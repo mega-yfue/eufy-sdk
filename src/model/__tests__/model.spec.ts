@@ -333,8 +333,7 @@ describe("mergeProperties — shared props dedupe across capabilities", () => {
   });
 
   it("honours per-member `available` — a hub doesn't inherit camera-only audio props", () => {
-    const names = (ctx: object | undefined) =>
-      mergeProperties(["audio"], ctx as never).map((p) => p.name);
+    const names = (ctx: object | undefined) => mergeProperties(["audio"], ctx as never).map((p) => p.name);
     const cam = { channel: 0, codec: "camera", capabilities: new Set(["audio"]), paramIds: new Set() };
     const hub = { channel: 0, codec: "station", deviceType: 0, capabilities: new Set(["audio"]), paramIds: new Set() };
 
