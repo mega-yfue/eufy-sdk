@@ -210,7 +210,11 @@ export const BATTERY_MEMBERS = {
   workingMode: {
     param: BATTERY_PARAM.WORKING_MODE,
     type: "number",
+    // kind stays "scalar": the static spec has no enum set to ship (the value-kinds guard requires
+    // one for kind:"enum"). The per-model options are stamped on at resolve time via enumValuesFor,
+    // and a host renders a select from the resulting `enumValues` regardless of kind.
     kind: "scalar",
+    enumValuesFor: (ctx) => workingModeMap(ctx.model),
     provenance: "verified",
     requires: [BATTERY_PARAM.WORKING_MODE],
     min: 0,
@@ -416,10 +420,18 @@ export const WORKING_MODE_MAPS: Readonly<Record<string, Readonly<Record<number, 
  * by T-code prefix, falling back to the 3-mode camera `DEFAULT`.
  */
 export function resolveWorkingMode(model: string | undefined, value: number): string | undefined {
+  return workingModeMap(model)[value];
+}
+
+/**
+ * The working-mode {index → label} map for a device model — its own {@link WORKING_MODE_MAPS} entry
+ * (matched by T-code prefix) or the 3-mode camera `DEFAULT`. This is the per-device enum a host shows
+ * as a dropdown; `workingMode`'s `enumValuesFor` stamps it onto the manifest.
+ */
+export function workingModeMap(model: string | undefined): Readonly<Record<number, string>> {
   const m = (model ?? "").toUpperCase();
   const key = Object.keys(WORKING_MODE_MAPS).find((k) => k !== "DEFAULT" && m.startsWith(k));
-  const map = (key && WORKING_MODE_MAPS[key]) || WORKING_MODE_MAPS.DEFAULT;
-  return map[value];
+  return (key && WORKING_MODE_MAPS[key]) || WORKING_MODE_MAPS.DEFAULT;
 }
 
 /**
@@ -427,9 +439,7 @@ export function resolveWorkingMode(model: string | undefined, value: number): st
  * `undefined` if that model doesn't offer the named mode. Used to let `setWorkingMode` take names.
  */
 export function resolveWorkingModeValue(model: string | undefined, name: string): number | undefined {
-  const m = (model ?? "").toUpperCase();
-  const key = Object.keys(WORKING_MODE_MAPS).find((k) => k !== "DEFAULT" && m.startsWith(k));
-  const map = (key && WORKING_MODE_MAPS[key]) || WORKING_MODE_MAPS.DEFAULT;
+  const map = workingModeMap(model);
   const hit = Object.entries(map).find(([, label]) => label.toLowerCase() === name.trim().toLowerCase());
   return hit ? Number(hit[0]) : undefined;
 }

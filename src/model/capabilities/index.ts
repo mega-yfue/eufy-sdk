@@ -7,7 +7,7 @@
  */
 
 import type { Capability, CloudRecord, Codec, PropertySpec } from "../types.js";
-import { bindMembers, installs, memberWrite, type Members } from "./members.js";
+import { bindMembers, installs, memberWrite, type Members, type ValueMember } from "./members.js";
 import { camelCase } from "./access.js";
 import { describeBound, type CapabilityDescriptor } from "./manifest.js";
 import type {
@@ -166,36 +166,39 @@ export function mergeProperties(caps: Capability[], ctx?: CommandContext): Prope
     if (!module) continue;
     for (const spec of module.properties) {
       if (seen.has(spec.name)) continue;
-      // A property whose member is family-gated (`available`) belongs on the manifest only where
-      // the gate holds — otherwise a shared capability leaks camera-only params onto a HomeBase
-      // (e.g. `audio` gives the hub its alarm volume, but not `microphone`/`speaker`).
-      if (ctx && !memberAvailable(module.members, spec.name, ctx)) continue;
+      const member = ctx ? memberFor(module.members, spec.name) : undefined;
+      // A property whose member is family-gated (`available`) belongs on the manifest only where the
+      // gate holds — otherwise a shared capability leaks camera-only params onto a HomeBase (e.g.
+      // `audio` gives the hub its alarm volume, but not `microphone`/`speaker`). A throwing gate is
+      // treated as available rather than dropping the property on a resolve-time edge case.
+      if (member?.available && !safeResolve(() => member.available!(ctx!), true)) continue;
       seen.add(spec.name);
-      merged.push(spec);
+      // A member can carry a per-device enum (e.g. `workingMode`, whose indices number differently
+      // per model): resolve it against the context and stamp it onto this device's spec.
+      const dynamicEnum = member?.enumValuesFor ? safeResolve(() => member.enumValuesFor!(ctx!), undefined) : undefined;
+      merged.push(dynamicEnum ? { ...spec, enumValues: dynamicEnum } : spec);
     }
   }
   return merged;
 }
 
-/**
- * Whether the member behind a property spec is available for this device context. True when there is
- * no member (defensive) or no `available` gate; a throwing gate is treated as available rather than
- * dropping the property on a resolve-time edge case.
- */
-function memberAvailable(members: Members | undefined, propName: string, ctx: CommandContext): boolean {
-  if (!members) return true;
+/** The value-member behind a property spec, matched by its property name (`property ?? key`). */
+function memberFor(members: Members | undefined, propName: string): ValueMember | undefined {
+  if (!members) return undefined;
   for (const [key, m] of Object.entries(members)) {
     const name = "property" in m && m.property ? m.property : key;
-    if (name !== propName) continue;
-    const gate = "available" in m ? m.available : undefined;
-    if (!gate) return true;
-    try {
-      return gate(ctx);
-    } catch {
-      return true;
-    }
+    if (name === propName) return "type" in m ? (m as ValueMember) : undefined;
   }
-  return true;
+  return undefined;
+}
+
+/** Run a resolve-time member hook, falling back on a throw so one bad predicate can't break resolution. */
+function safeResolve<T>(fn: () => T, fallback: T): T {
+  try {
+    return fn();
+  } catch {
+    return fallback;
+  }
 }
 
 /**

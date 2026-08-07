@@ -41,6 +41,14 @@ export interface ValueMember {
   kind?: ValueKind;
   unit?: string;
   enumValues?: Record<number, string>;
+  /**
+   * A per-device enum resolved at manifest time from the device context — for a value whose options
+   * are real but vary by model, so a single static {@link enumValues} cannot state them (e.g.
+   * `workingMode`, whose indices number differently per camera). `mergeProperties` calls this with the
+   * device context and stamps the result onto that device's spec. Returning `undefined` leaves the
+   * static `enumValues` (or none) in place.
+   */
+  enumValuesFor?: (ctx: CommandContext) => Record<number, string> | undefined;
   provenance?: PropertySpec["provenance"];
   invert?: boolean;
   description: string;

@@ -354,4 +354,32 @@ describe("mergeProperties — shared props dedupe across capabilities", () => {
     expect(all).toContain("microphone");
     expect(all).toContain("hubAlarmTone");
   });
+
+  it("stamps per-model enum options onto workingMode via enumValuesFor", () => {
+    const ctx = (model: string) => ({
+      channel: 0,
+      codec: "camera",
+      deviceType: 0,
+      model,
+      capabilities: new Set(["battery"]),
+      paramIds: new Set(),
+    });
+    const workingMode = (model: string) =>
+      mergeProperties(["battery"], ctx(model) as never).find((p) => p.name === "workingMode");
+
+    expect(workingMode("T8114")?.enumValues).toEqual({
+      0: "Optimal Battery Life",
+      1: "Optimal Surveillance",
+      2: "Customize Recording",
+    });
+    // The doorbell numbers its modes differently and adds a fourth.
+    expect(workingMode("T8214")?.enumValues).toEqual({
+      0: "Balance Surveillance",
+      1: "Optimal Surveillance",
+      2: "Customize Recording",
+      3: "Optimal Battery Life",
+    });
+    // No context → no per-device enum stamped (back-compat).
+    expect(mergeProperties(["battery"]).find((p) => p.name === "workingMode")?.enumValues).toBeUndefined();
+  });
 });
