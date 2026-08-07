@@ -331,4 +331,28 @@ describe("mergeProperties — shared props dedupe across capabilities", () => {
     expect(detectCapabilities({ params: { 1550: "1" } }, "sensor")).not.toContain("video");
     expect(detectCapabilities({ model: "cam" }, "camera")).toContain("video");
   });
+
+  it("honours per-member `available` — a hub doesn't inherit camera-only audio props", () => {
+    const names = (ctx: object | undefined) =>
+      mergeProperties(["audio"], ctx as never).map((p) => p.name);
+    const cam = { channel: 0, codec: "camera", capabilities: new Set(["audio"]), paramIds: new Set() };
+    const hub = { channel: 0, codec: "station", deviceType: 0, capabilities: new Set(["audio"]), paramIds: new Set() };
+
+    const camNames = names(cam);
+    expect(camNames).toContain("microphone");
+    expect(camNames).toContain("speaker");
+    expect(camNames).not.toContain("hubAlarmTone");
+
+    const hubNames = names(hub);
+    expect(hubNames).not.toContain("microphone");
+    expect(hubNames).not.toContain("speaker");
+    expect(hubNames).not.toContain("audioRecording");
+    expect(hubNames).toContain("hubAlarmTone");
+  });
+
+  it("without a context, nothing is gated (back-compat)", () => {
+    const all = mergeProperties(["audio"]).map((p) => p.name);
+    expect(all).toContain("microphone");
+    expect(all).toContain("hubAlarmTone");
+  });
 });

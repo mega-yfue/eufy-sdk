@@ -26,7 +26,7 @@
  * @module model/registry
  */
 
-import type { CloudRecord, RegistryEntry, ResolvedDevice, Capability } from "./types.js";
+import type { CloudRecord, RegistryEntry, ResolvedDevice, Capability, CommandContext } from "./types.js";
 import { classify, codecForType, codecFromModel } from "./classify.js";
 import {
   mergeProperties,
@@ -210,7 +210,19 @@ export function resolveDevice(rec: CloudRecord): ResolvedDevice {
     ...detectCapabilities(rec, codec),
   ]).filter((c) => !(attached && STATION_OWNED_CAPABILITIES.has(c)));
 
-  const properties = mergeProperties(capabilities);
+  // Gate family-specific members (a hub must not inherit a camera's `microphone`/`speaker` from the
+  // shared `audio` capability). The `available` predicates only read codec / deviceType /
+  // capabilities, so a lightweight resolve-time context is enough.
+  const gateCtx = {
+    channel: 0,
+    codec,
+    deviceType: rec.deviceType,
+    model: rec.model,
+    category: rec.category,
+    capabilities: new Set(capabilities),
+    paramIds: new Set<number>(),
+  } as unknown as CommandContext;
+  const properties = mergeProperties(capabilities, gateCtx);
 
   // Name: curated → inferred clean T-code → raw model → "unknown".
   const name = row?.name ?? inferName(rec) ?? rec.model ?? "unknown";

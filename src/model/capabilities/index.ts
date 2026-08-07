@@ -7,7 +7,7 @@
  */
 
 import type { Capability, CloudRecord, Codec, PropertySpec } from "../types.js";
-import { bindMembers, installs, memberWrite } from "./members.js";
+import { bindMembers, installs, memberWrite, type Members } from "./members.js";
 import { camelCase } from "./access.js";
 import { describeBound, type CapabilityDescriptor } from "./manifest.js";
 import type {
@@ -158,7 +158,7 @@ export const CAPABILITY_MODULES = Object.fromEntries(MODULES.map((m) => [m.capab
  * @returns the union of all contributed `PropertySpec`s, unique by `name`.
  * @internal
  */
-export function mergeProperties(caps: Capability[]): PropertySpec[] {
+export function mergeProperties(caps: Capability[], ctx?: CommandContext): PropertySpec[] {
   const seen = new Set<string>();
   const merged: PropertySpec[] = [];
   for (const cap of caps) {
@@ -166,11 +166,36 @@ export function mergeProperties(caps: Capability[]): PropertySpec[] {
     if (!module) continue;
     for (const spec of module.properties) {
       if (seen.has(spec.name)) continue;
+      // A property whose member is family-gated (`available`) belongs on the manifest only where
+      // the gate holds — otherwise a shared capability leaks camera-only params onto a HomeBase
+      // (e.g. `audio` gives the hub its alarm volume, but not `microphone`/`speaker`).
+      if (ctx && !memberAvailable(module.members, spec.name, ctx)) continue;
       seen.add(spec.name);
       merged.push(spec);
     }
   }
   return merged;
+}
+
+/**
+ * Whether the member behind a property spec is available for this device context. True when there is
+ * no member (defensive) or no `available` gate; a throwing gate is treated as available rather than
+ * dropping the property on a resolve-time edge case.
+ */
+function memberAvailable(members: Members | undefined, propName: string, ctx: CommandContext): boolean {
+  if (!members) return true;
+  for (const [key, m] of Object.entries(members)) {
+    const name = "property" in m && m.property ? m.property : key;
+    if (name !== propName) continue;
+    const gate = "available" in m ? m.available : undefined;
+    if (!gate) return true;
+    try {
+      return gate(ctx);
+    } catch {
+      return true;
+    }
+  }
+  return true;
 }
 
 /**
