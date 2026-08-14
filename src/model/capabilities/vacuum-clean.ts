@@ -45,7 +45,12 @@ export const LEGACY_VACUUM_DP = {
 } as const;
 
 /**
- * Tuya DP ids for the X8 Pro (T2266) / X-series hybrid clean line.
+ * DP ids for the **Mach-class** X8/L-series clean line (T2261/T2262/T2266/T2267/T2268/T2276–T2278).
+ *
+ * These are the classic (pre-protobuf) Tuya DP numbers, shared with the G-series subset in
+ * {@link LEGACY_VACUUM_DP} but extended to the full Mach schema. Distinct from {@link VACUUM_DP}
+ * (DPs 151–163, AIoT protobuf) and from the X9 Pro (T2320), which is also Tuya P2P but uses the
+ * 150–180 protobuf scheme — so this map does NOT apply to T2320.
  *
  * Full schema sourced from `thing.m.device.ref.info.list` v5.4 for product `wahqax6ifjgs1c4n`
  * (schemaInfo.schema, 39 DPs). Only the DPs with confirmed read-side values from a live
@@ -53,10 +58,10 @@ export const LEGACY_VACUUM_DP = {
  * no live publishDps capture has been made yet.
  * @internal
  */
-export const TUYA_VACUUM_DP = {
+export const MACH_VACUUM_DP = {
   /** Power on/off (DP 1, Bool). */
   POWER: 1,
-  /** Play/pause toggle (DP 2, Bool rw) — true = start, false = pause. Shared with {@link LEGACY_VACUUM_DP.PLAY_PAUSE}. */
+  /** Play/pause toggle (DP 2, Bool rw) — true = start, false = pause. Supersedes {@link LEGACY_VACUUM_DP.PLAY_PAUSE} (same id). */
   PLAY_PAUSE: 2,
   /** Manual direction jog (DP 3, Enum: "forward"|"back"|"left"|"right"). */
   DIRECTION: 3,
@@ -64,17 +69,17 @@ export const TUYA_VACUUM_DP = {
   WORK_MODE: 5,
   /** Work status (DP 15, Enum string) — the high-level activity. Live-confirmed "Sleeping". */
   WORK_STATUS: 15,
-  /** Return to dock (DP 101, Bool rw). Shared with {@link LEGACY_VACUUM_DP.GO_HOME}. */
+  /** Return to dock (DP 101, Bool rw). Supersedes {@link LEGACY_VACUUM_DP.GO_HOME} (same id). */
   GO_HOME: 101,
   /** Suction/cleaning strength (DP 102, Enum: "Off"|"Quiet"|"Standard"|"Turbo"|"Max"). Live-confirmed "Off". */
   CLEAN_SPEED: 102,
   /** Find-the-robot locator (DP 103, Bool). */
   FIND_ROBOT: 103,
-  /** Battery level 0-100 (DP 104, Value ro). Shared with {@link LEGACY_VACUUM_DP.BATTERY_LEVEL}. */
+  /** Battery level 0-100 (DP 104, Value ro). Supersedes {@link LEGACY_VACUUM_DP.BATTERY_LEVEL} (same id). */
   BATTERY_LEVEL: 104,
   /** Mop water flow (DP 105, Enum: "Dry"|"Low"|"Mid"|"High"). Live-confirmed "Mid". */
   MOP_WATER: 105,
-  /** Fault code, 0 = ok (DP 106, Value ro). Shared with {@link LEGACY_VACUUM_DP.ERROR_CODE}. */
+  /** Fault code, 0 = ok (DP 106, Value ro). Supersedes {@link LEGACY_VACUUM_DP.ERROR_CODE} (same id). */
   ERROR_CODE: 106,
   /** Do-not-disturb / forbid mode (DP 107, Bool). Live-confirmed false. */
   FORBID_MODE: 107,
@@ -489,7 +494,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * Distinct from {@link activity} (DP 153, protobuf), which the AIoT T2351 reports instead.
    */
   workStatus: {
-    param: TUYA_VACUUM_DP.WORK_STATUS,
+    param: MACH_VACUUM_DP.WORK_STATUS,
     type: "string",
     provenance: "mega",
     decode: (raw) => decodeTuyaWorkStatus(raw as ParamValue | undefined),
@@ -504,7 +509,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * Known values from schemaInfo.schema: {@link WORK_MODES}.
    */
   workMode: {
-    param: TUYA_VACUUM_DP.WORK_MODE,
+    param: MACH_VACUUM_DP.WORK_MODE,
     type: "string",
     provenance: "mega",
     decode: (raw): WorkMode | undefined => {
@@ -522,7 +527,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * Known values from schemaInfo.schema: {@link CLEAN_SPEED_VALUES}.
    */
   cleaningStrength: {
-    param: TUYA_VACUUM_DP.CLEAN_SPEED,
+    param: MACH_VACUUM_DP.CLEAN_SPEED,
     type: "string",
     provenance: "mega",
     decode: (raw): CleanSpeed | undefined => {
@@ -541,7 +546,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * Known values from schemaInfo.schema: {@link MOP_WATER_LEVELS}.
    */
   mopWater: {
-    param: TUYA_VACUUM_DP.MOP_WATER,
+    param: MACH_VACUUM_DP.MOP_WATER,
     type: "string",
     provenance: "mega",
     decode: (raw): MopWaterLevel | undefined => {
@@ -561,7 +566,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * Known values from schemaInfo.schema: {@link TUYA_CLEAN_TYPES}.
    */
   x8CleanType: {
-    param: TUYA_VACUUM_DP.CLEAN_TYPE,
+    param: MACH_VACUUM_DP.CLEAN_TYPE,
     type: "string",
     provenance: "mega",
     decode: (raw): TuyaCleanType | undefined => {
@@ -578,7 +583,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * Read-only — no write is expected for a session counter.
    */
   clearTime: {
-    param: TUYA_VACUUM_DP.CLEAR_TIME,
+    param: MACH_VACUUM_DP.CLEAR_TIME,
     type: "number",
     unit: "s",
     kind: "seconds",
@@ -590,7 +595,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * Session cleaned area in m² (DP 110, Value). Live-confirmed 54 at rest. Read-only.
    */
   clearArea: {
-    param: TUYA_VACUUM_DP.CLEAR_AREA,
+    param: MACH_VACUUM_DP.CLEAR_AREA,
     type: "number",
     kind: "scalar",
     provenance: "mega",
@@ -601,7 +606,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    * Distinct from {@link volume} (DP 161), which the AIoT T2351 reports.
    */
   loudness: {
-    param: TUYA_VACUUM_DP.LOUDNESS,
+    param: MACH_VACUUM_DP.LOUDNESS,
     type: "number",
     unit: "%",
     kind: "percent",
@@ -668,7 +673,7 @@ export const VACUUM_CLEAN: CapabilityModule = {
     const params = pickDpParams(signal.source === "mqtt" ? signal.dpParams : undefined, [
       ...Object.values(VACUUM_DP),
       ...Object.values(LEGACY_VACUUM_DP),
-      ...Object.values(TUYA_VACUUM_DP),
+      ...Object.values(MACH_VACUUM_DP),
     ]);
     return params ? { params } : null;
   },
