@@ -143,3 +143,5 @@ export const isWiredDoorbell = (ctx: FamilyContext): boolean => ctx.deviceType =
  * X8 Pro (2026-08-04). Additional category strings are added here as devices are captured.
  */
 export const isAiotVacuum = (ctx: FamilyContext): boolean => ctx.category !== "eufy_home_tuya";
+
+export const isTuyaVacuum = (ctx: FamilyContext): boolean => ctx.category === "eufy_home_tuya";
