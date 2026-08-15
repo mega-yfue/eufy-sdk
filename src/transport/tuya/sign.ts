@@ -1,25 +1,25 @@
 /**
- * Tuya / Thingclips `api.json` request signing.
+ * Tuya `api.json` request signing for eufy Home/Clean app vacuums.
  *
- * The signature is computed in two stages:
+ * The signature is `HMAC-SHA256(keyHmac, preimage)` (lowercase hex), where:
+ *   keyHmac = certSign + '_' + secret2 + '_' + secret
+ *           = {@link TUYA_HOME_HMAC_KEY}
  *
- *  1. **preimage** (pure-Java, fully reversed + encoded here): take the request param map, keep
- *     ONLY the allowlisted keys with a non-empty value, sort those keys ascending, and join them
- *     as `key=value` with `||`. The `postData` value is first replaced by an md5-then-swap
- *     transform ({@link swapMd5}) so the (potentially large) body is folded to a fixed 32 chars.
+ * All three components are extracted from the eufy Home/Clean APK (`com.oceanwing.battery.cam`):
+ * certSign is the package name + SHA-256 signing-certificate fingerprint (from the APK manifest
+ * and signing metadata), secret2 is embedded in the native security library, and secret is the
+ * `THING_SMART_SECRET` value in `AndroidManifest.xml`.
  *
- *  2. **digest** (was NATIVE — command 1 in `libthing_security.so`; now SOLVED):
- *     `sign = HMAC-SHA256(K, preimage)` as lowercase hex, where K is the recovered app-wide constant
- *     (supplied via the `TUYA_SIGN_KEY` env var — see {@link HmacSigner}; not hardcoded here). Behind
- *     the {@link TuyaSigner} seam: {@link HmacSigner} is the real implementation; {@link StubSigner}
- *     (throws) remains for wiring/tests without a key.
+ * The preimage follows the standard Tuya scheme: keep only allowlisted keys with a non-empty value,
+ * sort ascending, join as `key=value` with `||`. `postData` is folded via {@link swapMd5} before joining.
  */
 import { createHash, createHmac } from "node:crypto";
 
 /**
  * Keys that participate in the signature, in no particular order (the preimage builder sorts).
- * Everything else in the request (bizData, sdkVersion, os-info fields, cp/channel/nd, …) is
- * DELIBERATELY excluded from the sign. Verified against a live preimage (see the spec test).
+ * `chKey` IS included — confirmed from a live-captured `smartlife.p.time.get` golden preimage
+ * (see `scripts/tuya/setup-sign-key.mjs`). Non-allowlisted keys (sdkVersion, platform,
+ * appRnVersion, …) are excluded from the sign.
  */
 export const SIGN_ALLOWLIST: ReadonlySet<string> = new Set([
   "a",
@@ -29,6 +29,7 @@ export const SIGN_ALLOWLIST: ReadonlySet<string> = new Set([
   "lang",
   "deviceId",
   "appVersion",
+  "chKey",
   "ttid",
   "isH5",
   "h5Token",
@@ -40,19 +41,13 @@ export const SIGN_ALLOWLIST: ReadonlySet<string> = new Set([
   "et",
   "n4h5",
   "sid",
-  "chKey",
   "sp",
 ]);
 
 /**
  * The `postData` sign transform: md5 the body to 32 hex chars, then rotate the four 8-char blocks
- * `[b0 b1 b2 b3]` → `[b1 b0 b3 b2]`. This is the Thingclips SDK 7.5.0 transform; it is applied to
- * the `postData` value before it is joined into the preimage.
- *
- * ✅ Confirmed: the `thing.m.user.uid.token.create` call carries a `postData`, and its
- * sign (computed over this transform) was accepted by `a1.tuyaeu.com` with no SIGN_INVALID — so a
- * postData-bearing preimage IS exercised end-to-end. (The static `smartlife.p.time.get` golden vector
- * separately carries no postData; the two together cover both paths.)
+ * `[b0 b1 b2 b3]` → `[b1 b0 b3 b2]`. Same transform used by both the ThingClips SDK and the eufy
+ * Home/Clean app.
  */
 export function swapMd5(postData: string): string {
   const h = createHash("md5").update(postData, "utf-8").digest("hex");
@@ -67,64 +62,70 @@ export function swapMd5(postData: string): string {
 export function buildSignPreimage(params: Readonly<Record<string, string | undefined>>): string {
   const keys = Object.keys(params)
     .filter((k) => SIGN_ALLOWLIST.has(k) && params[k] !== undefined && params[k] !== "")
-    .sort(); // default lexicographic sort = ASCII ascending, matching the native ordering
+    .sort();
   return keys.map((k) => `${k}=${k === "postData" ? swapMd5(params[k] as string) : params[k]}`).join("||");
 }
 
-/**
- * The native signing seam. Given the {@link buildSignPreimage} output, return the final `sign`
- * value (SHA-256-length hex). Implementations mix in the app secret natively.
- */
+/** The native signing seam. Given the {@link buildSignPreimage} output, return the sign (64 hex chars). */
 export interface TuyaSigner {
   sign(preimage: string): string;
 }
 
-/**
- * Placeholder {@link TuyaSigner} that throws. Lets the request builder + client be wired and
- * unit-tested (with an injected fake signer) before the native digest is cracked; swap in the real
- * signer to make live calls work.
- */
+/** Placeholder {@link TuyaSigner} that throws. For unit-testing with an injected fake. */
 export class StubSigner implements TuyaSigner {
   sign(_preimage: string): string {
-    throw new Error(
-      "native sign not yet implemented: the api.json `sign` digest is computed in " +
-        "libthing_security.so (command 1) and has not been reversed — inject a real TuyaSigner",
-    );
+    throw new Error("tuya StubSigner: inject a real TuyaSigner for live calls");
   }
 }
 
 /**
- * The native-digest key **K**: `sign = HMAC-SHA256(K, preimage)` (lowercase hex) — proven by
- * the native signer (command 1 → `mbedtls_md_hmac`, SHA-256), confirmed by
- * reproducing a live-captured signature. K is a per-app-build CONSTANT (the same for every eufy user,
- * NOT tied to any account), assembled natively as `package_cert_stego_appSecret`:
- *   - the package name (`com.oceanwing.battery.cam`),
- *   - the developer signing-cert SHA-256 (public),
- *   - the value hidden by keyed steganography in `assets/t_s.bmp` (the only genuinely-hidden part —
- *     extracted once from the running app's memory at `libthing_security.so + 0x384f0`),
- *   - the manifest app secret (== {@link TUYA_APP_SECRET}).
- *
- * It authorizes requests — treat it like the app secret, so it is NOT baked into this source. Supply
- * it out-of-band via the `TUYA_SIGN_KEY` env var (or pass it to {@link HmacSigner}).
- *
- * The real {@link TuyaSigner}: `sign = HMAC-SHA256(key, preimage)` as lowercase hex. The key is read
- * from `process.env.TUYA_SIGN_KEY` unless one is passed explicitly; the constructor throws if neither
- * is present, so a missing key fails loudly instead of producing a wrong sign. Verified: reproduces
- * the captured `smartlife.p.time.get` sign `97a78b35…a7f8c84` from its preimage.
+ * eufy Home/Clean app clientId / appKey.
+ * Extracted from `THING_SMART_APPKEY` in `AndroidManifest.xml` of the eufy Home/Clean APK
+ * (`com.oceanwing.battery.cam`).
+ */
+export const TUYA_HOME_APP_KEY = "w8x4ppqkdxvqnd73ahj9";
+
+/**
+ * Package name + SHA-256 signing-certificate fingerprint — the first component of the HMAC key.
+ * Extracted from the APK signing metadata (`com.oceanwing.battery.cam`).
+ */
+export const TUYA_HOME_CERT_SIGN =
+  "com.oceanwing.battery.cam_16:6C:23:45:57:B7:76:CA:D8:AC:94:C9:79:37:9E:48:DF:38:7D:4D:8F:96:A3:43:DF:40:FC:D9:05:BF:F6:86";
+
+/** Second component of the HMAC key — embedded in the native security library of the APK. */
+export const TUYA_HOME_SECRET2 = "dn9erpyp7nmeuvah8ktghqsgpay87maa";
+
+/**
+ * App-secret component of the HMAC key.
+ * Extracted from `THING_SMART_SECRET` in `AndroidManifest.xml` of the eufy Home/Clean APK.
+ */
+export const TUYA_HOME_SECRET = "pt585qhmt75hwcynchnps9dnxh9suhwd";
+
+/**
+ * The assembled HMAC-SHA256 signing key: `certSign + '_' + secret2 + '_' + secret`.
+ * A constant — no env var or per-install derivation needed.
+ * All three components extracted from the eufy Home/Clean APK (`com.oceanwing.battery.cam`).
+ */
+export const TUYA_HOME_HMAC_KEY = `${TUYA_HOME_CERT_SIGN}_${TUYA_HOME_SECRET2}_${TUYA_HOME_SECRET}` as const;
+
+/**
+ * The real signing implementation: `sign = HMAC-SHA256(TUYA_HOME_HMAC_KEY, preimage)` (hex).
+ * Works out of the box — the key is a constant extracted from the eufy Home/Clean APK.
+ * Pass a custom `key` only in tests or to override the default.
  */
 export class HmacSigner implements TuyaSigner {
   private readonly key: string;
   constructor(key?: string) {
-    const k = key ?? process.env.TUYA_SIGN_KEY;
-    if (!k) {
-      throw new Error(
-        "HmacSigner: no sign key — set the TUYA_SIGN_KEY env var (the recovered app-wide K = " +
-          "package_cert_stego_appSecret) or pass one explicitly.",
-      );
-    }
-    this.key = k;
+    this.key = key ?? TUYA_HOME_HMAC_KEY;
   }
   sign(preimage: string): string {
     return createHmac("sha256", this.key).update(preimage, "utf-8").digest("hex");
   }
 }
+
+/**
+ * Channel key sent on every request as `chKey`.
+ * Extracted from the eufy Home/Clean APK (`com.oceanwing.battery.cam`); present in the sign
+ * preimage — confirmed from the live-captured golden vector in `scripts/tuya/setup-sign-key.mjs`.
+ */
+export const TUYA_CHKEY = "7cbfe6d8";

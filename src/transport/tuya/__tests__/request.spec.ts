@@ -2,7 +2,7 @@ import {
   buildApiParams,
   buildGetDeviceDpsAction,
   buildPublishDpsAction,
-  buildTokenCreateAction,
+  buildUsernameTokenGetAction,
   buildPasswordLoginAction,
   DEFAULT_TUYA_ENV,
   type TuyaSession,
@@ -85,9 +85,9 @@ describe("buildApiParams", () => {
 });
 
 describe("dp action builders", () => {
-  it("publishDps: thing.m.device.dp.publish v2.0 with nested stringified dps", () => {
+  it("publishDps: smartlife.m.device.dp.publish v2.0 with nested stringified dps", () => {
     const action = buildPublishDpsAction("dev-1", "gw-1", { "101": true, "102": 50 });
-    expect(action.a).toBe("thing.m.device.dp.publish");
+    expect(action.a).toBe("smartlife.m.device.dp.publish");
     expect(action.v).toBe("2.0");
     expect(JSON.parse(action.postData!)).toEqual({
       gwId: "gw-1",
@@ -96,24 +96,32 @@ describe("dp action builders", () => {
     });
   });
 
-  it("getDeviceDps: thing.m.device.cache.dp.get v2.0", () => {
+  it("getDeviceDps: smartlife.m.device.cache.dp.get v2.0", () => {
     const action = buildGetDeviceDpsAction("dev-1", 1);
-    expect(action.a).toBe("thing.m.device.cache.dp.get");
+    expect(action.a).toBe("smartlife.m.device.cache.dp.get");
     expect(action.v).toBe("2.0");
     expect(JSON.parse(action.postData!)).toEqual({ devId: "dev-1", dpCacheType: 1 });
   });
 
   it("login action builders shape their postData", () => {
-    expect(JSON.parse(buildTokenCreateAction("44", "eufyhome-42").postData!)).toEqual({
+    const tokenAction = buildUsernameTokenGetAction("44", "eufyhome-42");
+    expect(tokenAction.a).toBe("smartlife.m.user.username.token.get");
+    expect(JSON.parse(tokenAction.postData!)).toEqual({
       countryCode: "44",
-      uid: "eufyhome-42",
+      username: "eufyhome-42",
+      isUid: true,
     });
-    expect(JSON.parse(buildPasswordLoginAction("44", "eufyhome-42", "PW", "TOK").postData!)).toEqual({
+
+    const loginAction = buildPasswordLoginAction("44", "eufyhome-42", "PW", "TOK");
+    expect(loginAction.a).toBe("smartlife.m.user.uid.password.login.reg");
+    expect(JSON.parse(loginAction.postData!)).toEqual({
       countryCode: "44",
       uid: "eufyhome-42",
       passwd: "PW",
       token: "TOK",
       ifencrypt: 1,
+      createGroup: true,
+      options: '{"group": 1}',
     });
   });
 });
