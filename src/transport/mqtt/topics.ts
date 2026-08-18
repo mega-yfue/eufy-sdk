@@ -82,15 +82,33 @@ export function secureTopic(device: EufyDevice, leg: "req" | "res"): string {
 /**
  * Every topic to subscribe for a device's inbound traffic.
  *
- * `eufy_life` gets the app's full four-topic set: `/app/res` (the state channel — device status
- * reports and command replies), `/res` (present in the app's subscribe list but observed to carry
- * nothing on this line), `synq/…/state_info` (online/offline), and `/app/ota/res` (OTA progress).
+ * `eufy_life` (smart lights) gets the app's full four-topic set: `/app/res` (the state channel),
+ * `/res` (present in the app's subscribe list but observed to carry nothing on this line),
+ * `synq/…/state_info` (online/offline), and `/app/ota/res` (OTA progress).
+ *
+ * Clean-line devices (vacuum/mower) subscribe four topics on the `eufy_home` prefix:
+ *   - `cmd/…/res` — device→app DP reports and command replies (confirmed live on T2351)
+ *   - `biz/…/res` — cloud→app business-layer responses (TopicManager.getBizReqTopic())
+ *   - `biz/…/req` — cloud ACKs for app→cloud business requests (subscribe for ACKs)
+ *   - `dt/…/param_info` — device-twin parameter push (_research/02_mqtt_push.md · topic table)
+ *
  * Every other line subscribes `/res` alone.
  */
 export function subscribeTopics(device: EufyDevice): readonly string[] {
-  if (device.category !== EUFY_LIFE) return [secureTopic(device, "res")];
-  const base = `${EUFY_LIFE}/${device.model}/${device.sn}`;
-  return [`cmd/${base}/app/res`, `cmd/${base}/res`, `synq/${base}/state_info`, `cmd/${base}/app/ota/res`];
+  if (device.category === EUFY_LIFE) {
+    const base = `${EUFY_LIFE}/${device.model}/${device.sn}`;
+    return [`cmd/${base}/app/res`, `cmd/${base}/res`, `synq/${base}/state_info`, `cmd/${base}/app/ota/res`];
+  }
+  if (device.deviceClass === "vacuum" || device.deviceClass === "mower") {
+    const base = `${EUFY_HOME}/${device.model}/${device.sn}`;
+    return [
+      `cmd/${base}/res`,
+      `biz/${base}/res`,
+      `biz/${base}/req`,
+      `dt/${base}/param_info`,
+    ];
+  }
+  return [secureTopic(device, "res")];
 }
 
 /** A parsed inbound topic. `tail` is everything after the serial (`res`, `app/res`, `state_info`, …). */
@@ -103,17 +121,17 @@ export interface ParsedTopic {
 }
 
 /**
- * Split an inbound topic into its parts. Both roots this broker uses (`cmd/…` and `synq/…`) put the
- * serial at index 3 regardless of how deep the tail runs, so the serial is read positionally rather
- * than from the end — `…/<sn>/app/res` and `…/<sn>/app/ota/res` would otherwise yield the tail
- * segment as the device id. Returns `undefined` on any shape this doesn't recognise, so an unparsed
- * topic leaves `deviceSn` unset instead of carrying a guess.
+ * Split an inbound topic into its parts. All roots this broker uses (`cmd/…`, `synq/…`, `biz/…`,
+ * `dt/…`) put the serial at index 3 regardless of how deep the tail runs, so the serial is read
+ * positionally rather than from the end — `…/<sn>/app/res` and `…/<sn>/app/ota/res` would otherwise
+ * yield the tail segment as the device id. Returns `undefined` on any shape this doesn't recognise,
+ * so an unparsed topic leaves `deviceSn` unset instead of carrying a guess.
  */
 export function parseSecureTopic(topic: string): ParsedTopic | undefined {
   const parts = topic.split("/");
   if (parts.length < 5) return undefined;
   const [root, category, model, sn] = parts;
-  if (root !== "cmd" && root !== "synq") return undefined;
+  if (root !== "cmd" && root !== "synq" && root !== "biz" && root !== "dt") return undefined;
   if (!category || !model || !sn) return undefined;
   return { root, category, model, sn, tail: parts.slice(4).join("/") };
 }
