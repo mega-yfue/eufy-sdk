@@ -86,6 +86,7 @@ describe("vacuum_clean capability module", () => {
       "activity",
       "volume",
       "battery",
+      "language",
       "cleanType",
       "errorCode",
       "workStatus",
@@ -254,6 +255,11 @@ const _errorCode: Exact<typeof vac.errorCode, number | undefined> = true;
 const _doNotDisturb: Exact<typeof vac.doNotDisturb, boolean | undefined> = true;
 const _rssi: Exact<typeof vac.rssi, number | undefined> = true;
 
+// language is AIoT-only: read is a string locale code; setLanguage is the optional setter.
+const _language: Exact<typeof vac.language, string | undefined> = true;
+const _setLanguageOptional: Exact<undefined extends typeof vac.setLanguage ? true : false, true> = true;
+const _setLanguageArg: Exact<Parameters<NonNullable<typeof vac.setLanguage>>[0], string> = true;
+
 export const _surfaceAssertions = [
   _power,
   _battery,
@@ -267,6 +273,9 @@ export const _surfaceAssertions = [
   _errorCode,
   _doNotDisturb,
   _rssi,
+  _language,
+  _setLanguageOptional,
+  _setLanguageArg,
 ];
 
 describe("vacuum_clean — DP-based action routing", () => {
@@ -337,5 +346,18 @@ describe("vacuum_clean — DP-based action routing", () => {
   it("doNotDisturb is absent when DP 107 is not in paramIds", () => {
     const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, undefined, aiotDps));
     expect(acts.setDoNotDisturb).toBeUndefined();
+  });
+
+  it("setLanguage is present on AIoT vacuums and dispatches DP 162", async () => {
+    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home"));
+    expect(acts.setLanguage).toBeDefined();
+    await acts.setLanguage!("en");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ kind: "aiot-dp", dp: VACUUM_DP.LANGUAGE, value: "en" });
+  });
+
+  it("setLanguage is absent on Tuya vacuums — no confirmed language DP in Tuya schema", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya"));
+    expect(acts.setLanguage).toBeUndefined();
   });
 });

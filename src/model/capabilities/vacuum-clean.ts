@@ -22,6 +22,8 @@ export const VACUUM_DP = {
   CLEAN_PARAM: 154,
   /** Speaker volume 0-100 (DP 161, Value). */
   VOLUME: 161,
+  /** Device UI language (DP 162, String rw). Locale code set by the app, e.g. "en", "zh", "de". */
+  LANGUAGE: 162,
   /** Battery level 0-100 (DP 163, Value) — a clean-namespace DP, NOT the security param 1101. */
   BATTERY: 163,
 } as const;
@@ -449,6 +451,22 @@ export const VACUUM_CLEAN_MEMBERS = {
     provenance: "mega",
     readAliases: [{ paramType: LEGACY_VACUUM_DP.BATTERY_LEVEL }],
     description: "Battery level 0-100 (DP 163 AIoT / DP 104 Tuya). NOTE: clean namespace — not param 1101.",
+  },
+  /**
+   * Device UI language — the locale the robot uses for its voice prompts (DP 162, String rw).
+   * AIoT clean line only; the Tuya X8 Pro has no confirmed language DP in its 1–134 schema.
+   * Write direction confirmed from `get_product_data_point` (`writable: true`); locale format is
+   * an open string (no live report observed for a closed set of values yet).
+   */
+  language: {
+    param: VACUUM_DP.LANGUAGE,
+    type: "string",
+    kind: "text",
+    provenance: "mega",
+    description: "Device UI language locale code (DP 162, String rw). AIoT clean line.",
+    write: (v) => aiotDp(VACUUM_DP.LANGUAGE, v as string),
+    writeAs: "setLanguage",
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
   },
   /**
    * The SETTING for what to do with a surface, not what a running job is doing — the two disagree while
