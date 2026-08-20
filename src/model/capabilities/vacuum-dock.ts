@@ -12,9 +12,8 @@ const VACUUM_DOCK_DP = 173 as const;
  * Every value {@link DockActivity} can take — the read's declared domain, so the schema a caller reads
  * and the type it compiles against are the same list rather than two that can drift.
  *
- * Exported so a caller can offer the set as data; not published — `DockActivity` is the union a reader
- * of the reference needs, and it states the same members.
- * @internal
+ * Published alongside {@link DockActivity} so a caller can offer the set as data — a picker or a
+ * legend needs the members at runtime, not only at compile time.
  */
 export const DOCK_ACTIVITIES = [
   "idle",
@@ -33,8 +32,8 @@ export const DOCK_ACTIVITIES = [
  * What the dock is doing — what `dev.vacuumDock()?.dockState` reports.
  *
  * A dock services several subsystems, so more than one can be busy at once; this answers the single
- * most specific one, in the order {@link decodeDockActivity} resolves them. `"unknown"` covers a state
- * value outside the set the dock's own status message declares.
+ * most specific one — a subsystem that is running beats the mop system's own mode. `"unknown"` covers
+ * a state value outside the set the dock's own status message declares.
  */
 export type DockActivity = (typeof DOCK_ACTIVITIES)[number];
 
