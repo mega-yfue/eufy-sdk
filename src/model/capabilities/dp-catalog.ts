@@ -1,11 +1,14 @@
 /**
  * Per-SKU DP capability catalog — the parsed result of a `get_product_data_point` API call.
  *
- * The raw response shape from `get_product_data_point` is not yet confirmed from a live capture
- * (the `MegaHttpClient.getProductDataPoint` method returns `unknown` for this reason). The parser
- * here is maximally defensive: any field mismatch or missing key yields an empty catalog, and
- * capabilities fall back to their safe defaults. Once a live response is captured and the shape
- * confirmed, tighten the field names below and drop the unused branches.
+ * The response carries one entry per data point, each declaring `dp_id`, a stable `code`, a
+ * human `name`, an access `mode`, a `data_type` and a `property` blob. Only the enum ranges are
+ * read here; the names and writability that same call reports are already resolved offline into
+ * `CLEAN_PARAMS`, so what this adds is the per-SKU narrowing a shared dictionary cannot carry —
+ * two products with the same DP can offer different value sets.
+ *
+ * Still defensive at every step: a missing key or a mismatched shape yields an empty catalog and
+ * capabilities fall back to their safe defaults, because a wrong range is worse than none.
  *
  * @module model/capabilities/dp-catalog
  */
@@ -25,20 +28,22 @@ export const EMPTY_DP_CATALOG: DpCatalog = {
 };
 
 /**
- * Defensively parse a raw `get_product_data_point` response into a {@link DpCatalog}.
+ * Parse a `get_product_data_point` response into a {@link DpCatalog}.
  *
- * Handles both known response variants:
- *  - `data_point_list` or `dp_list` (alternate key name observed in some responses)
- *  - `dp_id` (Tuya-native integer field) or `id` (alternate field name)
- *  - `values` as a plain `number[]` array, a JSON-stringified `"[0,1,2,3]"`, or a
- *    JSON-stringified `"{\"range\":[\"0\",\"1\",\"2\",\"3\"]}"` object
+ * `raw` is the response's `data` object, already unwrapped by the transport — so the entry array
+ * sits at the top level under `data_point_list`.
+ *
+ * An entry's declared type is `data_type` and its constraint blob is `property`; a range is read
+ * only from an enum entry, since that is the only type whose `property` states a closed set.
+ * `data_type` is matched case-insensitively — its casing is the server's to choose and nothing
+ * here should depend on it.
  *
  * Returns {@link EMPTY_DP_CATALOG} on any shape mismatch — never throws.
  */
 export function parseDpCatalog(raw: unknown): DpCatalog {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return EMPTY_DP_CATALOG;
   const r = raw as Record<string, unknown>;
-  const list = r.data_point_list ?? r.dp_list;
+  const list = r.data_point_list;
   if (!Array.isArray(list) || list.length === 0) return EMPTY_DP_CATALOG;
 
   let found = 0;
@@ -48,17 +53,15 @@ export function parseDpCatalog(raw: unknown): DpCatalog {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
     const e = entry as Record<string, unknown>;
 
-    // DP id: try dp_id first, then id
-    const rawId = e.dp_id ?? e.id;
+    const rawId = e.dp_id;
     const dpId = typeof rawId === "number" ? rawId : typeof rawId === "string" ? Number(rawId) : NaN;
     if (!Number.isInteger(dpId) || dpId <= 0) continue;
 
     found++;
 
-    // For enum-type DPs, parse the valid integer values
-    const type = typeof e.type === "string" ? e.type.toLowerCase() : "";
-    if (type === "enum") {
-      const range = parseEnumRange(e.values);
+    const dataType = typeof e.data_type === "string" ? e.data_type.toLowerCase() : "";
+    if (dataType === "enum") {
+      const range = parseEnumRange(e.property);
       if (range.length > 0) enumRanges.set(dpId, range);
     }
   }
@@ -67,7 +70,13 @@ export function parseDpCatalog(raw: unknown): DpCatalog {
   return { enumRanges };
 }
 
-/** Parse the `values` field of an enum DP entry into an integer array. */
+/**
+ * Parse an enum entry's `property` blob into the integer values it allows.
+ *
+ * The blob is a JSON string in the Tuya schema convention — `{"type":"enum","range":["0","1"]}`,
+ * whose members are STRINGS even for a numeric scale. A bare array, or an array already parsed
+ * out of JSON, is accepted on the same terms.
+ */
 function parseEnumRange(values: unknown): readonly number[] {
   if (values === null || values === undefined) return [];
   // Plain array of numbers or numeric strings
