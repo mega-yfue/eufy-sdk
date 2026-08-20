@@ -1,4 +1,4 @@
-import type { RawDpCodec } from "../../core/contracts.js";
+import type { RawDpCodec, RawDpField } from "../../core/contracts.js";
 import type { ParamValue } from "../types.js";
 import type { AvailabilityContext, CapabilityModule } from "./types.js";
 import { asBool } from "../../core/util.js";
@@ -204,7 +204,8 @@ export const VACUUM_ACTIVITIES = ["idle", "error", "docked", "cleaning", "return
 
 /**
  * The robot's high-level activity — what `dev.vacuumClean()?.activity` reports. `"unknown"` covers a
- * status the SDK can't classify yet. Several finer states collapse into `"cleaning"` today.
+ * status the SDK can't classify yet. `"cleaning"` is the widest member: it also covers mapping,
+ * cruising and manual remote driving, which the wire distinguishes and this union does not.
  */
 export type VacuumActivity = (typeof VACUUM_ACTIVITIES)[number];
 
@@ -246,30 +247,112 @@ export function decodeTuyaWorkStatus(raw: ParamValue | undefined): VacuumActivit
 /**
  * `WorkStatus.state` (protobuf field #2) → {@link VacuumActivity}.
  *
- * Only three values are **live-verified** on a T2351 — a start→return→charge run reported `5`(cleaning)
- * → `7`(returning) → `3`(docked), matching the physical actions. Every other value is carried from the
- * legacy `eufy-clean` `control.proto` enum and is **UNVERIFIED** (flagged inline, the same way the
- * arming module marks its unconfirmed mode ids); each is best-effort until captured on-device.
+ * Three values are **live-verified** on a T2351 — a start→return→charge run reported `5`(cleaning) →
+ * `7`(returning) → `3`(docked), matching the physical actions. The rest come from the vendor's own
+ * `WorkStatus.State` enumeration, which those three corroborate exactly: it declares `CHARGING = 3`,
+ * `CLEANING = 5` and `GO_HOME = 7` at the same positions the device reported them.
  *
- * Known gap — `state == 5` is not final; it carries a sub-state this decoder does not read (it only
- * reads field #2). The reversed `WorkStatus` shows the same `5` also means **paused**
- * (`cleaning.state == 1`) or **parked at the dock running its wash/dry cycle** (`go_wash.mode ∈ {1,2}`
- * / `station` washing-drying), not just actively cleaning. So a paused robot AND one washing/drying on
- * the dock both currently read as `"cleaning"`, and the standalone `15` (paused) value may be
- * unreachable in practice. Resolving it needs those sub-fields decoded; they are not guessed here.
+ * The vendor's remaining names are narrower than this union can express, so several collapse onto
+ * `"cleaning"` — the closest true answer for a robot that is off the dock and driving:
+ * `FAST_MAPPING`(4) is mapping a floor, `REMOTE_CTRL`(6) is being driven by hand, `CRUISIING`(8) is
+ * patrolling. A caller that needs to tell those apart cannot use this read to do it.
+ *
+ * The enumeration ends at `8`. An earlier revision carried a `15 → "paused"` entry, which no device
+ * can report — pause is a **sub-state** of `5`, resolved by {@link resolveCleaningState} rather than by
+ * a state of its own.
  */
 const WORK_STATE_ACTIVITY: Record<number, VacuumActivity> = {
-  0: "idle", // ⚠️ unverified — legacy eufy-clean enum, see doc above
-  1: "idle", // ⚠️ unverified — legacy eufy-clean enum, see doc above
-  2: "error", // ⚠️ unverified — legacy eufy-clean enum, see doc above
-  3: "docked", // ✅ live T2351
-  4: "cleaning", // ⚠️ unverified — legacy eufy-clean enum, see doc above
-  5: "cleaning", // ✅ live T2351
-  6: "cleaning", // ⚠️ unverified — legacy eufy-clean enum, see doc above
-  7: "returning", // ✅ live T2351
-  8: "cleaning", // ⚠️ unverified — legacy eufy-clean enum, see doc above
-  15: "paused", // ⚠️ unverified — legacy eufy-clean enum; may be unreachable, see "Known gap" above
+  0: "idle", // STANDBY — also every paused-* state; the sub-state carries which
+  1: "idle", // SLEEP
+  2: "error", // FAULT
+  3: "docked", // CHARGING ✅ live T2351
+  4: "cleaning", // FAST_MAPPING — driving, no narrower member
+  5: "cleaning", // CLEANING ✅ live T2351 — refined by resolveCleaningState
+  6: "cleaning", // REMOTE_CTRL — driving, no narrower member
+  7: "returning", // GO_HOME ✅ live T2351
+  8: "cleaning", // CRUISIING — driving, no narrower member
 };
+
+/** The one {@link WORK_STATE_ACTIVITY} entry that is not final on its own — see {@link resolveCleaningState}. */
+const WORK_STATE_CLEANING = 5;
+
+/**
+ * Field numbers inside `WorkStatus` that refine state `5`, and inside the sub-messages they carry.
+ *
+ * Each sub-message follows the vendor's stated rule: **an absent message means that sub-state is
+ * idle**, so presence is the signal and the fields inside it only narrow further.
+ */
+const WORK_STATUS_FIELD = {
+  /** `state` — the one field read for every other state. */
+  STATE: 2,
+  /** `cleaning` — carries `state`(1) `DOING`/`PAUSED`. */
+  CLEANING: 6,
+  /** `go_wash` — carries `mode`(2) `NAVIGATION`/`WASHING`/`DRYING`. */
+  GO_WASH: 7,
+  /** `station` — carries `washing_drying_system`(3) while the dock runs a mop cycle. */
+  STATION: 14,
+} as const;
+
+/** `Cleaning.state` — the run state of a cleaning job. `DOING` is the proto3 default, so it is absent on the wire. */
+const CLEANING_STATE_PAUSED = 1;
+
+/** `GoWash.mode` values that mean the robot is parked ON the dock rather than driving toward it. */
+const GO_WASH_ON_DOCK = new Set([1, 2]);
+
+/** `Station.washing_drying_system` — present while the dock is washing or drying mops. */
+const STATION_WASHING_DRYING = 3;
+
+/** `mode`'s field number inside `GoWash` — which leg of the wash cycle the robot is in. */
+const SUB_MODE_FIELD = 2;
+
+/** `state`'s field number inside `Cleaning` — whether the job is running or paused. */
+const SUB_STATE_FIELD = 1;
+
+/**
+ * Read one `uint32`-valued field out of a nested sub-message, or `0` when it is absent.
+ *
+ * Absent is not missing data: proto3 omits a zero-valued field, so an empty sub-message states the
+ * enum's zero member — `DOING` for a run state, `NAVIGATION` for a wash mode — and reading it as `0`
+ * is what the encoding means.
+ */
+function subValue(codec: RawDpCodec, body: Buffer, field: number): number {
+  const found = codec.nested(body)?.find((f) => f.field === field);
+  return found?.kind === "int" ? Number(found.value) : 0;
+}
+
+/**
+ * Refine `WorkStatus.state == 5` into the activity the robot is actually in.
+ *
+ * State `5` is not one state. The vendor's own enumeration lists it as covering positioning, global
+ * and area cleaning, spot cleaning **and** returning-to-wash / washing mops — and the sub-messages
+ * beside it are what separate those. Without this, a paused robot and one parked on its dock running a
+ * wash cycle both read as `"cleaning"`, which is the single most visible wrong answer this capability
+ * can give.
+ *
+ * Resolution order matters, and follows the device's own precedence: being **on** the dock beats being
+ * paused, because a robot that paused itself to go wash reports both. `go_wash` with a driving mode
+ * (`NAVIGATION`) is deliberately NOT docked — it is still en route.
+ *
+ * Falls through to `"cleaning"` whenever no sub-message claims it, so a frame this does not recognise
+ * degrades to the previous behaviour rather than to a worse one.
+ */
+function resolveCleaningState(fields: readonly RawDpField[], codec: RawDpCodec): VacuumActivity {
+  const sub = (field: number): Buffer | undefined => {
+    const found = fields.find((f) => f.field === field);
+    return found?.kind === "bytes" ? found.value : undefined;
+  };
+
+  const goWash = sub(WORK_STATUS_FIELD.GO_WASH);
+  if (goWash && GO_WASH_ON_DOCK.has(subValue(codec, goWash, SUB_MODE_FIELD))) return "docked";
+
+  const station = sub(WORK_STATUS_FIELD.STATION);
+  if (station && codec.nested(station)?.some((f) => f.field === STATION_WASHING_DRYING)) return "docked";
+
+  const cleaning = sub(WORK_STATUS_FIELD.CLEANING);
+  if (cleaning && !goWash && subValue(codec, cleaning, SUB_STATE_FIELD) === CLEANING_STATE_PAUSED) return "paused";
+
+  return "cleaning";
+}
 
 /**
  * Every value {@link VacuumCleanType} can take — the read's declared domain, see `VACUUM_ACTIVITIES`.
@@ -347,22 +430,27 @@ export function decodeCleanType(
   return value.kind === "int" ? CLEAN_TYPE[Number(value.value)] : undefined;
 }
 
-/** `state`'s field number inside the `WorkStatus` message — the one field of DP 153 read today. */
-const WORK_STATUS_STATE_FIELD = 2;
-
 /**
  * Decode a `WorkStatus` (DP 153) Raw-DP value to a {@link VacuumActivity}. That DP carries a whole
  * protobuf message rather than a scalar, so the payload is read through the injected {@link RawDpCodec}:
  * the codec owns the structure, this owns which field number carries which meaning. `"unknown"` covers
- * every way the answer can be absent — an unbound device (no codec), a malformed payload, no field
- * {@link WORK_STATUS_STATE_FIELD}, or a state value missing from {@link WORK_STATE_ACTIVITY}.
+ * every way the answer can be absent — an unbound device (no codec), a malformed payload, no
+ * `state` field, or a state value missing from {@link WORK_STATE_ACTIVITY}.
+ *
+ * `CLEANING` is the one state that is not final on its own; {@link resolveCleaningState} reads the
+ * sub-messages beside it to separate cleaning from paused and from a mop cycle on the dock.
  * @internal
  */
 export function decodeVacuumActivity(raw: ParamValue | undefined, codec: RawDpCodec | undefined): VacuumActivity {
   if (typeof raw !== "string" || !codec) return "unknown";
-  const state = codec.decode(raw)?.find((f) => f.field === WORK_STATUS_STATE_FIELD);
-  if (state?.kind !== "int") return "unknown";
-  return WORK_STATE_ACTIVITY[Number(state.value)] ?? "unknown";
+  const fields = codec.decode(raw);
+  const state = fields?.find((f) => f.field === WORK_STATUS_FIELD.STATE);
+  if (!fields || state?.kind !== "int") return "unknown";
+  const activity = WORK_STATE_ACTIVITY[Number(state.value)];
+  if (activity === undefined) return "unknown";
+  return activity === "cleaning" && Number(state.value) === WORK_STATE_CLEANING
+    ? resolveCleaningState(fields, codec)
+    : activity;
 }
 
 /**
@@ -423,7 +511,9 @@ export const VACUUM_CLEAN_MEMBERS = {
     decode: (raw, codec) => decodeVacuumActivity(raw as ParamValue | undefined, codec),
     decodedKind: "enum",
     decodedValues: VACUUM_ACTIVITIES,
-    description: "High-level activity from WorkStatus.state (DP 153 work status, Raw protobuf).",
+    description:
+      "High-level activity from WorkStatus (DP 153 work status, Raw protobuf). Reads the state field, " +
+      "then the sub-messages that separate cleaning from paused and from a mop cycle on the dock.",
   },
   /**
    * The robot's own speaker loudness — its spoken prompts and chimes, nothing to do with suction noise.

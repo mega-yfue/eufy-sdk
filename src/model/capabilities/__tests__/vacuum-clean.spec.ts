@@ -136,7 +136,11 @@ describe("decodeVacuumActivity (WorkStatus.state → activity)", () => {
     expect(decodeVacuumActivity("payload", workStatus(3))).toBe("docked");
     expect(decodeVacuumActivity("payload", workStatus(5))).toBe("cleaning");
     expect(decodeVacuumActivity("payload", workStatus(7))).toBe("returning");
-    expect(decodeVacuumActivity("payload", workStatus(15))).toBe("paused");
+  });
+
+  it("has no state above the vendor enum's last member — 15 is not a state a device can report", () => {
+    expect(decodeVacuumActivity("payload", workStatus(9))).toBe("unknown");
+    expect(decodeVacuumActivity("payload", workStatus(15))).toBe("unknown");
   });
 
   it("picks field #2 out of a full frame, ignoring the fields around it", () => {
@@ -168,6 +172,139 @@ describe("decodeVacuumActivity (WorkStatus.state → activity)", () => {
   it("returns 'unknown' for a non-string value", () => {
     expect(decodeVacuumActivity(undefined, workStatus(3))).toBe("unknown");
     expect(decodeVacuumActivity(7, workStatus(3))).toBe("unknown");
+  });
+});
+
+/**
+ * Byte-real `WorkStatus` fixtures. State 5 is resolved from the sub-messages BESIDE the state field, so
+ * a fake that hands back one flat field list cannot exercise it — these encode actual protobuf bytes and
+ * read them back through a schema-less reader that mirrors the `RawDpCodec` contract.
+ *
+ * Encoding only what a real device would send matters here: proto3 omits a zero-valued field, so
+ * `Cleaning{state: DOING}` and `Cleaning{}` are the same bytes, and the decode has to read the absence
+ * as the enum's zero member rather than as missing data.
+ */
+function varint(n: number): number[] {
+  const out: number[] = [];
+  let v = n;
+  while (v > 0x7f) {
+    out.push((v & 0x7f) | 0x80);
+    v >>>= 7;
+  }
+  out.push(v);
+  return out;
+}
+/** A varint-valued field, omitted entirely when zero — the proto3 default rule. */
+function int(field: number, value: number): number[] {
+  return value === 0 ? [] : [...varint((field << 3) | 0), ...varint(value)];
+}
+/** A length-delimited sub-message field. Always emitted, so an EMPTY sub-message still states its presence. */
+function sub(field: number, body: number[]): number[] {
+  return [...varint((field << 3) | 2), ...varint(body.length), ...body];
+}
+/** Wrap a message body in the `varint(len) ++ body` framing a Raw DP value carries, base64-encoded. */
+function frame(body: number[]): string {
+  return Buffer.from([...varint(body.length), ...body]).toString("base64");
+}
+
+/**
+ * A schema-less reader over real bytes, matching `transport/raw-dp.ts`'s contract without importing it —
+ * `model/` specs may not reach into `transport/`, and re-deriving the read here is what proves the
+ * capability depends on the CONTRACT rather than on that implementation.
+ */
+const byteCodec: RawDpCodec = {
+  decode(value: string) {
+    const buf = Buffer.from(value, "base64");
+    let pos = 0;
+    let len = 0;
+    let shift = 0;
+    while (pos < buf.length) {
+      const b = buf[pos++]!;
+      len |= (b & 0x7f) << shift;
+      shift += 7;
+      if (!(b & 0x80)) break;
+    }
+    const body = buf.subarray(pos);
+    return len === body.length ? this.nested(body) : undefined;
+  },
+  nested(value: Buffer) {
+    const out: RawDpField[] = [];
+    let pos = 0;
+    const readVarint = (): number => {
+      let v = 0;
+      let shift = 0;
+      while (pos < value.length) {
+        const b = value[pos++]!;
+        v |= (b & 0x7f) << shift;
+        shift += 7;
+        if (!(b & 0x80)) break;
+      }
+      return v;
+    };
+    while (pos < value.length) {
+      const tag = readVarint();
+      const field = tag >>> 3;
+      if ((tag & 7) === 0) out.push({ field, kind: "int", value: BigInt(readVarint()) });
+      else if ((tag & 7) === 2) {
+        const len = readVarint();
+        out.push({ field, kind: "bytes", value: value.subarray(pos, pos + len) });
+        pos += len;
+      } else return undefined;
+    }
+    return out;
+  },
+};
+
+/** `WorkStatus.state` = CLEANING(5), plus whichever sub-messages the fixture states. */
+function cleaningFrame(...subs: number[][]): string {
+  return frame([...int(2, 5), ...subs.flat()]);
+}
+
+/**
+ * State 5 is the vendor's catch-all for "off the dock or servicing mops", and separating its members is
+ * the whole point of reading the sub-messages. Each case here is a physical situation a T2351 reaches.
+ */
+describe("decodeVacuumActivity — WorkStatus state 5 sub-states", () => {
+  it("is cleaning when no sub-message narrows it", () => {
+    expect(decodeVacuumActivity(cleaningFrame(), byteCodec)).toBe("cleaning");
+  });
+
+  it("is paused when the cleaning job reports PAUSED", () => {
+    expect(decodeVacuumActivity(cleaningFrame(sub(6, int(1, 1))), byteCodec)).toBe("paused");
+  });
+
+  it("is cleaning when the cleaning job is present but running — an empty sub-message means DOING", () => {
+    expect(decodeVacuumActivity(cleaningFrame(sub(6, [])), byteCodec)).toBe("cleaning");
+  });
+
+  it("is docked while the dock washes or dries the mops", () => {
+    expect(decodeVacuumActivity(cleaningFrame(sub(7, int(2, 1))), byteCodec)).toBe("docked");
+    expect(decodeVacuumActivity(cleaningFrame(sub(7, int(2, 2))), byteCodec)).toBe("docked");
+  });
+
+  it("is still cleaning while DRIVING to the dock to wash — navigation is not arrival", () => {
+    expect(decodeVacuumActivity(cleaningFrame(sub(7, [])), byteCodec)).toBe("cleaning");
+  });
+
+  it("is docked when the station reports a washing/drying cycle", () => {
+    expect(decodeVacuumActivity(cleaningFrame(sub(14, sub(3, []))), byteCodec)).toBe("docked");
+  });
+
+  it("is cleaning when the station is reported but idle", () => {
+    expect(decodeVacuumActivity(cleaningFrame(sub(14, [])), byteCodec)).toBe("cleaning");
+  });
+
+  it("prefers the dock over the pause — a robot that paused itself to go wash reports both", () => {
+    expect(decodeVacuumActivity(cleaningFrame(sub(6, int(1, 1)), sub(7, int(2, 1))), byteCodec)).toBe("docked");
+  });
+
+  it("refines only state 5 — every other state answers from the state field alone", () => {
+    expect(decodeVacuumActivity(frame([...int(2, 3), ...sub(6, int(1, 1))]), byteCodec)).toBe("docked");
+    expect(decodeVacuumActivity(frame([...int(2, 7), ...sub(7, int(2, 2))]), byteCodec)).toBe("returning");
+  });
+
+  it("falls back to cleaning on a frame whose sub-messages it cannot read", () => {
+    expect(decodeVacuumActivity(cleaningFrame(sub(6, [0xff])), byteCodec)).toBe("cleaning");
   });
 });
 
