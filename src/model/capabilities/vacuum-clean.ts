@@ -426,8 +426,8 @@ export const VACUUM_CLEAN_MEMBERS = {
   },
   /**
    * The robot's own speaker loudness — its spoken prompts and chimes, nothing to do with suction noise.
-   * Read-only: DP 161 is confirmed as a reported value but no write has been captured for it. Reaches
-   * the getters only via `decodeState`, since the robot's cloud record carries no DPs at all.
+   * Confirmed writable via `get_product_data_point` (`writable: true`); no live publishDps capture yet.
+   * Reaches the getters only via `decodeState`, since the robot's cloud record carries no DPs at all.
    */
   volume: {
     param: VACUUM_DP.VOLUME,
@@ -435,7 +435,10 @@ export const VACUUM_CLEAN_MEMBERS = {
     unit: "%",
     kind: "percent",
     provenance: "mega",
-    description: "Speaker volume 0-100 (DP 161, Value).",
+    description: "Speaker volume 0-100 (DP 161, Value rw). AIoT clean line.",
+    write: (v) => aiotDp(VACUUM_DP.VOLUME, v as number),
+    writeAs: "setVolume",
+    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
   },
   /**
    * Charge percentage — DP 163 for the AIoT clean line; DP 104 for the legacy Tuya (G-series/X8)

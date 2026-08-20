@@ -260,6 +260,10 @@ const _language: Exact<typeof vac.language, string | undefined> = true;
 const _setLanguageOptional: Exact<undefined extends typeof vac.setLanguage ? true : false, true> = true;
 const _setLanguageArg: Exact<Parameters<NonNullable<typeof vac.setLanguage>>[0], string> = true;
 
+// volume is AIoT-only write: setVolume takes a number; absent on Tuya.
+const _setVolumeOptional: Exact<undefined extends typeof vac.setVolume ? true : false, true> = true;
+const _setVolumeArg: Exact<Parameters<NonNullable<typeof vac.setVolume>>[0], number> = true;
+
 export const _surfaceAssertions = [
   _power,
   _battery,
@@ -276,6 +280,8 @@ export const _surfaceAssertions = [
   _language,
   _setLanguageOptional,
   _setLanguageArg,
+  _setVolumeOptional,
+  _setVolumeArg,
 ];
 
 describe("vacuum_clean — DP-based action routing", () => {
@@ -359,5 +365,18 @@ describe("vacuum_clean — DP-based action routing", () => {
   it("setLanguage is absent on Tuya vacuums — no confirmed language DP in Tuya schema", () => {
     const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya"));
     expect(acts.setLanguage).toBeUndefined();
+  });
+
+  it("setVolume is present on AIoT vacuums and dispatches DP 161", async () => {
+    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home"));
+    expect(acts.setVolume).toBeDefined();
+    await acts.setVolume!(50);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ kind: "aiot-dp", dp: VACUUM_DP.VOLUME, value: 50 });
+  });
+
+  it("setVolume is absent on Tuya vacuums — no confirmed volume write DP in Tuya schema", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya"));
+    expect(acts.setVolume).toBeUndefined();
   });
 });
