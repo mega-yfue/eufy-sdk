@@ -1,4 +1,4 @@
-import type { RawDpCodec } from "../../core/contracts.js";
+import type { RawDpCodec, RawDpField } from "../../core/contracts.js";
 import type { ParamValue } from "../types.js";
 import type { AvailabilityContext, CapabilityModule } from "./types.js";
 import { asBool } from "../../core/util.js";
@@ -27,6 +27,8 @@ export const VACUUM_DP = {
   LANGUAGE: 162,
   /** Battery level 0-100 (DP 163, Value) — a clean-namespace DP, NOT the security param 1101. */
   BATTERY: 163,
+  /** ErrorCode (DP 177 fault alert, Raw protobuf) — the robot's faults and warnings (see {@link decodeVacuumFault}). */
+  FAULT_ALERT: 177,
 } as const;
 
 /**
@@ -347,6 +349,72 @@ export function decodeCleanType(
   return value.kind === "int" ? CLEAN_TYPE[Number(value.value)] : undefined;
 }
 
+/**
+ * Field numbers inside the `ErrorCode` message (DP 177).
+ *
+ * Both lists are `repeated uint32`, which proto3 encodes PACKED by default — one length-delimited run
+ * of varints rather than one field per value. {@link firstRepeatedCode} reads either form, because a
+ * sender is free to emit the unpacked one and a reader that assumed packing would silently see nothing.
+ */
+const ERROR_CODE_FIELD = {
+  /** `error` — faults that stop the robot. */
+  ERROR: 2,
+  /** `warn` — conditions the robot reports while continuing. */
+  WARN: 3,
+} as const;
+
+/** No fault: the message decoded and listed neither an error nor a warning. */
+const NO_FAULT = 0;
+
+/**
+ * Read the first value of a `repeated uint32`, accepting both encodings.
+ *
+ * Packed arrives as one length-delimited run of varints, unpacked as a plain varint field repeated —
+ * so the first match wins in either case. Returns `undefined` when the field is absent or the packed
+ * run is empty, which the caller reads as "this list said nothing" rather than as a zero code.
+ */
+function firstRepeatedCode(fields: readonly RawDpField[], field: number): number | undefined {
+  const found = fields.find((f) => f.field === field);
+  if (found === undefined) return undefined;
+  if (found.kind === "int") return Number(found.value);
+
+  let value = 0;
+  let shift = 0;
+  for (const byte of found.value) {
+    value |= (byte & 0x7f) << shift;
+    if (!(byte & 0x80)) return value;
+    shift += 7;
+  }
+  return undefined;
+}
+
+/**
+ * Decode the robot's current fault code from either clean line.
+ *
+ * The two lines carry the same meaning on different wires, so this discriminates on the value's SHAPE
+ * the way {@link decodeCleanType} does: the legacy Tuya line reports DP 106 as a plain integer, the
+ * AIoT line reports DP 177 as an `ErrorCode` protobuf.
+ *
+ * `error` is preferred over `warn`: a fault that stops the robot is the more urgent answer when both
+ * are listed. Only the FIRST code of the winning list is answered — the property is one number, and a
+ * caller needing the whole set needs a shape this schema cannot express (see the module's members).
+ *
+ * `0` means the device stated no fault. `undefined` means it did not state one at all — an unbound
+ * device, or a payload that does not decode — and the two are deliberately different.
+ * @internal
+ */
+export function decodeVacuumFault(raw: ParamValue | undefined, codec: RawDpCodec | undefined): number | undefined {
+  if (typeof raw === "number") return raw;
+  if (typeof raw !== "string") return undefined;
+  if (/^\d+$/.test(raw)) return Number(raw);
+  if (!codec) return undefined;
+  const fields = codec.decode(raw);
+  if (!fields) return undefined;
+  return (
+    firstRepeatedCode(fields, ERROR_CODE_FIELD.ERROR) ?? firstRepeatedCode(fields, ERROR_CODE_FIELD.WARN) ?? NO_FAULT
+  );
+}
+
 /** `state`'s field number inside the `WorkStatus` message — the one field of DP 153 read today. */
 const WORK_STATUS_STATE_FIELD = 2;
 
@@ -491,15 +559,26 @@ export const VACUUM_CLEAN_MEMBERS = {
     description: "Configured cleaning type from CleanParam.clean_type (DP 154 AIoT protobuf) or DP 113 Tuya Enum.",
   },
   /**
-   * Error code from the legacy Tuya clean line (DP 106, Int ro). 0 = ok; non-zero is a device fault.
-   * Exact fault code semantics have not been captured live.
+   * The robot's current fault, as a numeric code. `0` is no fault; `undefined` is a device that has not
+   * said, which is not the same thing.
+   *
+   * One number for both clean lines: the AIoT line reports an `ErrorCode` message on DP 177 carrying a
+   * list of faults and a list of warnings, and the legacy Tuya line reports a plain integer on DP 106.
+   * {@link decodeVacuumFault} answers the first fault, or the first warning when there is no fault.
+   *
+   * The code's MEANING is the vendor's own table and is not interpreted here — a host that wants text
+   * maps the number itself.
    */
   errorCode: {
-    param: LEGACY_VACUUM_DP.ERROR_CODE,
+    param: VACUUM_DP.FAULT_ALERT,
     type: "number",
-    kind: "scalar",
     provenance: "mega",
-    description: "Error code, 0 = ok (DP 106, Int ro). Legacy Tuya G-series/X8 clean line.",
+    readAliases: [{ paramType: LEGACY_VACUUM_DP.ERROR_CODE }],
+    decode: (raw, codec) => decodeVacuumFault(raw as ParamValue | undefined, codec),
+    decodedKind: "scalar",
+    description:
+      "Current fault code, 0 = none. ErrorCode.error[0] (DP 177 faultAlert, Raw protobuf) falling " +
+      "back to ErrorCode.warn[0], or the plain DP 106 integer on the legacy Tuya clean line.",
   },
   /**
    * High-level activity for the X8 Pro Tuya clean line (DP 15, Enum string). Decoded from the device's

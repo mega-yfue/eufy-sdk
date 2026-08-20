@@ -7,6 +7,7 @@ import {
   TUYA_VACUUM_DP,
   decodeVacuumActivity,
   decodeCleanType,
+  decodeVacuumFault,
   encodeModeCtrl,
   ModeCtrlMethod,
   type VacuumCleanActions,
@@ -15,6 +16,7 @@ import {
   type TuyaCleanType,
 } from "../vacuum-clean.js";
 import { bind } from "./bind.js";
+import { byteCodec, frame, int, sub } from "./proto-bytes.js";
 
 /**
  * The capability is exercised against a FAKE codec, never the real `transport/raw-dp.ts` — importing
@@ -283,6 +285,76 @@ export const _surfaceAssertions = [
   _setVolumeOptional,
   _setVolumeArg,
 ];
+
+/**
+ * `ErrorCode` (DP 177). Both code lists are `repeated uint32`, which proto3 encodes PACKED by
+ * default — one length-delimited run of varints, not one field per value. A sender may still emit the
+ * unpacked form, so both are exercised against real bytes.
+ */
+function varintBytes(n: number): number[] {
+  const out: number[] = [];
+  let v = n;
+  while (v > 0x7f) {
+    out.push((v & 0x7f) | 0x80);
+    v >>>= 7;
+  }
+  out.push(v);
+  return out;
+}
+/** A packed `repeated uint32` field: one length-delimited run of concatenated varints. */
+function packed(field: number, values: readonly number[]): number[] {
+  return sub(
+    field,
+    values.flatMap((v) => varintBytes(v)),
+  );
+}
+
+describe("decodeVacuumFault (ErrorCode → fault code)", () => {
+  it("reads the first packed error code", () => {
+    expect(decodeVacuumFault(frame(packed(2, [77])), byteCodec)).toBe(77);
+    expect(decodeVacuumFault(frame(packed(2, [77, 3, 21])), byteCodec)).toBe(77);
+  });
+
+  it("reads a multi-byte code — the station and situational ranges are all above 127", () => {
+    expect(decodeVacuumFault(frame(packed(2, [6113])), byteCodec)).toBe(6113);
+    expect(decodeVacuumFault(frame(packed(3, [7055])), byteCodec)).toBe(7055);
+  });
+
+  it("reads the unpacked encoding too — a sender may emit either", () => {
+    expect(decodeVacuumFault(frame(int(2, 40)), byteCodec)).toBe(40);
+  });
+
+  it("falls back to the first warning when no error is listed", () => {
+    expect(decodeVacuumFault(frame(packed(3, [50, 51])), byteCodec)).toBe(50);
+  });
+
+  it("prefers an error over a warning — a fault that stops the robot is the more urgent answer", () => {
+    expect(decodeVacuumFault(frame([...packed(2, [77]), ...packed(3, [50])]), byteCodec)).toBe(77);
+  });
+
+  it("is 0 when the device states no fault, including an empty list", () => {
+    expect(decodeVacuumFault(frame([]), byteCodec)).toBe(0);
+    expect(decodeVacuumFault(frame(packed(2, [])), byteCodec)).toBe(0);
+    expect(decodeVacuumFault(frame([...packed(2, []), ...packed(3, [])]), byteCodec)).toBe(0);
+  });
+
+  it("ignores the fields around the code lists", () => {
+    expect(decodeVacuumFault(frame([...int(1, 999), ...packed(2, [21]), ...sub(4, [])]), byteCodec)).toBe(21);
+  });
+
+  it("reads the legacy Tuya line's plain integer on the same property", () => {
+    expect(decodeVacuumFault(0, byteCodec)).toBe(0);
+    expect(decodeVacuumFault(106, byteCodec)).toBe(106);
+    expect(decodeVacuumFault("77", byteCodec)).toBe(77);
+    expect(decodeVacuumFault(3, undefined)).toBe(3);
+  });
+
+  it("is undefined when the device has not stated a fault at all", () => {
+    expect(decodeVacuumFault(undefined, byteCodec)).toBeUndefined();
+    expect(decodeVacuumFault(frame(packed(2, [77])), undefined)).toBeUndefined();
+    expect(decodeVacuumFault("!!not-base64!!", byteCodec)).toBeUndefined();
+  });
+});
 
 describe("vacuum_clean — DP-based action routing", () => {
   // AIoT device: has reported DP 151 (power) and DP 152 (mode control).
