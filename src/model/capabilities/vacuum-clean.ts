@@ -4,6 +4,7 @@ import type { AvailabilityContext, CapabilityModule } from "./types.js";
 import { asBool } from "../../core/util.js";
 import { pickDpParams, aiotDp } from "./access.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
+import { isAiotVacuum } from "../device-family.js";
 
 /**
  * RoboVac Tuya **DP ids** this capability reads — the "clean" namespace (ids ~150-180, from the cloud
