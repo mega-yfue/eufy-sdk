@@ -4,14 +4,14 @@ import { Writable } from "node:stream";
 import type { LiveStreamHandle, LiveVideoFrame } from "../../../core/contracts.js";
 
 /**
- * `snapshotLive` intermittently failed with `non-existing PPS 0 referenced` on cameras whose live burst
- * otherwise works: the collected burst began after the stream's parameter sets, so the decoder had no
- * SPS/PPS for its first slices. Whether it happens on a given attempt is pure framing luck, which is
- * why the same camera alternates between a still and a failure.
+ * `snapshotLive` must hand the decoder a burst it can decode alone. A decoder given slices whose SPS/PPS
+ * were announced earlier in the stream refuses them with `non-existing PPS 0 referenced`, and a collected
+ * burst routinely starts after the only announcement — the first keyframe is skipped by default, and a
+ * consumer joining a warm source never saw it.
  *
- * `../ffmpeg.js` is mocked so the exact bytes handed to the decoder are observable — a spec that only
- * asserts the resolved image would pass with the priming dropped, because a burst that HAPPENS to carry
- * its own parameter sets decodes either way. That is the defect itself.
+ * `../ffmpeg.js` is mocked so the exact bytes handed to the decoder are observable. Asserting only the
+ * resolved image would not pin this: a burst that happens to carry its own parameter sets decodes with or
+ * without priming, so the property under test is the bytes, not the outcome.
  */
 const START = Buffer.from([0, 0, 0, 1]);
 const SPS = [0x67, 0x42, 0x00];
@@ -29,8 +29,11 @@ type Outcome = { jpeg: Buffer } | { exitCode: number; stderr: string } | { spawn
 let outcome: Outcome = { jpeg: JPEG };
 const decoded: Buffer[] = [];
 
+const spawnArgs: string[][] = [];
+
 vi.mock("../../ffmpeg.js", () => ({
-  spawnFfmpeg: vi.fn(() => {
+  spawnFfmpeg: vi.fn((args: string[]) => {
+    spawnArgs.push(args);
     const child = new EventEmitter() as EventEmitter & {
       stdin: Writable;
       stdout: EventEmitter;
@@ -108,8 +111,10 @@ describe("captureSnapshotFromShared — decoder priming", () => {
 
   it("primes a burst whose parameter sets were announced before it with those sets", async () => {
     const { source, stream, watcher } = warmSource();
-    stream.video(frame(unit(SPS, PPS, IDR))); // stream start announces the sets, then they never repeat
-    stream.video(frame(unit(IDR))); // the cached prime a joining snapshot receives: a BARE IDR
+    const announcement = frame(unit(SPS, PPS, IDR));
+    const bareIdr = frame(unit(IDR));
+    stream.video(announcement);
+    stream.video(bareIdr);
 
     const snapshot = await captureSnapshotFromShared(source, { timeoutMs: 1000 });
 
@@ -118,13 +123,55 @@ describe("captureSnapshotFromShared — decoder priming", () => {
     watcher.detach();
   });
 
-  it("leaves a self-contained burst exactly as collected", async () => {
+  it("primes a burst that carries only an SPS — the literal missing-PPS case", async () => {
+    const { source, stream, watcher } = warmSource();
+    stream.video(frame(unit(SPS, PPS, IDR)));
+    const spsOnly = frame(unit(SPS, IDR));
+    stream.video(spsOnly);
+
+    await captureSnapshotFromShared(source, { timeoutMs: 1000 });
+
+    expect(nalTypes(decoded[0])).toEqual([0x67, 0x68, 0x67, 0x65]);
+    watcher.detach();
+  });
+
+  it("re-announces sets a self-contained burst already carried, which a decoder ignores", async () => {
     const { source, stream, watcher } = warmSource();
     stream.video(frame(unit(SPS, PPS, IDR)));
 
     await captureSnapshotFromShared(source, { timeoutMs: 1000 });
 
-    expect(nalTypes(decoded[0])).toEqual([0x67, 0x68, 0x65]);
+    expect(nalTypes(decoded[0])).toEqual([0x67, 0x68, 0x67, 0x68, 0x65]);
+    watcher.detach();
+  });
+
+  it("never substitutes another codec's parameter sets for the burst's own", async () => {
+    const { source, stream, watcher } = warmSource();
+    const h264Announcement = frame(unit(SPS, PPS, IDR));
+    const h265BareIdr = {
+      keyframe: true,
+      width: 1920,
+      height: 1080,
+      codec: "h265" as const,
+      data: unit([0x26, 0x01, 0xaf]),
+    };
+    stream.video(h264Announcement);
+    stream.video(h265BareIdr);
+
+    await captureSnapshotFromShared(source, { timeoutMs: 1000 });
+
+    expect(nalTypes(decoded[0])).toEqual([0x26]);
+    watcher.detach();
+  });
+
+  it("pins the JPEG-range pixel format, which the encoder requires regardless of negotiation", async () => {
+    const { source, stream, watcher } = warmSource();
+    stream.video(frame(unit(SPS, PPS, IDR)));
+
+    await captureSnapshotFromShared(source, { timeoutMs: 1000 });
+
+    expect(spawnArgs[0]).toContain("yuvj420p");
+    expect(spawnArgs[0].indexOf("-pix_fmt")).toBe(spawnArgs[0].indexOf("yuvj420p") - 1);
     watcher.detach();
   });
 
@@ -173,7 +220,7 @@ describe("captureSnapshotFromShared — typed reasons", () => {
   });
 
   it("calls a burst that never arrived retryable, and names that as the reason", async () => {
-    const { source, watcher } = warmSource(); // no frames at all
+    const { source, watcher } = warmSource();
 
     const error = await captureSnapshotFromShared(source, { timeoutMs: 20 }).catch((e) => e);
 

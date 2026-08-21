@@ -68,7 +68,8 @@ describe("SharedLiveSource parameter-set cache", () => {
     const { source, stream, consumer } = sourceWithStream();
     stream.video(frame(unit(SPS, PPS, IDR), true));
     stream.video(frame(unit(DELTA), false));
-    stream.video(frame(unit(IDR), true)); // a bare IDR: this is the burst that fails to decode alone
+    const bareIdr = frame(unit(IDR), true);
+    stream.video(bareIdr);
     expect(source.parameterSets?.sps).toHaveLength(1);
     consumer.detach();
   });

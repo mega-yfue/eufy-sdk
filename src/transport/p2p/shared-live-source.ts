@@ -27,7 +27,7 @@
 import { EventEmitter } from "node:events";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { Timer } from "../../core/util.js";
-import { extractParamSets, type ParamSets } from "./annexb.js";
+import { updatedParamSets, type ParamSets } from "./annexb.js";
 import type { LiveAudioFrame, LiveStreamHandle, LiveVideoFrame, StreamBudgetNotice } from "../../core/contracts.js";
 
 /** Lifecycle state of a {@link SharedLiveSource}. */
@@ -422,8 +422,7 @@ export class SharedLiveSource {
       );
       if (this.powered === "battery") this.armBudget(); // battery drain starts now
     }
-    const announced = extractParamSets(frame.data);
-    if (announced) this.lastParamSets = announced;
+    this.lastParamSets = updatedParamSets(frame.data, this.lastParamSets);
     if (frame.keyframe) {
       this.lastKeyframe = item;
       if (this._state === "warming") this._state = "live";

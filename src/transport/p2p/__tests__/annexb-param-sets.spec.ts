@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractParamSets, prefixParamSets, splitAnnexbNals } from "../annexb.js";
+import { extractParamSets, prefixParamSets, splitAnnexbNals, updatedParamSets } from "../annexb.js";
 
 /**
  * A decoder handed an access unit whose parameter sets were sent earlier in the stream fails with
@@ -59,5 +59,36 @@ describe("prefixParamSets", () => {
     const recovered = extractParamSets(prefixParamSets(h264Idr, sets))!;
     expect(recovered.sps).toEqual(sets.sps);
     expect(recovered.pps).toEqual(sets.pps);
+  });
+});
+
+describe("updatedParamSets", () => {
+  const complete = extractParamSets(Buffer.concat([h264Sps, h264Pps, h264Idr]))!;
+
+  it("carries the current sets forward across a unit that announces none", () => {
+    expect(updatedParamSets(h264Idr, complete)).toBe(complete);
+  });
+
+  it("keeps a PPS still in force when a unit re-states only the SPS", () => {
+    const folded = updatedParamSets(Buffer.concat([h264Sps, h264Idr]), complete)!;
+    expect(folded.pps).toEqual(complete.pps);
+    expect(folded.sps).toEqual(complete.sps);
+  });
+
+  it("takes the newer value of a kind that IS re-announced", () => {
+    const changed = nal(0x67, 0x4d, 0x00);
+    const folded = updatedParamSets(Buffer.concat([changed, h264Idr]), complete)!;
+    expect(folded.sps[0]).toEqual(changed.subarray(4));
+  });
+
+  it("replaces everything on a codec change — other sets describe another bitstream", () => {
+    const folded = updatedParamSets(Buffer.concat([h265Vps, h265Sps, h265Pps, h265Idr]), complete)!;
+    expect(folded.codec).toBe("h265");
+    expect(folded.sps).toHaveLength(1);
+    expect(folded.sps[0]).toEqual(h265Sps.subarray(4));
+  });
+
+  it("answers undefined while nothing has been announced yet", () => {
+    expect(updatedParamSets(h264Idr, undefined)).toBeUndefined();
   });
 });

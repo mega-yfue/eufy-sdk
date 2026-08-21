@@ -69,10 +69,10 @@ export interface ParamSets {
  * decoder-config record. Returns `undefined` if no parameter sets are present.
  */
 export function extractParamSets(buf: Buffer): ParamSets | undefined {
-  const offsets = [...nalStarts(buf)];
-  if (!offsets.length) return undefined;
   const codec = sniffAnnexbCodec(buf);
   if (!codec) return undefined;
+  const offsets = [...nalStarts(buf)];
+  if (!offsets.length) return undefined;
   const sps: Buffer[] = [];
   const pps: Buffer[] = [];
   const vps: Buffer[] = [];
@@ -95,6 +95,32 @@ export function extractParamSets(buf: Buffer): ParamSets | undefined {
   }
   if (!sps.length && !pps.length) return undefined;
   return { codec, sps, pps, vps };
+}
+
+/**
+ * The parameter sets in force after `buf`, folding what it announces into `current`.
+ *
+ * A camera commonly announces SPS/PPS ONCE, with the first keyframe of a stream, so anything that will
+ * later hand a burst to a decoder has to watch EVERY unit go past — including ones it discards.
+ *
+ * Folds per kind rather than replacing wholesale, because a decoder retains the last set it was given of
+ * EACH kind: a unit announcing an SPS alone re-states that SPS and says nothing about the PPS, so
+ * replacing the whole record would drop a PPS that is still in force. A codec change replaces
+ * everything — sets from another codec describe a different bitstream.
+ *
+ * Cheap on the overwhelmingly common case: {@link extractParamSets} answers from a bounded head scan when
+ * a unit carries no config NAL, so an ordinary delta frame costs no full-buffer walk.
+ */
+export function updatedParamSets(buf: Buffer, current: ParamSets | undefined): ParamSets | undefined {
+  const announced = extractParamSets(buf);
+  if (!announced) return current;
+  if (!current || current.codec !== announced.codec) return announced;
+  return {
+    codec: announced.codec,
+    sps: announced.sps.length ? announced.sps : current.sps,
+    pps: announced.pps.length ? announced.pps : current.pps,
+    vps: announced.vps.length ? announced.vps : current.vps,
+  };
 }
 
 /**

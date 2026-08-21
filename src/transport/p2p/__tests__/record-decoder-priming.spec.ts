@@ -82,8 +82,10 @@ async function clipFrom(announce: number[][], then: number[][]) {
   const session = new FakeSession();
   const clip = recordClip(session as unknown as P2PSession, 0, { keepAliveMs: 0, timeoutMs: 1000 });
   await Promise.resolve();
-  session.push(announce, true); // the FIRST keyframe — skipped, and with it the announcement
-  session.push(then, true); // the second keyframe: where the clip actually starts
+  const skippedFirstKeyframe = announce;
+  const keyframeTheClipStartsAt = then;
+  session.push(skippedFirstKeyframe, true);
+  session.push(keyframeTheClipStartsAt, true);
   return clip;
 }
 
@@ -103,8 +105,13 @@ describe("recordClip — decoder priming", () => {
     expect(nalTypes(muxed[0].input)).toEqual([0x40, 0x42, 0x44, 0x26]);
   });
 
-  it("leaves a clip that carries its own parameter sets untouched", async () => {
+  it("primes a clip carrying only an SPS — the literal missing-PPS case", async () => {
+    await clipFrom([H264_SPS, H264_PPS, H264_IDR], [H264_SPS, H264_IDR]);
+    expect(nalTypes(muxed[0].input)).toEqual([0x67, 0x68, 0x67, 0x65]);
+  });
+
+  it("re-announces sets a self-contained clip already carried, which a decoder ignores", async () => {
     await clipFrom([H264_IDR], [H264_SPS, H264_PPS, H264_IDR]);
-    expect(nalTypes(muxed[0].input)).toEqual([0x67, 0x68, 0x65]);
+    expect(nalTypes(muxed[0].input)).toEqual([0x67, 0x68, 0x67, 0x68, 0x65]);
   });
 });

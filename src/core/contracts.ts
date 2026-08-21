@@ -32,16 +32,31 @@ export class StoredSnapshotUnavailableError extends Error {
 /**
  * Why {@link MediaProvider.snapshotLive} could not return a still.
  *
- * - `no-keyframe` — no clean keyframe arrived within the acquisition window. The stream may simply be
- *   slow to start, or the source may be delivering nothing.
+ * - `no-keyframe` — no clean keyframe arrived within the acquisition window, and the live source never
+ *   reported a failure of its own. The source may simply be slower than the window allowed.
+ * - `source-failed` — the live source reported a failure, so the burst will not arrive at all. Distinct
+ *   from `no-keyframe` because it is known rather than merely elapsed, and it is known EARLY: a caller
+ *   gets it instead of waiting out the window on a source that has already given up.
  * - `undecodable-burst` — a burst was collected but the decoder refused it. Per-attempt framing, not a
  *   property of the camera.
- * - `decoder-unavailable` — the decoder could not be run at all (no ffmpeg was runnable).
+ * - `decoder-unavailable` — the decoder could not be run at all.
  */
-export type LiveSnapshotUnavailableReason = "no-keyframe" | "undecodable-burst" | "decoder-unavailable";
+export type LiveSnapshotUnavailableReason =
+  "no-keyframe" | "source-failed" | "undecodable-burst" | "decoder-unavailable";
 
-/** The reasons another attempt could plausibly succeed against an unchanged configuration. */
-const RETRYABLE_LIVE_SNAPSHOT_REASONS: readonly LiveSnapshotUnavailableReason[] = ["no-keyframe", "undecodable-burst"];
+/**
+ * The reasons another attempt could plausibly succeed against an unchanged configuration.
+ *
+ * All three acquisition failures qualify, because each is a property of the attempt rather than of the
+ * camera: a window can elapse, a source can fail to start and then start, and a burst's framing is luck.
+ * An unrunnable decoder is the one that is not — it is host configuration, and no number of retries
+ * changes it.
+ */
+const RETRYABLE_LIVE_SNAPSHOT_REASONS: readonly LiveSnapshotUnavailableReason[] = [
+  "no-keyframe",
+  "source-failed",
+  "undecodable-burst",
+];
 
 /**
  * Thrown by {@link MediaProvider.snapshotLive} when no still could be produced.
@@ -52,8 +67,11 @@ const RETRYABLE_LIVE_SNAPSHOT_REASONS: readonly LiveSnapshotUnavailableReason[] 
  * retries will change. Without it every failure looks alike, and a caller either retries a permanent
  * fault forever or gives up on a camera that would have answered on the next attempt.
  *
- * The decoder's own diagnostics are preserved in {@link Error.message}, so classifying the failure never
- * costs the detail needed to explain it.
+ * It is derived from {@link reason} rather than passed in, so the two can never disagree, and every
+ * caller reads one answer instead of re-deriving the mapping and drifting from it.
+ *
+ * The underlying diagnostics are preserved in {@link Error.message} and, where there is one, `cause` —
+ * so classifying the failure never costs the detail needed to explain it.
  */
 export class LiveSnapshotUnavailableError extends Error {
   /** Whether another attempt could plausibly succeed without the host changing anything. */

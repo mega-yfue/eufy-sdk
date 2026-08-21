@@ -13,11 +13,11 @@
  */
 import { P2PSession } from "./p2p-session.js";
 import { LiveStream, type LiveStreamOptions } from "./live-stream.js";
-import { extractParamSets, prefixParamSets, sniffAnnexbCodec, type ParamSets } from "./annexb.js";
+import { prefixParamSets, sniffAnnexbCodec, updatedParamSets, type ParamSets } from "./annexb.js";
 import { spawnFfmpeg, type FfmpegLevel, type FfmpegSpawnOptions } from "../ffmpeg.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import type { SharedLiveSource } from "./shared-live-source.js";
-import { LiveSnapshotUnavailableError, type LiveVideoFrame } from "../../core/contracts.js";
+import { LiveSnapshotUnavailableError, type LiveVideoFrame, type VideoCodec } from "../../core/contracts.js";
 
 /**
  * ffmpeg's `-f` demuxer name for an Annex-B buffer. Sniffs via the shared {@link sniffAnnexbCodec}
@@ -64,57 +64,70 @@ export async function captureSnapshotFromShared(
   // once (no skip, no collect window). A cold consumer skips the (often partial) first IDR.
   const primed = consumer.primed;
   try {
-    const { h264, width, height } = await new Promise<{ h264: Buffer; width: number; height: number }>(
-      (resolve, reject) => {
-        const bufs: Buffer[] = [];
-        let keyCount = 0,
-          capturing = false,
-          w = 0,
-          h = 0,
-          settle: ReturnType<typeof setTimeout> | undefined;
-        const timer = setTimeout(() => {
-          cleanup();
-          reject(
-            new LiveSnapshotUnavailableError(
-              "no-keyframe",
-              `no clean keyframe within ${timeoutMs}ms (source state: ${source.state})`,
-            ),
+    const burst = await new Promise<{
+      h264: Buffer;
+      width: number;
+      height: number;
+      codec: VideoCodec;
+      sets?: ParamSets;
+    }>((resolve, reject) => {
+      const bufs: Buffer[] = [];
+      let sets = source.parameterSets;
+      let codec: VideoCodec = "h264";
+      let keyCount = 0,
+        capturing = false,
+        w = 0,
+        h = 0,
+        settle: ReturnType<typeof setTimeout> | undefined;
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(
+          new LiveSnapshotUnavailableError(
+            "no-keyframe",
+            `no clean keyframe within ${timeoutMs}ms (source state: ${source.state})`,
+          ),
+        );
+      }, timeoutMs);
+      const onVideo = (fr: LiveVideoFrame) => {
+        sets = updatedParamSets(fr.data, sets);
+        if (fr.keyframe) keyCount++;
+        if (!capturing) {
+          const threshold = primed ? 0 : skip; // primed: accept the cached IDR immediately
+          if (!fr.keyframe || keyCount <= threshold) return;
+          capturing = true;
+          w = fr.width;
+          h = fr.height;
+          codec = fr.codec;
+        }
+        bufs.push(fr.data);
+        if (!settle)
+          settle = setTimeout(
+            () => {
+              cleanup();
+              resolve({ h264: Buffer.concat(bufs), width: w, height: h, codec, sets });
+            },
+            primed ? 0 : collectMs,
           );
-        }, timeoutMs);
-        const onVideo = (fr: LiveVideoFrame) => {
-          if (fr.keyframe) keyCount++;
-          if (!capturing) {
-            const threshold = primed ? 0 : skip; // primed: accept the cached IDR immediately
-            if (!fr.keyframe || keyCount <= threshold) return;
-            capturing = true;
-            w = fr.width;
-            h = fr.height;
-          }
-          bufs.push(fr.data);
-          if (!settle)
-            settle = setTimeout(
-              () => {
-                cleanup();
-                resolve({ h264: Buffer.concat(bufs), width: w, height: h });
-              },
-              primed ? 0 : collectMs,
-            );
-        };
-        const cleanup = () => {
-          clearTimeout(timer);
-          if (settle) clearTimeout(settle);
-          consumer.off("video", onVideo);
-        };
-        consumer.on("video", onVideo);
-        consumer.on("error", () => {});
-      },
-    );
-    const jpeg = await annexbToJpeg(primeForDecode(h264, source.parameterSets), {
+      };
+      const onError = (err: Error) => {
+        cleanup();
+        reject(new LiveSnapshotUnavailableError("source-failed", err.message, { cause: err }));
+      };
+      const cleanup = () => {
+        clearTimeout(timer);
+        if (settle) clearTimeout(settle);
+        consumer.off("video", onVideo);
+        consumer.off("error", onError);
+      };
+      consumer.on("video", onVideo);
+      consumer.on("error", onError);
+    });
+    const jpeg = await annexbToJpeg(primeForDecode(burst.h264, burst.sets, burst.codec), {
       logger: opts.logger ?? noopLogger,
       level: opts.ffmpegLevel,
       executable: opts.ffmpegPath,
     });
-    return { jpeg, width, height };
+    return { jpeg, width: burst.width, height: burst.height };
   } finally {
     consumer.detach();
   }
@@ -153,24 +166,25 @@ export async function recordClip(
         capturing = false,
         stopAt = 0;
       let sets: ParamSets | undefined;
+      let codec: VideoCodec = "h264";
       const timer = setTimeout(() => {
         cleanup();
         reject(new Error("timeout waiting for a clean keyframe"));
       }, timeoutMs);
       const onVideo = (fr: LiveVideoFrame) => {
-        const announced = extractParamSets(fr.data);
-        if (announced) sets = announced;
+        sets = updatedParamSets(fr.data, sets);
         if (fr.keyframe) keyCount++;
         if (!capturing) {
           if (!fr.keyframe || keyCount <= skip) return; // start the clip at the first COMPLETE keyframe
           capturing = true;
+          codec = fr.codec;
           clearTimeout(timer);
           stopAt = Date.now() + seconds * 1000;
         }
         bufs.push(fr.data);
         if (Date.now() >= stopAt) {
           cleanup();
-          resolve(primeForDecode(Buffer.concat(bufs), sets));
+          resolve(primeForDecode(Buffer.concat(bufs), sets, codec));
         }
       };
       const cleanup = () => {
@@ -223,24 +237,40 @@ export async function recordClip(
  * Make a collected burst decodable on its own by re-emitting the stream's parameter sets ahead of it.
  *
  * A camera commonly announces SPS/PPS ONCE, with the first keyframe of a stream. A snapshot skips that
- * first (often partial) IDR by default and a joining consumer never sees it at all, so the burst that
- * reaches the decoder routinely begins after the only announcement — and a decoder with no SPS/PPS for
- * its first slices fails with `non-existing PPS 0 referenced`. Whether a given attempt lands before or
- * after an announcement is framing luck, which is why the same camera alternated between a still and a
- * failure. Priming removes the luck.
+ * first (often partial) IDR by default and a consumer joining a warm source never sees it at all, so a
+ * collected burst routinely begins after the only announcement. A decoder with no SPS/PPS for its first
+ * slices refuses the burst with `non-existing PPS 0 referenced`, so whether such an attempt yields an
+ * image depends on where in the stream it happened to land. Re-emitting the sets makes it independent of
+ * that.
  *
- * A burst that already carries its own sets is returned untouched, and a source that has not yet seen
- * any leaves it unchanged rather than guessing at bytes — an unprimeable burst then fails with the
- * decoder's own reason instead of a fabricated one.
+ * Primes unconditionally rather than only when the burst looks incomplete. Re-announcing a set a decoder
+ * already holds is harmless — it overwrites the entry with the same id — while judging completeness is
+ * not: a unit carrying an SPS but no PPS, or H.265 SPS+PPS but no VPS, reads as self-contained by any
+ * cheap test and is precisely a burst that cannot decode alone.
+ *
+ * `codec` guards the one substitution that would be worse than none: sets from a different codec are
+ * parameter sets the burst's decoder cannot use. Without sets, or on a mismatch, the burst passes through
+ * unchanged so it fails with the decoder's own reason rather than a fabricated one.
  */
-function primeForDecode(burst: Buffer, sets: ParamSets | undefined): Buffer {
-  if (!sets || extractParamSets(burst)) return burst;
-  return prefixParamSets(burst, sets);
+function primeForDecode(burst: Buffer, sets: ParamSets | undefined, codec: VideoCodec): Buffer {
+  return sets && sets.codec === codec ? prefixParamSets(burst, sets) : burst;
 }
 
 /**
- * Decode an Annex-B buffer (H.264 or H.265, starting at a keyframe) to a single JPEG via ffmpeg. `spawn`
- * carries the ffmpeg dials straight through to {@link spawnFfmpeg} — they are its options, not this
+ * Decode an Annex-B buffer (H.264 or H.265, starting at a keyframe) to a single JPEG via ffmpeg.
+ *
+ * `-pix_fmt yuvj420p` pins the JPEG-range output the encoder requires. Camera streams signal limited
+ * ("tv") range, and the mjpeg encoder refuses a non-full-range input under default compliance — whether
+ * it sees one depends on which pixel format format-negotiation happens to settle on, so leaving it
+ * unpinned makes the decode fail on some bursts and not others from the same camera. Verified against a
+ * captured live burst: the flag produces byte-identical output where negotiation already chose this
+ * format, so it constrains only the case that would otherwise error.
+ *
+ * A burst can also yield no image while ffmpeg exits 0 — asked for one frame, it finds no complete frame
+ * in the data and reports success having encoded none. That is a property of the burst, so it carries the
+ * same reason as a refused one, but it is described as such rather than as an ffmpeg failure.
+ *
+ * `spawn` carries the ffmpeg dials straight through to {@link spawnFfmpeg} — they are its options, not this
  * function's, so they travel as one bag rather than accumulating as positionals here.
  */
 function annexbToJpeg(annexb: Buffer, spawn: FfmpegSpawnOptions): Promise<Buffer> {
@@ -255,6 +285,8 @@ function annexbToJpeg(annexb: Buffer, spawn: FfmpegSpawnOptions): Promise<Buffer
         "pipe:0",
         "-frames:v",
         "1",
+        "-pix_fmt",
+        "yuvj420p",
         "-f",
         "image2",
         "-vcodec",
@@ -278,14 +310,10 @@ function annexbToJpeg(annexb: Buffer, spawn: FfmpegSpawnOptions): Promise<Buffer
     );
     ff.on("close", (code) => {
       const jpeg = Buffer.concat(out);
-      if (jpeg.length >= 3 && jpeg.subarray(0, 3).toString("hex") === "ffd8ff") resolve(jpeg);
-      else
-        reject(
-          new LiveSnapshotUnavailableError(
-            "undecodable-burst",
-            `ffmpeg JPEG decode failed (code ${code}): ${Buffer.concat(err).toString().slice(0, 200)}`,
-          ),
-        );
+      if (jpeg.length >= 3 && jpeg.subarray(0, 3).toString("hex") === "ffd8ff") return resolve(jpeg);
+      const diagnostics = Buffer.concat(err).toString().slice(0, 200).trim();
+      const what = code === 0 ? "no complete frame in the burst" : `ffmpeg exited ${code}`;
+      reject(new LiveSnapshotUnavailableError("undecodable-burst", diagnostics ? `${what}: ${diagnostics}` : what));
     });
     ff.stdin!.on("error", () => {});
     ff.stdin!.write(annexb);
