@@ -81,6 +81,18 @@ export interface SharedLiveSourceOptions {
   onActive?: () => void;
   /** Called when the LAST consumer detaches (1→0) — the router releases its session user. See {@link onActive}. */
   onIdle?: () => void;
+  /**
+   * Called when a start produced no frame within the warm-up window, AFTER consumers have been told.
+   *
+   * A source can only rebuild its stream; it holds a factory, not the session that stream rides on. When
+   * the session — or the per-device state on it — is what has gone bad, rebuilding in place reproduces the
+   * same dead start indefinitely, so the owner of the session needs to hear about it to do anything else.
+   * Ordering matters: consumers are failed first, so an owner is free to dispose the source from here.
+   *
+   * Fired only for a failed START. A linger teardown, an upstream stop after a healthy start, and
+   * {@link SharedLiveSource.dispose} are not failures and do not call it.
+   */
+  onStartFailed?: () => void;
 }
 
 /**
@@ -404,13 +416,18 @@ export class SharedLiveSource {
     this.warmDeadlineTimer.cancel();
   }
 
-  /** No frame within the warm-up window — surface a start failure to consumers and tear down. */
+  /**
+   * No frame within the warm-up window — surface a start failure to consumers, tear down, and report the
+   * failed start to the owner (see {@link SharedLiveSourceOptions.onStartFailed}) so it can recycle what
+   * this source cannot reach.
+   */
   private onWarmTimeout(): void {
     if (this.disposed || !this.stream) return;
     const err = new Error("live stream failed to start (no frames within warm-up window)");
     this.logger.warn(`${this.tag} ${err.message} (${this.warmTimeoutMs}ms, consumers=${this.consumers.size})`);
     for (const c of [...this.consumers]) c.fail(err);
     this.teardown("stopped");
+    this.opts.onStartFailed?.();
   }
 
   private onVideo(frame: LiveVideoFrame): void {
@@ -542,12 +559,20 @@ export class SharedLiveSource {
     this.teardown("stopped");
   }
 
-  /** Permanent shutdown (session close / router closeAll). Consumers get `stop`; no rebuild. */
+  /**
+   * Permanent shutdown (session close / router closeAll). Consumers get `stop`; no rebuild.
+   *
+   * Releases the session user when consumers were still attached: {@link SharedLiveSourceOptions.onActive}
+   * fired on the 0→1 transition, and this is the 1→0 one, so skipping it would leave the station pinned
+   * open for a source that can never serve anyone again.
+   */
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    const held = this.consumers.size > 0;
     for (const c of [...this.consumers]) c.end();
     this.consumers.clear();
     this.teardown("stopped");
+    if (held) this.opts.onIdle?.();
   }
 }

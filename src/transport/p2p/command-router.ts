@@ -325,12 +325,8 @@ export class P2PCommandRouter {
     session.on("close", () => {
       if (this.manager.get(stationSn) !== session) return;
       this.manager.remove(stationSn);
-      for (const [key, src] of this.liveSources) {
-        if (key.startsWith(`${stationSn}:`)) {
-          src.dispose();
-          this.liveSources.delete(key);
-          this.liveSourceOpts.delete(key);
-        }
+      for (const key of [...this.liveSources.keys()]) {
+        if (key.startsWith(`${stationSn}:`)) this.dropLiveSource(key);
       }
       for (const [key, talk] of this.talkbacks) {
         if (key.startsWith(`${stationSn}:`)) {
@@ -622,6 +618,12 @@ export class P2PCommandRouter {
    * snapshot would still be dictating the budget hours later. Dropping it lets the next caller build a
    * fresh source from its own options, which is the difference between fixing the silent-drop defect
    * and merely reporting it.
+   *
+   * A **stopped** source is always replaced, whatever is still attached to it. It can no longer serve
+   * anyone, and its stream factory closes over the session resolved when it was built — so handing it back
+   * rebuilds a stream over that same session. After a failed start the consumers are failed but not
+   * detached, so requiring an empty source here is what made a camera that stopped delivering frames stay
+   * that way for the life of the client.
    */
   async sharedLiveSourceFor(sn: string, opts: SharedLiveOpts = {}): Promise<SharedLiveSource> {
     const { session, parentSn, channel, accountId, homeBaseAttached } = await this.resolveSession(sn, {
@@ -629,10 +631,8 @@ export class P2PCommandRouter {
     });
     const key = `${parentSn}:${channel}`;
     let source = this.liveSources.get(key);
-    if (source && source.state === "stopped" && source.consumerCount === 0) {
-      source.dispose();
-      this.liveSources.delete(key);
-      this.liveSourceOpts.delete(key);
+    if (source && source.state === "stopped") {
+      this.dropLiveSource(key);
       source = undefined;
     }
     if (!source) {
@@ -656,6 +656,7 @@ export class P2PCommandRouter {
         label: key,
         onActive: () => this.manager.addUser(parentSn),
         onIdle: () => this.manager.releaseUser(parentSn),
+        onStartFailed: () => this.onLiveStartFailed(sn, key, parentSn),
       });
       this.liveSources.set(key, source);
       this.liveSourceOpts.set(key, opts);
@@ -663,6 +664,37 @@ export class P2PCommandRouter {
     }
     this.warnIgnoredLiveOpts(key, opts);
     return source;
+  }
+
+  /** Dispose one cached live source and forget it, so the next acquisition builds a fresh one. */
+  private dropLiveSource(key: string): void {
+    const source = this.liveSources.get(key);
+    if (!source) return;
+    source.dispose();
+    this.liveSources.delete(key);
+    this.liveSourceOpts.delete(key);
+  }
+
+  /**
+   * A live start produced no frames. Drop the source, and recycle the device's P2P session when doing so
+   * is safe.
+   *
+   * Rebuilding the stream alone is not enough when it is the session, or the per-device state carried on
+   * it, that has stopped serving this camera: every later attach builds another stream over the same
+   * session and fails identically, which is why only a client restart recovered it. A closed session is
+   * rebuilt on demand by the next acquisition, so recycling costs one reconnect.
+   *
+   * Only a **standalone** device's session is recycled. An attached camera shares its HomeBase session with
+   * every other camera on it, and closing that to recover one of them would drop the rest — so an attached
+   * camera gets the stream rebuild and nothing more. This is the same boundary
+   * {@link resetStandaloneSession} draws.
+   */
+  private onLiveStartFailed(sn: string, key: string, parentSn: string): void {
+    this.dropLiveSource(key);
+    if (parentSn !== sn) return;
+    void this.manager
+      .close(parentSn)
+      .catch((error) => this.reportError(error instanceof Error ? error : new Error(String(error))));
   }
 
   /**
