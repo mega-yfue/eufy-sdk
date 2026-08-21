@@ -66,3 +66,24 @@ describe("host-provided ffmpeg binary reaches the media egresses", () => {
     expect(snapshotOpts[0].ffmpegPath).toBeUndefined();
   });
 });
+
+/**
+ * The option the contract is written against is the CLIENT one — `new EufyMega({ ffmpegPath })`. The
+ * router legs above prove the media calls honour what they are handed; this proves the client hands it
+ * over at all, which is the single line joining the two and otherwise the easiest thing to omit.
+ */
+describe("the client-level option reaches the router that owns the media paths", () => {
+  it("hands the configured executable to the P2P router", async () => {
+    const { EufyMega } = await import("../../../client/eufy-mega.js");
+    const eufy = new EufyMega({ email: "user@example.invalid", password: "x", ffmpegPath: "/opt/host/bin/ffmpeg" });
+    const deps = (eufy as unknown as { p2p: { deps: { ffmpegPath?: string } } }).p2p.deps;
+    expect(deps.ffmpegPath).toBe("/opt/host/bin/ffmpeg");
+  });
+
+  it("hands over nothing when unconfigured, so the default PATH lookup stands", async () => {
+    const { EufyMega } = await import("../../../client/eufy-mega.js");
+    const eufy = new EufyMega({ email: "user@example.invalid", password: "x" });
+    const deps = (eufy as unknown as { p2p: { deps: { ffmpegPath?: string } } }).p2p.deps;
+    expect(deps.ffmpegPath).toBeUndefined();
+  });
+});

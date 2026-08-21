@@ -388,7 +388,7 @@ class WebRTCPeer implements WebRTCPeerHandle {
     const ff = spawnFfmpeg(args, {
       logger: this.opts.logger,
       level: this.opts.ffmpegLogLevel,
-      path: this.opts.ffmpegPath,
+      executable: this.opts.ffmpegPath,
       stdio: ["pipe", "ignore", "pipe"],
     });
     ff.stdin?.on("error", () => undefined); // EPIPE if ffmpeg dies — swallow

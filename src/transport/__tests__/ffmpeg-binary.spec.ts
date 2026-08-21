@@ -38,24 +38,24 @@ describe("spawnFfmpeg — host-provided binary", () => {
   });
 
   it("spawns the executable the host supplied", () => {
-    spawnFfmpeg(["-i", "pipe:0"], { path: "/opt/host/bin/ffmpeg" });
+    spawnFfmpeg(["-i", "pipe:0"], { executable: "/opt/host/bin/ffmpeg" });
     expect(spawnCalls[0].file).toBe("/opt/host/bin/ffmpeg");
   });
 
   it("leaves the argv untouched by the binary choice", () => {
-    spawnFfmpeg(["-i", "pipe:0"], { path: "/opt/host/bin/ffmpeg", level: "warning" });
+    spawnFfmpeg(["-i", "pipe:0"], { executable: "/opt/host/bin/ffmpeg", level: "warning" });
     expect(spawnCalls[0].args).toEqual(["-hide_banner", "-loglevel", "warning", "-i", "pipe:0"]);
   });
 
-  it("falls back to the bare name for an empty or whitespace path", () => {
-    spawnFfmpeg([], { path: "" });
-    spawnFfmpeg([], { path: "   " });
+  it("treats a blank value as absent, rather than spawning a name that cannot exist", () => {
+    spawnFfmpeg([], { executable: "" });
+    spawnFfmpeg([], { executable: "   " });
     expect(spawnCalls.map((c) => c.file)).toEqual(["ffmpeg", "ffmpeg"]);
   });
 
-  it("trims a padded path rather than spawning a name that cannot exist", () => {
-    spawnFfmpeg([], { path: "  /opt/host/bin/ffmpeg  " });
-    expect(spawnCalls[0].file).toBe("/opt/host/bin/ffmpeg");
+  it("passes a non-blank value through untouched — a padded path is still a legal POSIX path", () => {
+    spawnFfmpeg([], { executable: " /opt/host/bin/ffmpeg " });
+    expect(spawnCalls[0].file).toBe(" /opt/host/bin/ffmpeg ");
   });
 });
 

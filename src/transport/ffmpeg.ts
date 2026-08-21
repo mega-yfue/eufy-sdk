@@ -62,16 +62,20 @@ export function ffmpegLogLevel(level?: FfmpegLevel): FfmpegLevel {
  *
  * A host that ships its own build resolves and validates that binary itself, and an environment where
  * no `ffmpeg` is on `PATH` is ordinary — so the alternative to this option is the caller mutating
- * `process.env.PATH` process-wide to reach a file it already holds the absolute path to. The value is
- * trimmed, and a blank one falls back to the default: an unset host config that arrives as `""` must
- * not become a spawn of the empty string, which fails as an unrelated `ENOENT`.
+ * `process.env.PATH` process-wide to reach a file it already holds the absolute path to.
  *
- * The path is NOT probed here. Spawn failure surfaces to the caller as the media path's own "not
+ * A **blank** value counts as absent: an unset host config commonly arrives as `""` or as whitespace
+ * from a config file, and neither can name a binary, so spawning it would fail as an `ENOENT` on the
+ * empty string — the misleading message this option exists to remove. Any non-blank value is passed
+ * through EXACTLY as given, never trimmed: a leading or trailing space is legal in a POSIX path, and
+ * rewriting one would make a real file unreachable.
+ *
+ * The value is NOT probed here. Spawn failure surfaces to the caller as the media path's own "not
  * runnable" rejection, which is the same signal a missing `PATH` entry gives, so there is nothing for
- * an extra `stat` to add.
+ * an extra `stat` to add. {@link ffmpegAvailable} is the probe for a caller that wants to ask first.
  */
 export function ffmpegExecutable(path?: string): string {
-  return path?.trim() || "ffmpeg";
+  return path === undefined || path.trim() === "" ? "ffmpeg" : path;
 }
 
 /**
@@ -82,15 +86,23 @@ export function ffmpegExecutable(path?: string): string {
  *
  * `stdio` defaults to all-pipe; pass e.g. `["pipe", "ignore", "pipe"]` to drop stdout (stderr must
  * stay piped for forwarding to work). `level` overrides the resolved `-loglevel` (see
- * {@link ffmpegLogLevel} for precedence); `path` picks the executable (see {@link ffmpegExecutable}).
+ * {@link ffmpegLogLevel} for precedence); `executable` picks the binary (see
+ * {@link ffmpegExecutable}).
  */
-export function spawnFfmpeg(
-  args: string[],
-  opts: { logger?: Logger; stdio?: StdioOptions; level?: FfmpegLevel; path?: string } = {},
-): ChildProcess {
-  const ff = spawn(ffmpegExecutable(opts.path), ["-hide_banner", "-loglevel", ffmpegLogLevel(opts.level), ...args], {
-    stdio: opts.stdio ?? "pipe",
-  });
+export interface FfmpegSpawnOptions {
+  logger?: Logger;
+  stdio?: StdioOptions;
+  level?: FfmpegLevel;
+  /** The ffmpeg binary to run. Default: the bare name, looked up on `PATH`. */
+  executable?: string;
+}
+
+export function spawnFfmpeg(args: string[], opts: FfmpegSpawnOptions = {}): ChildProcess {
+  const ff = spawn(
+    ffmpegExecutable(opts.executable),
+    ["-hide_banner", "-loglevel", ffmpegLogLevel(opts.level), ...args],
+    { stdio: opts.stdio ?? "pipe" },
+  );
   ff.stderr?.on("data", (d: Buffer) => {
     const text = d.toString().trimEnd();
     if (text) (opts.logger ?? noopLogger).debug(`[ffmpeg] ${text}`);
@@ -106,22 +118,21 @@ export function spawnFfmpeg(
  *
  * Synchronous, because it answers a branch a caller has to take before opening anything.
  */
-export function ffmpegAvailable(path?: string): boolean {
+export function ffmpegAvailable(executable?: string): boolean {
   try {
-    return spawnSync(ffmpegExecutable(path), ["-version"], { stdio: "ignore" }).status === 0;
+    return spawnSync(ffmpegExecutable(executable), ["-version"], { stdio: "ignore" }).status === 0;
   } catch {
     return false;
   }
 }
 
 /**
- * Whether `ffprobe` is runnable. Same contract as {@link ffmpegAvailable}, for the sibling binary;
- * `path` names the ffprobe executable, not the ffmpeg one — a host that ships a single-binary ffmpeg
- * build commonly has no ffprobe at all, so the two are answered independently.
+ * Whether `ffprobe` is on `PATH`. The SDK never spawns it — this answers the question for a caller
+ * doing its own media work, which is why it takes no executable: no SDK path would use one.
  */
-export function ffprobeAvailable(path?: string): boolean {
+export function ffprobeAvailable(): boolean {
   try {
-    return spawnSync(path?.trim() || "ffprobe", ["-version"], { stdio: "ignore" }).status === 0;
+    return spawnSync("ffprobe", ["-version"], { stdio: "ignore" }).status === 0;
   } catch {
     return false;
   }

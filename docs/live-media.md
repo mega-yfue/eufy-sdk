@@ -163,8 +163,9 @@ const shot = await cam.snapshotLive?.(); // { jpeg, width, height }
 If the shared source already has a cached keyframe (a live view or another consumer is warm),
 `snapshotLive` decodes that keyframe directly — **no second pull**. Only if nothing is warm does it
 briefly attach, wait for a clean keyframe, decode, and detach. (The JPEG decode itself uses ffmpeg as
-an optional convenience sink; the raw keyframe bytes are always available dependency-free via
-`openReadable` / the event stream.)
+an optional convenience sink — resolved on `PATH`, or set `ffmpegPath` on the client to name the binary
+you ship; the raw keyframe bytes are always available dependency-free via `openReadable` / the event
+stream.)
 
 ## Talkback — audio the other way
 
