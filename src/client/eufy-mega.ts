@@ -295,6 +295,7 @@ export class EufyMega extends EventEmitter {
       mega: this.mega,
       logger: opts.logger,
       ffmpegLogLevel: opts.ffmpegLogLevel,
+      ffmpegPath: opts.ffmpegPath,
       poweredFor: (parentSn) => this.stationPower(parentSn),
       sessionIdle: { batteryIdleMs: opts.p2pIdleMs },
       localAddresses: opts.localAddresses,

@@ -122,6 +122,8 @@ export interface P2PRouterDeps {
   logger?: Logger;
   /** ffmpeg `-loglevel` for the media (snapshot/record) paths. Default `"error"`. */
   ffmpegLogLevel?: FfmpegLevel;
+  /** The ffmpeg executable the media paths run. Default: the bare name, looked up on `PATH`. */
+  ffmpegPath?: string;
   /** Current (already-loaded) device list. */
   listDevices: () => EufyDevice[];
   /** Load the device list if it isn't loaded yet (delegates to the client's getDevices). */
@@ -504,6 +506,7 @@ export class P2PCommandRouter {
           ...opts,
           logger: this.deps.logger ?? noopLogger,
           ffmpegLevel: this.deps.ffmpegLogLevel,
+          ffmpegPath: this.deps.ffmpegPath,
         });
       },
       live: async (opts) => {
@@ -526,6 +529,7 @@ export class P2PCommandRouter {
           ...opts,
           logger: this.deps.logger ?? noopLogger,
           ffmpegLevel: this.deps.ffmpegLogLevel,
+          ffmpegPath: this.deps.ffmpegPath,
         });
       },
     };

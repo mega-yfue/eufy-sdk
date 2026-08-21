@@ -23,11 +23,4 @@ export * from "./params.js";
 // Only the engine-free door + plain option/codec types — NOT the concrete `WebRTCPeer` (which carries
 // werift's type surface). `createWebRtcPeer()` returns the core `WebRTCPeerHandle`, and the engine is
 // lazy-loaded on first construction, so importing this barrel does not pull werift into memory.
-export {
-  createWebRtcPeer,
-  hasFfmpeg,
-  hasFfprobe,
-  EUFY_CODECS,
-  type CodecConfig,
-  type WebRTCPeerOptions,
-} from "./peer.js";
+export { createWebRtcPeer, EUFY_CODECS, type CodecConfig, type WebRTCPeerOptions } from "./peer.js";

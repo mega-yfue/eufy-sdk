@@ -18,7 +18,7 @@
  * Built on **werift** (pure-TS WebRTC for Node). werift's depacketizer covers H.264/Opus natively;
  * H.265 lacks a built-in depacketizer, so we do a minimal RFC 7798 (HEVC) depacketization here.
  */
-import { spawnSync, type ChildProcess } from "node:child_process";
+import { type ChildProcess } from "node:child_process";
 import { createWriteStream, type WriteStream } from "node:fs";
 // werift is imported TYPE-ONLY here (fully erased from the JS) and loaded LAZILY at runtime via
 // {@link loadWerift}. Nothing in this module's public surface (only the engine-free
@@ -27,7 +27,7 @@ import { createWriteStream, type WriteStream } from "node:fs";
 // its ~620ms import cost. CI greps `dist/**/*.d.ts` to keep it that way.
 import type { RTCPeerConnection, RTCRtpCodecParameters, MediaStreamTrack, RtpPacket } from "werift";
 import type { WebRTCPeerHandle, WebRTCIceCandidate, WebRTCSessionDescription } from "../../core/contracts.js";
-import { spawnFfmpeg, type FfmpegLevel } from "../ffmpeg.js";
+import { ffmpegAvailable, spawnFfmpeg, type FfmpegLevel } from "../ffmpeg.js";
 import type { Logger } from "../../core/logger.js";
 
 /** The werift module shape, loaded on demand. */
@@ -94,24 +94,12 @@ export interface WebRTCPeerOptions {
   logger?: Logger;
   /** ffmpeg's own `-loglevel` for the container mux. Default `"error"`; raise to diagnose the mux. */
   ffmpegLogLevel?: FfmpegLevel;
-}
-
-/** Whether `ffmpeg` is on PATH. */
-export function hasFfmpeg(): boolean {
-  try {
-    return spawnSync("ffmpeg", ["-version"], { stdio: "ignore" }).status === 0;
-  } catch {
-    return false;
-  }
-}
-
-/** Whether `ffprobe` is on PATH. */
-export function hasFfprobe(): boolean {
-  try {
-    return spawnSync("ffprobe", ["-version"], { stdio: "ignore" }).status === 0;
-  } catch {
-    return false;
-  }
+  /**
+   * The ffmpeg executable to mux the container with. Default: the bare name, looked up on `PATH`. Both
+   * the availability check that selects the mux and the mux itself resolve this one value, so a host
+   * that ships its own build gets a container rather than a silent fall back to a raw stream.
+   */
+  ffmpegPath?: string;
 }
 
 type TrackKind = "video" | "audio";
@@ -360,7 +348,7 @@ class WebRTCPeer implements WebRTCPeerHandle {
     if (!path) return () => undefined;
 
     const isContainer = /\.(mp4|mkv|mov|webm)$/i.test(path);
-    const useFfmpeg = isContainer && !this.opts.forceRaw && hasFfmpeg();
+    const useFfmpeg = isContainer && !this.opts.forceRaw && ffmpegAvailable(this.opts.ffmpegPath);
 
     if (useFfmpeg) {
       // Only video is muxed through ffmpeg here (single-input pipe); audio gets a raw sidecar so
@@ -400,6 +388,7 @@ class WebRTCPeer implements WebRTCPeerHandle {
     const ff = spawnFfmpeg(args, {
       logger: this.opts.logger,
       level: this.opts.ffmpegLogLevel,
+      path: this.opts.ffmpegPath,
       stdio: ["pipe", "ignore", "pipe"],
     });
     ff.stdin?.on("error", () => undefined); // EPIPE if ffmpeg dies — swallow

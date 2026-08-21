@@ -138,6 +138,16 @@ export interface EufyMegaOptions extends MegaClientConfig {
    * you have confirmed the full round-trip on a real device, or have accepted that ambiguity.
    */
   tuyaAllowUnverified?: boolean;
+  /**
+   * The `ffmpeg` executable the media paths that shell out should run (live snapshot / record / WebRTC
+   * container). Default: the bare name `"ffmpeg"`, looked up on `PATH`.
+   *
+   * Set it when the host ships or manages its own build — an absolute path is resolved without any
+   * `PATH` lookup, so those paths work on a host that has no system ffmpeg at all. The SDK never
+   * edits `process.env.PATH`; naming the binary here is the supported way to point it at one. The
+   * path is not probed, so a wrong one surfaces as the media call's own "not runnable" rejection.
+   */
+  ffmpegPath?: string;
 }
 
 /**

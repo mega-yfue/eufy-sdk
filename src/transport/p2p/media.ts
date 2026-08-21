@@ -6,7 +6,8 @@
  * P2P + ffmpeg — no dependency on the client class — so the client stays thin and this stays the
  * single home for the media protocol. Surfaced to consumers via `device.camera()`.
  *
- * `snapshotLive` / `record` require `ffmpeg` on PATH.
+ * `snapshotLive` / `record` shell out to ffmpeg. The binary is whatever {@link spawnFfmpeg} resolves —
+ * the bare name on `PATH` by default, or the executable the caller named (`ffmpegPath`).
  *
  * @module p2p/media
  */
@@ -52,6 +53,7 @@ export async function captureSnapshotFromShared(
     skipKeyframes?: number;
     logger?: Logger;
     ffmpegLevel?: FfmpegLevel;
+    ffmpegPath?: string;
   } = {},
 ): Promise<{ jpeg: Buffer; width: number; height: number }> {
   const timeoutMs = opts.timeoutMs ?? 20000;
@@ -102,7 +104,7 @@ export async function captureSnapshotFromShared(
         consumer.on("error", () => {});
       },
     );
-    const jpeg = await annexbToJpeg(h264, opts.logger ?? noopLogger, opts.ffmpegLevel);
+    const jpeg = await annexbToJpeg(h264, opts.logger ?? noopLogger, opts.ffmpegLevel, opts.ffmpegPath);
     return { jpeg, width, height };
   } finally {
     consumer.detach();
@@ -122,6 +124,7 @@ export async function recordClip(
     skipKeyframes?: number;
     logger?: Logger;
     ffmpegLevel?: FfmpegLevel;
+    ffmpegPath?: string;
   } & LiveStreamOptions = {},
 ): Promise<Buffer> {
   const timeoutMs = opts.timeoutMs ?? 20000;
@@ -180,7 +183,7 @@ export async function recordClip(
         "mp4",
         "pipe:1",
       ],
-      { logger: opts.logger, level: opts.ffmpegLevel },
+      { logger: opts.logger, level: opts.ffmpegLevel, path: opts.ffmpegPath },
     );
     const out: Buffer[] = [];
     const err: Buffer[] = [];
@@ -199,7 +202,12 @@ export async function recordClip(
 }
 
 /** Decode an Annex-B buffer (H.264 or H.265, starting at a keyframe) to a single JPEG via ffmpeg. */
-function annexbToJpeg(annexb: Buffer, logger: Logger = noopLogger, level?: FfmpegLevel): Promise<Buffer> {
+function annexbToJpeg(
+  annexb: Buffer,
+  logger: Logger = noopLogger,
+  level?: FfmpegLevel,
+  path?: string,
+): Promise<Buffer> {
   const codec = annexbFfmpegFormat(annexb);
   return new Promise<Buffer>((resolve, reject) => {
     const ff = spawnFfmpeg(
@@ -217,7 +225,7 @@ function annexbToJpeg(annexb: Buffer, logger: Logger = noopLogger, level?: Ffmpe
         "mjpeg",
         "pipe:1",
       ],
-      { logger, level },
+      { logger, level, path },
     );
     const out: Buffer[] = [];
     const err: Buffer[] = [];

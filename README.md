@@ -72,7 +72,9 @@ npm install @mega-yfue/eufy-sdk
 Once the repository is public, releases also go to npmjs and the `.npmrc` becomes unnecessary.
 
 **Node.js ≥ 24.5.0** is required, not just recommended (see [`.nvmrc`](./.nvmrc)). `ffmpeg` is
-optional — only the live JPEG snapshot, one-shot mp4 record and WebRTC container-output paths use it.
+optional — only the live JPEG snapshot, one-shot mp4 record and WebRTC container-output paths use it,
+and a host that ships its own build names it with `new EufyMega({ ffmpegPath })` rather than needing
+one on `PATH`.
 
 ## Documentation
 

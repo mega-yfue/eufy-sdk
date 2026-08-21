@@ -52,7 +52,7 @@ stream?.on("stop", () => console.log("source ended — re-attach to rebuild"));
 | A command fails only on a standalone camera                                       | some controls need a HomeBase-attached device and aren't available standalone                                                                                                                                                        | expected — drive that control on a HomeBase-attached device, or use the property that adapts automatically                                                                                                |
 | `live stream failed to start (no frames within warm-up window)`                   | the source never produced a frame in time                                                                                                                                                                                            | handle the stream `error`, then call `cam.live()` again to rebuild                                                                                                                                        |
 | `timeout waiting for a clean keyframe`                                            | a snapshot/record couldn't get a keyframe in the window                                                                                                                                                                              | retry, or widen the timeout via the call's options                                                                                                                                                        |
-| `ffmpeg not runnable` / snapshot or record fails                                  | `ffmpeg` isn't on `PATH` (needed for JPEG snapshot / mp4 record / WebRTC container)                                                                                                                                                  | install `ffmpeg`, or use the ffmpeg-free paths (`openReadable()`, `recordFragments()`); see [§5](#_5-media-snapshot-record-ffmpeg)                                                                        |
+| `ffmpeg not runnable` / snapshot or record fails                                  | no runnable `ffmpeg` (needed for JPEG snapshot / mp4 record / WebRTC container)                                                                                                                                                      | point the SDK at the binary you ship with `ffmpegPath`, install `ffmpeg`, or use the ffmpeg-free paths (`openReadable()`, `recordFragments()`); see [§5](#_5-media-snapshot-record-ffmpeg)                |
 | `p2p down` / `smqtt reconnecting` on `error`                                      | a transient transport drop                                                                                                                                                                                                           | the channels reconnect on their own; re-attach live streams when a consumer gets `stop`                                                                                                                   |
 
 ## 4. Streams that hang or stop
@@ -69,7 +69,22 @@ stream?.on("stop", () => console.log("source ended — re-attach to rebuild"));
 ## 5. Media (snapshot / record / ffmpeg)
 
 The JPEG snapshot (`snapshotLive`), one-shot `record`, and WebRTC-container paths shell out to
-`ffmpeg`. When one of them fails, surface ffmpeg's **own** diagnostics through your logger: raise
+`ffmpeg`.
+
+**No `ffmpeg` on `PATH`?** That is ordinary on a managed host, and it does not mean these paths are
+unavailable — name the binary you ship instead of editing the process `PATH`:
+
+```ts
+const eufy = new EufyMega({ email, password, ffmpegPath: "/opt/your-host/bin/ffmpeg" });
+```
+
+An absolute path is spawned directly, with no `PATH` lookup. It is not probed at construction, so a
+wrong path surfaces as the media call's own `ffmpeg not runnable` rejection; check it up front with
+`ffmpegAvailable(path)`, which resolves the same executable the media paths will run.
+`createWebRtcPeer` takes its own `ffmpegPath` for the container mux — and uses it for the availability
+check that selects the mux, so a host-supplied build no longer falls back to a raw stream.
+
+When one of them fails, surface ffmpeg's **own** diagnostics through your logger: raise
 `ffmpegLogLevel` on the client and the SDK forwards ffmpeg's stderr as `[ffmpeg]`-prefixed **debug**
 lines.
 

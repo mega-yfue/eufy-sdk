@@ -18,10 +18,12 @@ eufy-sdk is not affiliated with, endorsed by, or sponsored by Anker Innovations 
   v2 thumbnail performs repeated candidate decodes and blocks the Node.js event loop until that image
   finishes. The synthetic 176×144 and 264×200 fixtures each took about one second on one Node 24 test
   host; timing varies by image and hardware.
-- **`ffmpeg` — optional, on `PATH`.** Needed only for the convenience decode/mux sinks: JPEG
+- **`ffmpeg` — optional.** Needed only for the convenience decode/mux sinks: JPEG
   `snapshotLive()`, the one-shot `record(seconds)` buffer, and WebRTC container output (`.mp4`/`.mkv`;
   falls back to raw when absent). The core paths — `live()`, `openReadable()`, `recordFragments()`
-  (CMAF fMP4), and the passive stored `snapshotStored()` — need no ffmpeg.
+  (CMAF fMP4), and the passive stored `snapshotStored()` — need no ffmpeg. Resolved on `PATH` by
+  default; a host that ships or manages its own build names it with `new EufyMega({ ffmpegPath })`
+  instead of editing `PATH`, and `ffmpegAvailable(ffmpegPath)` answers whether that one is runnable.
 
 ## Install
 
