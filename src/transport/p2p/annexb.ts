@@ -11,6 +11,9 @@
  */
 import type { VideoCodec } from "../../core/contracts.js";
 
+/** The 4-byte Annex-B start code emitted ahead of a re-serialized NAL. */
+const ANNEXB_START = Buffer.from([0x00, 0x00, 0x00, 0x01]);
+
 /** Iterate the byte offset of every NAL payload (first byte after a 3- or 4-byte start code). */
 function* nalStarts(buf: Buffer): Generator<number> {
   for (let i = 0; i + 3 < buf.length; i++) {
@@ -92,6 +95,26 @@ export function extractParamSets(buf: Buffer): ParamSets | undefined {
   }
   if (!sps.length && !pps.length) return undefined;
   return { codec, sps, pps, vps };
+}
+
+/**
+ * Re-emit `sets` as Annex-B NALs immediately ahead of `annexb`, so a unit whose parameter sets were
+ * sent earlier in the stream becomes decodable on its own.
+ *
+ * A decoder reads parameter sets in stream order, so they are emitted VPS → SPS → PPS: a PPS ahead of
+ * the SPS it references is as useless as none at all. Sets carrying no NALs return the input unchanged
+ * rather than an equal copy, so a caller that already has a self-contained unit pays nothing.
+ *
+ * Emitting a duplicate set is harmless — a decoder overwrites the entry with the same id — which is why
+ * this needs no knowledge of what the unit already carries; {@link extractParamSets} answers that for a
+ * caller that wants to prime only when necessary.
+ */
+export function prefixParamSets(annexb: Buffer, sets: ParamSets): Buffer {
+  const ordered = [...sets.vps, ...sets.sps, ...sets.pps];
+  if (!ordered.length) return annexb;
+  const prefix: Buffer[] = [];
+  for (const nal of ordered) prefix.push(ANNEXB_START, nal);
+  return Buffer.concat([...prefix, annexb]);
 }
 
 /** Given a NAL payload offset, back up over its (3- or 4-byte) start code to the code's first byte. */

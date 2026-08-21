@@ -27,6 +27,7 @@
 import { EventEmitter } from "node:events";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { Timer } from "../../core/util.js";
+import { extractParamSets, type ParamSets } from "./annexb.js";
 import type { LiveAudioFrame, LiveStreamHandle, LiveVideoFrame, StreamBudgetNotice } from "../../core/contracts.js";
 
 /** Lifecycle state of a {@link SharedLiveSource}. */
@@ -237,6 +238,8 @@ export class SharedLiveSource {
 
   /** Last keyframe access unit seen — replayed to a joining consumer (keyframe-prime). */
   private lastKeyframe?: Extract<TimedMediaFrame, { kind: "video" }>;
+  /** Last parameter sets the stream announced — see {@link parameterSets}. */
+  private lastParamSets?: ParamSets;
   /** Rolling prebuffer, keyframe-alignable on drain. */
   private ring: TimedMediaFrame[] = [];
 
@@ -281,6 +284,21 @@ export class SharedLiveSource {
 
   get concurrentCap(): number | undefined {
     return this.opts.concurrentCap;
+  }
+
+  /**
+   * The parameter sets (SPS/PPS, plus VPS for H.265) most recently announced on this stream, or
+   * `undefined` before any have been seen.
+   *
+   * A camera commonly sends them ONCE, with the first keyframe of a stream. Every later access unit is
+   * then undecodable in isolation, so a consumer that collects a burst — and cannot see frames from
+   * before it joined — has no way to recover them. This source watches every frame from stream start,
+   * which makes it the only holder of the answer. A caller re-emits them ahead of its collected burst.
+   *
+   * Cleared by {@link teardown}, so a rebuilt stream never primes a burst with a dead stream's sets.
+   */
+  get parameterSets(): ParamSets | undefined {
+    return this.lastParamSets;
   }
 
   /**
@@ -404,6 +422,8 @@ export class SharedLiveSource {
       );
       if (this.powered === "battery") this.armBudget(); // battery drain starts now
     }
+    const announced = extractParamSets(frame.data);
+    if (announced) this.lastParamSets = announced;
     if (frame.keyframe) {
       this.lastKeyframe = item;
       if (this._state === "warming") this._state = "live";
@@ -501,6 +521,7 @@ export class SharedLiveSource {
     }
     this.stream = undefined;
     this.lastKeyframe = undefined;
+    this.lastParamSets = undefined;
     this.ring = [];
     this._state = state;
   }

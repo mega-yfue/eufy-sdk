@@ -13,11 +13,11 @@
  */
 import { P2PSession } from "./p2p-session.js";
 import { LiveStream, type LiveStreamOptions } from "./live-stream.js";
-import { sniffAnnexbCodec } from "./annexb.js";
+import { extractParamSets, prefixParamSets, sniffAnnexbCodec, type ParamSets } from "./annexb.js";
 import { spawnFfmpeg, type FfmpegLevel, type FfmpegSpawnOptions } from "../ffmpeg.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import type { SharedLiveSource } from "./shared-live-source.js";
-import type { LiveVideoFrame } from "../../core/contracts.js";
+import { LiveSnapshotUnavailableError, type LiveVideoFrame } from "../../core/contracts.js";
 
 /**
  * ffmpeg's `-f` demuxer name for an Annex-B buffer. Sniffs via the shared {@link sniffAnnexbCodec}
@@ -74,7 +74,12 @@ export async function captureSnapshotFromShared(
           settle: ReturnType<typeof setTimeout> | undefined;
         const timer = setTimeout(() => {
           cleanup();
-          reject(new Error("timeout waiting for a clean keyframe"));
+          reject(
+            new LiveSnapshotUnavailableError(
+              "no-keyframe",
+              `no clean keyframe within ${timeoutMs}ms (source state: ${source.state})`,
+            ),
+          );
         }, timeoutMs);
         const onVideo = (fr: LiveVideoFrame) => {
           if (fr.keyframe) keyCount++;
@@ -104,7 +109,7 @@ export async function captureSnapshotFromShared(
         consumer.on("error", () => {});
       },
     );
-    const jpeg = await annexbToJpeg(h264, {
+    const jpeg = await annexbToJpeg(primeForDecode(h264, source.parameterSets), {
       logger: opts.logger ?? noopLogger,
       level: opts.ffmpegLevel,
       executable: opts.ffmpegPath,
@@ -119,6 +124,12 @@ export async function captureSnapshotFromShared(
  * **Record** a clip — collect the live H.264/H.265 stream for `seconds` and mux it to a fragmented
  * MP4 (same source as {@link captureSnapshotFromShared}, kept running and written to a container).
  * Recording starts at the first complete keyframe so the clip is seekable. Requires `ffmpeg`.
+ *
+ * The clip therefore starts at the SECOND keyframe, so parameter sets announced only with the first are
+ * dropped along with it — every frame is watched for an announcement, including the skipped ones, and
+ * the collected run is primed before muxing (see {@link primeForDecode}). This also settles the codec:
+ * {@link annexbFfmpegFormat} sniffs a config NAL, and a run of bare slices would otherwise fall back to
+ * H.264 and mislabel an H.265 clip.
  */
 export async function recordClip(
   session: P2PSession,
@@ -141,11 +152,14 @@ export async function recordClip(
       let keyCount = 0,
         capturing = false,
         stopAt = 0;
+      let sets: ParamSets | undefined;
       const timer = setTimeout(() => {
         cleanup();
         reject(new Error("timeout waiting for a clean keyframe"));
       }, timeoutMs);
       const onVideo = (fr: LiveVideoFrame) => {
+        const announced = extractParamSets(fr.data);
+        if (announced) sets = announced;
         if (fr.keyframe) keyCount++;
         if (!capturing) {
           if (!fr.keyframe || keyCount <= skip) return; // start the clip at the first COMPLETE keyframe
@@ -156,7 +170,7 @@ export async function recordClip(
         bufs.push(fr.data);
         if (Date.now() >= stopAt) {
           cleanup();
-          resolve(Buffer.concat(bufs));
+          resolve(primeForDecode(Buffer.concat(bufs), sets));
         }
       };
       const cleanup = () => {
@@ -206,6 +220,25 @@ export async function recordClip(
 }
 
 /**
+ * Make a collected burst decodable on its own by re-emitting the stream's parameter sets ahead of it.
+ *
+ * A camera commonly announces SPS/PPS ONCE, with the first keyframe of a stream. A snapshot skips that
+ * first (often partial) IDR by default and a joining consumer never sees it at all, so the burst that
+ * reaches the decoder routinely begins after the only announcement — and a decoder with no SPS/PPS for
+ * its first slices fails with `non-existing PPS 0 referenced`. Whether a given attempt lands before or
+ * after an announcement is framing luck, which is why the same camera alternated between a still and a
+ * failure. Priming removes the luck.
+ *
+ * A burst that already carries its own sets is returned untouched, and a source that has not yet seen
+ * any leaves it unchanged rather than guessing at bytes — an unprimeable burst then fails with the
+ * decoder's own reason instead of a fabricated one.
+ */
+function primeForDecode(burst: Buffer, sets: ParamSets | undefined): Buffer {
+  if (!sets || extractParamSets(burst)) return burst;
+  return prefixParamSets(burst, sets);
+}
+
+/**
  * Decode an Annex-B buffer (H.264 or H.265, starting at a keyframe) to a single JPEG via ffmpeg. `spawn`
  * carries the ffmpeg dials straight through to {@link spawnFfmpeg} — they are its options, not this
  * function's, so they travel as one bag rather than accumulating as positionals here.
@@ -235,13 +268,24 @@ function annexbToJpeg(annexb: Buffer, spawn: FfmpegSpawnOptions): Promise<Buffer
     ff.stdout!.on("data", (d) => out.push(d));
     ff.stderr!.on("data", (d) => err.push(d));
     ff.on("error", (e) =>
-      reject(new Error(`ffmpeg not runnable (is it installed?): ${e instanceof Error ? e.message : e}`)),
+      reject(
+        new LiveSnapshotUnavailableError(
+          "decoder-unavailable",
+          `ffmpeg not runnable: ${e instanceof Error ? e.message : e}`,
+          { cause: e },
+        ),
+      ),
     );
     ff.on("close", (code) => {
       const jpeg = Buffer.concat(out);
       if (jpeg.length >= 3 && jpeg.subarray(0, 3).toString("hex") === "ffd8ff") resolve(jpeg);
       else
-        reject(new Error(`ffmpeg JPEG decode failed (code ${code}): ${Buffer.concat(err).toString().slice(0, 200)}`));
+        reject(
+          new LiveSnapshotUnavailableError(
+            "undecodable-burst",
+            `ffmpeg JPEG decode failed (code ${code}): ${Buffer.concat(err).toString().slice(0, 200)}`,
+          ),
+        );
     });
     ff.stdin!.on("error", () => {});
     ff.stdin!.write(annexb);

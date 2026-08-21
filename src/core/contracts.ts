@@ -30,6 +30,47 @@ export class StoredSnapshotUnavailableError extends Error {
 }
 
 /**
+ * Why {@link MediaProvider.snapshotLive} could not return a still.
+ *
+ * - `no-keyframe` — no clean keyframe arrived within the acquisition window. The stream may simply be
+ *   slow to start, or the source may be delivering nothing.
+ * - `undecodable-burst` — a burst was collected but the decoder refused it. Per-attempt framing, not a
+ *   property of the camera.
+ * - `decoder-unavailable` — the decoder could not be run at all (no ffmpeg was runnable).
+ */
+export type LiveSnapshotUnavailableReason = "no-keyframe" | "undecodable-burst" | "decoder-unavailable";
+
+/** The reasons another attempt could plausibly succeed against an unchanged configuration. */
+const RETRYABLE_LIVE_SNAPSHOT_REASONS: readonly LiveSnapshotUnavailableReason[] = ["no-keyframe", "undecodable-burst"];
+
+/**
+ * Thrown by {@link MediaProvider.snapshotLive} when no still could be produced.
+ *
+ * {@link retryable} is the distinction the reason exists for. A caller that rate-limits acquisition has
+ * to spend its budget on attempts that can succeed: a burst the decoder refused is per-attempt framing
+ * and another try is worthwhile, while an unrunnable decoder is host configuration that no number of
+ * retries will change. Without it every failure looks alike, and a caller either retries a permanent
+ * fault forever or gives up on a camera that would have answered on the next attempt.
+ *
+ * The decoder's own diagnostics are preserved in {@link Error.message}, so classifying the failure never
+ * costs the detail needed to explain it.
+ */
+export class LiveSnapshotUnavailableError extends Error {
+  /** Whether another attempt could plausibly succeed without the host changing anything. */
+  readonly retryable: boolean;
+
+  constructor(
+    readonly reason: LiveSnapshotUnavailableReason,
+    message: string,
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+    this.name = "LiveSnapshotUnavailableError";
+    this.retryable = RETRYABLE_LIVE_SNAPSHOT_REASONS.includes(reason);
+  }
+}
+
+/**
  * Wire form for a scalar {@link Command} `"set-param"` intent. `"auto"` lets the transport choose the
  * right encoding for the device's session; `"int-string"` / `"direct-binary"` pin a specific encoding
  * when the firmware requires one.
@@ -362,6 +403,10 @@ export interface MediaProvider {
   snapshotStored?(): Promise<Buffer>;
   /**
    * A fresh still decoded from a short live burst.
+   *
+   * Rejects with {@link LiveSnapshotUnavailableError}, whose {@link LiveSnapshotUnavailableError.retryable}
+   * says whether another attempt could succeed — a caller that rate-limits acquisition needs that to
+   * avoid spending its budget on a permanent fault, or abandoning a camera that would have answered.
    *
    * Carries `powered` for the same reason every other egress does: it may be the call that CREATES the
    * shared source, and the source keeps whatever power hint it was built with. A caller polling this
