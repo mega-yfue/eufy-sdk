@@ -8,6 +8,7 @@
  * capability or a wire; it maps records to the model's `resolveDevice`/`inspectParams`.
  */
 import { MegaApiError, MegaHttpClient, OWNER_ONLY_CODE } from "../transport/http/mega-client.js";
+import { noopLogger, type Logger } from "../core/logger.js";
 import { classifyDevice, type DeviceClass, type EufyDevice, type RealtimeKind } from "../core/types.js";
 import { inspectParams, resolveDevice, type Capability, type Codec, type DeviceInspection } from "../model/index.js";
 
@@ -143,6 +144,8 @@ export interface DeviceRegistryDeps {
   mega: MegaHttpClient;
   /** Surface a non-fatal fetch error (a house/body query that failed) without aborting the merge. */
   onError: (e: unknown) => void;
+  /** Diagnostics sink for facts that are NOT errors — see the owner-gated overlay note on {@link DeviceRegistry.record}. */
+  logger?: Logger;
 }
 
 /**
@@ -158,6 +161,7 @@ const LIST_REUSE_MS = 5_000;
 export class DeviceRegistry {
   private readonly mega: MegaHttpClient;
   private readonly onError: (e: unknown) => void;
+  private readonly logger: Logger;
   private devices: EufyDevice[] = [];
   /** Per-(station, channel) capability cache for {@link capabilitiesForFrame}; `null` = negative hit. */
   private readonly frameCapsCache = new Map<string, ReadonlySet<Capability> | null>();
@@ -198,6 +202,7 @@ export class DeviceRegistry {
   constructor(deps: DeviceRegistryDeps) {
     this.mega = deps.mega;
     this.onError = deps.onError;
+    this.logger = deps.logger ?? noopLogger;
   }
 
   /** The current device cache (last {@link getDevices} result). */
@@ -368,6 +373,13 @@ export class DeviceRegistry {
    * instead. Any OTHER failure is treated as transient: it falls back for that call but is retried next
    * time, because latching on a timeout would cost an entitled account its freshest source of params.
    *
+   * The refusal is **logged, never surfaced as an error**. It is a normal property of a shared or member
+   * account, not a fault: nothing failed that the SDK did not immediately handle, and the account holder
+   * cannot grant themselves ownership. A host cannot tell "non-fatal degradation" from "something went
+   * wrong" on an untyped error event, and one that treats an error during discovery as evidence of an
+   * incomplete inventory would abandon a perfectly good fleet — so this says it where someone diagnosing
+   * freshness will find it, and says nothing where it would be mistaken for a failure.
+   *
    * The list is account-wide, so a re-fetch is NOT per device: resolving a fleet calls this once per device,
    * and each one re-fetching would multiply one burst into N. {@link refreshedList} reuses a list younger
    * than {@link LIST_REUSE_MS} and coalesces concurrent fetches, which keeps resolving N devices at the cost
@@ -395,7 +407,9 @@ export class DeviceRegistry {
           this.overlayRefused.add(sn);
           if (!this.overlayRefusalReported) {
             this.overlayRefusalReported = true;
-            this.onError(error);
+            this.logger.debug(
+              "[registry] per-device params are owner-gated for this account — reading params from the device list instead",
+            );
           }
         }
         dev = (await this.refreshedList(sn)) ?? dev;

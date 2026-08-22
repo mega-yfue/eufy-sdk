@@ -290,6 +290,7 @@ export class EufyMega extends EventEmitter {
     this.registry = new DeviceRegistry({
       mega: this.mega,
       onError: (e) => this.reportError(e),
+      logger: opts.logger,
     });
     this.p2p = new P2PCommandRouter({
       mega: this.mega,

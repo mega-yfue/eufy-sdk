@@ -36,7 +36,11 @@ function rawDevice(params: Record<number, string>, sn: string = SN) {
   };
 }
 
-function registryWith(opts: { overlay: (sn: string) => Promise<unknown>; params: () => Record<number, string> }) {
+function registryWith(opts: {
+  overlay: (sn: string) => Promise<unknown>;
+  params: () => Record<number, string>;
+  debug?: (message: string) => void;
+}) {
   const errors: unknown[] = [];
   let listFetches = 0;
   const overlay = vi.fn(opts.overlay);
@@ -48,7 +52,11 @@ function registryWith(opts: { overlay: (sn: string) => Promise<unknown>; params:
     },
     getDeviceParamList: overlay,
   } as never;
-  const registry = new DeviceRegistry({ mega, onError: (e) => errors.push(e) });
+  const registry = new DeviceRegistry({
+    mega,
+    onError: (e) => errors.push(e),
+    logger: { debug: opts.debug ?? (() => {}), info: () => {}, warn: () => {}, error: () => {} } as never,
+  });
   return { registry, overlay, errors, listFetches: () => listFetches };
 }
 
@@ -91,25 +99,6 @@ describe("record() when the per-device overlay is unavailable", () => {
     await registry.record(SN);
 
     expect(listFetches()).toBe(afterFirst);
-  });
-
-  it("reports the overlay failure instead of swallowing it, so a permanent one is diagnosable", async () => {
-    const { registry, errors } = registryWith({ overlay: ownerGated, params: () => ({ 2001: "true" }) });
-
-    await registry.record(SN);
-
-    expect(errors).toHaveLength(1);
-    expect(String((errors[0] as { message?: string }).message)).toMatch(/20004|owner/i);
-  });
-
-  it("reports it only once per device, not on every refresh", async () => {
-    const { registry, errors } = registryWith({ overlay: ownerGated, params: () => ({ 2001: "true" }) });
-
-    await registry.record(SN);
-    await registry.record(SN);
-    await registry.record(SN);
-
-    expect(errors).toHaveLength(1);
   });
 
   it("stops attempting an overlay that is permanently refused", async () => {
@@ -181,13 +170,24 @@ describe("record() when the per-device overlay is unavailable", () => {
     expect(listFetches() - before).toBe(1);
   });
 
-  it("reports the refusal once for the ACCOUNT, not once per device", async () => {
+  it("never surfaces the refusal as an error — a host may treat one as a failed discovery", async () => {
     const { registry, errors } = registryWith({ overlay: ownerGated, params: () => ({ 2001: "true" }) });
 
     await registry.record(SN);
     await registry.record(OTHER_SN);
 
-    expect(errors).toHaveLength(1);
+    expect(errors).toEqual([]);
+  });
+
+  it("logs it once for the ACCOUNT rather than once per device", async () => {
+    const debug = vi.fn();
+    const { registry } = registryWith({ overlay: ownerGated, params: () => ({ 2001: "true" }), debug });
+
+    await registry.record(SN);
+    await registry.record(OTHER_SN);
+
+    expect(debug).toHaveBeenCalledTimes(1);
+    expect(String(debug.mock.calls[0][0])).toMatch(/owner-gated/i);
   });
 
   it("keeps using the overlay while it works, and does not re-fetch the list for nothing", async () => {
