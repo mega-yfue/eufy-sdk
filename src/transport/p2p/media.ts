@@ -140,9 +140,8 @@ export async function captureSnapshotFromShared(
  *
  * The clip therefore starts at the SECOND keyframe, so parameter sets announced only with the first are
  * dropped along with it — every frame is watched for an announcement, including the skipped ones, and
- * the collected run is primed before muxing (see {@link primeForDecode}). This also settles the codec:
- * {@link annexbFfmpegFormat} sniffs a config NAL, and a run of bare slices would otherwise fall back to
- * H.264 and mislabel an H.265 clip.
+ * the collected run is primed before muxing. This also settles the codec, which is sniffed from a config NAL:
+ * a run of bare slices would otherwise fall back to H.264 and mislabel an H.265 clip.
  */
 export async function recordClip(
   session: P2PSession,

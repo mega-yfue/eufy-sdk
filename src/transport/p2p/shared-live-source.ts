@@ -295,7 +295,7 @@ export class SharedLiveSource {
    * before it joined — has no way to recover them. This source watches every frame from stream start,
    * which makes it the only holder of the answer. A caller re-emits them ahead of its collected burst.
    *
-   * Cleared by {@link teardown}, so a rebuilt stream never primes a burst with a dead stream's sets.
+   * Cleared when the stream is torn down, so a rebuilt stream never primes a burst with a dead stream's sets.
    */
   get parameterSets(): ParamSets | undefined {
     return this.lastParamSets;

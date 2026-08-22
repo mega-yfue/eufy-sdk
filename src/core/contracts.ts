@@ -70,8 +70,8 @@ const RETRYABLE_LIVE_SNAPSHOT_REASONS: readonly LiveSnapshotUnavailableReason[] 
  * It is derived from {@link reason} rather than passed in, so the two can never disagree, and every
  * caller reads one answer instead of re-deriving the mapping and drifting from it.
  *
- * The underlying diagnostics are preserved in {@link Error.message} and, where there is one, `cause` —
- * so classifying the failure never costs the detail needed to explain it.
+ * The underlying diagnostics are preserved in the error's `message` and, where there is one, its `cause` — so
+ * classifying the failure never costs the detail needed to explain it.
  */
 export class LiveSnapshotUnavailableError extends Error {
   /** Whether another attempt could plausibly succeed without the host changing anything. */

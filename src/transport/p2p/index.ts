@@ -11,6 +11,8 @@ export {
   type TimedMediaFrame,
   type Consumer as LiveConsumer,
 } from "./shared-live-source.js";
+// `ParamSets` is what `SharedLiveSource.parameterSets` answers with, so a caller has to be able to name it.
+export { type ParamSets } from "./annexb.js";
 export * from "./commands.js";
 export * from "./envelope.js";
 export * from "./write-commands.js";
