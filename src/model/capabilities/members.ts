@@ -861,7 +861,7 @@ const UNREFLECTED = Symbol("unreflected-members");
  * `unexposed` members are deliberately absent: the device DOES report those — they are in the property schema
  * and reachable through `getProperty` — what is missing is a confirmed meaning for the value.
  *
- * Empty for a surface not built by {@link bindMembers}.
+ * Empty for any object that is not a bound capability.
  */
 export function unobservableMembers(surface: object): readonly string[] {
   return (surface as { [UNOBSERVABLE]?: readonly string[] })[UNOBSERVABLE] ?? [];
@@ -876,7 +876,7 @@ export function unobservableMembers(surface: object): readonly string[] {
  * the write goes there while the read still observes the on/off param, so a camera that has been turned off
  * still reads as on. Naming it lets a caller decline to act on the value instead of acting on a wrong one.
  *
- * Empty for a surface not built by {@link bindMembers}.
+ * Empty for any object that is not a bound capability.
  */
 export function unreflectedMembers(surface: object): readonly string[] {
   return (surface as { [UNREFLECTED]?: readonly string[] })[UNREFLECTED] ?? [];
