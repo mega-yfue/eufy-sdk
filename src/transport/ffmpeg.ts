@@ -111,10 +111,10 @@ export function spawnFfmpeg(args: string[], opts: FfmpegSpawnOptions = {}): Chil
 }
 
 /**
- * Whether the ffmpeg a caller would actually get is runnable, by running `-version` on it. Resolves
- * the executable through {@link ffmpegExecutable}, so the answer is about the SAME binary
- * {@link spawnFfmpeg} would launch — a probe of the bare name reports "missing" on a host that ships
- * its own build, and an egress gated on that answer would silently take a degraded path instead.
+ * Whether the ffmpeg a caller would actually get is runnable, by running `-version` on it. Resolves the
+ * executable exactly as the media paths do, so the answer is about the SAME binary they will launch — a probe
+ * of the bare name reports "missing" on a host that ships its own build, and an egress gated on that answer
+ * would silently take a degraded path instead.
  *
  * Synchronous, because it answers a branch a caller has to take before opening anything.
  */
