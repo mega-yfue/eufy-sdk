@@ -1,7 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { EventEmitter } from "node:events";
 import { SharedLiveSource } from "../shared-live-source.js";
-import type { LiveStreamHandle, LiveVideoFrame } from "../../../core/contracts.js";
+import { H264, streamFactory, unit, videoFrame } from "./live-source-fixtures.js";
 
 /**
  * A live start that never delivers a frame is reported to consumers and the stream is torn down, but the
@@ -10,40 +9,15 @@ import type { LiveStreamHandle, LiveVideoFrame } from "../../../core/contracts.j
  * the same way and only a client restart clears it. The source cannot fix that itself: it holds a stream
  * factory, not a session. It has to say that a start failed, so whoever owns the session can act.
  */
-class FakeStream extends EventEmitter implements LiveStreamHandle {
-  started = 0;
-  stopped = 0;
-  nudged = 0;
-  start(): this {
-    this.started++;
-    return this;
-  }
-  stop(): void {
-    this.stopped++;
-  }
-  nudge(): void {
-    this.nudged++;
-  }
-  video(f: LiveVideoFrame) {
-    this.emit("video", f);
-  }
-}
-
-function frame(): LiveVideoFrame {
-  return { keyframe: true, width: 8, height: 8, codec: "h264", data: Buffer.from([0, 0, 0, 1, 0x67]) };
-}
+const frame = () => videoFrame(unit(H264.sps, H264.idr));
 
 function mk(opts: Record<string, unknown> = {}) {
-  const streams: FakeStream[] = [];
+  const { makeStream, streams } = streamFactory();
   const onStartFailed = vi.fn();
   const onIdle = vi.fn();
   const onActive = vi.fn();
   const source = new SharedLiveSource({
-    makeStream: () => {
-      const s = new FakeStream();
-      streams.push(s);
-      return s;
-    },
+    makeStream,
     warmRetryMs: 2000,
     warmTimeoutMs: 6000,
     lingerMs: 5000,
