@@ -338,11 +338,15 @@ export const CAMERA_MEMBERS = {
    * 2001=false → OFF). The S350/outdoor-PT privacy form (6250) is a separate wire and is not aliased
    * here until its polarity is captured.
    *
-   * Consequence a caller has to know about on the families `usesSeparatePowerEnvelope` covers: the WRITE
-   * goes to the privacy envelope while this read still observes 1035/2001, so `setEnabled(false)` succeeds
-   * without moving this value. A live read of a fleet member of that family reported 6250 alongside 1035,
-   * so the parameter is observable there — but only one polarity has been seen, and aliasing it on a single
-   * sample would be the guess the ground-truth rule forbids.
+   * On the families {@link usesSeparatePowerEnvelope} covers, the WRITE goes to the privacy envelope while
+   * this read still observes 1035/2001 — so `setEnabled(false)` succeeds without moving this value, and the
+   * value reads as ON for a camera that is off. `readReflectsWrite` declares that, which puts those devices
+   * in `unreflectedMembers(dev.camera())` so a caller can decline to act on the value instead of acting on a
+   * wrong one.
+   *
+   * Aliasing 6250 here would fix it properly, and it IS reported on those families (T8170 and T8171 each
+   * returned 6250="0" alongside 1035="0" while streaming). That is one polarity seen once; the privacy-on
+   * reading is not captured, so the mapping stays unverified rather than guessed.
    */
   enabled: {
     param: CAMERA_CMD.CAMERA_ENABLE,
@@ -351,6 +355,7 @@ export const CAMERA_MEMBERS = {
     provenance: "verified",
     invert: true,
     readAliases: [{ paramType: 2001, invert: false }],
+    readReflectsWrite: (ctx) => !usesSeparatePowerEnvelope(ctx),
     description:
       "Camera enabled. Family-dependent wire param: 1035 CMD_DEVS_SWITCH (disable bit, battery/" +
       "solo cams) or 2001 OPEN_DEVICE (standalone indoor/outdoor). Reliable on/off status source " +

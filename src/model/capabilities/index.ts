@@ -33,8 +33,11 @@ import { BATTERY } from "./battery.js";
 export { RtspRecordingMode, type RtspRecordingModeValue, type RtspAuthScheme } from "./rtsp.js";
 export { EntryAlarmTone, type EntryAlarmToneValue } from "./contact.js";
 export { SirenVolume, type SirenVolumeValue, SirenAlarmDuration, type SirenAlarmDurationValue } from "./siren.js";
-/** Ask what a bound capability can be told to change but can never report back. */
-export { unobservableMembers } from "./members.js";
+/**
+ * Ask what a bound capability can be told to change but can never report back, and what it reports without
+ * that value reflecting its own setter.
+ */
+export { unobservableMembers, unreflectedMembers } from "./members.js";
 export {
   Watermark,
   type WatermarkValue,

@@ -145,6 +145,19 @@ export interface DeviceRegistryDeps {
   onError: (e: unknown) => void;
 }
 
+/**
+ * Whether an overlay failure is the permanent, account-level refusal rather than a transient fault.
+ *
+ * `get_device_param_list` is owner-gated: a shared or member account is refused it (`20004`) for the life of
+ * the client, so retrying spends a request to learn the same thing. Anything else — a timeout, a dropped
+ * connection, an expired session — is transient, and latching on it would permanently give up the freshest
+ * source of params for that device on an account that is entitled to it.
+ */
+function isOverlayRefusal(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b20004\b/.test(message) || /only the owner/i.test(message);
+}
+
 export class DeviceRegistry {
   private readonly mega: MegaHttpClient;
   private readonly onError: (e: unknown) => void;
@@ -157,6 +170,8 @@ export class DeviceRegistry {
    * to learn the same thing, and the answer is reported once rather than on every read.
    */
   private readonly overlayRefused = new Set<string>();
+  /** One in-flight device-list fetch shared by every caller that wants a fresher list. See {@link refreshedList}. */
+  private listInFlight?: Promise<EufyDevice[]>;
   /** Per-serial capability cache for {@link capabilitiesForDevice}; `null` = negative hit. */
   private readonly deviceCapsCache = new Map<string, ReadonlySet<Capability> | null>();
   /** Per-serial realtime state, keyed by param id in the device's own namespace (see {@link DeviceRecord.dpParams}). */
@@ -357,8 +372,7 @@ export class DeviceRegistry {
    * Shared by {@link EufyMega.getDevice} / {@link EufyMega.inspectDevice} / `commandContext`.
    */
   async record(sn: string): Promise<DeviceRecord> {
-    if (!this.devices.length) await this.getDevices();
-    else if (this.overlayRefused.has(sn)) await this.getDevices();
+    if (!this.devices.length || this.overlayRefused.has(sn)) await this.refreshedList(sn);
     let dev = this.devices.find((d) => d.sn === sn);
     if (!dev) throw new Error(`device ${sn} not found (have: ${this.devices.map((d) => d.sn).join(", ")})`);
 
@@ -369,10 +383,11 @@ export class DeviceRegistry {
         const live = await this.mega.getDeviceParamList<{ params?: RawParam[] }>(sn);
         mergeParams(live.params, params, paramUpdatedAt);
       } catch (error) {
-        this.overlayRefused.add(sn);
-        this.onError(error);
-        await this.getDevices();
-        dev = this.devices.find((d) => d.sn === sn) ?? dev;
+        if (isOverlayRefusal(error)) {
+          this.overlayRefused.add(sn);
+          this.onError(error);
+        }
+        dev = (await this.refreshedList(sn)) ?? dev;
         Object.assign(params, dev.params ?? {});
         Object.assign(paramUpdatedAt, dev.paramUpdatedAt ?? {});
       }
@@ -391,6 +406,20 @@ export class DeviceRegistry {
       paramUpdatedAt,
       dpParams: this.dpParams.get(sn),
     };
+  }
+
+  /**
+   * Re-fetch the device list, coalescing concurrent callers onto one in-flight fetch.
+   *
+   * The list is account-wide (`get_house_list` plus one `get_devs_list` per house), so without this a refresh
+   * cycle over N devices would multiply into N of those bursts — and every fetch clears the capability caches,
+   * so they would stop working. One fetch serves every device that wants the same answer.
+   */
+  private refreshedList(sn: string): Promise<EufyDevice | undefined> {
+    this.listInFlight ??= this.getDevices().finally(() => {
+      this.listInFlight = undefined;
+    });
+    return this.listInFlight.then((devices) => devices.find((d) => d.sn === sn)).catch(() => undefined);
   }
 
   /**

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bindMembers, unobservableMembers } from "../members.js";
+import { bindMembers, unobservableMembers, unreflectedMembers } from "../members.js";
 import type { CommandContext } from "../types.js";
 
 /**
@@ -79,12 +79,70 @@ describe("unobservable members", () => {
     expect(Object.isFrozen(unobservableMembers(bound))).toBe(true);
   });
 
-  it("does not appear among the capability's own keys — it describes the surface, not a member of it", () => {
+  it("survives neither a spread nor JSON — it describes the surface, not a member of it", () => {
     const bound = bind({ enabled: readableMember, privacy: writeOnlyMember }, [1035]);
-    expect(Object.keys(Object.getOwnPropertyDescriptors(bound))).not.toContain("unobservable");
+    expect(unobservableMembers({ ...bound })).toEqual([]);
+    expect(JSON.stringify(bound)).not.toContain("privacy");
+    expect(Object.getOwnPropertyNames(bound)).not.toContain("unobservable");
+  });
+
+  it("does not name a member whose write is unverified — it has no setter and its intent throws", () => {
+    const bound = bind({ privacy: { ...writeOnlyMember, unverified: true } }, []);
+    expect(bound.setPrivacy).toBeUndefined();
+    expect(unobservableMembers(bound)).toEqual([]);
+  });
+
+  it("does not name a write-only member that declares no write at all", () => {
+    const { write, ...noWrite } = writeOnlyMember;
+    const bound = bind({ privacy: noWrite }, []);
+    expect(unobservableMembers(bound)).toEqual([]);
   });
 
   it("answers empty for a surface it was never attached to", () => {
     expect(unobservableMembers({})).toEqual([]);
+  });
+});
+
+/**
+ * A readable value that silently disagrees with its own setter is worse than an unreadable one: the caller has
+ * no reason to distrust it. That happens where a family routes the write to a different wire than the read
+ * observes, and the read then answers honestly about a param the write never touched.
+ */
+describe("unreflected members", () => {
+  const routedElsewhere = {
+    ...readableMember,
+    readReflectsWrite: (c: CommandContext) => c.model !== "T8410",
+    write: () => ({ kind: "set-param" as const, param: 6250, value: 1, channel: 0 }),
+  };
+
+  it("names a member whose write lands on a wire its read does not observe", () => {
+    const bound = bind({ enabled: routedElsewhere }, [1035]);
+    expect(unreflectedMembers(bound)).toEqual(["enabled"]);
+  });
+
+  it("still reports the value — the point is that it cannot be trusted, not that it is absent", () => {
+    const bound = bind({ enabled: routedElsewhere }, [1035]);
+    expect("enabled" in bound).toBe(true);
+    expect(typeof bound.setEnabled).toBe("function");
+  });
+
+  it("says nothing about a member whose read does reflect its write", () => {
+    const bound = bind({ enabled: { ...routedElsewhere, readReflectsWrite: () => true } }, [1035]);
+    expect(unreflectedMembers(bound)).toEqual([]);
+  });
+
+  it("says nothing about a member that never declared the distinction", () => {
+    const bound = bind({ enabled: { ...readableMember, write: routedElsewhere.write } }, [1035]);
+    expect(unreflectedMembers(bound)).toEqual([]);
+  });
+
+  it("keeps the two statements separate — a write-only member is unobservable, not unreflected", () => {
+    const bound = bind({ privacy: writeOnlyMember, enabled: routedElsewhere }, [1035]);
+    expect(unobservableMembers(bound)).toEqual(["privacy"]);
+    expect(unreflectedMembers(bound)).toEqual(["enabled"]);
+  });
+
+  it("answers empty for a surface it was never attached to", () => {
+    expect(unreflectedMembers({})).toEqual([]);
   });
 });

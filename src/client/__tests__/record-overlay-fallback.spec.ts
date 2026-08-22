@@ -97,6 +97,49 @@ describe("record() when the per-device overlay is unavailable", () => {
     expect(overlay).toHaveBeenCalledTimes(1);
   });
 
+  it("does NOT latch on a transient failure — an entitled account keeps its freshest source", async () => {
+    let attempt = 0;
+    const { registry, overlay, errors } = registryWith({
+      overlay: async () => {
+        if (++attempt === 1) throw new Error("socket hang up");
+        return { params: [{ param_type: 2001, param_value: "false", update_time: 2 }] };
+      },
+      params: () => ({ 2001: "true" }),
+    });
+
+    const first = await registry.record(SN);
+    const second = await registry.record(SN);
+
+    expect(first.params[2001]).toBe("true");
+    expect(second.params[2001]).toBe("false");
+    expect(overlay).toHaveBeenCalledTimes(2);
+    expect(errors).toEqual([]);
+  });
+
+  it("recognises the refusal by its code as well as its wording", async () => {
+    const { registry, overlay } = registryWith({
+      overlay: async () => {
+        throw new Error("request failed (200/20004)");
+      },
+      params: () => ({ 2001: "true" }),
+    });
+
+    await registry.record(SN);
+    await registry.record(SN);
+
+    expect(overlay).toHaveBeenCalledTimes(1);
+  });
+
+  it("coalesces concurrent refreshes onto one device-list fetch", async () => {
+    const { registry, listFetches } = registryWith({ overlay: ownerGated, params: () => ({ 2001: "true" }) });
+    await registry.record(SN);
+    const before = listFetches();
+
+    await Promise.all([registry.record(SN), registry.record(SN), registry.record(SN)]);
+
+    expect(listFetches() - before).toBe(1);
+  });
+
   it("keeps using the overlay while it works, and does not re-fetch the list for nothing", async () => {
     const { registry, listFetches } = registryWith({
       overlay: async () => ({ params: [{ param_type: 2001, param_value: "false", update_time: 2 }] }),
