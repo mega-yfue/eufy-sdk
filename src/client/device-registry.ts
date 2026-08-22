@@ -151,6 +151,12 @@ export class DeviceRegistry {
   private devices: EufyDevice[] = [];
   /** Per-(station, channel) capability cache for {@link capabilitiesForFrame}; `null` = negative hit. */
   private readonly frameCapsCache = new Map<string, ReadonlySet<Capability> | null>();
+  /**
+   * Serials whose per-device param overlay has been refused. The call is owner-gated, so on a shared or
+   * member account it fails for the whole life of the client — retrying it every refresh spends a request
+   * to learn the same thing, and the answer is reported once rather than on every read.
+   */
+  private readonly overlayRefused = new Set<string>();
   /** Per-serial capability cache for {@link capabilitiesForDevice}; `null` = negative hit. */
   private readonly deviceCapsCache = new Map<string, ReadonlySet<Capability> | null>();
   /** Per-serial realtime state, keyed by param id in the device's own namespace (see {@link DeviceRecord.dpParams}). */
@@ -338,22 +344,38 @@ export class DeviceRegistry {
   }
 
   /**
-   * Resolve a serial to a {@link DeviceRecord} with current params: starts from the device-list
-   * params, then overlays a fresh `get_device_param_list` when reachable. Shared by
-   * {@link EufyMega.getDevice} / {@link EufyMega.inspectDevice} / `commandContext`.
+   * Resolve a serial to a {@link DeviceRecord} with current params: starts from the device-list params, then
+   * overlays a fresh `get_device_param_list` when that call is available to this account.
+   *
+   * The overlay is **owner-gated** — a shared or member account is refused it for every device — so when it
+   * is unavailable the device list is re-fetched instead. That list is not owner-gated and carries the same
+   * `{param_type, param_value, update_time}`, which makes it the fallback the overlay's own contract names.
+   * Without it this method answered from a cached list it only ever loaded once, so a read-through refresh
+   * re-applied the same values with a fresh timestamp and no observation could change for the life of the
+   * client — indistinguishable, to a caller, from a device that simply never changed.
+   *
+   * Shared by {@link EufyMega.getDevice} / {@link EufyMega.inspectDevice} / `commandContext`.
    */
   async record(sn: string): Promise<DeviceRecord> {
     if (!this.devices.length) await this.getDevices();
-    const dev = this.devices.find((d) => d.sn === sn);
+    else if (this.overlayRefused.has(sn)) await this.getDevices();
+    let dev = this.devices.find((d) => d.sn === sn);
     if (!dev) throw new Error(`device ${sn} not found (have: ${this.devices.map((d) => d.sn).join(", ")})`);
 
     const params: Record<number, string> = { ...(dev.params ?? {}) };
     const paramUpdatedAt: Record<number, number> = { ...(dev.paramUpdatedAt ?? {}) };
-    try {
-      const live = await this.mega.getDeviceParamList<{ params?: RawParam[] }>(sn);
-      mergeParams(live.params, params, paramUpdatedAt);
-    } catch {
-      /* fall back to device-list params */
+    if (!this.overlayRefused.has(sn)) {
+      try {
+        const live = await this.mega.getDeviceParamList<{ params?: RawParam[] }>(sn);
+        mergeParams(live.params, params, paramUpdatedAt);
+      } catch (error) {
+        this.overlayRefused.add(sn);
+        this.onError(error);
+        await this.getDevices();
+        dev = this.devices.find((d) => d.sn === sn) ?? dev;
+        Object.assign(params, dev.params ?? {});
+        Object.assign(paramUpdatedAt, dev.paramUpdatedAt ?? {});
+      }
     }
 
     const raw = dev.raw as Record<string, unknown> | undefined;

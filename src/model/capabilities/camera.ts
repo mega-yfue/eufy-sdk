@@ -337,6 +337,12 @@ export const CAMERA_MEMBERS = {
    * with direct polarity, so 2001 is a read-alias. Both verified live (T8114 1035=0 → ON; T8410
    * 2001=false → OFF). The S350/outdoor-PT privacy form (6250) is a separate wire and is not aliased
    * here until its polarity is captured.
+   *
+   * Consequence a caller has to know about on the families `usesSeparatePowerEnvelope` covers: the WRITE
+   * goes to the privacy envelope while this read still observes 1035/2001, so `setEnabled(false)` succeeds
+   * without moving this value. A live read of a fleet member of that family reported 6250 alongside 1035,
+   * so the parameter is observable there — but only one polarity has been seen, and aliasing it on a single
+   * sample would be the guess the ground-truth rule forbids.
    */
   enabled: {
     param: CAMERA_CMD.CAMERA_ENABLE,
@@ -459,6 +465,10 @@ export const CAMERA_MEMBERS = {
   /**
    * Privacy mode — the multi-frame burst. Nothing reports it back, so it is a setter with no getter, and
    * it declares no param: the id the burst is built from is the transport's, not this capability's.
+   *
+   * Being write-only, it is named by `unobservableMembers(dev.camera())`, so a caller can tell "this camera
+   * is not in privacy mode" from "this camera cannot say" rather than reading both as `undefined`. That
+   * distinction matters most on the families whose power rides this same envelope — see {@link enabled}.
    */
   privacy: {
     type: "bool",

@@ -821,5 +821,40 @@ export function bindMembers<M extends Members>(
       }
     });
   }
+  Object.defineProperty(out, UNOBSERVABLE, { value: Object.freeze(unobservableOf(members, ctx)) });
   return out as Surface<M>;
+}
+
+/**
+ * Carries the unobservable-member list out of band, so it never appears among a capability's own keys — it
+ * describes the surface rather than being a member of it. Same device as `core/contracts`' command-observation
+ * symbol: metadata a caller can read without it becoming part of the shape.
+ */
+const UNOBSERVABLE = Symbol("unobservable-members");
+
+/**
+ * The members this device accepts but never reports back, so a caller can tell "observed as off" from "cannot
+ * be observed" instead of inferring it from a getter that is missing.
+ *
+ * `cam.privacy === undefined` reads identically for a device that reports the value as unset and one that
+ * never reports it, and guessing between them is what a caller must not do: refusing a working camera
+ * withdraws it, and allowing a dead one shows a viewer a stream that will never carry frames. This answers it.
+ *
+ * Empty for a capability with nothing write-only, and for a surface not built by {@link bindMembers}.
+ */
+export function unobservableMembers(surface: object): readonly string[] {
+  return (surface as { [UNOBSERVABLE]?: readonly string[] })[UNOBSERVABLE] ?? [];
+}
+
+/**
+ * The `writeOnly` members this device actually has — those `available` gates off for it are not among them.
+ *
+ * `unexposed` members are deliberately excluded. The device does report those — they are in the property
+ * schema and reachable through `getProperty`; what is missing is a confirmed MEANING for the value, which is
+ * a different thing from the value never being reported.
+ */
+function unobservableOf(members: Members, ctx: CommandContext): string[] {
+  return Object.entries(members)
+    .filter(([, m]) => "type" in m && m.writeOnly === true && (!m.available || m.available(ctx)))
+    .map(([name]) => name);
 }
