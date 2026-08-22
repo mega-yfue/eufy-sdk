@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DeviceRegistry } from "../device-registry.js";
 import { MegaApiError, OWNER_ONLY_CODE } from "../../transport/http/mega-client.js";
 
@@ -16,11 +16,12 @@ import { MegaApiError, OWNER_ONLY_CODE } from "../../transport/http/mega-client.
  * the fallback the overlay's own contract prescribes.
  */
 const SN = "T8000P0000000000";
+const OTHER_SN = "T8000P0000000001";
 
 /** A devs-list record carrying `params` in the wire shape, mirroring `device-registry.spec.ts`. */
-function rawDevice(params: Record<number, string>) {
+function rawDevice(params: Record<number, string>, sn: string = SN) {
   return {
-    device_sn: SN,
+    device_sn: sn,
     device_name: "cam",
     device_model: "T8410",
     station_sn: SN,
@@ -43,7 +44,7 @@ function registryWith(opts: { overlay: (sn: string) => Promise<unknown>; params:
     post: async (_service: string, path: string) => {
       if (path.endsWith("get_house_list")) return { house_infos: [] };
       listFetches++;
-      return { devices: [rawDevice(opts.params())] };
+      return { devices: [rawDevice(opts.params()), rawDevice(opts.params(), OTHER_SN)] };
     },
     getDeviceParamList: overlay,
   } as never;
@@ -60,8 +61,13 @@ const ownerGated = async () => {
   );
 };
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe("record() when the per-device overlay is unavailable", () => {
-  it("re-fetches the device list, so a changed value can still be observed", async () => {
+  it("re-fetches once the reuse window has passed, so a changed value can still be observed", async () => {
+    vi.useFakeTimers();
     let current = "true";
     const { registry } = registryWith({ overlay: ownerGated, params: () => ({ 2001: current }) });
 
@@ -69,9 +75,22 @@ describe("record() when the per-device overlay is unavailable", () => {
     expect(first.params[2001]).toBe("true");
 
     current = "false";
+    await vi.advanceTimersByTimeAsync(6000);
     const second = await registry.record(SN);
 
     expect(second.params[2001]).toBe("false");
+  });
+
+  it("reuses a list younger than the window, so resolving a fleet costs ONE list not one per device", async () => {
+    const { registry, listFetches } = registryWith({ overlay: ownerGated, params: () => ({ 2001: "true" }) });
+    await registry.record(SN);
+    const afterFirst = listFetches();
+
+    await registry.record(SN);
+    await registry.record(SN);
+    await registry.record(SN);
+
+    expect(listFetches()).toBe(afterFirst);
   });
 
   it("reports the overlay failure instead of swallowing it, so a permanent one is diagnosable", async () => {
@@ -151,13 +170,24 @@ describe("record() when the per-device overlay is unavailable", () => {
   });
 
   it("coalesces concurrent refreshes onto one device-list fetch", async () => {
+    vi.useFakeTimers();
     const { registry, listFetches } = registryWith({ overlay: ownerGated, params: () => ({ 2001: "true" }) });
     await registry.record(SN);
     const before = listFetches();
+    await vi.advanceTimersByTimeAsync(6000);
 
     await Promise.all([registry.record(SN), registry.record(SN), registry.record(SN)]);
 
     expect(listFetches() - before).toBe(1);
+  });
+
+  it("reports the refusal once for the ACCOUNT, not once per device", async () => {
+    const { registry, errors } = registryWith({ overlay: ownerGated, params: () => ({ 2001: "true" }) });
+
+    await registry.record(SN);
+    await registry.record(OTHER_SN);
+
+    expect(errors).toHaveLength(1);
   });
 
   it("keeps using the overlay while it works, and does not re-fetch the list for nothing", async () => {

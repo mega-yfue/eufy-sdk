@@ -145,6 +145,16 @@ export interface DeviceRegistryDeps {
   onError: (e: unknown) => void;
 }
 
+/**
+ * How long a fetched device list is reused for a per-device read that needs a fresher one.
+ *
+ * The list is account-wide (`get_house_list` plus one `get_devs_list` per house), so a caller resolving a
+ * fleet must not trigger one fetch per device — measured on a 14-device account that turned 6 list requests
+ * into 90 and a 2 s resolve into 25 s. Short enough that a read-through refresh still observes a change
+ * (the default staleness window is longer than this), long enough that resolving a whole fleet costs one list.
+ */
+const LIST_REUSE_MS = 5_000;
+
 export class DeviceRegistry {
   private readonly mega: MegaHttpClient;
   private readonly onError: (e: unknown) => void;
@@ -159,6 +169,10 @@ export class DeviceRegistry {
   private readonly overlayRefused = new Set<string>();
   /** One in-flight device-list fetch shared by every caller that wants a fresher list. See {@link refreshedList}. */
   private listInFlight?: Promise<EufyDevice[]>;
+  /** When the device list was last fetched, so a burst of per-device reads shares one. See {@link refreshedList}. */
+  private listFetchedAtMs = 0;
+  /** Whether the owner-gated refusal has been reported. It is one fact about the account, so it is said once. */
+  private overlayRefusalReported = false;
   /** Per-serial capability cache for {@link capabilitiesForDevice}; `null` = negative hit. */
   private readonly deviceCapsCache = new Map<string, ReadonlySet<Capability> | null>();
   /** Per-serial realtime state, keyed by param id in the device's own namespace (see {@link DeviceRecord.dpParams}). */
@@ -350,9 +364,14 @@ export class DeviceRegistry {
    * overlays a fresh `get_device_param_list` when that call is available to this account.
    *
    * The overlay is **owner-gated** — a shared or member account is refused it for every device, permanently,
-   * which {@link OWNER_ONLY_CODE} identifies — so when it is unavailable the device list is re-fetched
+   * which {@link OWNER_ONLY_CODE} identifies — so when it is unavailable the device list is the source
    * instead. Any OTHER failure is treated as transient: it falls back for that call but is retried next
-   * time, because latching on a timeout would cost an entitled account its freshest source of params. That list is not owner-gated and carries the same
+   * time, because latching on a timeout would cost an entitled account its freshest source of params.
+   *
+   * The list is account-wide, so a re-fetch is NOT per device: resolving a fleet calls this once per device,
+   * and each one re-fetching would multiply one burst into N. {@link refreshedList} reuses a list younger
+   * than {@link LIST_REUSE_MS} and coalesces concurrent fetches, which keeps resolving N devices at the cost
+   * of one list while still letting a later refresh see a new value. That list is not owner-gated and carries the same
    * `{param_type, param_value, update_time}`, which makes it the fallback the overlay's own contract names.
    * Without it this method answered from a cached list it only ever loaded once, so a read-through refresh
    * re-applied the same values with a fresh timestamp and no observation could change for the life of the
@@ -374,7 +393,10 @@ export class DeviceRegistry {
       } catch (error) {
         if (error instanceof MegaApiError && error.code === OWNER_ONLY_CODE) {
           this.overlayRefused.add(sn);
-          this.onError(error);
+          if (!this.overlayRefusalReported) {
+            this.overlayRefusalReported = true;
+            this.onError(error);
+          }
         }
         dev = (await this.refreshedList(sn)) ?? dev;
         Object.assign(params, dev.params ?? {});
@@ -404,11 +426,17 @@ export class DeviceRegistry {
    * cycle over N devices would multiply into N of those bursts — and every fetch clears the capability caches,
    * so they would stop working. One fetch serves every device that wants the same answer.
    */
-  private refreshedList(sn: string): Promise<EufyDevice | undefined> {
+  private async refreshedList(sn: string): Promise<EufyDevice | undefined> {
+    if (Date.now() - this.listFetchedAtMs < LIST_REUSE_MS) return this.devices.find((d) => d.sn === sn);
     this.listInFlight ??= this.getDevices().finally(() => {
       this.listInFlight = undefined;
+      this.listFetchedAtMs = Date.now();
     });
-    return this.listInFlight.then((devices) => devices.find((d) => d.sn === sn)).catch(() => undefined);
+    try {
+      return (await this.listInFlight).find((d) => d.sn === sn);
+    } catch {
+      return undefined;
+    }
   }
 
   /**
