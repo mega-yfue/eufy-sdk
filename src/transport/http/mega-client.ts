@@ -78,6 +78,35 @@ function parseMaybeJson(text: string): unknown {
   }
 }
 
+/**
+ * A mega API call the server answered with a non-zero envelope code, carrying that code rather than only a
+ * message.
+ *
+ * The retry/auth logic here already decides what to do by NUMBER (4416, 10000, 4404, 26084), so the number is
+ * the authoritative fact about which condition was hit. Formatting it into a message and throwing a bare
+ * `Error` left every caller that needs to tell one condition from another parsing this module's message
+ * format back apart — a decision that belongs to the layer that owns the wire, not to whoever reads it.
+ */
+export class MegaApiError extends Error {
+  constructor(
+    message: string,
+    /** The envelope's `code`, or undefined when the failure produced no envelope. */
+    readonly code: number | undefined,
+    /** The HTTP status the envelope arrived with. */
+    readonly status: number | undefined,
+  ) {
+    super(message);
+    this.name = "MegaApiError";
+  }
+}
+
+/**
+ * `get_device_param_list` refuses a shared or member account: only the device's owner may read it. The
+ * refusal is permanent for the life of that account's session, so a caller should fall back to the
+ * device-list params rather than retry.
+ */
+export const OWNER_ONLY_CODE = 20004;
+
 /** Thrown when a persisted/expired session is rejected (401). Re-login to recover. */
 export class SessionExpiredError extends Error {
   constructor(message: string) {
@@ -446,7 +475,7 @@ export class MegaHttpClient {
       this.clearSession();
       throw new SessionExpiredError(`${path} failed (401): ${last?.msg}`);
     }
-    throw new Error(`${path} failed (${last?.status}/${last?.code}): ${last?.msg}`);
+    throw new MegaApiError(`${path} failed (${last?.status}/${last?.code}): ${last?.msg}`, last?.code, last?.status);
   }
 
   /** Authed call to a mega service host: app-{service}-{region}.eufy.com. */
@@ -518,9 +547,9 @@ export class MegaHttpClient {
    * `{ param_type, param_value, update_time }` — VALUES ONLY, no name/meaning (the param→meaning
    * mapping is hardcoded in the app, never returned by the API).
    *
-   * NOTE: this endpoint is **owner-gated** — a shared/member account gets `20004 "Only the owner
-   * can change settings"`. For those accounts use the `get_devs_list` params instead (which also
-   * carry `{param_type, param_value, update_time}` and are not owner-gated).
+   * NOTE: this endpoint is **owner-gated** — a shared/member account gets {@link OWNER_ONLY_CODE}
+   * (`"Only the owner can change settings"`), permanently. For those accounts use the `get_devs_list`
+   * params instead, which also carry `{param_type, param_value, update_time}` and are not owner-gated.
    */
   getDeviceParamList<T = unknown>(deviceSn: string): Promise<T> {
     return this.post<T>("devicemanage", "/app/devicemanage/get_device_param_list", {

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { DeviceRegistry } from "../device-registry.js";
+import { MegaApiError, OWNER_ONLY_CODE } from "../../transport/http/mega-client.js";
 
 /**
  * `record()` starts from the device-list params and overlays a per-device `get_device_param_list`. That
@@ -50,8 +51,13 @@ function registryWith(opts: { overlay: (sn: string) => Promise<unknown>; params:
   return { registry, overlay, errors, listFetches: () => listFetches };
 }
 
+/** What the client throws for this endpoint on a shared or member account. */
 const ownerGated = async () => {
-  throw new Error("/app/devicemanage/get_device_param_list failed (200/20004): Only the owner can change settings.");
+  throw new MegaApiError(
+    "/app/devicemanage/get_device_param_list failed (200/20004): Only the owner can change settings.",
+    OWNER_ONLY_CODE,
+    200,
+  );
 };
 
 describe("record() when the per-device overlay is unavailable", () => {
@@ -116,10 +122,10 @@ describe("record() when the per-device overlay is unavailable", () => {
     expect(errors).toEqual([]);
   });
 
-  it("recognises the refusal by its code as well as its wording", async () => {
+  it("classifies by the envelope code, not by the wording of a message", async () => {
     const { registry, overlay } = registryWith({
       overlay: async () => {
-        throw new Error("request failed (200/20004)");
+        throw new MegaApiError("request failed", OWNER_ONLY_CODE, 200);
       },
       params: () => ({ 2001: "true" }),
     });
@@ -128,6 +134,20 @@ describe("record() when the per-device overlay is unavailable", () => {
     await registry.record(SN);
 
     expect(overlay).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not latch on a DIFFERENT api failure that merely mentions the number", async () => {
+    const { registry, overlay } = registryWith({
+      overlay: async () => {
+        throw new MegaApiError("failed (500/20004 devices scanned): server error", 500, 500);
+      },
+      params: () => ({ 2001: "true" }),
+    });
+
+    await registry.record(SN);
+    await registry.record(SN);
+
+    expect(overlay).toHaveBeenCalledTimes(2);
   });
 
   it("coalesces concurrent refreshes onto one device-list fetch", async () => {

@@ -7,7 +7,7 @@
  * tricky bits are unit-testable with a fake `mega` — the facade stays pure wiring. It never names a
  * capability or a wire; it maps records to the model's `resolveDevice`/`inspectParams`.
  */
-import { MegaHttpClient } from "../transport/http/mega-client.js";
+import { MegaApiError, MegaHttpClient, OWNER_ONLY_CODE } from "../transport/http/mega-client.js";
 import { classifyDevice, type DeviceClass, type EufyDevice, type RealtimeKind } from "../core/types.js";
 import { inspectParams, resolveDevice, type Capability, type Codec, type DeviceInspection } from "../model/index.js";
 
@@ -143,19 +143,6 @@ export interface DeviceRegistryDeps {
   mega: MegaHttpClient;
   /** Surface a non-fatal fetch error (a house/body query that failed) without aborting the merge. */
   onError: (e: unknown) => void;
-}
-
-/**
- * Whether an overlay failure is the permanent, account-level refusal rather than a transient fault.
- *
- * `get_device_param_list` is owner-gated: a shared or member account is refused it (`20004`) for the life of
- * the client, so retrying spends a request to learn the same thing. Anything else — a timeout, a dropped
- * connection, an expired session — is transient, and latching on it would permanently give up the freshest
- * source of params for that device on an account that is entitled to it.
- */
-function isOverlayRefusal(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /\b20004\b/.test(message) || /only the owner/i.test(message);
 }
 
 export class DeviceRegistry {
@@ -362,8 +349,10 @@ export class DeviceRegistry {
    * Resolve a serial to a {@link DeviceRecord} with current params: starts from the device-list params, then
    * overlays a fresh `get_device_param_list` when that call is available to this account.
    *
-   * The overlay is **owner-gated** — a shared or member account is refused it for every device — so when it
-   * is unavailable the device list is re-fetched instead. That list is not owner-gated and carries the same
+   * The overlay is **owner-gated** — a shared or member account is refused it for every device, permanently,
+   * which {@link OWNER_ONLY_CODE} identifies — so when it is unavailable the device list is re-fetched
+   * instead. Any OTHER failure is treated as transient: it falls back for that call but is retried next
+   * time, because latching on a timeout would cost an entitled account its freshest source of params. That list is not owner-gated and carries the same
    * `{param_type, param_value, update_time}`, which makes it the fallback the overlay's own contract names.
    * Without it this method answered from a cached list it only ever loaded once, so a read-through refresh
    * re-applied the same values with a fresh timestamp and no observation could change for the life of the
@@ -383,7 +372,7 @@ export class DeviceRegistry {
         const live = await this.mega.getDeviceParamList<{ params?: RawParam[] }>(sn);
         mergeParams(live.params, params, paramUpdatedAt);
       } catch (error) {
-        if (isOverlayRefusal(error)) {
+        if (error instanceof MegaApiError && error.code === OWNER_ONLY_CODE) {
           this.overlayRefused.add(sn);
           this.onError(error);
         }

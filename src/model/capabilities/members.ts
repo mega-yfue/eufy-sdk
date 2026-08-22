@@ -835,8 +835,8 @@ export function bindMembers<M extends Members>(
       }
     });
   }
-  Object.defineProperty(out, UNOBSERVABLE, { value: Object.freeze(unobservable), configurable: true });
-  Object.defineProperty(out, UNREFLECTED, { value: Object.freeze(unreflected), configurable: true });
+  attachStatement(out, UNOBSERVABLE, unobservable);
+  attachStatement(out, UNREFLECTED, unreflected);
   return out as Surface<M>;
 }
 
@@ -846,6 +846,16 @@ export function bindMembers<M extends Members>(
  */
 const UNOBSERVABLE = Symbol("unobservable-members");
 const UNREFLECTED = Symbol("unreflected-members");
+
+/** Attach one frozen statement to a bound surface, keyed so it is not a member of it. */
+function attachStatement(surface: object, key: symbol, names: readonly string[]): void {
+  Object.defineProperty(surface, key, { value: Object.freeze([...names]), configurable: true });
+}
+
+/** Read one back. Any object that was never bound answers empty rather than undefined. */
+function statement(surface: object, key: symbol): readonly string[] {
+  return (surface as Record<symbol, readonly string[] | undefined>)[key] ?? [];
+}
 
 /**
  * The members this device can be told to change but will never report back.
@@ -863,9 +873,7 @@ const UNREFLECTED = Symbol("unreflected-members");
  *
  * Empty for any object that is not a bound capability.
  */
-export function unobservableMembers(surface: object): readonly string[] {
-  return (surface as { [UNOBSERVABLE]?: readonly string[] })[UNOBSERVABLE] ?? [];
-}
+export const unobservableMembers = (surface: object): readonly string[] => statement(surface, UNOBSERVABLE);
 
 /**
  * The members this device reports, but whose value does NOT reflect what its own setter writes — because on
@@ -878,6 +886,4 @@ export function unobservableMembers(surface: object): readonly string[] {
  *
  * Empty for any object that is not a bound capability.
  */
-export function unreflectedMembers(surface: object): readonly string[] {
-  return (surface as { [UNREFLECTED]?: readonly string[] })[UNREFLECTED] ?? [];
-}
+export const unreflectedMembers = (surface: object): readonly string[] => statement(surface, UNREFLECTED);
