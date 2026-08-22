@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { EventEmitter } from "node:events";
 import { SharedLiveSource } from "../shared-live-source.js";
-import type { LiveStreamHandle, LiveVideoFrame } from "../../../core/contracts.js";
+import { H264, streamFactory, unit, videoFrame } from "./live-source-fixtures.js";
 
 /**
  * A camera commonly sends SPS/PPS once, with the FIRST keyframe of a stream. Every consumer that joins
@@ -10,40 +9,13 @@ import type { LiveStreamHandle, LiveVideoFrame } from "../../../core/contracts.j
  * decode failure. Only the source sees every frame from stream start, so only the source can answer
  * what the current parameter sets are; a consumer cannot recover them from what it was given.
  */
-const START = Buffer.from([0, 0, 0, 1]);
+const { sps: SPS, pps: PPS, idr: IDR, delta: DELTA } = H264;
 
-function unit(...nals: number[][]): Buffer {
-  return Buffer.concat(nals.flatMap((n) => [START, Buffer.from(n)]));
-}
-
-const SPS = [0x67, 0x42, 0x00];
-const PPS = [0x68, 0xce, 0x01];
-const IDR = [0x65, 0x88, 0x84];
-const DELTA = [0x41, 0x9a, 0x02];
-
-function frame(data: Buffer, keyframe: boolean): LiveVideoFrame {
-  return { keyframe, width: 1920, height: 1080, codec: "h264", data };
-}
-
-class FakeStream extends EventEmitter implements LiveStreamHandle {
-  start(): this {
-    return this;
-  }
-  stop(): void {}
-  video(f: LiveVideoFrame) {
-    this.emit("video", f);
-  }
-}
+const frame = (data: Buffer, keyframe = true) => videoFrame(data, { keyframe });
 
 function sourceWithStream() {
-  const streams: FakeStream[] = [];
-  const source = new SharedLiveSource({
-    makeStream: () => {
-      const s = new FakeStream();
-      streams.push(s);
-      return s;
-    },
-  });
+  const { makeStream, streams } = streamFactory();
+  const source = new SharedLiveSource({ makeStream });
   const consumer = source.attach();
   return { source, stream: streams[0], consumer };
 }
