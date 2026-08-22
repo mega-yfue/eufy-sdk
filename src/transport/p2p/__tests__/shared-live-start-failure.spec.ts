@@ -82,6 +82,56 @@ describe("SharedLiveSource — reporting a failed start", () => {
     expect(order).toEqual(["consumer", "reported"]);
   });
 
+  it("reports a start the CALLER gave up on before the deadline — the deadline is then cancelled", () => {
+    const { source, onStartFailed } = mk();
+    const consumer = source.attach();
+
+    consumer.detach();
+    vi.advanceTimersByTime(5000);
+
+    expect(source.state).toBe("stopped");
+    expect(onStartFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports an upstream error that arrives before the first frame", () => {
+    const { source, onStartFailed, streams } = mk();
+    source.attach().on("error", () => {});
+
+    streams[0].emit("error", new Error("upstream gone"));
+
+    expect(onStartFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports an upstream stop that arrives before the first frame", () => {
+    const { source, onStartFailed, streams } = mk();
+    source.attach();
+
+    streams[0].emit("stop");
+
+    expect(onStartFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports it exactly once, though stopping the stream re-enters teardown", () => {
+    const { source, onStartFailed, streams } = mk();
+    source.attach().on("error", () => {});
+
+    vi.advanceTimersByTimeAsync(6000);
+    vi.advanceTimersByTime(6000);
+
+    expect(streams[0].stopped).toBe(1);
+    expect(onStartFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports it exactly once, not again from a later timer", () => {
+    const { source, onStartFailed } = mk();
+    source.attach().on("error", () => {});
+
+    vi.advanceTimersByTime(6000);
+    vi.advanceTimersByTime(20000);
+
+    expect(onStartFailed).toHaveBeenCalledTimes(1);
+  });
+
   it("does NOT report an ordinary linger teardown — nothing failed there", () => {
     const { source, onStartFailed, streams } = mk();
     const consumer = source.attach();
@@ -92,6 +142,20 @@ describe("SharedLiveSource — reporting a failed start", () => {
 
     expect(source.state).toBe("stopped");
     expect(onStartFailed).not.toHaveBeenCalled();
+  });
+
+  it("does NOT report a rebuilt stream's health against the previous one's failure", () => {
+    const { source, onStartFailed, streams } = mk();
+    source.attach().on("error", () => {});
+    vi.advanceTimersByTime(6000);
+    expect(onStartFailed).toHaveBeenCalledTimes(1);
+
+    const revived = source.attach();
+    streams[1].video(frame());
+    revived.detach();
+    vi.advanceTimersByTime(5000);
+
+    expect(onStartFailed).toHaveBeenCalledTimes(1);
   });
 
   it("does NOT report an upstream stop after a healthy start", () => {

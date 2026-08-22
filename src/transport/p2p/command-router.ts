@@ -611,19 +611,19 @@ export class P2PCommandRouter {
    * `onActive`/`onIdle` so an attached stream counts as a user of the station's P2P session (cancels
    * the session idle-detach while streaming; its longer idle timer arms when the last consumer leaves).
    *
-   * A source that has **stopped** with no consumers left (linger teardown, warm timeout, budget
-   * auto-stop, upstream error) is dropped here rather than re-used. Its pull is dead, so nothing is
+   * A source that has **stopped** (linger teardown, failed start, budget auto-stop, upstream error) is
+   * dropped here rather than re-used, whatever is still attached to it. Its pull is dead, so nothing is
    * being protected by keeping it — and keeping it meant the options of whichever egress happened to
    * create it first survived for the process lifetime, so a stray `powered` from the day's first
    * snapshot would still be dictating the budget hours later. Dropping it lets the next caller build a
    * fresh source from its own options, which is the difference between fixing the silent-drop defect
    * and merely reporting it.
    *
-   * A **stopped** source is always replaced, whatever is still attached to it. It can no longer serve
-   * anyone, and its stream factory closes over the session resolved when it was built — so handing it back
-   * rebuilds a stream over that same session. After a failed start the consumers are failed but not
-   * detached, so requiring an empty source here is what made a camera that stopped delivering frames stay
-   * that way for the life of the client.
+   * Attachment count is deliberately NOT part of that test. A failed start fails its consumers without
+   * detaching them, so a caller still holding its handle left the count non-zero — and requiring an empty
+   * source here is what let one dead source be handed out for the life of the client. A caller must
+   * re-acquire through this method after a failure; `attach()` on the dropped source throws, because it
+   * has been disposed.
    */
   async sharedLiveSourceFor(sn: string, opts: SharedLiveOpts = {}): Promise<SharedLiveSource> {
     const { session, parentSn, channel, accountId, homeBaseAttached } = await this.resolveSession(sn, {
@@ -656,7 +656,7 @@ export class P2PCommandRouter {
         label: key,
         onActive: () => this.manager.addUser(parentSn),
         onIdle: () => this.manager.releaseUser(parentSn),
-        onStartFailed: () => this.onLiveStartFailed(sn, key, parentSn),
+        onStartFailed: () => this.onLiveStartFailed(sn, key),
       });
       this.liveSources.set(key, source);
       this.liveSourceOpts.set(key, opts);
@@ -681,20 +681,35 @@ export class P2PCommandRouter {
    *
    * Rebuilding the stream alone is not enough when it is the session, or the per-device state carried on
    * it, that has stopped serving this camera: every later attach builds another stream over the same
-   * session and fails identically, which is why only a client restart recovered it. A closed session is
-   * rebuilt on demand by the next acquisition, so recycling costs one reconnect.
+   * cached session and fails identically, which is why only a client restart recovered it.
    *
-   * Only a **standalone** device's session is recycled. An attached camera shares its HomeBase session with
-   * every other camera on it, and closing that to recover one of them would drop the rest — so an attached
-   * camera gets the stream rebuild and nothing more. This is the same boundary
-   * {@link resetStandaloneSession} draws.
+   * What a recycle actually replaces is the `P2PSession` INSTANCE. `close()` discards the manager's entry
+   * first, so the next acquisition builds a new instance — new socket, new RSA keypair offered as
+   * `encryptkey`, freshly negotiated level-2 key, and reset sequence windows. The instance's own `close()`
+   * resets none of those; being replaced is what does.
+   *
+   * The close is issued BEFORE the source is dropped, because discarding the manager entry is synchronous:
+   * from that moment a concurrent acquisition resolves a fresh session rather than the doomed one. It would
+   * find the not-yet-dropped source in that window, which is exactly why a stopped source is replaced
+   * regardless of what is attached to it.
+   *
+   * Only a **standalone** device's session is recycled, resolved through {@link stationKeyOf} so this and
+   * {@link resetStandaloneSession} cannot disagree about what standalone means. An attached camera shares
+   * its HomeBase session with every other camera on it, and closing that to recover one would drop the
+   * rest, so an attached camera gets the stream rebuild and nothing more. Unlike
+   * {@link resetStandaloneSession} this does not wait for the station to fall idle: the failed source's own
+   * session user is still counted, so a deferred reset would never fire.
    */
-  private onLiveStartFailed(sn: string, key: string, parentSn: string): void {
-    this.dropLiveSource(key);
-    if (parentSn !== sn) return;
+  private onLiveStartFailed(sn: string, key: string): void {
+    const station = this.stationKeyOf(sn);
+    if (station !== sn) {
+      this.dropLiveSource(key);
+      return;
+    }
     void this.manager
-      .close(parentSn)
-      .catch((error) => this.reportError(error instanceof Error ? error : new Error(String(error))));
+      .close(station)
+      .catch((error) => this.reportError(error instanceof Error ? error : new Error(String(error))))
+      .finally(() => this.dropLiveSource(key));
   }
 
   /**

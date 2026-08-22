@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { P2PCommandRouter } from "../command-router.js";
 
 /**
@@ -11,6 +11,9 @@ import { P2PCommandRouter } from "../command-router.js";
  * Two devices: one standalone (its station key is its own serial) and one attached to a HomeBase. Closing
  * a shared HomeBase session would drop every other camera on it, so the recycle is only ever safe for the
  * standalone case, and that asymmetry is the thing most likely to be got wrong.
+ *
+ * The last case drives a REAL warm-up timeout through a fake stream, so the source→router wiring is proven
+ * rather than assumed; the others invoke the report directly, which keeps them independent of the timing.
  */
 const STANDALONE = "T8000P0000000000";
 const ATTACHED = "T8000P0000000001";
@@ -78,14 +81,15 @@ describe("recovering a camera whose live start failed", () => {
     expect(second).not.toBe(first);
   });
 
-  it("resolves the session again for the replacement, rather than reusing the old closure", async () => {
-    const { router, opened } = routerFor(STANDALONE);
+  it("hands back a source that can actually be attached to, and disposes the one it replaced", async () => {
+    const { router } = routerFor(STANDALONE);
     const first = await router.sharedLiveSourceFor(STANDALONE);
     stoppedWithConsumerAttached(first);
 
-    await router.sharedLiveSourceFor(STANDALONE);
+    const second = await router.sharedLiveSourceFor(STANDALONE);
 
-    expect(opened).toHaveLength(2);
+    expect(() => second.attach()).not.toThrow();
+    expect(() => first.attach()).toThrow(/disposed/);
   });
 
   it("recycles a standalone device's session when its start failed", async () => {
@@ -103,6 +107,25 @@ describe("recovering a camera whose live start failed", () => {
 
     failTheStart(first);
     await vi.waitFor(async () => expect(await router.sharedLiveSourceFor(STANDALONE)).not.toBe(first));
+  });
+
+  it("recycles and re-serves after a real warm-up timeout, not just a poked callback", async () => {
+    vi.useFakeTimers();
+    try {
+      const { router, closed } = routerFor(STANDALONE);
+      const source = await router.sharedLiveSourceFor(STANDALONE);
+      const consumer = source.attach();
+      consumer.on("error", () => {});
+
+      await vi.advanceTimersByTimeAsync(20000); // the source's own warm-up deadline
+
+      expect(source.state).toBe("stopped");
+      expect(closed).toEqual([STANDALONE]);
+      await vi.runAllTimersAsync();
+      expect(await router.sharedLiveSourceFor(STANDALONE)).not.toBe(source);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("never closes a shared HomeBase session — other cameras are streaming on it", async () => {
