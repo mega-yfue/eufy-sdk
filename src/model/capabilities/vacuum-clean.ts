@@ -2668,14 +2668,17 @@ export const VACUUM_CLEAN_MEMBERS = {
   /**
    * The ModeCtrl verbs whose METHOD NUMBER is not yet captured.
    *
-   * Each shares its frame with the three verified verbs above — same message, same two fields, same
-   * encoder — so what is unconfirmed is the number alone. That still keeps them `unverified`: a wrong
-   * number is a different command arriving at real hardware, and an AIoT DP write is fire-and-forget,
-   * so a mistake looks exactly like success. They are declared so the capability documents what the
-   * robot accepts, and one capture per verb is all that stands between them and a working setter.
+   * Each shares its frame with the verified verbs above — same message, same two fields, same encoder
+   * — so what is unconfirmed is the number alone. That still keeps them `unverified`: a wrong number
+   * is a different command arriving at real hardware, and an AIoT DP write is fire-and-forget, so a
+   * mistake looks exactly like success. They are declared so the capability documents what the robot
+   * accepts.
    *
-   * `stopCleaning` and `resumeCleaning` are the pair users notice missing first: today a paused robot
-   * can only be resumed by starting a fresh run.
+   * **For most of them one capture is all that stands in the way. For
+   * {@link VACUUM_CLEAN_MEMBERS.stopCleaning} nothing
+   * does, and nothing will** — see its own note. A verb the phone has no button for cannot be
+   * captured from the phone, which is a different kind of blocked from the rest of this block and is
+   * worth not confusing with it.
    */
   /**
    * Tell the robot a replaceable part is new, clearing its hours.
@@ -2705,6 +2708,20 @@ export const VACUUM_CLEAN_MEMBERS = {
   /**
    * End the current job outright, as opposed to {@link VACUUM_CLEAN_MEMBERS.pauseCleaning}, which
    * leaves it resumable.
+   *
+   * **Unverified, and not pending a capture — there is nothing to capture.** The eufy app offers no
+   * stop: a run can be paused, resumed, or sent home, and that is the whole vocabulary. A live capture
+   * of "ending a clean" recorded method 6, `START_GOHOME`, which was not the app disagreeing with the
+   * vendor enum — it was the only affordance there is, answering the only question that could be
+   * asked. `STOP_TASK` is a verb the phone never sends, so no amount of driving the app will ever
+   * confirm it.
+   *
+   * Kept declared rather than deleted, because the enum entry is the vendor's own and the reason it
+   * cannot be confirmed is worth more written down than discovered again. It would take evidence from
+   * something other than the app — another client observed sending it, or a firmware trace.
+   *
+   * **What a caller wants instead is {@link VACUUM_CLEAN_MEMBERS.returnToDock}**, which is what the
+   * app's own end-a-clean button does and which is verified and shipping.
    */
   stopCleaning: {
     type: "bool",
@@ -2715,7 +2732,9 @@ export const VACUUM_CLEAN_MEMBERS = {
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
     provenance: "mega",
     description:
-      "Stop the current job (ModeCtrlRequest method 12 over DP 152). Method number not captured — unverified.",
+      "Stop the current job (ModeCtrlRequest method 12 over DP 152). The app has no stop button — it " +
+      "offers pause, resume and go-home — so this cannot be captured from it and stays unverified. " +
+      "Use returnToDock, which is what the app's end-a-clean button sends.",
   },
   /**
    * Carry on with a paused job rather than starting a new one — the counterpart the pause verb has
