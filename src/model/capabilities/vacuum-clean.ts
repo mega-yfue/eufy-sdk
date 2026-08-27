@@ -2691,6 +2691,28 @@ export const VACUUM_CLEAN_MEMBERS = {
    * through to `resetAccessories`, taking exactly this kind of integer part id. What is missing is a
    * capture showing the frame accepted, and an AIoT DP write is fire-and-forget, so a wrong one would
    * look like success while quietly discarding service history the device never recomputes.
+   *
+   * **And the enum may be short.** The app tracks each part on TWO independent countdowns under
+   * separate tabs — *Maintain* ("clean it") and *Replace* ("swap it") — each with its own Reset. A
+   * side brush is in both, at 30 hours and 180 hours respectively. It also lists parts this enum has
+   * no member for at all: sensors, swivel wheel, cleaning tray, brush guard. Thirteen reset targets
+   * on the screen against nine values here.
+   *
+   * Which means one of two things, and nothing yet decides between them: either a reset clears both
+   * counters for a part and the extra rows are computed app-side, or `ConsumableRequest` carries
+   * something this encoder does not write. Two taps settle it — Reset the same part from each tab and
+   * compare the frames — and until they do, an installed setter could silently clear the wrong
+   * countdown. That is a second reason to keep this unverified, independent of the first.
+   *
+   * **A related correction, recorded here because it has nowhere better to live.** The plan filed the
+   * per-part maximum lifetimes as another integration's calibration, not vendor data, and kept them
+   * out. The app disagrees: it prints "16 hours left/30 hours" outright, and `AccessoryInfoByJson` in
+   * the decompile is a server-delivered model keyed by product code carrying `count_time` alongside
+   * `accessory_sku`, `reset_btn_status`, `purchase_btn_status` and a how-to `video_link` — every one
+   * of which is visible on that screen. So the hours ARE the vendor's, delivered per product. The
+   * endpoint that serves them has not been found (the call lives in the app's React Native bundle),
+   * so nothing is built on this yet; it is written down so the next reader starts from the model
+   * rather than from the wrong conclusion.
    */
   resetConsumable: {
     type: "string",
