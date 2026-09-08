@@ -32,7 +32,11 @@ import { TuyaCommandRouter } from "../transport/tuya/command-router.js";
 import { TuyaDpRouter, parseTuyaDpReport } from "../transport/tuya/dp-codec.js";
 import { rawDpCodec } from "../transport/raw-dp.js";
 import { parseCleanRecordDetail, type CleanRecordDetail } from "../model/clean-record-detail.js";
-import { resolveLightEffect as resolveLightEffectHttp } from "../transport/http/light-catalog.js";
+import {
+  listLightEffects as listLightEffectsHttp,
+  resolveLightEffect as resolveLightEffectHttp,
+  type LightEffectSummary,
+} from "../transport/http/light-catalog.js";
 import {
   buildCommand as buildCapabilityCommand,
   decodeEvent as decodeCapabilityEvent,
@@ -1998,6 +2002,17 @@ export class EufyMega extends EventEmitter {
     // HomeBase relays the new name to the cloud, so no update_device_info HTTP call is needed.
     const ctx = await this.commandContext(sn);
     await this.p2p.renameDevice(sn, name, ctx.codec === "station");
+  }
+
+  /**
+   * Browse the smart-light effect gallery — the catalogue of ids that
+   * `dev.smartLight()?.setEffect(id)` accepts, each with its display name (and preview colours).
+   * An account-level HTTP catalogue, not a per-device call, so it lives on the client; delegates to
+   * {@link listLightEffectsHttp}. Scanning the id band is a handful of `batchget` calls, so a caller
+   * should fetch this once and cache it, not per render.
+   */
+  listLightEffects(opts: { idRange?: [number, number]; ids?: number[] } = {}): Promise<LightEffectSummary[]> {
+    return listLightEffectsHttp(this.mega, opts);
   }
 
   /**
