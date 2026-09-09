@@ -14,6 +14,18 @@ export const RTSP_PARAM = {
    */
   STREAM_SWITCH: 1145,
   /**
+   * The served-livestream switch (app `NAS_TEST_STREAM`) — `1` starts the livestream the publish switch
+   * has made available, `0` stops it. The second half of the app's own publish sequence, sent after
+   * {@link STREAM_SWITCH} and never instead of it.
+   *
+   * ✅ Verified live on a standalone camera: `1145=1` followed by `1146=1` is the sequence that elicits
+   * the station's URL push on the 1145 wire, and the camera served its endpoint under it. The switch
+   * alone has been observed to open the port ({@link STREAM_SWITCH}) but never to report the URL, and
+   * the credentials the device is enforcing are reported nowhere else — so a stream a caller can
+   * actually address needs both frames.
+   */
+  TEST_STREAM: 1146,
+  /**
    * The camera's authoritative RTSP URL — `rtsp://user:pass@host/path`, with the credentials it is
    * enforcing right now. The station pushes this back on the 1145 wire as a string data frame after the
    * publish switch flips; {@link RTSP.decodeState} lifts it into state, read as `dev.rtsp()?.url`.
@@ -98,6 +110,12 @@ export type RtspRecordingModeValue = (typeof RtspRecordingMode)[keyof typeof Rts
  *   capability, leaving RTSP published will drain the cell, so the feature suits mains-powered cameras
  *   feeding a recorder.
  *
+ * Publishing is TWO frames, and `publish()` sends both: the persistent NAS setting (1145) and the
+ * served-livestream switch (1146) that starts the livestream and makes the device report its URL. The
+ * setting alone can leave a device serving an endpoint whose credentials are reported nowhere, which a
+ * caller cannot address. Writing the `rtspStream` property sends only the first; `startStream()` is the
+ * second on its own.
+ *
  * The stream itself is served over plain RTSP on the local network, by the station for a
  * HomeBase-attached camera or by the camera itself when standalone. A standalone camera has been
  * observed serving a Digest challenge. A tested HomeBase-attached camera echoed freshly supplied Basic
@@ -109,6 +127,15 @@ export type RtspActions = Surface<typeof RTSP_MEMBERS>;
 /** The RTSP publish switch, both directions — a plain scalar, verified live on both topologies. */
 function publishCommand(on: boolean, ctx: CommandContext): Command {
   return setScalar(RTSP_PARAM.STREAM_SWITCH, on ? 1 : 0, ctx);
+}
+
+/**
+ * The served-livestream switch, both directions — the same plain scalar wire as the publish switch, on
+ * {@link RTSP_PARAM.TEST_STREAM}. Sent `"auto"` so the ONE level decision applies: a keyed HomeBase
+ * seals it at level 2, a standalone camera at level 1.
+ */
+function streamCommand(on: boolean, ctx: CommandContext): Command {
+  return setScalar(RTSP_PARAM.TEST_STREAM, on ? 1 : 0, ctx);
 }
 
 /**
@@ -166,12 +193,11 @@ export const RTSP_MEMBERS = {
    * generic `url` would claim that word SDK-wide. The fluent read stays `dev.rtsp()?.url` — the member
    * key qualifies it there.
    *
-   * **Two evidence bars, split on purpose.** The FRAME SHAPE — 1145 returning as a NUL-terminated
-   * `rtsp://user:pass@host/path` string — was OBSERVED live, so `decodeState` is grounded. The PROVOKE
-   * — that {@link publish} (1145=1) ALONE elicits that push — is INFERRED: the only live capture also
-   * sent `CMD_NAS_TEST` (1146, since removed), so the switch has not been seen to elicit the URL on its
-   * own. If it turns out not to, the URL never populates and the answer is a `MediaProvider` pull, not
-   * this read. Confirming it needs a real device, which this environment does not have.
+   * **What provokes it.** The served-livestream switch ({@link RTSP_PARAM.TEST_STREAM}), not the publish
+   * switch alone: the one live capture that produced a URL sent `1145=1` then `1146=1`, and the publish
+   * switch has never been observed to elicit a push on its own. {@link publish} and {@link startStream}
+   * both send the livestream frame, so either populates this; writing the `rtspStream` property sends
+   * only the setting, and no URL follows.
    *
    * `provenance` below is `verified` for the VALUE and its frame — not for the id: {@link STREAM_URL}
    * is synthetic and the wire never reports it, so no capture could have "verified" the id itself.
@@ -211,19 +237,59 @@ export const RTSP_MEMBERS = {
       "readback (0 → 1 → 0).",
   },
 
-  /** Persistently publish this camera's stream. The enabling caller owns withdrawing it when done. */
+  /**
+   * Persistently publish this camera's stream AND start the livestream serving it — the NAS setting
+   * ({@link RTSP_PARAM.STREAM_SWITCH}) followed by the served-livestream switch
+   * ({@link RTSP_PARAM.TEST_STREAM}), in that order, which is the app's own sequence and the only one
+   * observed to make a device report its URL. Both frames, not just the setting: the setting alone
+   * reports `published` true while {@link RTSP_MEMBERS.url} stays absent, and the credentials in that
+   * URL are reported nowhere else.
+   *
+   * The enabling caller owns withdrawing it when done.
+   */
   publish: method(
     ({ ctx, sink }) =>
-      (): Promise<void> =>
-        sink.dispatch(publishCommand(true, ctx)),
+      async (): Promise<void> => {
+        await sink.dispatch(publishCommand(true, ctx));
+        await sink.dispatch(streamCommand(true, ctx));
+      },
     "Publish the stream.",
   ),
-  /** Withdraw this camera's persistent publication; consumer retries do not ask the SDK to republish it. */
+  /**
+   * Stop serving this camera's stream and withdraw its publication — the reverse of {@link publish},
+   * stopping the livestream before clearing the setting. Consumer retries do not ask the SDK to
+   * republish it.
+   */
   withdraw: method(
     ({ ctx, sink }) =>
-      (): Promise<void> =>
-        sink.dispatch(publishCommand(false, ctx)),
+      async (): Promise<void> => {
+        await sink.dispatch(streamCommand(false, ctx));
+        await sink.dispatch(publishCommand(false, ctx));
+      },
     "Withdraw the stream.",
+  ),
+
+  /**
+   * Start serving the stream WITHOUT touching the persistent NAS setting — the second half of
+   * {@link publish} on its own, for a camera whose setting is already on and whose endpoint should come
+   * and go with a recorder. Answers nothing: the served URL arrives on the realtime wire and reads back
+   * as {@link RTSP_MEMBERS.url} shortly after.
+   *
+   * A device whose publish switch is off does not serve from this alone — {@link publish} is what
+   * establishes both.
+   */
+  startStream: method(
+    ({ ctx, sink }) =>
+      (): Promise<void> =>
+        sink.dispatch(streamCommand(true, ctx)),
+    "Start serving the published stream.",
+  ),
+  /** Stop serving the stream while leaving the persistent NAS setting on — the dual of {@link startStream}. */
+  stopStream: method(
+    ({ ctx, sink }) =>
+      (): Promise<void> =>
+        sink.dispatch(streamCommand(false, ctx)),
+    "Stop serving the stream, leaving it published.",
   ),
 
   /**
@@ -312,9 +378,9 @@ export const RTSP: CapabilityModule = {
   /**
    * Lift the camera's authoritative RTSP URL out of the station's push into state.
    *
-   * The station answers the publish switch (1145) by pushing the same command id BACK as a data frame
-   * whose string payload is the full `rtsp://user:pass@host/path`. That is a bare string rather than the
-   * `params` array the transport unwraps generically, so without this the URL is announced on the wire
+   * The station answers the served-livestream switch (1146) by pushing the PUBLISH command id (1145)
+   * back as a data frame whose string payload is the full `rtsp://user:pass@host/path`. That is a bare
+   * string rather than the `params` array the transport unwraps generically, so without this the URL is announced on the wire
    * and never reaches the {@link RTSP_MEMBERS.url} getter. It is surfaced under {@link RTSP_PARAM.STREAM_URL}
    * — its own synthetic id, since 1145 is the publish bool's.
    *

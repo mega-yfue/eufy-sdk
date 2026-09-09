@@ -17,12 +17,38 @@ once up front.
 ## Publishing
 
 ```ts
-await rtsp?.publish(); // persistently publish this camera
-await rtsp?.withdraw(); // explicitly withdraw the publication
+await rtsp?.publish(); // persistently publish this camera and start serving it
+await rtsp?.withdraw(); // stop serving and withdraw the publication
 rtsp?.published; // boolean | undefined — current state
 ```
 
 `published` is a typed read, present only when the device actually reports the backing state.
+
+### Publishing is two frames
+
+The vendor splits this across two controls, and `publish()` sends both:
+
+| Frame | What it does                                                                        |
+| ----- | ----------------------------------------------------------------------------------- |
+| 1145  | the persistent NAS/RTSP setting — what `published` reads and the app's toggle shows |
+| 1146  | the served livestream — what starts it and makes the device report its URL          |
+
+The setting alone is not enough. It can leave a device serving an endpoint, but only the livestream
+frame has been observed to make the device report its URL — and the credentials that URL carries are
+reported nowhere else, so without it there is no address to point a player at. `publish()` therefore
+always sends the pair, and `withdraw()` stops the livestream before clearing the setting.
+
+Writing the property directly (`setProperty("rtspStream", true)`, or the `publish` intent verb) sends
+the **setting only** — the intent path resolves to a single command by construction. Use `publish()`
+when you want a stream.
+
+`startStream()` and `stopStream()` are the second frame on its own, for a camera whose setting should
+stay on while the endpoint comes and goes with a recorder:
+
+```ts
+await rtsp?.startStream(); // serve the already-published camera
+await rtsp?.stopStream(); // stop serving, leave it published
+```
 
 The device does not stream to your process here — it serves an RTSP endpoint on your LAN that any
 recorder can open. Which host serves it depends on how the camera is installed:
@@ -74,7 +100,8 @@ serving perfectly well.
 It arrives on the device's realtime wire and never in the cloud record, which shapes how it reads
 back:
 
-- **Absent until the device pushes it.** `publish()` is what provokes the push, and the read appears
+- **Absent until the device pushes it.** The livestream frame is what provokes the push, so
+  `publish()` or `startStream()` elicits it and writing the setting alone does not. The read appears
   shortly after the write resolves rather than with it. Wait for the property; don't read it on the
   next line.
 - **Announced as a property change** named `rtspUrl` when the value moves. A device re-reporting a
@@ -123,6 +150,27 @@ A resolved `requireAuth()` call is therefore not proof of access control: verify
 device-reported URL and enforcement from `DESCRIBE` on the endpoint you will use. If that endpoint
 stays open, restrict access at the network instead, or leave the camera unpublished and use
 [live media](/live-media) instead.
+
+## When nothing plays
+
+A player that opens the URL and shows nothing has a small number of causes, in the order worth
+checking:
+
+1. **Only the setting was written.** `published` true while `rtsp?.url` stays `undefined` means the
+   livestream frame never went out — call `publish()` (or `startStream()`), not a bare property write.
+2. **No URL arrived.** `rtsp?.url` still `undefined` a few seconds after `publish()` means the device
+   never answered. Retry `startStream()`; a station still negotiating its session can drop the first
+   write.
+3. **The endpoint itself.** `DESCRIBE` the URL the device reported, unchanged. 404 means nothing is
+   published; 401 means it is serving but challenging; a refused connection on 554 means the serving
+   device is not listening at all.
+4. **Another camera took the slot.** One camera at a time per station — publishing a second silently
+   withdrew the first.
+5. **The serving device.** A refused connection that survives all of the above is the serving device's
+   own firmware, not the write: some station firmware accepts the publish and livestream frames,
+   acknowledges both, and still never opens 554 for an attached camera. Nothing a caller sends changes
+   that — a standalone camera serving its own endpoint is the topology that works, and
+   [live media](/live-media) is the answer for the rest.
 
 ## Choosing between RTSP and live media
 

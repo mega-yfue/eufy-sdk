@@ -1,5 +1,6 @@
 import type { CommandSink } from "../../../core/contracts.js";
 import { RTSP, RTSP_PARAM, RtspRecordingMode, type RtspActions } from "../rtsp.js";
+import { buildCommand } from "../index.js";
 import { bind } from "./bind.js";
 import { Device } from "../../device.js";
 import type { CommandContext, InboundSignal } from "../types.js";
@@ -40,6 +41,20 @@ describe("rtsp capability module", () => {
     expect(bind<RtspActions>("rtsp", ctx).acts.setRecordingMode).toBeTypeOf("function");
   });
 
+  /**
+   * The intent path resolves to ONE command by construction, so the `rtspStream` property write stays the
+   * NAS setting alone — the livestream half is reachable only through the methods. Pinned here because a
+   * caller who writes the property and expects a served endpoint is the bug this states is not silent.
+   */
+  it("keeps the rtspStream property write to the setting frame alone", () => {
+    expect(buildCommand("rtspStream", true, ctx)).toMatchObject({
+      kind: "set-param",
+      param: RTSP_PARAM.STREAM_SWITCH,
+      value: 1,
+    });
+    expect(buildCommand("publish", true, ctx)).toMatchObject({ param: RTSP_PARAM.STREAM_SWITCH, value: 1 });
+  });
+
   it("detects on the reported param alone, never a model table", () => {
     expect(RTSP.detection?.evidenceParams).toEqual([RTSP_PARAM.STREAM_SWITCH]);
     expect(RTSP.detection?.deviceTypes).toBeUndefined();
@@ -53,18 +68,46 @@ describe("rtsp capability module", () => {
     expect(RTSP.properties.some((p) => p.name === published.property)).toBe(true);
   });
 
-  it("publishes and withdraws as a scalar write on the camera's own channel", async () => {
+  /**
+   * The NAS setting alone leaves the device reporting `published` while nothing answers on 554, so a
+   * publish is the setting THEN the served-livestream switch, and a withdraw is the reverse order.
+   */
+  it("publishes and withdraws as the setting + livestream pair, on the camera's own channel", async () => {
     const { acts: actions, sent } = bind<RtspActions>("rtsp", ctx);
 
     await actions.publish();
     await actions.withdraw();
 
-    expect(sent).toHaveLength(2);
     for (const cmd of sent) {
       expect(cmd.kind).toBe("set-param");
-      expect((cmd as { param: number }).param).toBe(RTSP_PARAM.STREAM_SWITCH);
+      expect((cmd as { channel: number }).channel).toBe(2);
     }
-    expect(sent.map((c) => (c as { value: number }).value)).toEqual([1, 0]);
+    expect(sent.map((c) => [(c as { param: number }).param, (c as { value: number }).value])).toEqual([
+      [RTSP_PARAM.STREAM_SWITCH, 1],
+      [RTSP_PARAM.TEST_STREAM, 1],
+      [RTSP_PARAM.TEST_STREAM, 0],
+      [RTSP_PARAM.STREAM_SWITCH, 0],
+    ]);
+  });
+
+  it("starts and stops the served stream alone, leaving the persistent setting untouched", async () => {
+    const { acts: actions, sent } = bind<RtspActions>("rtsp", ctx);
+
+    await actions.startStream();
+    await actions.stopStream();
+
+    expect(sent.map((c) => [(c as { param: number }).param, (c as { value: number }).value])).toEqual([
+      [RTSP_PARAM.TEST_STREAM, 1],
+      [RTSP_PARAM.TEST_STREAM, 0],
+    ]);
+  });
+
+  it("sends the livestream switch form:auto, so a keyed HomeBase seals it at its own level", async () => {
+    const { acts: actions, sent } = bind<RtspActions>("rtsp", { ...ctx, homeBaseAttached: true } as CommandContext);
+
+    await actions.startStream();
+
+    expect(sent[0]).toMatchObject({ kind: "set-param", param: RTSP_PARAM.TEST_STREAM, form: "auto" });
   });
 
   it("builds the auth setting for a HomeBase-attached camera; enforcement belongs to the RTSP endpoint", async () => {
@@ -85,7 +128,7 @@ describe("rtsp capability module", () => {
 
     await actions.publish();
 
-    expect(sent).toHaveLength(1);
+    expect(sent.map((c) => (c as { param: number }).param)).toEqual([RTSP_PARAM.STREAM_SWITCH, RTSP_PARAM.TEST_STREAM]);
   });
 
   it("toggles authentication through the mode field of the credential payload, sent form:auto", async () => {
