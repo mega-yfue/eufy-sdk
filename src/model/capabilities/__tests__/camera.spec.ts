@@ -4,6 +4,7 @@ import {
   CAMERA_MEMBERS,
   Watermark,
   NotificationStyle,
+  SoundDetectionType,
   NightVision,
   VideoQuality,
   resolveVideoQuality,
@@ -40,12 +41,80 @@ describe("camera capability module", () => {
       "enabled",
       "imageFlipped",
       "watermark",
+      "soundDetection",
+      "soundDetectionSensitivity",
+      "soundDetectionType",
       "notificationStyle",
       "nightVision",
       "videoQuality",
       "antiTheftDetection",
       "statusLed",
     ]);
+  });
+
+  // Every wire here was captured from the app on an indoor pan-tilt (standalone, mains) and read back
+  // on the cloud param. Each command names its payload field differently — status / index / type —
+  // which is the reason there is no shared setter for the three.
+  describe("sound detection (6043 / 6044 / 6046)", () => {
+    it("soundDetection writes {status}, both directions", () => {
+      expect(buildCommand("soundDetection", true, ctx(0))).toEqual({
+        kind: "set-json",
+        param: CAMERA_CMD.SOUND_DETECTION, // 6043
+        data: { status: 1 },
+        channel: 0,
+      });
+      expect(buildCommand("soundDetection", false, ctx(0))).toMatchObject({ data: { status: 0 } });
+    });
+
+    it.each([
+      [1, "lowest"],
+      [3, "mid"],
+      [5, "highest"],
+    ])("soundDetectionSensitivity writes %i (%s) as {index}", (n) => {
+      expect(buildCommand("soundDetectionSensitivity", n, ctx(2))).toEqual({
+        kind: "set-json",
+        param: CAMERA_CMD.SOUND_DETECTION_SENSITIVITY, // 6044
+        data: { index: n },
+        channel: 2,
+      });
+    });
+
+    // The setter answers undefined; the intent path turns that into a throw rather than reporting the
+    // device as lacking the feature — a clamped value would arm a setting nobody asked for.
+    it.each([0, 6, -1, 2.5])("soundDetectionSensitivity refuses %s rather than clamping", (bad) => {
+      expect(CAMERA_MEMBERS.soundDetectionSensitivity.write!(bad, ctx(0))).toBeUndefined();
+      expect(() => buildCommand("soundDetectionSensitivity", bad, ctx(0))).toThrow(/not a valid value/);
+    });
+
+    it("soundDetectionSensitivity refuses a non-number instead of coercing it to 0", () => {
+      // Number(null) and Number("") are both 0, which would look like a real setting.
+      expect(CAMERA_MEMBERS.soundDetectionSensitivity.write!(null as never, ctx(0))).toBeUndefined();
+      expect(CAMERA_MEMBERS.soundDetectionSensitivity.write!("" as never, ctx(0))).toBeUndefined();
+    });
+
+    it("soundDetectionType writes {type}, and refuses a value outside the enum", () => {
+      expect(SoundDetectionType).toEqual({ Crying: 1, AllSound: 2 });
+      expect(buildCommand("soundDetectionType", SoundDetectionType.AllSound, ctx(0))).toEqual({
+        kind: "set-json",
+        param: CAMERA_CMD.SOUND_DETECTION_TYPE, // 6046
+        data: { type: 2 },
+        channel: 0,
+      });
+      expect(buildCommand("soundDetectionType", SoundDetectionType.Crying, ctx(0))).toMatchObject({
+        data: { type: 1 },
+      });
+      // 3 is not a type: coercing it would arm the wrong trigger and report success.
+      expect(CAMERA_MEMBERS.soundDetectionType.write!(3, ctx(0))).toBeUndefined();
+      expect(() => buildCommand("soundDetectionType", 3, ctx(0))).toThrow(/must be one of 1\/2/);
+    });
+
+    it("the sensitivity and the type do not compose against the switch — each writes alone", () => {
+      // A setter that folded the switch's state into its payload would revert it on the second write.
+      const sens = buildCommand("soundDetectionSensitivity", 5, ctx(0)) as { data: Record<string, unknown> };
+      const type = buildCommand("soundDetectionType", 1, ctx(0)) as { data: Record<string, unknown> };
+      expect(Object.keys(sens.data)).toEqual(["index"]);
+      expect(Object.keys(type.data)).toEqual(["type"]);
+    });
   });
 
   describe("antiTheftDetection (1015)", () => {

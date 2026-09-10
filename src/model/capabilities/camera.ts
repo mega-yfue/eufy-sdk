@@ -67,6 +67,31 @@ export const CAMERA_CMD = {
    */
   PUSH_NOTIFY_TYPE: 6020,
   /**
+   * **Sound detection** switch — whether the camera triggers on what it hears, beside the motion
+   * trigger it triggers on what it sees.
+   *
+   * Wire observed live on an indoor pan-tilt (standalone, mains, own channel): the `1700`
+   * CONTROL_PAYLOAD wrapper, plaintext `{"commandType":6043,"data":{"status":0|1}}`. Both directions
+   * captured byte-exact and read back on the cloud param, twice each; no other parameter moved.
+   */
+  SOUND_DETECTION: 6043,
+  /**
+   * How loud a sound has to be to trigger {@link CAMERA_CMD.SOUND_DETECTION} — the app's three-position
+   * control writes `1` lowest, `3` mid, `5` highest.
+   *
+   * Wire observed live on the same camera: `{"commandType":6044,"data":{"index":N}}` in the `1700`
+   * wrapper. The payload field is `index`, NOT the `value` its neighbours use — each of these
+   * commands names its field differently, so there is no generic setter for the family.
+   */
+  SOUND_DETECTION_SENSITIVITY: 6044,
+  /**
+   * WHICH sounds trigger {@link CAMERA_CMD.SOUND_DETECTION} — all sound, or crying alone.
+   *
+   * Wire observed live: `{"commandType":6046,"data":{"type":N}}` in the `1700` wrapper, both values
+   * captured and read back. (Values in {@link SoundDetectionType}.)
+   */
+  SOUND_DETECTION_TYPE: 6046,
+  /**
    * **Anti-theft detection** switch (app `APP_CMD_EAS_SWITCH`). Despite the "EAS" name the app's own
    * parser maps this id onto `anti_theft_detection_switch`, so the camera member uses that semantic
    * name. The app's "EAS" resource strings mix emergency- and anti-theft-worded copy; the parser is
@@ -132,6 +157,17 @@ export const NotificationStyle = {
 } as const;
 /** A notification style — the value side of {@link NotificationStyle}. */
 export type NotificationStyleValue = (typeof NotificationStyle)[keyof typeof NotificationStyle];
+
+// Wire: CMD_INDOOR_DET_SET_SOUND_DETECT_TYPE 6046 — both values observed live on an indoor pan-tilt,
+// each read back on the cloud param. `Crying` is the value the camera shipped configured with.
+export const SoundDetectionType = {
+  /** Crying alone triggers a detection. */
+  Crying: 1,
+  /** Any sound loud enough for the sensitivity triggers a detection. */
+  AllSound: 2,
+} as const;
+/** A sound-detection type — the value side of {@link SoundDetectionType}. */
+export type SoundDetectionTypeValue = (typeof SoundDetectionType)[keyof typeof SoundDetectionType];
 
 /**
  * Night-vision mode: 0=Off, 1=Infrared (the app shows "B&W Auto"), 2=FullColor ("Color"). Use
@@ -445,6 +481,64 @@ export const CAMERA_MEMBERS = {
     write: (v, ctx) => {
       const w = coerceEnumValue(Watermark, v);
       return w == null ? undefined : setScalar(CAMERA_CMD.SET_DEVS_OSD, w, ctx, "auto");
+    },
+  },
+  /**
+   * Whether the camera triggers on what it HEARS — the sound counterpart to motion detection, which the
+   * app presents beside it. The camera keeps the sensitivity and the type it was last given, so
+   * switching this off and on again restores the previous configuration rather than resetting it.
+   */
+  soundDetection: {
+    param: CAMERA_CMD.SOUND_DETECTION,
+    type: "bool",
+    kind: "boolean",
+    provenance: "verified",
+    description:
+      "Trigger on sound as well as motion (SOUND_DETECTION 6043). ✅ Write confirmed live on a T8410 " +
+      "(mains, standalone, own channel): both directions sent through this member and read back on " +
+      "the cloud param, and the app's own frame captured byte-exact for the same body.",
+    write: (v, ctx) => setJson(CAMERA_CMD.SOUND_DETECTION, { status: asBool(v) ? 1 : 0 }, ctx),
+  },
+  /**
+   * How loud a sound must be to trigger: `1` lowest, `3` mid, `5` highest, on the app's own
+   * three-position control. A `scalar` rather than an enum — the endpoints and the midpoint are
+   * observed, so 2 and 4 are a prediction of the scale's shape rather than values the wire is known to
+   * take. Independent of {@link CAMERA_MEMBERS.soundDetection}: the camera stores it whether sound
+   * detection is on or off.
+   */
+  soundDetectionSensitivity: {
+    param: CAMERA_CMD.SOUND_DETECTION_SENSITIVITY,
+    type: "number",
+    kind: "scalar",
+    provenance: "verified",
+    description:
+      "Sound-detection sensitivity: 1 = lowest, 3 = mid, 5 = highest (SOUND_DETECTION_SENSITIVITY " +
+      "6044). ✅ Write confirmed live on a T8410: 1 and 5 sent consecutively through this member and " +
+      "read back on the cloud param. 2 and 4 are the scale's shape, not observed values.",
+    write: (v, ctx) => {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < 1 || n > 5) return undefined;
+      return setJson(CAMERA_CMD.SOUND_DETECTION_SENSITIVITY, { index: n }, ctx);
+    },
+  },
+  /**
+   * WHICH sounds count — any sound, or crying alone. `coerceEnumValue` refuses anything outside
+   * {@link SoundDetectionType} rather than coercing it: both neighbouring values are real types, so a
+   * coerced one arms the wrong trigger and reports success.
+   */
+  soundDetectionType: {
+    param: CAMERA_CMD.SOUND_DETECTION_TYPE,
+    type: "enum",
+    kind: "enum",
+    enumValues: { 1: "Crying", 2: "All Sound" },
+    provenance: "verified",
+    description:
+      "Which sounds trigger a detection: crying alone, or any sound (SOUND_DETECTION_TYPE 6046). ✅ " +
+      "Write confirmed live on a T8410: both values sent consecutively through this member and read " +
+      "back on the cloud param.",
+    write: (v, ctx) => {
+      const type = coerceEnumValue(SoundDetectionType, v);
+      return type == null ? undefined : setJson(CAMERA_CMD.SOUND_DETECTION_TYPE, { type }, ctx);
     },
   },
   /**
