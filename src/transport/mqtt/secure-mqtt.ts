@@ -180,6 +180,18 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
    * topic is reported via `error` naming the credential scope; only an all-denied device throws, so a
    * line that grants its state channel but refuses (say) the OTA leg still works.
    */
+  /**
+   * Subscribe to explicit topic filters, returning the topics that were granted. A scope-denied filter
+   * comes back with {@link SUBACK_FAILURE} rather than an error (AWS IoT quirk), so it is dropped from
+   * the result instead of throwing — callers that need every leg check the returned list. Used by lines
+   * whose topic vocabulary isn't the eufy `subscribeTopics` shape (e.g. Anker Solix `dt/{app}/{pn}/{sn}`).
+   */
+  async subscribe(topics: string[]): Promise<string[]> {
+    if (!this.client) throw new Error("SecureMqtt not connected");
+    const grants = await this.client.subscribeAsync(topics, { qos: 1 });
+    return grants.filter((g) => g.qos !== SUBACK_FAILURE).map((g) => g.topic);
+  }
+
   async subscribeDevice(device: EufyDevice): Promise<void> {
     if (!this.client) throw new Error("SecureMqtt not connected");
     const topics = [...subscribeTopics(device)];

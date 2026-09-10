@@ -4,3 +4,4 @@
  */
 export * from "./constants.js";
 export * from "./solix-client.js";
+export * from "./solix-mqtt.js";
