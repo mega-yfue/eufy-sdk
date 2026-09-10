@@ -46,9 +46,10 @@ describe("SolixDevice", () => {
 
   it("populates the energyMeter values from an applied telemetry reading", () => {
     const d = new SolixDevice(METER, { catalog: CATALOG });
-    expect(d.energyMeter()!.gridVoltage()).toBeUndefined(); // no reading yet
-    d.applyReading({ values: { gridVoltage: 236.8, channel_ac: 236.8, channel_a8: 0 } });
-    expect(d.energyMeter()!.gridVoltage()).toBeCloseTo(236.8, 1);
+    expect(d.energyMeter()!.meterVoltageL1()).toBeUndefined(); // no reading yet
+    d.applyReading({ values: { meterVoltageL1: 236.8, channel_ac: 236.8, meterPowerL1: 0, channel_a8: 0 } });
+    expect(d.energyMeter()!.meterVoltageL1()).toBeCloseTo(236.8, 1);
+    expect(d.energyMeter()!.meterPowerL1()).toBe(0);
     expect(d.telemetry().channel_a8).toBe(0);
   });
 

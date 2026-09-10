@@ -37,12 +37,39 @@ export interface SolixParamFrame {
 }
 
 /**
- * Known telemetry field tags for the Smart Meter (AE1X0). Only tags confirmed against live data are
- * named; the rest surface as `channel_<tag>` so nothing is lost and the map can grow as fields are
- * correlated under load. `gridVoltage` (tag 0xac) was confirmed live (≈237.8 V on a UK supply).
+ * Telemetry field tags for the Smart Meter (AE1X0), keyed by ff09 tag byte. Names are the app's own
+ * (recovered from the Anker app's compiled-Dart strings in `libapp.so` — module
+ * `package:third_device/src/module/ae1x0/…`): the meter is 3-phase-capable and reports each quantity
+ * per line (L1/L2/L3) plus an aggregate total.
+ *
+ * Confidence:
+ * - `0xac` = `meterVoltageL1` is CONFIRMED against live data (≈237.5 V on a single-phase UK supply).
+ * - The rest are a STRUCTURAL INFERENCE from a quantity-major-by-phase layout that is consistent with
+ *   every observation to date: on a single-phase / single-CT install only the L1 and total slots move
+ *   (a8==ab because PowerL1==PowerTotal), the L2/L3 slots read 0, and the load-responsive tags
+ *   (a8/ab/af/b3) line up with PowerL1/PowerTotal/CurrentL1/ImportEnergy. Bind them hard with one
+ *   known-load capture and adjust here if a magnitude disagrees.
+ * - Tags 0xb5–0xb7 are left unnamed (surface as `channel_b5`..`channel_b7`). The app's Dart decoder
+ *   names NO field beyond the 14 above (no frequency / power-factor / reactive / temperature field
+ *   exists in libapp.so), so these are reserved/unused in the app. `b7` sits at ~0.1 at idle — a
+ *   firmware-level power-factor candidate (would climb toward ~1.0 under a resistive load); unconfirmed.
+ *
+ * Unnamed measurement tags always still surface as `channel_<tag>`, so nothing is lost.
  */
 export const SOLIX_METER_FIELD_NAMES: Readonly<Record<number, string>> = {
-  0xac: "gridVoltage",
+  0xa8: "meterPowerL1",
+  0xa9: "meterPowerL2",
+  0xaa: "meterPowerL3",
+  0xab: "meterPowerTotal",
+  0xac: "meterVoltageL1", // CONFIRMED live (≈237.5 V)
+  0xad: "meterVoltageL2",
+  0xae: "meterVoltageL3",
+  0xaf: "meterCurrentL1",
+  0xb0: "meterCurrentL2",
+  0xb1: "meterCurrentL3",
+  0xb2: "meterCurrentTotal",
+  0xb3: "meterImportEnergy",
+  0xb4: "meterExportEnergy",
 };
 
 /** Interpret one TLV value as a telemetry channel (leading type byte + payload). */
@@ -87,7 +114,7 @@ export function decodeSolixParamFrame(buf: Buffer): SolixParamFrame | null {
 /**
  * Reduce a param frame to named + raw telemetry values. Measurement channels (`0xa6`..`0xff`) are
  * decoded as float32 where the payload is 4 bytes; a tag in {@link SOLIX_METER_FIELD_NAMES} is emitted
- * under its name, all measurement tags additionally under `channel_<hex tag>`.
+ * under its name (e.g. `meterVoltageL1`), and all measurement tags additionally under `channel_<hex tag>`.
  */
 export function solixReadings(frame: SolixParamFrame): Record<string, number> {
   const out: Record<string, number> = {};
@@ -132,7 +159,7 @@ export interface SolixMqttOptions {
  * `SecureMqtt` for the connection; adds only the Solix data topic + ff09 param decoding.
  *
  *   const mqtt = new SolixMqtt({ mqttInfo: await solix.getUserMqttInfo() });
- *   mqtt.on("reading", (r) => console.log(r.deviceSn, r.values.gridVoltage));
+ *   mqtt.on("reading", (r) => console.log(r.deviceSn, r.values.meterVoltageL1));
  *   await mqtt.watch(device);   // device = a SolixClient.getDevices() entry
  */
 export class SolixMqtt extends EventEmitter {

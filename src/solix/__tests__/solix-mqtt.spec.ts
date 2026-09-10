@@ -32,12 +32,13 @@ describe("Solix MQTT param decoding", () => {
     expect(ch.float).toBeCloseTo(237.5, 1);
   });
 
-  it("emits grid voltage (tag 0xac) and raw float channels, only for float-typed fields", () => {
+  it("emits named meter fields (tag 0xac = meterVoltageL1) and raw float channels, only for float-typed fields", () => {
     const values = solixReadings(decodeSolixParamFrame(FRAME)!);
-    expect(values.gridVoltage).toBeCloseTo(237.5, 1);
+    expect(values.meterVoltageL1).toBeCloseTo(237.5, 1);
     expect(values["channel_ac"]).toBeCloseTo(237.5, 1);
-    // idle channels read 0
+    // idle channels read 0, and get their structural name too (power L1)
     expect(values["channel_a8"]).toBe(0);
+    expect(values.meterPowerL1).toBe(0);
     // a6 is a non-float type (0x03) → excluded from readings
     expect(values["channel_a6"]).toBeUndefined();
   });

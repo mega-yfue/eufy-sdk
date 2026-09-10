@@ -74,10 +74,31 @@ export interface SolixConnectivity {
   rssi?: number;
   ssid?: string;
 }
-/** Grid/energy-meter live values. `gridVoltage` is confirmed; `channels` are all decoded float32 datapoints. */
+/**
+ * Grid/energy-meter live values (Smart Meter AE1X0). The meter is 3-phase-capable and reports each
+ * quantity per line (L1/L2/L3) plus a total; on a single-phase / single-CT install only L1 + total
+ * carry data. `meterVoltageL1` is confirmed against live data; the other named accessors are a
+ * structural inference (see {@link SOLIX_METER_FIELD_NAMES}). `channels` carries every decoded float,
+ * including tags with no name yet (`channel_b5`..`channel_b7`).
+ */
 export interface SolixEnergyMeter {
-  /** Latest grid voltage (V), once a telemetry reading has been applied. */
-  gridVoltage(): number | undefined;
+  /** Latest line voltage (V). L1 is confirmed; L2/L3 read 0 on a single-phase supply. */
+  meterVoltageL1(): number | undefined;
+  meterVoltageL2(): number | undefined;
+  meterVoltageL3(): number | undefined;
+  /** Latest line current (A). */
+  meterCurrentL1(): number | undefined;
+  meterCurrentL2(): number | undefined;
+  meterCurrentL3(): number | undefined;
+  meterCurrentTotal(): number | undefined;
+  /** Latest active power (W) per line and aggregate total. */
+  meterPowerL1(): number | undefined;
+  meterPowerL2(): number | undefined;
+  meterPowerL3(): number | undefined;
+  meterPowerTotal(): number | undefined;
+  /** Cumulative imported / exported energy. */
+  meterImportEnergy(): number | undefined;
+  meterExportEnergy(): number | undefined;
   /** All decoded float channels from the latest reading, keyed `channel_<tag>` (+ any named ones). */
   channels(): Record<string, number>;
 }
@@ -155,8 +176,21 @@ export class SolixDevice {
   energyMeter(): SolixEnergyMeter | undefined {
     if (!this.has("energyMeter")) return undefined;
     const values = this.values;
+    const at = (tag: number) => values[SOLIX_METER_FIELD_NAMES[tag] as string];
     return {
-      gridVoltage: () => values[SOLIX_METER_FIELD_NAMES[0xac] as string],
+      meterVoltageL1: () => at(0xac),
+      meterVoltageL2: () => at(0xad),
+      meterVoltageL3: () => at(0xae),
+      meterCurrentL1: () => at(0xaf),
+      meterCurrentL2: () => at(0xb0),
+      meterCurrentL3: () => at(0xb1),
+      meterCurrentTotal: () => at(0xb2),
+      meterPowerL1: () => at(0xa8),
+      meterPowerL2: () => at(0xa9),
+      meterPowerL3: () => at(0xaa),
+      meterPowerTotal: () => at(0xab),
+      meterImportEnergy: () => at(0xb3),
+      meterExportEnergy: () => at(0xb4),
       channels: () => ({ ...values }),
     };
   }
