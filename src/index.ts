@@ -16,3 +16,6 @@ export * from "./transport/index.js";
 
 // Device model: capability-driven Device + capability modules.
 export * from "./model/index.js";
+
+// Anker Solix power-station cloud: same-account login + device/site/MQTT reads.
+export * from "./solix/index.js";
