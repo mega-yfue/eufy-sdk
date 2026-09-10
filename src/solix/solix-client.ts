@@ -165,6 +165,15 @@ export class SolixClient {
     return this.session_;
   }
 
+  /**
+   * Headers for the login/key-exchange path, which carry the device id. Authenticated resource reads
+   * must NOT send `openudid` — the gateway rejects a token-bearing read that also carries a device id
+   * (`401 token error`) — so those use {@link baseHeaders} directly.
+   */
+  private authHeaders(extra: Record<string, string> = {}): Record<string, string> {
+    return this.baseHeaders({ openudid: this.openudid, "x-terminal-id": this.openudid, ...extra });
+  }
+
   /** Base headers common to every Solix request. */
   private baseHeaders(extra: Record<string, string> = {}): Record<string, string> {
     return {
@@ -175,8 +184,6 @@ export class SolixClient {
       "os-version": "36",
       "app-version": this.appVersion,
       country: this.country,
-      openudid: this.openudid,
-      "x-terminal-id": this.openudid,
       timezone: "GMT+00:00",
       language: "en",
       "user-agent": "ktor-client",
@@ -230,7 +237,7 @@ export class SolixClient {
       this.apiHost,
       SOLIX_ENDPOINTS.keyExchange,
       JSON.stringify({ client_public_key: prep.encryptedClientPublicKey }),
-      this.baseHeaders(prep.headers),
+      this.authHeaders(prep.headers),
     );
     const spk = (env.data as { server_public_key?: string } | undefined)?.server_public_key;
     if (env.code !== 0 || !spk) throw new Error(`Solix key/exchange failed (${env.code}): ${env.msg}`);
@@ -257,7 +264,7 @@ export class SolixClient {
       this.apiHost,
       SOLIX_ENDPOINTS.login,
       encBody,
-      this.baseHeaders({
+      this.authHeaders({
         "x-encryption-info": "algo_ecdh",
         "x-key-ident": kx.keyIdent,
         "x-request-ts": ts,

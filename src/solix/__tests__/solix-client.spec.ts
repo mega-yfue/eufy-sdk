@@ -123,6 +123,8 @@ describe("SolixClient", () => {
     expect(read.headers["x-auth-token"]).toBeTruthy();
     expect(read.headers["gtoken"]).toBe(md5(USER_ID));
     expect(read.headers["x-encryption-info"]).toBeUndefined(); // reads are PLAIN
+    // The gateway rejects a token-bearing read that also carries a device id — reads must omit it.
+    expect(read.headers["openudid"]).toBeUndefined();
   });
 
   it("surfaces a 2FA challenge and completes it with submitVerifyCode", async () => {
@@ -147,6 +149,9 @@ describe("SolixClient", () => {
     await a.login();
     const b = new SolixClient({ email: "same@b.co", password: "pw", fetchImpl });
     await b.login();
+    // openudid rides the login/key-exchange path (never the reads); it is stable across instances.
+    const loginCall = calls.find((c) => c.path.endsWith("/passport/login"))!;
+    expect(loginCall.headers["openudid"]).toBeTruthy();
     const udids = calls.filter((c) => c.headers["openudid"]).map((c) => c.headers["openudid"]);
     expect(new Set(udids).size).toBe(1); // identical across separate instances of the same account
   });
