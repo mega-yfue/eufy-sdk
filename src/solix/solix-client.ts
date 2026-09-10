@@ -14,6 +14,7 @@
  * model's job for eufy hardware); it returns the vendor's typed JSON so a caller can consume it.
  */
 import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
 
 import {
   decryptBody,
@@ -88,11 +89,35 @@ export interface SolixClientOptions {
   apiHost?: string;
   /** App version reported to the cloud. */
   appVersion?: string;
+  /**
+   * Stable per-install device id (UUID). The auth token is bound to it, and a shifting id looks like
+   * a new device each run and re-triggers 2FA. Defaults to a deterministic id derived from the email
+   * (stable across runs); a store's saved id wins over this.
+   */
+  openudid?: string;
+  /** Persist the token + device id so a dedicated account logs in once and reuses it until expiry. */
+  store?: SolixSessionStore;
   /** Injected fetch (for tests). Defaults to the global `fetch`. */
   fetchImpl?: typeof fetch;
 }
 
+/** What {@link SolixSessionStore} holds: the stable device id and (once logged in) the session. */
+export interface SolixPersisted {
+  openudid: string;
+  session?: SolixSession;
+}
+
+/** A place to persist a Solix session across process runs. See {@link FileSolixSessionStore}. */
+export interface SolixSessionStore {
+  load(): SolixPersisted | undefined;
+  save(data: SolixPersisted): void;
+}
+
 const md5Hex = (s: string): string => createHash("md5").update(s).digest("hex");
+
+/** Format 32 hex chars as a UUID (8-4-4-4-12) — used to derive a stable openudid from the email. */
+const uuidFromHex = (hex: string): string =>
+  `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 
 /**
  * Login + read client for one Anker account's Solix devices. Construct with the account
@@ -105,6 +130,8 @@ export class SolixClient {
   private readonly country: string;
   private readonly appVersion: string;
   private readonly doFetch: typeof fetch;
+  private readonly store?: SolixSessionStore;
+  private readonly openudid: string;
   private apiHost: string;
   private session_?: SolixSession;
   /** Carried between {@link login} and {@link submitVerifyCode} while a 2FA code is outstanding. */
@@ -117,6 +144,20 @@ export class SolixClient {
     this.appVersion = opts.appVersion ?? "3.23.0";
     this.doFetch = opts.fetchImpl ?? fetch;
     this.apiHost = opts.apiHost ?? SOLIX_DEFAULT_API_HOST;
+    this.store = opts.store;
+    const saved = this.store?.load();
+    // Device id: explicit → stored → a deterministic id from the email (stable, avoids re-2FA).
+    this.openudid = opts.openudid ?? saved?.openudid ?? uuidFromHex(md5Hex(`anker-solix:${opts.email}`));
+    // Adopt a stored session that has not expired, so a warm start skips login entirely.
+    if (saved?.session && (!saved.session.tokenExpiresAt || saved.session.tokenExpiresAt * 1000 > Date.now())) {
+      this.session_ = saved.session;
+      this.apiHost = saved.session.apiHost;
+    }
+  }
+
+  /** Persist the current device id (+ session, if any) when a store is configured. */
+  private persist(): void {
+    this.store?.save({ openudid: this.openudid, session: this.session_ });
   }
 
   /** The authenticated session, once {@link login} has resolved to `ok`. */
@@ -134,6 +175,8 @@ export class SolixClient {
       "os-version": "36",
       "app-version": this.appVersion,
       country: this.country,
+      openudid: this.openudid,
+      "x-terminal-id": this.openudid,
       timezone: "GMT+00:00",
       language: "en",
       "user-agent": "ktor-client",
@@ -246,6 +289,7 @@ export class SolixClient {
       apiHost: this.apiHost,
       tokenExpiresAt: Number(data.token_expires_at ?? 0) || 0,
     };
+    this.persist();
     return { status: "ok", session: this.session_ };
   }
 
@@ -260,6 +304,10 @@ export class SolixClient {
    * when the passport sent a code — then call {@link submitVerifyCode}.
    */
   async login(): Promise<SolixLoginResult> {
+    // A warm session (from a store) that has not expired skips the handshake entirely.
+    if (this.session_ && (!this.session_.tokenExpiresAt || this.session_.tokenExpiresAt * 1000 > Date.now())) {
+      return { status: "ok", session: this.session_ };
+    }
     await this.estimateHost();
     const kx = await this.keyExchange();
     const env = await this.postLogin(kx);
@@ -333,6 +381,27 @@ export class SolixClient {
   /** The pairable-accessory catalog (same shape family as {@link getProductCatalog}). */
   async getProductAccessories(): Promise<unknown[]> {
     return (await this.authedGet<unknown[]>(SOLIX_ENDPOINTS.productAccessories)) ?? [];
+  }
+}
+
+/**
+ * A {@link SolixSessionStore} backed by a JSON file, mirroring the eufy client's file store: the
+ * device id survives token expiry (so the account keeps seeing the same device and does not re-prompt
+ * 2FA), and a live session is reused until it expires. Reads tolerate a missing/corrupt file.
+ */
+export class FileSolixSessionStore implements SolixSessionStore {
+  constructor(private readonly path: string) {}
+
+  load(): SolixPersisted | undefined {
+    try {
+      return JSON.parse(readFileSync(this.path, "utf-8")) as SolixPersisted;
+    } catch {
+      return undefined;
+    }
+  }
+
+  save(data: SolixPersisted): void {
+    writeFileSync(this.path, JSON.stringify(data, null, 2), { mode: 0o600 });
   }
 }
 

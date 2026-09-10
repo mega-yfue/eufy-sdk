@@ -10,7 +10,7 @@ import { createCipheriv, createDecipheriv, createECDH, createHash, randomBytes }
 import { describe, expect, it } from "vitest";
 
 import { encryptBody } from "../../core/index.js";
-import { SolixClient, buildModelIndex } from "../solix-client.js";
+import { SolixClient, buildModelIndex, type SolixPersisted, type SolixSessionStore } from "../solix-client.js";
 import { SOLIX_LOCAL_KEY_HEX } from "../constants.js";
 
 const LOCALKEY = Buffer.from(SOLIX_LOCAL_KEY_HEX, "hex");
@@ -139,6 +139,32 @@ describe("SolixClient", () => {
     const { fetchImpl } = makeServer();
     const client = new SolixClient({ email: "a@b.co", password: "pw", fetchImpl });
     await expect(client.getDevices()).rejects.toThrow(/not authenticated/);
+  });
+
+  it("sends a stable openudid derived from the email (so the account does not re-prompt 2FA)", async () => {
+    const { fetchImpl, calls } = makeServer();
+    const a = new SolixClient({ email: "same@b.co", password: "pw", fetchImpl });
+    await a.login();
+    const b = new SolixClient({ email: "same@b.co", password: "pw", fetchImpl });
+    await b.login();
+    const udids = calls.filter((c) => c.headers["openudid"]).map((c) => c.headers["openudid"]);
+    expect(new Set(udids).size).toBe(1); // identical across separate instances of the same account
+  });
+
+  it("persists the session to a store and reuses it on a warm start without re-logging in", async () => {
+    const mem: { v?: SolixPersisted } = {};
+    const store: SolixSessionStore = { load: () => mem.v, save: (d) => (mem.v = d) };
+    const s1 = makeServer();
+    await new SolixClient({ email: "a@b.co", password: "pw", store, fetchImpl: s1.fetchImpl }).login();
+    expect(mem.v?.session?.authToken).toBeTruthy();
+
+    // Warm start: a fresh client with the same store must NOT hit the login endpoint.
+    const s2 = makeServer();
+    const warm = new SolixClient({ email: "a@b.co", password: "pw", store, fetchImpl: s2.fetchImpl });
+    const r = await warm.login();
+    expect(r.status).toBe("ok");
+    expect(s2.calls.some((c) => c.path.endsWith("/passport/login"))).toBe(false);
+    expect(warm.session?.gtoken).toBe(md5(USER_ID));
   });
 
   it("fetches the product catalog and indexes model codes (incl. variants) to name + category", async () => {
