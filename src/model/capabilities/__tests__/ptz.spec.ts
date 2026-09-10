@@ -1,5 +1,6 @@
 import {
   PTZ,
+  PTZ_MEMBERS,
   rotateCommand,
   zoomCommand,
   gotoPresetCommand,
@@ -31,8 +32,49 @@ const zoomCtx = (channel = 0): CommandContext => ctx(channel, [6204]);
 describe("ptz capability module", () => {
   it("declares the capability + schema", () => {
     expect(PTZ.capability).toBe("ptz");
-    // No value member: no device reports its position as a parameter, so PTZ is methods + one event.
-    expect(PTZ.properties).toEqual([]);
+    // rotationSpeed is the only value member: position is an event, not a parameter.
+    expect(PTZ.properties.map((p) => p.name)).toEqual(["rotationSpeed"]);
+    expect(PTZ.properties[0].paramType).toBe(6015);
+  });
+
+  describe("rotationSpeed (6015)", () => {
+    // The app's Slow/Mid/Fast control, observed live: 1 / 3 / 5, in the 1700 {commandType,data} wrapper.
+    it.each([
+      [1, "slow"],
+      [3, "mid"],
+      [5, "fast"],
+    ])("writes %i (%s) as a set-json {value}", (n) => {
+      expect(PTZ_MEMBERS.rotationSpeed.write!(n, ctx(2))).toEqual({
+        kind: "set-json",
+        param: 6015,
+        data: { value: n },
+        channel: 2,
+      });
+    });
+
+    it("takes the untapped middle values too — the scale's shape, not a claim about the wire", () => {
+      expect(PTZ_MEMBERS.rotationSpeed.write!(2, ctx())).toMatchObject({ data: { value: 2 } });
+      expect(PTZ_MEMBERS.rotationSpeed.write!(4, ctx())).toMatchObject({ data: { value: 4 } });
+    });
+
+    it.each([0, 6, -1, 1.5, Number.NaN])("refuses %s rather than clamping it", (bad) => {
+      expect(PTZ_MEMBERS.rotationSpeed.write!(bad, ctx())).toBeUndefined();
+    });
+
+    it("refuses a value that is not a number at all, instead of coercing it to 0", () => {
+      // Number(null) and Number("") are both 0 — a real value on many params, so type-check first.
+      expect(PTZ_MEMBERS.rotationSpeed.write!(null as never, ctx())).toBeUndefined();
+      expect(PTZ_MEMBERS.rotationSpeed.write!("" as never, ctx())).toBeUndefined();
+    });
+
+    it("routes through setProperty as well as the fluent setter", () => {
+      expect(buildCommand("rotationSpeed", 5, ctx())).toEqual({
+        kind: "set-json",
+        param: 6015,
+        data: { value: 5 },
+        channel: 0,
+      });
+    });
   });
 
   describe("detection", () => {

@@ -42,6 +42,11 @@ export const PTZ_CMD = {
    * A compound builder — the app follows it with PREVIEW (6035) + PTZ_PIC (6097) to refresh the
    * thumbnail; the default-set itself is this frame. */
   PTZ_SET_DEFAULT_POSITION: 6242,
+  /** How fast a rotate STEP travels. 1700 wrapper, `{value:1|3|5}`. Observed live: the app's
+   * Slow/Mid/Fast control on an indoor pan-tilt writes 1 / 3 / 5 and nothing else moves. The id sits
+   * inside the smart lock's `601x` block, so the shared param dictionary labels it `lockParam` — an id
+   * reused across product lines, and the camera's meaning is the observed one. */
+  PTZ_ROTATE_SPEED: 6015,
 } as const;
 
 /**
@@ -316,17 +321,47 @@ function isDirection(v: unknown): v is PtzDirection {
 /**
  * Every `ptz` feature, declared once.
  *
- * Movement is command-driven, so every entry is a `method`: `rotate` takes a direction plus an
+ * Movement is command-driven, so almost every entry is a `method`: `rotate` takes a direction plus an
  * optional speed, the four compass verbs take nothing, `preset()` returns a whole sub-API, and `zoom`
- * is gated on the device having a second lens. There is no value member: no device reports its pan/tilt
- * position as a parameter. Position arrives only while the camera moves, as the `ptzNotify` event
- * {@link PTZ} decodes from a live frame.
+ * is gated on the device having a second lens. `rotationSpeed` is the one value member — the camera's
+ * own step speed, which it stores. There is no position member: no device reports where it is pointed
+ * as a parameter. Position arrives only while the camera moves, as the `ptzNotify` event {@link PTZ}
+ * decodes from a live frame.
  *
  * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
  * which the reference site does not carry.
  * @internal
  */
 export const PTZ_MEMBERS = {
+  /**
+   * How fast a rotate STEP travels, on the app's own three-position control: `1` slow, `3` mid, `5`
+   * fast. A `scalar` rather than an enum — the endpoints and the midpoint are observed, so 2 and 4 are
+   * a prediction of the scale's shape and the wire is not known to reject them.
+   *
+   * Not the same thing as `rotate`'s `zoom` argument, which scales one step's SIZE rather than its
+   * speed.
+   *
+   * The parameter is **absent until first written**: a camera whose speed has never been set reports
+   * no `6015` at all, so the getter is installed only once the value exists — an absent reading is "not
+   * configured", never "unsupported".
+   */
+  rotationSpeed: {
+    param: PTZ_CMD.PTZ_ROTATE_SPEED,
+    type: "number",
+    kind: "scalar",
+    provenance: "verified",
+    description:
+      "Pan/tilt rotate speed: 1 = slow, 3 = mid, 5 = fast (PTZ_ROTATE_SPEED 6015). ✅ Write confirmed " +
+      "live on a T8410 (mains, standalone): the app's Slow/Mid/Fast control identified 1/3/5, then 1 " +
+      "and 5 were sent consecutively through this member and read back on the cloud param. 2 and 4 " +
+      "are the scale's shape, not observed values. Absent until first written.",
+    write: (v, ctx) => {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < 1 || n > 5) return undefined;
+      return setJson(PTZ_CMD.PTZ_ROTATE_SPEED, { value: n }, ctx);
+    },
+  },
+
   /** Rotate a step in a direction; `zoom` scales the step size (1.0 = the default step). */
   rotate: method(
     ({ ctx, sink }) =>
@@ -413,7 +448,9 @@ export const PTZ_MEMBERS = {
 
 export const PTZ: CapabilityModule = {
   capability: "ptz",
-  description: "Pan/tilt (PTZ) control. Movement is command-driven; position arrives as a live event.",
+  description:
+    "Pan/tilt (PTZ) control. Movement is command-driven and rotate speed is stored; position arrives " +
+    "as a live event.",
   /**
    * The intent route for the movement verbs — kept alongside the member table because these are
    * ARGUMENT-TAKING verbs, not property writes: `rotate` takes a direction, the preset verbs take an id.
