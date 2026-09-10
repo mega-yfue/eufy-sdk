@@ -37,4 +37,8 @@ export const SOLIX_ENDPOINTS = {
   getSiteList: "/power_service/v1/site/get_site_list",
   /** Per-user AWS-IoT MQTT credentials (cert/key/endpoint/thing) for the real-time device plane. */
   getUserMqttInfo: "/v1/openapi/devicemanage/get_user_mqtt_info",
+  /** GET: the pairable-product catalog (categories → products), for labelling model codes. */
+  productCategories: "/power_service/v1/product_categories",
+  /** GET: pairable accessories. */
+  productAccessories: "/power_service/v1/product_accessories",
 } as const;

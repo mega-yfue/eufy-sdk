@@ -42,6 +42,24 @@ interface SolixEnvelope<T = unknown> {
   data?: T;
 }
 
+/** One product in the pairable-product catalog. Extra vendor fields (images, guides) are preserved. */
+export interface SolixProduct {
+  /** SKU / model code, e.g. `A1782`. */
+  product_code: string;
+  /** Marketing name, e.g. `SOLIX F3000`. */
+  name: string;
+  /** Variant/sub-model codes under this product, when present. */
+  p_codes?: unknown[];
+  [k: string]: unknown;
+}
+
+/** A catalog category (e.g. "Portable Power Station") and its products. */
+export interface SolixProductCategory {
+  name: string;
+  products: SolixProduct[];
+  [k: string]: unknown;
+}
+
 /** An authenticated Solix session — the token + the derived `gtoken` + the resolved API host. */
 export interface SolixSession {
   authToken: string;
@@ -288,4 +306,52 @@ export class SolixClient {
   async getUserMqttInfo(): Promise<Record<string, unknown>> {
     return this.authedRead<Record<string, unknown>>(SOLIX_ENDPOINTS.getUserMqttInfo);
   }
+
+  /** GET an authenticated PLAIN read (catalog endpoints are GET). */
+  private async authedGet<T = unknown>(path: string): Promise<T> {
+    if (!this.session_) throw new Error("not authenticated — call login() first");
+    const res = await this.doFetch(`https://${this.session_.apiHost}${path}`, {
+      method: "GET",
+      headers: this.baseHeaders({ gtoken: this.session_.gtoken, "x-auth-token": this.session_.authToken }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    const env = JSON.parse(await res.text()) as SolixEnvelope<T>;
+    if (env.code !== 0) throw new Error(`Solix ${path} failed (${env.code}): ${env.msg}`);
+    return (env.data ?? null) as T;
+  }
+
+  /**
+   * The pairable-product catalog (categories → products). This is Anker's product registry, not the
+   * account's devices — fetch it to label a discovered device's model code with a marketing name and
+   * category. Pair with {@link buildModelIndex}. It is a live endpoint, so it stays current without a
+   * baked-in table.
+   */
+  async getProductCatalog(): Promise<SolixProductCategory[]> {
+    return (await this.authedGet<SolixProductCategory[]>(SOLIX_ENDPOINTS.productCategories)) ?? [];
+  }
+
+  /** The pairable-accessory catalog (same shape family as {@link getProductCatalog}). */
+  async getProductAccessories(): Promise<unknown[]> {
+    return (await this.authedGet<unknown[]>(SOLIX_ENDPOINTS.productAccessories)) ?? [];
+  }
+}
+
+/**
+ * Flatten a {@link SolixClient.getProductCatalog} result into a `product_code → { name, category }`
+ * lookup for labelling discovered devices. Every variant code in `p_codes` maps to its parent product
+ * too, so a device reporting a sub-model resolves to the same marketing name.
+ */
+export function buildModelIndex(categories: SolixProductCategory[]): Map<string, { name: string; category: string }> {
+  const index = new Map<string, { name: string; category: string }>();
+  for (const category of categories) {
+    for (const product of category.products ?? []) {
+      const entry = { name: product.name, category: category.name };
+      if (product.product_code) index.set(product.product_code, entry);
+      for (const variant of product.p_codes ?? []) {
+        const code = typeof variant === "string" ? variant : (variant as { product_code?: string })?.product_code;
+        if (code) index.set(code, entry);
+      }
+    }
+  }
+  return index;
 }

@@ -10,7 +10,7 @@ import { createCipheriv, createDecipheriv, createECDH, createHash, randomBytes }
 import { describe, expect, it } from "vitest";
 
 import { encryptBody } from "../../core/index.js";
-import { SolixClient } from "../solix-client.js";
+import { SolixClient, buildModelIndex } from "../solix-client.js";
 import { SOLIX_LOCAL_KEY_HEX } from "../constants.js";
 
 const LOCALKEY = Buffer.from(SOLIX_LOCAL_KEY_HEX, "hex");
@@ -73,6 +73,17 @@ function makeServer(opts: { devices?: unknown[]; twoFactor?: boolean } = {}): {
     if (u.pathname.endsWith("/get_relate_and_bind_devices"))
       return reply({ code: 0, msg: "success!", data: { data: opts.devices ?? [] } });
     if (u.pathname.endsWith("/get_site_list")) return reply({ code: 0, msg: "success!", data: { site_list: [] } });
+    if (u.pathname.endsWith("/product_categories"))
+      return reply({
+        code: 0,
+        msg: "success!",
+        data: [
+          {
+            name: "Portable Power Station",
+            products: [{ product_code: "A1782", name: "SOLIX F3000", p_codes: ["2301", { product_code: "2302" }] }],
+          },
+        ],
+      });
     return reply({ code: 404, msg: "unknown" });
   }) as unknown as typeof fetch;
   return { fetchImpl, calls };
@@ -128,5 +139,17 @@ describe("SolixClient", () => {
     const { fetchImpl } = makeServer();
     const client = new SolixClient({ email: "a@b.co", password: "pw", fetchImpl });
     await expect(client.getDevices()).rejects.toThrow(/not authenticated/);
+  });
+
+  it("fetches the product catalog and indexes model codes (incl. variants) to name + category", async () => {
+    const { fetchImpl } = makeServer();
+    const client = new SolixClient({ email: "a@b.co", password: "pw", fetchImpl });
+    await client.login();
+    const catalog = await client.getProductCatalog();
+    const index = buildModelIndex(catalog);
+    expect(index.get("A1782")).toEqual({ name: "SOLIX F3000", category: "Portable Power Station" });
+    // both the string and object variant codes resolve to the parent product
+    expect(index.get("2301")?.name).toBe("SOLIX F3000");
+    expect(index.get("2302")?.name).toBe("SOLIX F3000");
   });
 });
