@@ -1,7 +1,7 @@
 /**
  * Live telemetry for Anker Solix devices over the AWS-IoT MQTT plane.
  *
- * The transport is the shared {@link SecureMqtt} — the exact same anker AWS-IoT broker + per-user
+ * The transport is the shared `SecureMqtt` — the exact same anker AWS-IoT broker + per-user
  * client-cert mutual TLS the eufy device path uses; a Solix account's `get_user_mqtt_info` result maps
  * straight onto {@link SecureMqttCredentials}. Solix devices publish telemetry continuously on
  * `dt/{app_name}/{product_code}/{device_sn}/param_info` as an **ff09 TLV frame** (the same framing
@@ -129,7 +129,7 @@ export interface SolixMqttOptions {
 
 /**
  * Subscribe to a Solix device's live telemetry and emit decoded `reading` events. Reuses
- * {@link SecureMqtt} for the connection; adds only the Solix data topic + ff09 param decoding.
+ * `SecureMqtt` for the connection; adds only the Solix data topic + ff09 param decoding.
  *
  *   const mqtt = new SolixMqtt({ mqttInfo: await solix.getUserMqttInfo() });
  *   mqtt.on("reading", (r) => console.log(r.deviceSn, r.values.gridVoltage));
@@ -185,7 +185,7 @@ export class SolixMqtt extends EventEmitter {
 
 /**
  * Pull the ff09 binary frame out of a received message. Solix telemetry arrives as a `{head, payload}`
- * envelope whose `payload` is a JSON string carrying base64 `data` (or `trans`); {@link SecureMqtt}
+ * envelope whose `payload` is a JSON string carrying base64 `data` (or `trans`); `SecureMqtt`
  * has already JSON-parsed the outer envelope. Returns the decoded frame bytes, or `null`.
  */
 export function extractFf09Payload(raw: unknown): Buffer | null {
