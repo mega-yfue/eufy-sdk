@@ -4,13 +4,15 @@
  * the device reports (its catalog category + record fields + live telemetry) rather than switched on
  * its model. Callers branch on {@link SolixDevice.has}(capability), never on the product code.
  *
- * Grounding: capabilities whose values come from data we can actually read today — `identity`,
- * `firmware`, `connectivity`, and `energyMeter` (grid voltage + raw telemetry channels) — expose typed
- * value accessors. The other categories' capabilities (`battery`, `solarInput`, `acOutput`,
- * `evCharger`, `charger`, `cooler`) are DETECTED so `has(...)` is correct, but their named metrics are
- * deliberately not decoded yet: naming a datapoint field without a real frame from that device type
- * would be a guess, which is exactly what the data-driven design exists to avoid. Their raw decoded
- * channels are still available via {@link SolixDevice.telemetry}.
+ * Grounding: `identity`, `firmware`, `connectivity`, and `energyMeter` expose typed accessors backed
+ * by data we can read today (`energyMeter`'s one confirmed tag came from a live ff09 frame). `battery`
+ * exposes typed accessors too, but on a weaker footing: the field NAMES are the app's own (recovered
+ * from `libapp.so`), yet no Solarbank telemetry frame has been captured, so the wire→field binding is
+ * unconfirmed and its accessors return `undefined` until a real frame arrives (see {@link SolixBattery}).
+ * The remaining capabilities (`solarInput`, `acOutput`, `evCharger`, `charger`, `cooler`) are DETECTED
+ * so `has(...)` is correct, but their named metrics are deliberately not decoded — naming a field with
+ * no real frame is a guess the data-driven design avoids. Raw decoded channels are always available via
+ * {@link SolixDevice.telemetry}.
  */
 import type { SolixProductCategory } from "./solix-client.js";
 import { buildModelIndex } from "./solix-client.js";
@@ -47,6 +49,12 @@ export const CATEGORY_CAPABILITIES: Readonly<Record<string, readonly SolixCapabi
 
 /** Product-code prefixes known to be grid/energy meters (detects `energyMeter` regardless of category). */
 export const SOLIX_METER_MODELS: readonly string[] = ["AE1X0"];
+
+/**
+ * Product-code prefixes for the grid-tie Solarbank / home-battery family (detects `battery` +
+ * `solarInput` regardless of category): A1790 = Solarbank E1600 gen-1, A17C* = Solarbank 2 / 3.
+ */
+export const SOLARBANK_MODELS: readonly string[] = ["A1790", "A17C"];
 
 /** A discovered Solix device record, as returned by `SolixClient.getDevices()`. */
 export interface SolixDeviceRecord {
@@ -100,6 +108,48 @@ export interface SolixEnergyMeter {
   meterImportEnergy(): number | undefined;
   meterExportEnergy(): number | undefined;
   /** All decoded float channels from the latest reading, keyed `channel_<tag>` (+ any named ones). */
+  channels(): Record<string, number>;
+}
+
+/**
+ * Solarbank / home-battery live values (grid-tie battery family — A1790, A17C*). Field NAMES are the
+ * app's own, recovered from the Anker app's compiled-Dart strings (`libapp.so`, packages `charging/`
+ * + `ak_soft_ems/`). Unlike {@link SolixEnergyMeter} — whose one confirmed tag came from a live ff09
+ * frame — the Solarbank's telemetry has NOT yet been captured from a real device, so the wire→field
+ * binding is unconfirmed: each accessor reads a small set of candidate keys (JSON snake_case + Dart
+ * camelCase) from the latest reading and returns `undefined` until a real frame populates them. Once a
+ * Solarbank frame is captured (or `blutter` recovers the parser), tighten the candidate keys here.
+ * `temperatures()` returns every reported temperature (pack / casing / BMS / per-expansion-pack).
+ */
+export interface SolixBattery {
+  /** State of charge, percent (0–100). */
+  soc(): number | undefined;
+  /** Battery capacity / stored energy (Wh) if reported. */
+  batteryEnergy(): number | undefined;
+  /** Net battery power (W); sign convention device-defined. */
+  batteryPower(): number | undefined;
+  /** Charge / discharge power (W). */
+  chargePower(): number | undefined;
+  dischargePower(): number | undefined;
+  /** PV / solar input power into the system (W). */
+  solarInputPower(): number | undefined;
+  /** AC output / home-supplied power (W). */
+  outputPower(): number | undefined;
+  /** Home load the system is serving (W). */
+  homeLoadPower(): number | undefined;
+  /** Grid → battery power (W), when grid-charging. */
+  gridToBatteryPower(): number | undefined;
+  /** Whether the battery is currently charging, if reported. */
+  isCharging(): boolean | undefined;
+  /** Battery / pack temperature (°C or °F per the device's unit). */
+  batteryTemperature(): number | undefined;
+  /** Enclosure / casing temperature. */
+  casingTemperature(): number | undefined;
+  /** BMS temperature. */
+  bmsTemperature(): number | undefined;
+  /** Every reported temperature, keyed by source (pack / casing / bms / per-pack). */
+  temperatures(): Record<string, number>;
+  /** All decoded telemetry values from the latest reading (raw keys). */
   channels(): Record<string, number>;
 }
 
@@ -194,6 +244,46 @@ export class SolixDevice {
       channels: () => ({ ...values }),
     };
   }
+
+  battery(): SolixBattery | undefined {
+    if (!this.has("battery")) return undefined;
+    const values = this.values;
+    // Read by candidate keys (JSON snake_case first, then Dart camelCase). The Solarbank frame
+    // isn't captured yet, so which form arrives is unconfirmed — try both; undefined until seen.
+    const num = (...keys: string[]): number | undefined => {
+      for (const k of keys) {
+        const v = values[k];
+        if (typeof v === "number") return v;
+      }
+      return undefined;
+    };
+    return {
+      soc: () => num("soc", "battery_soc", "batterySoc", "batteryLevel"),
+      batteryEnergy: () => num("battery_energy", "batteryEnergy", "batteryCapacity"),
+      batteryPower: () => num("battery_power", "batteryPower"),
+      chargePower: () => num("charging_power", "chargingPower"),
+      dischargePower: () => num("discharge_power", "dischargePower"),
+      solarInputPower: () => num("photovoltaic_power", "input_power", "inputPower", "microInverterPower"),
+      outputPower: () => num("output_power", "outputPower", "acOutputPower"),
+      homeLoadPower: () => num("home_load_power", "homeLoadPower", "currentHomeLoad"),
+      gridToBatteryPower: () => num("grid_to_battery_power", "gridToBatteryPower"),
+      isCharging: () => {
+        const v = values["is_charging"] ?? values["isCharging"];
+        return typeof v === "number" ? v !== 0 : undefined;
+      },
+      batteryTemperature: () => num("battery_temperature", "batteryTemperature"),
+      casingTemperature: () => num("scp_casing_temperature", "casing_temperature", "casingTemperature"),
+      bmsTemperature: () => num("bms_temperature", "bmsTemperature"),
+      temperatures: () => {
+        const out: Record<string, number> = {};
+        for (const [k, v] of Object.entries(values)) {
+          if (typeof v === "number" && /temp/i.test(k)) out[k] = v;
+        }
+        return out;
+      },
+      channels: () => ({ ...values }),
+    };
+  }
 }
 
 /** Resolve a device's capability set from its record fields, catalog category, and model. */
@@ -203,5 +293,9 @@ function resolveCapabilities(record: SolixDeviceRecord, category?: string): Set<
   if (record.wifi_online !== undefined || record.rssi != null || record.wifi_name) caps.add("connectivity");
   for (const c of (category && CATEGORY_CAPABILITIES[category]) || []) caps.add(c);
   if (SOLIX_METER_MODELS.some((m) => record.product_code?.startsWith(m))) caps.add("energyMeter");
+  if (SOLARBANK_MODELS.some((m) => record.product_code?.startsWith(m))) {
+    caps.add("battery");
+    caps.add("solarInput");
+  }
   return caps;
 }
