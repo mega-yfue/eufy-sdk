@@ -35,6 +35,7 @@ import {
   SOLIX_ESTIMATE_HOST,
   SOLIX_LOCAL_KEY_HEX,
 } from "./constants.js";
+import { SolixDevice, type SolixDeviceRecord } from "./device.js";
 
 /** The vendor envelope every Solix endpoint answers with (`data` shape varies per endpoint). */
 interface SolixEnvelope<T = unknown> {
@@ -360,6 +361,16 @@ export class SolixClient {
   /** Per-user AWS-IoT MQTT credentials (cert/key/endpoint/thing) for the real-time device plane. */
   async getUserMqttInfo(): Promise<Record<string, unknown>> {
     return this.authedRead<Record<string, unknown>>(SOLIX_ENDPOINTS.getUserMqttInfo);
+  }
+
+  /**
+   * Discover the account's devices as capability-driven {@link SolixDevice} objects — each already
+   * carrying its catalog category + resolved capabilities. Combines `getDevices()` with the product
+   * catalog (one fetch) so names/categories resolve; feed live telemetry via `SolixDevice.applyReading`.
+   */
+  async discoverDevices(): Promise<SolixDevice[]> {
+    const [records, catalog] = await Promise.all([this.getDevices(), this.getProductCatalog().catch(() => [])]);
+    return (records as SolixDeviceRecord[]).map((r) => new SolixDevice(r, { catalog }));
   }
 
   /** GET an authenticated PLAIN read (catalog endpoints are GET). */
