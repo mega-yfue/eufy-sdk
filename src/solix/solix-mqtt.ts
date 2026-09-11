@@ -14,6 +14,7 @@
  * type `0x05` = float32 LE. Field `a2` is the device serial (ASCII after a leading type byte).
  */
 import { EventEmitter } from "node:events";
+import { randomBytes } from "node:crypto";
 
 import { SecureMqtt, type SecureMqttCredentials } from "../transport/mqtt/secure-mqtt.js";
 import type { Logger } from "../core/index.js";
@@ -147,10 +148,28 @@ export interface SolixMqttDevice {
 
 /** Options for {@link SolixMqtt}. */
 export interface SolixMqttOptions {
-  /** `get_user_mqtt_info` result — carries endpoint, cert/key, app_name, thing_name. */
+  /** `get_user_mqtt_info` result — carries endpoint, cert/key, app_name, thing_name, user_id. */
   mqttInfo: SecureMqttCredentials;
   /** Override the MQTT clientId. Defaults to the cert CN (`thing_name`), distinct from the app's id. */
   clientId?: string;
+  /**
+   * Account/user id (40-hex) for the arming `account_id` + heartbeat topic. Defaults to
+   * `mqttInfo.user_id`; set it if the credentials omit it.
+   */
+  userId?: string;
+  /**
+   * How often (ms) to re-send the device-info arming request that keeps realtime telemetry flowing.
+   * The device stops pushing `param_info` when no client keeps requesting it (the app re-arms on every
+   * foreground resume + a periodic heartbeat), so a passive subscriber goes silent after the server's
+   * reporting window closes. Default 25s — inside the observed ~30s cadence with keepalive 60. Set `0`
+   * to disable arming (subscribe-only, the old behaviour).
+   */
+  armIntervalMs?: number;
+  /**
+   * The `head.client_id` stamped into the command/heartbeat envelopes — the app uses
+   * `android-{app_name}-{user_id}-{mqttUUID}`. Defaults to that shape with a random per-instance UUID.
+   */
+  appClientId?: string;
   logger?: Logger;
 }
 
@@ -165,10 +184,22 @@ export interface SolixMqttOptions {
 export class SolixMqtt extends EventEmitter {
   private readonly transport: SecureMqtt;
   private readonly appName: string;
+  private readonly userId?: string;
+  private readonly appClientId: string;
+  private readonly armIntervalMs: number;
+  private readonly logger?: Logger;
+  private readonly watched = new Map<string, SolixMqttDevice>();
+  private seq = 0;
+  private armTimer?: ReturnType<typeof setInterval>;
 
   constructor(opts: SolixMqttOptions) {
     super();
     this.appName = opts.mqttInfo.app_name ?? "anker_power";
+    this.userId = opts.userId ?? opts.mqttInfo.user_id;
+    this.armIntervalMs = opts.armIntervalMs ?? 25_000;
+    this.logger = opts.logger;
+    this.appClientId =
+      opts.appClientId ?? `android-${this.appName}-${this.userId ?? "anonymous"}-${randomBytes(16).toString("hex")}`;
     this.transport = new SecureMqtt({
       credentials: opts.mqttInfo,
       clientId: opts.clientId ?? opts.mqttInfo.thing_name,
@@ -179,16 +210,117 @@ export class SolixMqtt extends EventEmitter {
     this.transport.on("message", (msg: { topic?: string; raw: unknown }) => this.onMessage(msg));
   }
 
-  /** Connect (if needed) and subscribe to the device's telemetry topic. */
+  /**
+   * Connect, subscribe to the device's telemetry (+ command-reply) topics, ARM realtime reporting, and
+   * start the re-arm/heartbeat timer so telemetry keeps flowing without the app. Idempotent per device.
+   */
   async watch(device: SolixMqttDevice): Promise<void> {
     await this.transport.connect();
-    const topic = `dt/${this.appName}/${device.product_code}/${device.device_sn}/#`;
-    await this.transport.subscribe([topic]);
+    const dt = `dt/${this.appName}/${device.product_code}/${device.device_sn}`;
+    const cmd = `cmd/${this.appName}/${device.product_code}/${device.device_sn}`;
+    await this.transport.subscribe([
+      `${dt}/#`, // param_info + basic_info + state_info
+      `${cmd}/app/res`, // this device's command replies
+      ...(this.userId ? [`cmd/${this.appName}/${this.userId}/res`, `cmd/${this.appName}/${this.userId}/req`] : []),
+    ]);
+    this.watched.set(device.device_sn, device);
+    if (this.armIntervalMs > 0) {
+      await this.armAll();
+      this.armTimer ??= setInterval(() => void this.armAll(), this.armIntervalMs);
+    }
   }
 
-  /** Tear down the connection. */
+  /** Tear down the connection and stop the re-arm timer. */
   async close(): Promise<void> {
+    if (this.armTimer) {
+      clearInterval(this.armTimer);
+      this.armTimer = undefined;
+    }
+    this.watched.clear();
     await this.transport.disconnect();
+  }
+
+  /**
+   * Re-arm every watched device and send the site heartbeat. The device only pushes `param_info` while
+   * a client keeps requesting it — this replays the app's `requestDeviceInfo` (cmd 17) + `power_site`
+   * heartbeat (cmd 10), the exact envelopes captured live (see docs). Best-effort: a publish failure is
+   * emitted, not thrown, so one bad device doesn't stop the rest or kill the timer.
+   */
+  private async armAll(): Promise<void> {
+    for (const device of this.watched.values()) {
+      try {
+        await this.arm(device);
+      } catch (e) {
+        this.emit("error", e);
+      }
+    }
+    if (this.userId) {
+      try {
+        await this.transport.publish(`dt/${this.appName}/${this.userId}/power_site`, this.heartbeatEnvelope(), {
+          qos: 1,
+        });
+      } catch (e) {
+        this.emit("error", e);
+      }
+    }
+  }
+
+  /** Publish the device-info arming request (both the "info" and "realtime" ff09 variants the app sends). */
+  private async arm(device: SolixMqttDevice): Promise<void> {
+    const topic = `cmd/${this.appName}/${device.product_code}/${device.device_sn}/req`;
+    for (const variant of ["info", "realtime"] as const) {
+      const body = this.commandEnvelope(
+        device,
+        buildFf09Request(variant),
+        variant === "info" ? { encoding_type: 2 } : {},
+      );
+      await this.transport.publish(topic, body, { qos: 1 });
+    }
+    this.logger?.debug?.(`[solix] armed ${device.device_sn} (param_info reporting requested)`);
+  }
+
+  /** Build the `{head, payload}` cmd-17 (requestDeviceInfo) envelope carrying a base64 ff09 request. */
+  private commandEnvelope(device: SolixMqttDevice, frame: Buffer, extra: Record<string, unknown>): string {
+    this.seq += 1;
+    return JSON.stringify({
+      head: {
+        version: "1.0.0.1",
+        client_id: this.appClientId,
+        sess_id: randomBytes(2).toString("hex"),
+        msg_seq: this.seq,
+        seed: randomBytes(16).toString("hex"),
+        timestamp: Math.floor(Date.now() / 1000),
+        cmd_status: 2,
+        cmd: 17,
+        sign_code: 1,
+        device_pn: device.product_code,
+        device_sn: device.device_sn,
+      },
+      payload: JSON.stringify({
+        device_sn: device.device_sn,
+        account_id: this.userId ?? "",
+        data: frame.toString("base64"),
+        ...extra,
+      }),
+    });
+  }
+
+  /** The `power_site` heartbeat (cmd 10) envelope the app sends on a timer to keep the session alive. */
+  private heartbeatEnvelope(): string {
+    return JSON.stringify({
+      head: {
+        version: "1.0.0.1",
+        client_id: this.appClientId,
+        sess_id: "1",
+        msg_seq: 1,
+        cmd: 10,
+        cmd_status: 2,
+        sign_code: 1,
+        seed: "1",
+        timestamp: Math.floor(Date.now() / 1000),
+      },
+      payload: JSON.stringify({ user_id: this.userId ?? "", site_id: "" }),
+    });
   }
 
   /** Decode one inbound MQTT message envelope and emit a `reading` if it carries an ff09 param frame. */
@@ -231,4 +363,38 @@ export function extractFf09Payload(raw: unknown): Buffer | null {
   if (typeof data !== "string") return null;
   const buf = Buffer.from(data, "base64");
   return buf.length ? buf : null;
+}
+
+/**
+ * Build the ff09 request frame the app base64-encodes into a `requestDeviceInfo` (cmd 17) command's
+ * `data`. Captured live from the Anker app — request-type tag `a1`=0x22; the `realtime` variant adds
+ * `a2`/`a3` params (this is the one that keeps `param_info` reporting flowing), while `info` is the bare
+ * device-info fetch. Frame:
+ *   `ff09 | len(u16 LE, TOTAL bytes incl. ff09+len+xor) | 5-byte header | a1 01 22
+ *    [| a2 02 01 01 | a3 03 02 2c 01] | fe … <ts32 LE> | xor`
+ * `fe` carries a fresh unix-timestamp nonce; the trailing byte is XOR of every preceding byte (the same
+ * checksum the meter's telemetry frames use — verified to reproduce the captured frames exactly).
+ */
+export function buildFf09Request(variant: "info" | "realtime"): Buffer {
+  const ts = Buffer.alloc(4);
+  ts.writeUInt32LE(Math.floor(Date.now() / 1000) >>> 0);
+  const body =
+    variant === "info"
+      ? Buffer.concat([Buffer.from([0x03, 0x00, 0x0f, 0x00, 0x40, 0xa1, 0x01, 0x22, 0xfe, 0x04]), ts])
+      : Buffer.concat([
+          Buffer.from([
+            0x03, 0x00, 0x0f, 0x00, 0x57, 0xa1, 0x01, 0x22, 0xa2, 0x02, 0x01, 0x01, 0xa3, 0x03, 0x02, 0x2c, 0x01, 0xfe,
+            0x05, 0x03,
+          ]),
+          ts,
+        ]);
+  const frame = Buffer.alloc(body.length + 5);
+  frame[0] = 0xff;
+  frame[1] = 0x09;
+  frame.writeUInt16LE(frame.length, 2); // declared length = total frame bytes (incl. ff09, len, xor)
+  body.copy(frame, 4);
+  let xor = 0;
+  for (let i = 0; i < frame.length - 1; i++) xor ^= frame[i]!;
+  frame[frame.length - 1] = xor;
+  return frame;
 }
