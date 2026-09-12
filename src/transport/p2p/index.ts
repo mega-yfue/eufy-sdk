@@ -27,6 +27,9 @@ export * from "./lan-ip.js";
 // A host that surfaces live-startup diagnostics needs to name the message and narrow its phases, so the
 // trace vocabulary is public; `traceLiveStart` itself stays internal to this layer's own call sites.
 export { LIVE_TRACE_MESSAGE, type LiveTrace } from "./live-trace.js";
+// A caller that bounds a station call itself has to place its own bound above what this layer waits, and a
+// literal copied into its source is a second source of truth. The router stays internal; its waits do not.
+export { P2P_STATION_WAITS } from "./command-router.js";
 // Feature-command ids (P2P_CMD) + state param ids (P2P_PARAM) are the capability layer's vocabulary
 // and live in model/, not here. This layer owns only the router's envelope ids (./envelope).
 // codec.ts has generic decode/encode helper names → namespace to avoid flat collisions.

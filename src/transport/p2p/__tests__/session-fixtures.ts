@@ -20,6 +20,8 @@ export const ACCOUNT_ID = "0000000000000000000000000000000000000000";
  */
 export interface FakeP2PSession extends EventEmitter {
   isConnected: boolean;
+  /** Records the traces staged on this session, which is how work done before a command is observed. */
+  trace: ReturnType<typeof vi.fn>;
   hasLevel2Key: boolean;
   awaitLevel2Key: ReturnType<typeof vi.fn>;
   repromptLevel2Key: ReturnType<typeof vi.fn>;
@@ -37,6 +39,7 @@ export interface FakeP2PSession extends EventEmitter {
 export function connectedSession(hasLevel2Key = true): FakeP2PSession {
   const session = new EventEmitter() as FakeP2PSession;
   session.isConnected = true;
+  session.trace = vi.fn();
   session.hasLevel2Key = hasLevel2Key;
   session.keyArrivesOnReprompt = false;
   session.awaitLevel2Key = vi.fn(async () => session.hasLevel2Key);
@@ -45,6 +48,18 @@ export function connectedSession(hasLevel2Key = true): FakeP2PSession {
     session.hasLevel2Key = true; // the station answered the second ask
     return true;
   });
+  return session;
+}
+
+/**
+ * A session that has not connected, and does not while a spec waits on it.
+ *
+ * Every call on a station holds for this before anything is sent, so it is the state that separates a station
+ * that could not be reached from one that answered and refused.
+ */
+export function disconnectedSession(): FakeP2PSession {
+  const session = connectedSession(false);
+  session.isConnected = false;
   return session;
 }
 

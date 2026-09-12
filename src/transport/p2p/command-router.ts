@@ -22,7 +22,7 @@ import type {
   AbortableCall,
   TalkbackHandle,
 } from "../../core/contracts.js";
-import { StationBusyError } from "../../core/contracts.js";
+import { StationBusyError, StationUnreachableError } from "../../core/contracts.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { assertNever } from "../../core/util.js";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -105,6 +105,24 @@ const LEVEL2_GRACE_MS = 25_000;
  * so a station that offers no key does not charge this to every later command.
  */
 const LEVEL2_SETTLE_MS = 8_000;
+
+/**
+ * What a caller's own deadline on a station call has to clear, in milliseconds.
+ *
+ * A caller that bounds one of these calls itself races these waits, and a bound below them reports the
+ * caller's own expiry in place of the reason this SDK was about to give — the two are indistinguishable to
+ * whoever reads the outcome, and they call for different next steps. Published so that bound can be derived
+ * rather than copied: a literal in a caller's source is a second source of truth that goes stale silently
+ * when these change.
+ *
+ * `connect` applies to every call on a station, because nothing can be addressed to one before its session is
+ * up. `level2Grace` applies twice where the key is required: the negotiation is re-prompted once.
+ */
+export const P2P_STATION_WAITS = Object.freeze({
+  connect: CONNECT_WAIT_MS,
+  level2Grace: LEVEL2_GRACE_MS,
+  level2Settle: LEVEL2_SETTLE_MS,
+});
 
 /** How long a station's live RTSP URL push is awaited — the connect wait and the URL wait together. */
 const RTSP_URL_READ_TIMEOUT_MS = 12_000;
@@ -1255,12 +1273,20 @@ export class P2PCommandRouter {
     const accountId = ((raw.member as any)?.admin_user_id as string) ?? this.deps.mega.auth?.userId ?? "";
 
     const t0 = Date.now();
-    while (!session.isConnected && Date.now() - t0 < CONNECT_WAIT_MS) {
-      opts.signal?.throwIfAborted();
-      await sleep(200);
+    if (!session.isConnected) {
+      session.trace({ phase: "session-connect-wait", waitMs: CONNECT_WAIT_MS });
+      while (!session.isConnected && Date.now() - t0 < CONNECT_WAIT_MS) {
+        opts.signal?.throwIfAborted();
+        await sleep(200);
+      }
+      session.trace(
+        session.isConnected
+          ? { phase: "session-connected", waitedMs: Date.now() - t0 }
+          : { phase: "session-unreachable", waitedMs: Date.now() - t0 },
+      );
     }
     opts.signal?.throwIfAborted();
-    if (!session.isConnected) throw new Error(`P2P session for ${parentSn} did not connect`);
+    if (!session.isConnected) throw new StationUnreachableError(Date.now() - t0);
     if (opts.waitLevel2) {
       if (opts.waitLevel2 === "settle") {
         await abortable(session.awaitLevel2Key(LEVEL2_SETTLE_MS, "session"), opts.signal);

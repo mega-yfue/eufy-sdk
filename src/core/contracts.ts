@@ -107,6 +107,32 @@ export class CameraDisabledError extends Error {
 }
 
 /**
+ * Work on a station was refused: its session did not connect within the wait it was given.
+ *
+ * A station is reached over its own session, and nothing addressed to it — a media start, a property read, a
+ * still — can be attempted before that session is up. Naming this apart from every other failure is what tells
+ * a station that could not be reached at all from one that answered and then refused, or one that served media
+ * a caller could not use: those call for opposite next steps, and a caller cannot infer which it had from a
+ * message.
+ *
+ * `waitedMs` is how long was actually waited, which a caller compares against its own deadline to know whether
+ * this SDK concluded or its own bound expired first.
+ */
+export class StationUnreachableError extends Error {
+  /** Always true: a station unreachable now may answer on a later attempt. */
+  readonly retryable = true;
+
+  constructor(
+    /** How long the session was waited on before this was raised. */
+    readonly waitedMs: number,
+    options?: { cause?: unknown },
+  ) {
+    super(`the station's P2P session did not connect within ${waitedMs}ms, so nothing could be sent to it`, options);
+    this.name = "StationUnreachableError";
+  }
+}
+
+/**
  * A live stream was refused: the station is already serving another of its cameras to a viewer.
  *
  * A station fans several cameras out over one session and serves ONE of them at a time. Accepting a second

@@ -37,11 +37,27 @@ export type LiveTrace =
   /** A data channel's numbering restarted mid-connection, so sequencing resynchronized onto it. */
   | { phase: "sequence-restart"; dataType: number }
   /**
+   * Work on a station is holding for its session to connect, with the milliseconds it will wait.
+   *
+   * The earliest phase there is: nothing else on a station can be attempted until its session is up, and a
+   * caller whose own deadline expires inside this wait has this record and no other. Emitted only where a wait
+   * actually happens, so its absence states that the session was already connected.
+   */
+  | { phase: "session-connect-wait"; waitMs: number }
+  /** The session connected, after this long. */
+  | { phase: "session-connected"; waitedMs: number }
+  /**
+   * The session did not connect within its wait, so nothing on this station can be attempted.
+   *
+   * The one outcome that is otherwise indistinguishable from a station that answered and then refused: both
+   * leave a caller with no media and no phase naming a station.
+   */
+  | { phase: "session-unreachable"; waitedMs: number }
+  /**
    * A live start is holding for the station's level-2 key, with the milliseconds it will wait.
    *
-   * The first of three phases that account for the wait before any media command is sent. A start that looks
-   * slow is either waiting here, waiting for the station to serve the channel it was asked for, or being
-   * re-issued — and only these separate them.
+   * A start that looks slow is either waiting here, waiting for its session to connect, waiting for the station
+   * to serve the channel it was asked for, or being re-issued — and only these phases separate them.
    */
   | { phase: "level2-wait"; waitMs: number }
   /** The station's level-2 key was negotiated, under the cipher it selected. */

@@ -435,8 +435,13 @@ export class P2PSession extends EventEmitter {
     return false;
   }
 
-  /** Emit a live trace under this session's handle. */
-  private trace(trace: LiveTrace): void {
+  /**
+   * Emit a live trace under this session's handle.
+   *
+   * Public so work staged on a session outside it — reaching the station before anything can be addressed to
+   * it — is recorded under the same handle as everything that follows, which is what groups one attempt.
+   */
+  trace(trace: LiveTrace): void {
     traceLiveStart(this.logger, trace, this.traceId);
   }
 
