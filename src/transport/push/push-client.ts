@@ -243,7 +243,12 @@ export class PushClient extends EventEmitter {
       persistentId: object?.persistentId,
       ttl: object?.ttl,
       sent: object?.sent,
-      payload: data.payload ?? data,
+      // Keep the WHOLE envelope, not just the decoded `payload` entry. The identity keys
+      // (`device_sn`, `station_sn`) are app_data siblings of `payload`, never inside it, so
+      // narrowing to `data.payload` here discarded them and every push arrived unattributed.
+      // `normalizePushEvent` already reads `env.payload ?? env` and falls back to `env.device_sn`,
+      // so it wants the envelope — that fallback was simply unreachable.
+      payload: data,
     };
     this.emit("message", raw);
     const event = normalizePushEvent(raw);
