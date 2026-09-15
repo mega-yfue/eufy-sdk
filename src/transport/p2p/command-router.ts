@@ -26,7 +26,7 @@ import { StationKeyUnavailableError, StationUnreachableError } from "../../core/
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { assertNever } from "../../core/util.js";
 import { setTimeout as sleep } from "node:timers/promises";
-import { P2PSession, type P2PFrame } from "./p2p-session.js";
+import { CONNECT_TIMEOUT_MS, P2PSession, type P2PFrame } from "./p2p-session.js";
 import { buildDirectBinaryBody } from "./write-commands.js";
 import { CommandType } from "./commands.js";
 import {
@@ -68,9 +68,6 @@ import { traceLiveStart, type LiveTrace } from "./live-trace.js";
  * sends are harmless). Bump if drops are seen on marginal links.
  */
 const DIRECT_CMD_SENDS = 5;
-
-/** How long a freshly resolved session is given to reach a connected state. */
-const CONNECT_WAIT_MS = 20_000;
 
 /**
  * Settle `work` as it settles, or reject the moment `signal` aborts, whichever comes first.
@@ -117,10 +114,12 @@ const LEVEL2_SETTLE_MS = 8_000;
  * when these change.
  *
  * `connect` applies to every call on a station, because nothing can be addressed to one before its session is
- * up. `level2Grace` applies twice where the key is required: the negotiation is re-prompted once.
+ * up, and it is the session's own connect deadline: a session that reaches it closes itself, so waiting past it
+ * waits on a connection that can no longer answer. `level2Grace` applies twice where the key is required: the
+ * negotiation is re-prompted once.
  */
 export const P2P_STATION_WAITS = {
-  connect: CONNECT_WAIT_MS,
+  connect: CONNECT_TIMEOUT_MS,
   level2Grace: LEVEL2_GRACE_MS,
   level2Settle: LEVEL2_SETTLE_MS,
 } as const;
@@ -1459,13 +1458,27 @@ export class P2PCommandRouter {
     this.manager.bumpCommand(parentSn, parentSn);
     const channel = typeof raw.device_channel === "number" ? (raw.device_channel as number) : 0;
     const stationAdminId = (raw.member as any)?.admin_user_id;
+    const stationModel = this.recordFor(parentSn)?.model;
     const accountId = (stationAdminId as string) ?? this.deps.mega.auth?.userId ?? "";
+
+    this.traceOnStation(session, {
+      phase: "station-resolved",
+      topology: homeBaseAttached ? "attached" : "own",
+      channel,
+      stationAdmin:
+        typeof stationAdminId !== "string"
+          ? "unstated"
+          : stationAdminId === this.deps.mega.auth?.userId
+            ? "self"
+            : "other",
+      ...(stationModel ? { stationModel } : {}),
+    });
 
     const t0 = Date.now();
     let waitedMs = 0;
     if (!session.isConnected) {
-      this.traceOnStation(session, { phase: "session-connect-wait", waitMs: CONNECT_WAIT_MS });
-      while (!session.isConnected && Date.now() - t0 < CONNECT_WAIT_MS) {
+      this.traceOnStation(session, { phase: "session-connect-wait", waitMs: P2P_STATION_WAITS.connect });
+      while (!session.isConnected && Date.now() - t0 < P2P_STATION_WAITS.connect) {
         opts.signal?.throwIfAborted();
         await sleep(200);
       }
@@ -1477,17 +1490,6 @@ export class P2PCommandRouter {
     }
     opts.signal?.throwIfAborted();
     if (!session.isConnected) throw new StationUnreachableError(parentSn, waitedMs);
-    this.traceOnStation(session, {
-      phase: "station-resolved",
-      topology: homeBaseAttached ? "attached" : "own",
-      channel,
-      stationAdmin:
-        typeof stationAdminId !== "string"
-          ? "unstated"
-          : stationAdminId === this.deps.mega.auth?.userId
-            ? "self"
-            : "other",
-    });
     if (opts.waitLevel2) {
       if (opts.waitLevel2 === "settle") {
         await abortable(session.awaitLevel2Key(LEVEL2_SETTLE_MS, "session"), opts.signal);

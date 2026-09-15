@@ -69,7 +69,15 @@ const HEARTBEAT_MS = 5_000;
  */
 const PATH_SILENCE_MS = HEARTBEAT_MS * 3;
 const LOOKUP_RETRY_MS = 1_000;
-const CONNECT_TIMEOUT_MS = 15_000;
+/**
+ * How long a station is given to answer a lookup before the connection gives up on it and closes.
+ *
+ * The whole deadline for reaching a station: the lookups are re-sent every second until one is answered, and
+ * a connection that reaches this closes itself, so nothing addressed to that station can succeed afterwards.
+ * Published because it bounds every wait on a session connecting — a second number for the same deadline
+ * elsewhere would outlive the connection it waits on and charge the difference to every failure.
+ */
+export const CONNECT_TIMEOUT_MS = 15_000;
 /**
  * The channel a command addresses the station itself on, rather than one of its cameras, and the value a
  * session's channel-taking methods resolve an omitted channel to.
@@ -679,6 +687,11 @@ export class P2PSession extends EventEmitter {
       if (host && !this.closed) this.selfAddress = { host, port: boundPort };
     });
 
+    this.trace({
+      phase: "lookup-channels",
+      local: !this.cfg.noBroadcast || this.cfg.localAddress !== undefined,
+      cloud: this.cfg.dskKey !== undefined && (this.cfg.cloudAddresses?.length ?? 0) > 0,
+    });
     this.sendLookups();
     this.lookupTimer = setInterval(() => this.sendLookups(), LOOKUP_RETRY_MS);
     this.connectTimer = setTimeout(() => {
@@ -775,10 +788,6 @@ export class P2PSession extends EventEmitter {
       for (const addr of this.cfg.cloudAddresses) this.send(addr, type, payload);
       this.logger.debug(
         `[p2p] ${this.cfg.stationSn} sendLookups: cloud -> ${this.cfg.cloudAddresses.map((a) => `${a.host}:${a.port}`).join(", ")} self=${this.selfAddress?.host}:${this.selfAddress?.port}`,
-      );
-    } else {
-      this.logger.debug(
-        `[p2p] ${this.cfg.stationSn} sendLookups: NO cloud lookup sent (dskKey=${!!this.cfg.dskKey} cloudAddresses=${this.cfg.cloudAddresses?.length ?? 0})`,
       );
     }
   }

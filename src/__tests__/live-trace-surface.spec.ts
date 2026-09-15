@@ -38,6 +38,7 @@ describe("live-trace vocabulary at the package entry point", () => {
       "video-decode-empty": true,
       "datagram-gap": true,
       "sequence-restart": true,
+      "lookup-channels": true,
       "session-connect-wait": true,
       "session-connected": true,
       "session-unreachable": true,

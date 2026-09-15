@@ -6,6 +6,7 @@ import {
   traceCollector,
   ACCOUNT_ID,
   DEVICE_SN,
+  STATION_MODEL,
   STATION_SN,
 } from "./session-fixtures.js";
 
@@ -33,6 +34,10 @@ describe("the station a call resolves", () => {
 
   it("states the topology and channel it was resolved under", async () => {
     expect(await resolved()).toMatchObject({ phase: "station-resolved", topology: "attached", channel: 1 });
+  });
+
+  it("states the model of the station it resolved, not of the device on it", async () => {
+    expect(await resolved()).toMatchObject({ stationModel: STATION_MODEL });
   });
 
   it("states the signed-in account as the station's administrator where it is", async () => {

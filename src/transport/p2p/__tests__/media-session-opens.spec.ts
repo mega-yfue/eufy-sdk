@@ -46,7 +46,10 @@ class FakeSession extends EventEmitter {
   }
 }
 
-vi.mock("../p2p-session.js", () => ({ P2PSession: FakeSession }));
+vi.mock("../p2p-session.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../p2p-session.js")>()),
+  P2PSession: FakeSession,
+}));
 
 const { P2PCommandRouter } = await import("../command-router.js");
 type Router = InstanceType<typeof P2PCommandRouter>;

@@ -7,6 +7,8 @@ import { LIVE_TRACE_MESSAGE, type LiveTrace } from "../live-trace.js";
 /** Synthetic ids shared by the command-router specs — never a real device. */
 export const DEVICE_SN = "T8114P0000000000";
 export const STATION_SN = "T8010P0000000000";
+/** The model the fixture's parent station reports, which a resolve states apart from the device on it. */
+export const STATION_MODEL = "T8010";
 export const ACCOUNT_ID = "0000000000000000000000000000000000000000";
 
 /**
@@ -101,11 +103,18 @@ export function routerWithSession(
       {
         sn: DEVICE_SN,
         stationSn: STATION_SN,
+        model: "T8114",
         raw: { parent_sn: STATION_SN, device_channel: 1, member: { admin_user_id: accountId } },
       } as never,
       // The parent station, listed but endpoint-less: with nothing registered, a cold open fails at
       // session resolution rather than hanging — which is what `register: false` exercises.
-      { sn: STATION_SN, stationSn: STATION_SN, p2pDid: "", raw: { member: { admin_user_id: accountId } } } as never,
+      {
+        sn: STATION_SN,
+        stationSn: STATION_SN,
+        p2pDid: "",
+        model: STATION_MODEL,
+        raw: { member: { admin_user_id: accountId } },
+      } as never,
     ],
     ensureDevices: async () => {},
     onConnect: () => {},

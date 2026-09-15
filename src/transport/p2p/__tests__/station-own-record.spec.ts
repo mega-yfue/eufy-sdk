@@ -5,7 +5,7 @@ import type { P2PRouterDeps } from "../command-router.js";
 /** Every `P2PSession` the router constructed, in order — reset per test by the `beforeEach` below. */
 const opened: Array<{ stationSn: string; p2pDid: string; dskKey?: string }> = [];
 
-vi.mock("../p2p-session.js", async () => {
+vi.mock("../p2p-session.js", async (importOriginal) => {
   const { EventEmitter } = await import("node:events");
   class FakeP2PSession extends EventEmitter {
     isConnected = true;
@@ -16,7 +16,7 @@ vi.mock("../p2p-session.js", async () => {
     }
     connect = vi.fn(async () => {});
   }
-  return { P2PSession: FakeP2PSession };
+  return { ...(await importOriginal<typeof import("../p2p-session.js")>()), P2PSession: FakeP2PSession };
 });
 
 const { P2PCommandRouter } = await import("../command-router.js");
