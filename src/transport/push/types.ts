@@ -33,7 +33,7 @@ export interface RawPushMessage {
   persistentId?: string;
   ttl?: number;
   sent?: string;
-  /** The decoded eufy payload (the `payload` app_data entry, JSON-parsed). */
+  /** The eufy envelope: every app_data entry, with the `payload` entry JSON-parsed in place. */
   payload: EufyPushMessage;
 }
 
