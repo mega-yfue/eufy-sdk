@@ -309,6 +309,62 @@ describe("Device.describe — the manifest a caller renders from", () => {
   });
 });
 
+/**
+ * A claimed event is described only where the evidence for it is.
+ *
+ * The AI-detection ids are shared verbatim across the camera families, so the id table alone reports
+ * every camera as classifying vehicles and dogs. A claim narrows the DESCRIPTION to the units with
+ * evidence; what the dispatch index decodes is deliberately untouched, which the decode specs hold.
+ */
+describe("describeCapabilities — events claimed on evidence", () => {
+  const motionEvents = (params: number[], extra: Partial<CommandContext> = {}): readonly string[] =>
+    describeCapabilities(
+      buildActions(["motion"], {
+        ctx: { ...ctxWith(new Set(params)), ...extra },
+        sink,
+        read: () => undefined,
+      }),
+      { codec: "camera", capabilities: new Set<Capability>(["motion"]), ...extra },
+    ).find((entry) => entry.capability === "motion")!.events;
+
+  const AI_DETECT_TYPE = 1298;
+  const PIR = 1011;
+
+  it("claims a vehicle only where the device reports the bitmask that has a vehicle bit", () => {
+    expect(motionEvents([PIR, AI_DETECT_TYPE])).toContain("vehicleDetected");
+    expect(motionEvents([PIR])).not.toContain("vehicleDetected");
+  });
+
+  it("claims a dog only for a device that hangs off a station", () => {
+    expect(motionEvents([PIR], { homeBaseAttached: true })).toContain("dogDetected");
+    expect(motionEvents([PIR], { homeBaseAttached: false })).not.toContain("dogDetected");
+  });
+
+  /**
+   * Narrowing on a fact the context does not carry would withdraw the event from every caller that
+   * describes a device without resolving its parent — so an absent topology withdraws nothing.
+   */
+  it("withdraws nothing for a device whose topology is not stated", () => {
+    expect(motionEvents([PIR])).toContain("dogDetected");
+  });
+
+  /** Unclaimed rows are the common case and must not be touched by the claim resolution. */
+  it("leaves an unclaimed detection on every device that binds the capability", () => {
+    for (const events of [motionEvents([PIR]), motionEvents([PIR, AI_DETECT_TYPE], { homeBaseAttached: true })]) {
+      expect(events).toEqual(expect.arrayContaining(["motion", "petDetection", "soundDetected", "cryingDetected"]));
+    }
+  });
+
+  /**
+   * A standalone motion sensor binds this capability — it IS motion detection by device type — and
+   * reports no AI classification at all. Its own motion id is not claimed, so it keeps that.
+   */
+  it("claims no AI classification for a device outside the camera families", () => {
+    const sensor = motionEvents([PIR], { codec: "sensor", homeBaseAttached: true });
+    expect(sensor).toEqual(["motion"]);
+  });
+});
+
 /** A command never leaves the manifest path — describing a device is a read of its shape. */
 describe("describing a device sends nothing", () => {
   it("dispatches no command", () => {

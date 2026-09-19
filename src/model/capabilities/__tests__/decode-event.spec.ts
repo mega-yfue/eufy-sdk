@@ -271,6 +271,17 @@ describe("decodeEvent — detection sub-events and station events", () => {
     expect(push(3108)[0]).toMatchObject({ event: "dogDetected" });
   });
 
+  /**
+   * 3106 is declared identically in the doorbell, indoor and HB3-paired vocabularies, so it belongs to
+   * the camera-wide capability rather than to the doorbell one. A camera with no doorbell has to
+   * decode it, and a doorbell — which holds both capabilities — has to decode it once, not twice.
+   */
+  it("decodes a pet detection for every camera, and once for a device that is also a doorbell", () => {
+    expect(push(3106)[0]).toMatchObject({ event: "petDetection" });
+    expect(push(3106, ["motion"]).map((e) => e.event)).toEqual(["petDetection"]);
+    expect(push(3106, ["motion", "doorbell"]).map((e) => e.event)).toEqual(["petDetection"]);
+  });
+
   it("tags the dog sub-behaviours without inventing separate event names", () => {
     expect(push(3109)[0]).toMatchObject({ event: "dogDetected", payload: { kind: "lick" } });
     expect(push(3110)[0]).toMatchObject({ event: "dogDetected", payload: { kind: "poop" } });

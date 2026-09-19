@@ -9,6 +9,7 @@ import type {
   CapabilityStateReader,
   CommandContext,
   DecodedState,
+  EventClaim,
   InboundSignal,
 } from "./types.js";
 import type { ParamValue } from "../types.js";
@@ -161,6 +162,40 @@ export const AiDetectType = {
   vehicle: 0x4,
   pet: 0x8,
 } as const;
+
+/**
+ * Evidence a device is in the population that issues the AI-detection ids at all: it is a camera.
+ *
+ * 3101-3110 are drawn from the doorbell, indoor and HB3-paired vocabularies, every one of them a
+ * camera family. A standalone motion sensor binds this capability — it IS motion detection by device
+ * type — but announces itself under {@link CusPushEvent.MOTION_SENSOR_PIR}, and reports no AI
+ * classification of any kind.
+ */
+const CAMERA_AI_CLAIM: EventClaim = { codecs: ["camera"] };
+
+/**
+ * Evidence a device classifies vehicles: it reports the AI-detection-type bitmask that HAS a vehicle
+ * bit ({@link AiDetectType} bit2, decoded live and confirmed against the app).
+ *
+ * The push id cannot carry this. 3107 is `VEHICLE_DETECTION` in the doorbell, indoor and
+ * HB3-paired vocabularies alike — the integer is the vendor's meaning for the classification, not a
+ * statement that a given unit performs it. The type parameter is the one signal a unit reports about
+ * itself, so its absence is the only honest evidence available, and it is the same bar the typed read
+ * of that bitmask already answers to. A camera that starts reporting the parameter starts announcing
+ * the event with it.
+ */
+const VEHICLE_CLAIM: EventClaim = { ...CAMERA_AI_CLAIM, reads: ["aiDetectType"] };
+
+/**
+ * Evidence a device classifies dogs: it hangs off a station.
+ *
+ * 3108/3109/3110 are declared in {@link HB3PairedDevicePushEvent} and in no other family's
+ * vocabulary, so a unit that stands alone is not in the population that issues them. Attachment to
+ * ANY station is the gate rather than to a HomeBase 3 specifically: the coarser test keeps the event
+ * on an attached camera whose station generation is not established, which is the direction that
+ * cannot lose a real detection.
+ */
+const DOG_CLAIM: EventClaim = { ...CAMERA_AI_CLAIM, homeBaseAttached: true };
 
 /** Bound motion controls — the object returned by `dev.motion()`. */
 export type MotionActions = Surface<typeof MOTION_MEMBERS> & {
@@ -745,21 +780,24 @@ export const MOTION: CapabilityModule = {
   events: [
     { source: "push", match: DoorbellPushEvent.MOTION_DETECTION, emit: "motion" },
     { source: "push", match: CusPushEvent.MOTION_SENSOR_PIR, emit: "motion" },
-    { source: "push", match: IndoorPushEvent.CRYING_DETECTION, emit: "cryingDetected" },
-    { source: "push", match: IndoorPushEvent.SOUND_DETECTION, emit: "soundDetected" },
-    { source: "push", match: DoorbellPushEvent.VEHICLE_DETECTION, emit: "vehicleDetected" },
-    { source: "push", match: HB3PairedDevicePushEvent.DOG_DETECTION, emit: "dogDetected" },
+    { source: "push", match: IndoorPushEvent.CRYING_DETECTION, emit: "cryingDetected", claim: CAMERA_AI_CLAIM },
+    { source: "push", match: IndoorPushEvent.SOUND_DETECTION, emit: "soundDetected", claim: CAMERA_AI_CLAIM },
+    { source: "push", match: IndoorPushEvent.PET_DETECTION, emit: "petDetection", claim: CAMERA_AI_CLAIM },
+    { source: "push", match: DoorbellPushEvent.VEHICLE_DETECTION, emit: "vehicleDetected", claim: VEHICLE_CLAIM },
+    { source: "push", match: HB3PairedDevicePushEvent.DOG_DETECTION, emit: "dogDetected", claim: DOG_CLAIM },
     {
       source: "push",
       match: HB3PairedDevicePushEvent.DOG_LICK_DETECTION,
       emit: "dogDetected",
       payload: { kind: "lick" },
+      claim: DOG_CLAIM,
     },
     {
       source: "push",
       match: HB3PairedDevicePushEvent.DOG_POOP_DETECTION,
       emit: "dogDetected",
       payload: { kind: "poop" },
+      claim: DOG_CLAIM,
     },
   ],
 };

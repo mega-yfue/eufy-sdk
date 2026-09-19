@@ -475,10 +475,16 @@ export const DOORBELL: CapabilityModule = {
   properties: propertiesOf(DOORBELL_MEMBERS),
   /** Doorbells self-report no single unambiguous param; the model name is the reliable signal. */
   detection: { modelHints: [/doorbell/i] },
-  /** Inbound FCM doorbell events (`DoorbellPushEvent`): ring press, pet, package delivered/taken. */
+  /**
+   * Inbound FCM doorbell events (`DoorbellPushEvent`): ring press and the package trio.
+   *
+   * Pet (3106) is NOT here. The id is declared identically in the doorbell, indoor and HB3-paired
+   * vocabularies, so it belongs to the camera-wide `motion` module that every camera binds; claiming
+   * it here as well would make it a contested id that a doorbell — which has both capabilities —
+   * matches twice, emitting one push as two events.
+   */
   events: [
     { source: "push", match: DoorbellPushEvent.PRESS_DOORBELL, emit: "doorbellPress" },
-    { source: "push", match: DoorbellPushEvent.PET_DETECTION, emit: "petDetection" },
     { source: "push", match: DoorbellPushEvent.PACKAGE_DELIVERED, emit: "packageDelivered" },
     { source: "push", match: DoorbellPushEvent.PACKAGE_TAKEN, emit: "packageTaken" },
     { source: "push", match: DoorbellPushEvent.PACKAGE_STRANDED, emit: "packageStranded" },

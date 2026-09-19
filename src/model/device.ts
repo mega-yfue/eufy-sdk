@@ -538,6 +538,7 @@ export class Device {
         codec: this.codec,
         model: this.model,
         capabilities: new Set(this.capabilities),
+        homeBaseAttached: this.stationSn !== this.sn,
       }),
     };
   }

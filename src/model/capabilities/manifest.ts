@@ -22,7 +22,7 @@
 import type { Capability, Codec, PropertyValueType, ResolvedDevice, ValueKind } from "../types.js";
 import { actionSpecOf, camelCase } from "./access.js";
 import { resolvedEnum, type ValueMember } from "./members.js";
-import type { ActionSpec, AvailabilityContext, CapabilityModule } from "./types.js";
+import type { ActionSpec, AvailabilityContext, CapabilityModule, EventClaim } from "./types.js";
 
 /** One read installed on a bound capability object — a value the device reports, and what it means. */
 export interface ReadDescriptor {
@@ -138,7 +138,14 @@ export function describeBound(
       if (spec) actions.push({ name, ...spec });
       else undescribedActions.push(name);
     }
-    out.push({ capability: m.capability, accessor, reads, actions, undescribedActions, events: emitsOf(m) });
+    out.push({
+      capability: m.capability,
+      accessor,
+      reads,
+      actions,
+      undescribedActions,
+      events: emitsOf(m, reads, ctx),
+    });
   }
   return out;
 }
@@ -172,7 +179,43 @@ function readDescriptor(
   };
 }
 
-/** Every event name a capability announces: its declarative id table plus what its own decoder emits. */
-function emitsOf(m: CapabilityModule): string[] {
-  return [...new Set([...(m.events ?? []).map((e) => e.emit), ...(m.emits ?? [])])];
+/**
+ * Every event name a capability announces ON THIS DEVICE: the mappings whose claim this device meets,
+ * plus what its own decoder emits.
+ *
+ * An unclaimed mapping belongs to every device that binds the capability, which is most of them — an
+ * id the vendor issues per capability rather than per family needs no evidence beyond having the
+ * capability at all. A claimed one names the evidence that tells shared families apart; see
+ * {@link EventClaim}.
+ *
+ * The escape-hatch `emits` list is not claimable: those names come out of a module's own binary
+ * decoder, which already ran against this device's frames.
+ */
+function emitsOf(m: CapabilityModule, reads: readonly ReadDescriptor[], ctx?: AvailabilityContext): string[] {
+  const installed = new Set(reads.map((r) => r.accessor));
+  const claimed = (m.events ?? []).filter((e) => holds(e.claim, installed, ctx)).map((e) => e.emit);
+  return [...new Set([...claimed, ...(m.emits ?? [])])];
+}
+
+/**
+ * Whether this device meets a mapping's claim — every stated field, against evidence that contradicts
+ * it rather than evidence that confirms it.
+ *
+ * A read the device never reported is the contradiction for `reads`: the getter is absent from the
+ * bound object, which is the same evidence gate the read itself answers to. A topology the context
+ * does not state contradicts nothing, so the event stands; narrowing on an unknown would withdraw an
+ * event from every caller that describes a device without resolving its parent.
+ *
+ * `codecs` is the exception to that leniency, and for the reason {@link AvailabilityContext.codec}
+ * gives: an absent codec is a device outside the eufy device model rather than one whose family is
+ * merely unresolved, so it matches no family's vocabulary and cannot be issuing the family's ids.
+ */
+function holds(claim: EventClaim | undefined, installed: ReadonlySet<string>, ctx?: AvailabilityContext): boolean {
+  if (!claim) return true;
+  if (claim.codecs && (ctx?.codec === undefined || !claim.codecs.includes(ctx.codec))) return false;
+  if (claim.reads?.some((name) => !installed.has(name))) return false;
+  if (claim.homeBaseAttached !== undefined && ctx?.homeBaseAttached !== undefined) {
+    return ctx.homeBaseAttached === claim.homeBaseAttached;
+  }
+  return true;
 }

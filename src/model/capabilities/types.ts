@@ -144,6 +144,46 @@ export interface EventMapping {
    * capture. Return `{}` when this signal doesn't carry the field, so nothing is invented.
    */
   derive?(signal: InboundSignal): Record<string, unknown>;
+  /**
+   * Evidence that this device deals in the classification the id names, for an id whose presence in
+   * the wire vocabulary does not prove it.
+   *
+   * The AI-detection ids are shared verbatim across the camera families, so the id space says what an
+   * integer MEANS and never which units classify that way. A claim is how a mapping states the
+   * evidence that separates them, and it narrows the DESCRIPTION only: {@link EventMapping} stays in
+   * the dispatch index unclaimed, so a device that sends the push still gets the event. Under-reporting
+   * what a device is expected to emit is recoverable; dropping an event it did emit is not.
+   *
+   * Every field must hold — the AND to {@link DetectionSpec}'s OR, because a claim rules a family OUT
+   * rather than finding one more reason to say yes. A fact the context does not carry rules nothing
+   * out: only evidence that positively contradicts the claim withdraws the event.
+   */
+  claim?: EventClaim;
+}
+
+/**
+ * Evidence separating the families that share one inbound id.
+ *
+ * Both fields are optional and independent; an empty claim asserts nothing and is the same as none.
+ */
+export interface EventClaim {
+  /**
+   * The codecs whose devices issue the id. For an id drawn from a vocabulary one device family owns:
+   * the AI-detection ids belong to the camera families, and a standalone sensor announces its own
+   * motion under a different id entirely.
+   */
+  codecs?: readonly Codec[];
+  /**
+   * Member names whose INSTALLED getter is the evidence — the device reported the parameter behind
+   * the classification, which is the same bar every typed read is held to.
+   */
+  reads?: readonly string[];
+  /**
+   * The topology the id belongs to: `true` for an id only a station's attached device sends, `false`
+   * for one only a standalone unit sends. Compared against {@link AvailabilityContext.homeBaseAttached},
+   * and ignored where that is absent.
+   */
+  homeBaseAttached?: boolean;
 }
 
 /**
@@ -208,6 +248,15 @@ export interface AvailabilityContext {
    * `undefined` as an empty set — `ctx.paramIds?.has(dp) ?? false`.
    */
   paramIds?: ReadonlySet<number>;
+  /**
+   * Whether the device hangs off a HomeBase (a `parent_sn` other than its own) rather than standing
+   * alone. A DEVICE fact, not a transport one — the same class of routing evidence as {@link hasP2p} —
+   * which is why it sits here rather than on {@link CommandContext}: it is as true of a described
+   * device as of a commanded one. The `rtsp` capability gates on it because a station serves an
+   * attached camera's stream itself and ignores that camera's authentication setting, so the write
+   * cannot do what its name promises there.
+   */
+  homeBaseAttached?: boolean;
 }
 
 export interface CommandContext extends AvailabilityContext {
@@ -271,13 +320,6 @@ export interface CommandContext extends AvailabilityContext {
    * capability uses this to route lock/unlock to P2P vs. reject with a clear MQTT-not-wired error.
    */
   hasP2p?: boolean;
-  /**
-   * Whether the device hangs off a HomeBase (a `parent_sn` other than its own) rather than standing
-   * alone. A DEVICE fact, not a transport one — the same class of routing evidence as {@link hasP2p}.
-   * The `rtsp` capability gates on it because a station serves an attached camera's stream itself and
-   * ignores that camera's authentication setting, so the write cannot do what its name promises there.
-   */
-  homeBaseAttached?: boolean;
   /**
    * Parsed `get_product_data_point` catalog for this device's SKU — present for vacuum/mower devices,
    * absent for all other codecs. Capabilities use it for per-model feature-availability and value-range
