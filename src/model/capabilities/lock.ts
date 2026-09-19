@@ -106,33 +106,32 @@ const overP2p = (ctx: AvailabilityContext): boolean => ctx.hasP2p === true;
  */
 export const LOCK_MEMBERS = {
   /**
-   * The lock's own state, and the weakest thing in this table: 1200 is a `guessed` placeholder because
-   * the lock announces (un)locking as a pushed event rather than holding a param, so the evidence gate
-   * will normally leave this getter uninstalled and `lockState` is the real read. `writtenElsewhere`
-   * points at the `lock`/`unlock` methods — a single `write` cannot express two verbs that carry no
-   * value.
+   * The lock's own state, verified on param 6000: "4" = locked, "3" = unlocked.
+   * `writtenElsewhere` points at the `lock`/`unlock` methods — a single `write` cannot express two
+   * verbs that carry no value.
    */
   locked: {
-    param: 1200,
+    param: 6000,
     type: "bool",
     kind: "boolean",
-    provenance: "guessed",
+    provenance: "verified",
     writtenElsewhere: true,
-    description:
-      "Lock state, true=locked. UNVERIFIED: no stable state param to key off; placeholder id pending verification.",
+    coerce: (raw) => String(raw).trim() === "4",
+    description: "Lock state, true=locked (verified: param 6000, 4=locked, 3=unlocked).",
   },
   /**
-   * Cell charge as a percentage, on the same param 1101 every battery device reports. Named `battery`
+   * Cell charge as a percentage, on param 1101 or smart-lock param 6001. Named `battery`
    * within this capability rather than deferring to the `battery` capability: a lock resolves as a lock,
    * so the accessor is `dev.lock().battery`.
    */
   battery: {
     param: 1101,
+    readAliases: [{ paramType: 6001 }],
     type: "number",
     unit: "%",
     kind: "percent",
     provenance: "verified",
-    description: "Lock battery level 0-100 (verified: param 1101).",
+    description: "Lock battery level 0-100 (verified: param 1101, alias 6001).",
   },
   /**
    * Link quality in dBm as the lock measures it, on the shared param 1141. Both actuation methods here
@@ -330,17 +329,17 @@ function settingToggleCommand(settingId: number, enabled: boolean | number | str
 }
 
 /**
- * `lock` — smart lock. `locked` is the reported lock state, but there's no stable state param to
- * key off (only pushed via a CommandType-style event), so the param id here is a placeholder.
+ * `lock` — smart lock. `locked` reports lock state via verified param 6000 (4=locked, 3=unlocked),
+ * and `battery` reports charge percentage via param 1101 or smart-lock alias 6001.
  */
 export const LOCK: CapabilityModule = {
   capability: "lock",
   description: "Smart-lock locked/unlocked state and battery.",
   members: LOCK_MEMBERS,
   properties: propertiesOf(LOCK_MEMBERS),
-  // Lock state is reported via CommandType (no stable param); the model name (lock/safe) is a
+  // Lock state is reported via param 6000 (verified: 4=locked, 3=unlocked); the model name (lock/safe) is a
   // signal, and every lock-codec device has the lock capability as its baseline.
-  detection: { modelHints: [/lock/i, /safe/i], codecs: ["lock"] },
+  detection: { evidenceParams: [6000], modelHints: [/lock/i, /safe/i], codecs: ["lock"] },
   // Inbound FCM lock events (LockPushEvent 257..771: (un)lock actions + alarms) → one "lockState".
   events: [{ source: "push", match: [257, 771], emit: "lockState" }],
 };
