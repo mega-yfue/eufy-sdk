@@ -28,6 +28,18 @@ describe("classify (device_type → codec)", () => {
     expect(codecForType(10)).toBe("sensor"); // motion sensor
     expect(codecForType(11)).toBe("keypad");
     expect(codecForType(9)).toBe("camera"); // CAMERA2 → residual camera bucket
+    expect(codecForType(27)).toBe("station"); // HomeBase S1 Pro
+  });
+
+  /**
+   * The S1 Pro is the only station whose model code sits outside the T8 band, so every prefix rule for a
+   * station misses it and the residual camera rule cannot catch it either. A base taken for anything but a
+   * station carries no arming surface and its attached cameras resolve against a parent nothing calls one.
+   */
+  it("classifies the HomeBase S1 Pro from its type and from its model", () => {
+    expect(classify({ deviceType: 27 })).toBe("station");
+    expect(classify({ model: "T9000" })).toBe("station");
+    expect(classify({ model: "T9000P0000000000" })).toBe("station");
   });
 
   it("falls back to model code, then defaults to camera", () => {

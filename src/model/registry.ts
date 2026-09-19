@@ -45,6 +45,7 @@ import { inferName } from "./infer.js";
  */
 export const MODEL_REGISTRY: Readonly<Record<string, RegistryEntry>> = {
   // Stations / hubs.
+  T9000: { codec: "station", name: "HomeBase S1 Pro" },
   T8030: { codec: "station", name: "HomeBase 3" },
   T8010: { codec: "station", name: "HomeBase" },
   T8002: { codec: "station", name: "HomeBase E" },
