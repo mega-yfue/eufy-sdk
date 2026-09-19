@@ -322,6 +322,100 @@ describe("mega authenticated session rejection", () => {
     });
   });
 
+  /**
+   * What a host is told to do about a rejection it is left to handle.
+   *
+   * The message alone leaves a host to invent a delay, and the one it invents is the seconds-scale ladder a
+   * login state machine already has for a FAILED login — which turns a displaced session into a login every
+   * few seconds, from outside the hold-off that exists to stop exactly that. So the wait rides on the error.
+   */
+  describe("the wait it hands the host", () => {
+    it("carries the hold-off remaining, and says the session is being displaced", async () => {
+      vi.useFakeTimers();
+      const { mega } = client([KICKED], { status: LoginStatus.Ok, session: {} as never });
+
+      await expect(call(mega)).rejects.toBeInstanceOf(SessionExpiredError); // replaced once, rejected again
+      const held = (await call(mega).catch((e: unknown) => e)) as SessionExpiredError;
+
+      expect(held.contended).toBe(true);
+      expect(held.retryAfterMs).toBe(60_000);
+    });
+
+    /** A replacement that was SPENT and failed is still a replacement: the next one waits, and the host is told. */
+    it("carries a wait for a replacement that was spent and failed", async () => {
+      vi.useFakeTimers();
+      const { mega } = client([KICKED], new Error("synthetic: re-login unavailable"));
+
+      const failed = (await call(mega).catch((e: unknown) => e)) as SessionExpiredError;
+
+      expect(failed.contended).toBe(false); // nothing was held off — the login ran and failed
+      expect(failed.retryAfterMs).toBe(60_000);
+    });
+
+    /** Nothing spent, nothing to wait for: a host with no session to replace may act at once. */
+    it("carries no wait when no replacement has been spent", async () => {
+      const mega = new MegaHttpClient({ email: "", password: "" });
+      const internals = mega as unknown as {
+        ensureSessionKey: () => Promise<{ shareKey: string; keyIdent: string }>;
+        httpPost: () => Promise<Response>;
+      };
+      internals.ensureSessionKey = vi.fn(async () => ({ shareKey: "00".repeat(32), keyIdent: "00".repeat(16) }));
+      internals.httpPost = vi.fn(async () => KICKED);
+
+      const err = (await call(mega).catch((e: unknown) => e)) as SessionExpiredError;
+
+      expect(err.retryAfterMs).toBe(0);
+      expect(err.contended).toBe(false);
+    });
+
+    /**
+     * The hold-off has to count the host's logins too, or it is not a bound.
+     *
+     * Every replacement this client spends doubles the wait; a host that re-logs in off the surfaced error
+     * spends one the same way, and if only the internal path counted, the wait reported back would sit at
+     * its first value while the account was in fact being logged into over and over. Here the whole loop is
+     * real — a rejected call, a host-driven `login()`, another rejected call — and the wait has to have
+     * grown.
+     */
+    it("counts a host-driven login against the hold-off, so the wait it reports grows", async () => {
+      vi.useFakeTimers();
+      const mega = new MegaHttpClient({ email: "synthetic@example.invalid", password: "synthetic", region: "us-pr" });
+      const internals = mega as unknown as {
+        ensureSessionKey: () => Promise<{ shareKey: string; keyIdent: string }>;
+        httpPost: (url: string) => Promise<Response>;
+      };
+      internals.ensureSessionKey = vi.fn(async () => ({ shareKey: "00".repeat(32), keyIdent: "00".repeat(16) }));
+      const logins: string[] = [];
+      internals.httpPost = vi.fn(async (url: string) => {
+        if (!url.includes("/passport/login")) return KICKED;
+        logins.push(url);
+        return {
+          status: 200,
+          data: {
+            code: 0,
+            data: {
+              user_id: "synthetic-user",
+              ap_cloud_user_id: "synthetic-user",
+              auth_token: `synthetic-token-${logins.length}`,
+              token_expires_at: 0,
+            },
+          },
+        };
+      });
+
+      const first = (await call(mega).catch((e: unknown) => e)) as SessionExpiredError;
+      expect(logins).toHaveLength(1); // this client's own recovery, counted
+      expect(first.retryAfterMs).toBe(60_000);
+
+      await mega.login(); // the host, doing what the error left it to do
+      const second = (await call(mega).catch((e: unknown) => e)) as SessionExpiredError;
+
+      expect(logins).toHaveLength(2);
+      expect(second.contended).toBe(true);
+      expect(second.retryAfterMs).toBe(120_000); // counted, not ignored
+    });
+  });
+
   /** An unauthenticated call has no session to recover — nothing about it says the token is dead. */
   it("leaves an unauthenticated call alone", async () => {
     const { mega, login } = client([KICKED]);

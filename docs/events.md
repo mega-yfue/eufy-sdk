@@ -155,6 +155,9 @@ write is acknowledged and simply ignored is the case this exists for.
 A kicked or expired cloud session — another client logged into the account, or the token lapsed —
 surfaces as its own **`sessionExpired`** event, not on `error`. The SDK has already cleared the
 persisted session by the time it fires; listen for it to re-drive `login()` (usually a fresh 2FA).
+Wait `err.retryAfterMs` first, and read `err.contended` for whether the session is being displaced by
+another client rather than expiring — a re-login answers that no better, and firing one immediately is
+the login war the SDK's own hold-off avoids.
 
 Detection kinds are **separate events**, not one `motion` with a flag — a host usually maps them to
 distinct sensors. Note `personDetected` means a face or a _recognised_ person; someone the device does

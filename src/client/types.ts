@@ -5,7 +5,7 @@
  * `interface EufyMega` (the typed on/once/off/emit overloads) stays in `eufy-mega.ts` next to the
  * class — TS declaration merging requires both in the same module.
  */
-import type { MegaClientConfig } from "../transport/http/mega-client.js";
+import type { MegaClientConfig, SessionExpiredError } from "../transport/http/mega-client.js";
 import type { FcmStore } from "../transport/push/store.js";
 import type { FfmpegLevel } from "../transport/ffmpeg.js";
 import type { DeviceEventMap } from "../model/capabilities/index.js";
@@ -364,8 +364,12 @@ export type EufyMegaEventMap = {
    * token expired. The SDK has already cleared the persisted session, so recovery is a fresh `login()`
    * (which usually needs 2FA). Distinct from `error`: a session error is emitted ONLY here, not also
    * on `error`.
+   *
+   * The error carries the rate: `err.retryAfterMs` is how long the next session replacement is barred
+   * for, and `err.contended` says this session is being displaced by another client rather than expiring
+   * — which a re-login does not answer. A login made before that wait elapses extends it.
    */
-  sessionExpired: [err: Error];
+  sessionExpired: [err: SessionExpiredError];
   // Any transport error.
   error: [err: Error];
 };

@@ -95,8 +95,11 @@ Notes:
 - **Contention is bounded, not silent.** A token replaced once is ordinary; a second replacement soon
   after is treated as contention, so the client waits (a minute, doubling, capped at half an hour)
   instead of trading logins — repeated logins are what makes an account start demanding captchas. The
-  rejection you get then names the likely cause. A replacement that keeps working for ten minutes clears
-  the wait.
+  rejection you get then names the likely cause and **carries the wait**: `SessionExpiredError.retryAfterMs`
+  is how long to hold off before calling `login()` yourself, and `contended` says the session is being
+  displaced rather than expiring. Honour it — a host that re-logs in every few seconds spends the same
+  login war from outside the client, and your logins count against the same wait. A replacement that keeps
+  working for ten minutes clears it.
 - **Device identity:** `phoneModel` defaults to a **realistic random model**, seeded by `openudid` so it
   stays stable across runs (many installs no longer all report one identical model), and is persisted
   with the session. `openudid` itself defaults to a per-account value — give each client on the same

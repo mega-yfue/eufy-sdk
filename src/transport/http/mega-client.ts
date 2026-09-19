@@ -122,11 +122,36 @@ export class MegaApiError extends Error {
  */
 export const OWNER_ONLY_CODE = 20004;
 
-/** Thrown when a persisted/expired session is rejected (401). Re-login to recover. */
+/**
+ * Thrown when a persisted/expired session is rejected (401). Re-login to recover.
+ *
+ * It carries the rate the client has already worked out for replacing a rejected token, because the
+ * rejection is where that rate stops being the client's alone: a login driven from here spends the same
+ * session the client's own recovery would have, and repeated logins are what makes an account start
+ * demanding captchas. {@link retryAfterMs} is how long the next replacement is barred for, and
+ * {@link contended} whether this rejection landed inside that bar — the shape repeated displacement has.
+ */
 export class SessionExpiredError extends Error {
-  constructor(message: string) {
+  /**
+   * How long the next session replacement is barred for, in milliseconds; `0` when nothing bars one now.
+   *
+   * The remainder of the client's own hold-off, which doubles per consecutive replacement and is capped —
+   * and which every replacement extends, whether the client spent it or a login made on this error did.
+   */
+  readonly retryAfterMs: number;
+  /**
+   * Whether this rejection landed inside that bar — a token replaced recently and rejected again since.
+   *
+   * It says the session is being DISPLACED rather than expiring: something else is signing in on this
+   * account, and replacing the token again only trades one login for another.
+   */
+  readonly contended: boolean;
+
+  constructor(message: string, opts: { retryAfterMs?: number; contended?: boolean } = {}) {
     super(message);
     this.name = "SessionExpiredError";
+    this.retryAfterMs = opts.retryAfterMs ?? 0;
+    this.contended = opts.contended ?? false;
   }
 }
 
@@ -227,13 +252,18 @@ const REAUTH_HOLD_OFF_CAP_MS = 30 * 60_000;
 const REAUTH_STABLE_MS = 10 * 60_000;
 
 /**
- * What a token being displaced repeatedly almost always means, and the one thing that fixes it. Carried on the
- * surfaced error because the alternative — a client silently trading logins with another — is worse than a
- * caller being told.
+ * What a token being displaced repeatedly means, and what can be done about it. Carried on the surfaced
+ * error because the alternative — a client silently trading logins with another — is worse than a caller
+ * being told.
+ *
+ * The mechanism comes first and the `openudid` remedy second: the remedy applies only where the other
+ * client is another SDK install, and a caller that already sets its own device id is left with the
+ * mechanism alone. {@link SessionExpiredError.contended} is that same fact without the prose.
  */
 const CONTENDED_SESSION_HINT =
-  "another client may be signed in with the same account and device identity, and each login displaces the " +
-  "other's session; give each client its own openudid";
+  "another client signed in on this account keeps displacing this session — the cloud holds about one " +
+  "session per account and device identity, so each login ends the other's; where the other client is " +
+  "another SDK install, give each its own openudid";
 
 /**
  * Whether a rejection's CODE or WORDING says the token is finished, rather than that this request was refused
@@ -341,9 +371,11 @@ export class MegaHttpClient {
   private loggingIn = false;
   /** The one in-flight re-login every call rejected on the same dead token waits on. */
   private reauthAttempt?: Promise<boolean>;
-  /** Replacements since the held session last proved stable, and when the last one ran — see {@link recoveryDue}. */
+  /** Replacements since the held session last proved stable, and when the last one ran — see {@link holdOffRemainingMs}. */
   private recoveries = 0;
   private lastRecoveryAt = 0;
+  /** A token of ours has been rejected and not yet replaced — see {@link noteTokenReplacement}. */
+  private rejectedTokenPending = false;
 
   constructor(cfg: MegaClientConfig) {
     this.cfg = {
@@ -689,11 +721,16 @@ export class MegaHttpClient {
       (identityError && retry.identity) || (authed && last?.status === 401 && tokenRejected(last.code, last.msg));
     if (tokenFinished) {
       const reason = `${path} failed (${last?.status}/${last?.code}): ${last?.msg}`;
+      this.rejectedTokenPending = true;
       const recovery = retry.reauth ? "unrecoverable" : await this.recoverRejectedSession(sentToken);
       if (recovery === "retry")
         return this.postSigned<T>(host, path, body, authed, { ...retry, reauth: true }, headerOverrides);
       if (!this.sessionReplacedSince(sentToken)) this.clearSession();
-      throw new SessionExpiredError(recovery === "held-off" ? `${reason} — ${CONTENDED_SESSION_HINT}` : reason);
+      const contended = recovery === "held-off";
+      throw new SessionExpiredError(contended ? `${reason} — ${CONTENDED_SESSION_HINT}` : reason, {
+        retryAfterMs: this.holdOffRemainingMs(),
+        contended,
+      });
     }
     throw new MegaApiError(`${path} failed (${last?.status}/${last?.code}): ${last?.msg}`, last?.code, last?.status);
   }
@@ -1084,8 +1121,7 @@ export class MegaHttpClient {
     if (this.hydrateFromStore() && this.sessionReplacedSince(sentToken)) return "retry";
     if (!this.canReauthenticate()) return "unrecoverable";
     if (!this.recoveryDue()) return "held-off";
-    this.recoveries++;
-    this.lastRecoveryAt = Date.now();
+    this.noteTokenReplacement();
     this.clearSession();
     return (await this.reauthenticate()) ? "retry" : "unrecoverable";
   }
@@ -1101,15 +1137,43 @@ export class MegaHttpClient {
    * and a caller is told the honest reason instead of being served a fight.
    */
   private recoveryDue(): boolean {
-    if (this.recoveries === 0) return true;
-    const wait = Math.min(REAUTH_HOLD_OFF_MS * 2 ** (this.recoveries - 1), REAUTH_HOLD_OFF_CAP_MS);
-    const waited = Date.now() - this.lastRecoveryAt;
-    if (waited >= wait) return true;
+    const remaining = this.holdOffRemainingMs();
+    if (remaining === 0) return true;
     this.logger.warn(
-      `[mega] token rejected ${Math.round(waited / 1000)}s after the last replacement — holding off ` +
-        `${Math.round(wait / 1000)}s. ${CONTENDED_SESSION_HINT}`,
+      `[mega] token rejected ${Math.round((Date.now() - this.lastRecoveryAt) / 1000)}s after the last ` +
+        `replacement — holding off ${Math.round(remaining / 1000)}s more. ${CONTENDED_SESSION_HINT}`,
     );
     return false;
+  }
+
+  /**
+   * How much longer a token replacement must wait, in milliseconds; `0` when one may run now.
+   *
+   * The wait doubles per consecutive replacement and is capped, and it is what {@link recoveryDue} gates
+   * this client's own recovery on — and what {@link SessionExpiredError.retryAfterMs} hands a host that
+   * drives its own. One function so the two cannot disagree about the rate, which they would have to for
+   * a host to be told it may retry while this client is still holding off.
+   */
+  private holdOffRemainingMs(): number {
+    if (this.recoveries === 0) return 0;
+    const wait = Math.min(REAUTH_HOLD_OFF_MS * 2 ** (this.recoveries - 1), REAUTH_HOLD_OFF_CAP_MS);
+    return Math.max(0, wait - (Date.now() - this.lastRecoveryAt));
+  }
+
+  /**
+   * Count one token replacement against the hold-off, and clear the rejection it answered.
+   *
+   * Every replacement passes through here, wherever it was spent from: {@link recoverRejectedSession}, and
+   * a {@link login} that follows a rejection this client surfaced. A hold-off that counted only its own
+   * would be no bound at all — the wait would sit at its first value however many sessions had been spent,
+   * and {@link SessionExpiredError.retryAfterMs} would report a minute while logins ran every few seconds.
+   * Which of the two counted a given replacement is the flag: the recovery path clears it before logging
+   * in, so the login cannot count the same one again.
+   */
+  private noteTokenReplacement(): void {
+    this.recoveries++;
+    this.lastRecoveryAt = Date.now();
+    this.rejectedTokenPending = false;
   }
 
   /**
@@ -1117,6 +1181,7 @@ export class MegaHttpClient {
    * contention, so the hold-off is forgotten and the next genuine expiry recovers immediately.
    */
   private noteSessionWorking(): void {
+    this.rejectedTokenPending = false;
     if (this.recoveries > 0 && Date.now() - this.lastRecoveryAt > REAUTH_STABLE_MS) this.recoveries = 0;
   }
 
@@ -1250,6 +1315,7 @@ export class MegaHttpClient {
     this.sessionKey = undefined;
     await this.ensureSessionKey();
     this.persist();
+    if (this.rejectedTokenPending) this.noteTokenReplacement();
     return { status: LoginStatus.Ok, session: { userId, authToken, geoKey: this.auth_.geoKey, raw: res } };
   }
 
