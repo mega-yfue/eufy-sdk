@@ -12,6 +12,7 @@ import {
   readSolixChannel,
   solixReadings,
   solixStateReadings,
+  SOLIX_EMS_MODES,
 } from "../solix-mqtt.js";
 
 // Captured from dt/anker_power/AE1X0/AE1X0EXAMPLE00001/param_info (grid idle; voltage ~237.5 V).
@@ -207,7 +208,7 @@ describe("Solix Solarbank (AE103 / ats_ax170) decoding", () => {
       [0xa1, Buffer.from([0x32])],
       [0xa5, Buffer.from([0x03, 0x99, 0x0c, 0x00, 0x00])], // type-03 settings int → payload[1]=0x0c=12
       [0xa6, Buffer.from([0x03, 0x00, 0x14, 0x00, 0x00])], // → 0x14 = 20
-      [0xa9, Buffer.from([0x01, 0x02])], // mode = 2 (self-consumption)
+      [0xa9, Buffer.from([0x01, 0x02])], // mode raw value 2 (label it with SOLIX_EMS_MODES)
       [0xaa, Buffer.from([0x02, 0x20, 0x03])], // u16 LE 0x0320 = 800 (max_load)
       [0xab, f32(-30)], // AC-socket export limit, watts
     ]);
@@ -222,6 +223,18 @@ describe("Solix Solarbank (AE103 / ats_ax170) decoding", () => {
     // state_info uses its OWN table — the param_info measurement names are NOT applied here (0xab is the
     // export limit here, not photovoltaicPower).
     expect("photovoltaicPower" in v).toBe(false);
+  });
+
+  it("SOLIX_EMS_MODES carries Anker's seven operating modes (values 0,1,3-7; 2 unassigned)", () => {
+    expect(
+      Object.keys(SOLIX_EMS_MODES)
+        .map(Number)
+        .sort((a, b) => a - b),
+    ).toEqual([0, 1, 3, 4, 5, 6, 7]);
+    expect(SOLIX_EMS_MODES[0]).toBe("selfConsumption");
+    expect(SOLIX_EMS_MODES[6]).toBe("smart");
+    expect(SOLIX_EMS_MODES[7]).toBe("dynamicTariff");
+    expect(SOLIX_EMS_MODES[2]).toBeUndefined(); // Anker leaves value 2 unassigned
   });
 
   it("the 0xa5 header cutoff differs by design: state_info decodes it, param_info skips it", () => {

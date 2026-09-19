@@ -9,3 +9,6 @@ export * from "./biz-stream.js";
 // SOLIX_METER_FIELD_NAMES stay module-internal; their specs import them from the module directly.
 export { SolixMqtt } from "./solix-mqtt.js";
 export type { SolixMqttOptions, SolixMqttDevice, SolixReading, SolixParamFrame, SolixChannel } from "./solix-mqtt.js";
+// The operating-mode enumeration IS consumer-facing (a caller labels the `mode` value with it), so unlike
+// the decode tables it is exported.
+export { SOLIX_EMS_MODES } from "./solix-mqtt.js";

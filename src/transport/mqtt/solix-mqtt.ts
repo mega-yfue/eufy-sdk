@@ -56,7 +56,14 @@ export interface SolixParamFrame {
  * `0xb6`, `0xb7` — stay raw `channel_<hex tag>` (see {@link solixReadings}). `0xb2` in particular is NOT
  * a current total: under a 1.371 A line current it reads 0.009, three orders of magnitude off. Both
  * `0xb2` and `0xb7` read zero at idle and non-zero under load, so they carry *something* load-related;
- * what, is not established.
+ * what, is not established — `reactive_power` and `power_factor` (below) are the leading candidates.
+ *
+ * Each name is annotated with the equivalent register from Anker's OWN vendor integration for the
+ * newer Modbus-TCP meter generation (Smart Meter Gen 2), which independently corroborates the meaning
+ * of each tag: our `meterPowerL1` is their `primary_phase_1_active_power`, and so on. Same physical
+ * quantities, different hardware/transport (their meter reports two CT channels — `primary` and
+ * `secondary` — and also exposes `reactive_power`, `power_factor` and per-phase energy, none of which
+ * this single-channel ff09 frame carries).
  *
  * This table is **meter-family-specific**: the same tag carries a different quantity on another Solix
  * device (a Solarbank's `0xac` reads a power value, not a voltage), so {@link solixReadings} applies
@@ -65,18 +72,18 @@ export interface SolixParamFrame {
  * lost; the model layer names non-meter tags per capability.
  */
 export const SOLIX_METER_FIELD_NAMES: Readonly<Record<number, string>> = {
-  0xa8: "meterPowerL1",
-  0xa9: "meterPowerL2",
-  0xaa: "meterPowerL3",
-  0xab: "meterPowerTotal",
-  0xac: "meterVoltageL1",
-  0xad: "meterVoltageL2",
-  0xae: "meterVoltageL3",
-  0xaf: "meterCurrentL1",
-  0xb0: "meterCurrentL2",
-  0xb1: "meterCurrentL3",
-  0xb3: "meterImportEnergy",
-  0xb4: "meterExportEnergy",
+  0xa8: "meterPowerL1", // Anker Modbus: primary_phase_1_active_power
+  0xa9: "meterPowerL2", // Anker Modbus: primary_phase_2_active_power
+  0xaa: "meterPowerL3", // Anker Modbus: primary_phase_3_active_power
+  0xab: "meterPowerTotal", // Anker Modbus: primary_total_active_power
+  0xac: "meterVoltageL1", // Anker Modbus: primary_phase_1_voltage
+  0xad: "meterVoltageL2", // Anker Modbus: primary_phase_2_voltage
+  0xae: "meterVoltageL3", // Anker Modbus: primary_phase_3_voltage
+  0xaf: "meterCurrentL1", // Anker Modbus: primary_phase_1_current
+  0xb0: "meterCurrentL2", // Anker Modbus: primary_phase_2_current
+  0xb1: "meterCurrentL3", // Anker Modbus: primary_phase_3_current
+  0xb3: "meterImportEnergy", // Anker Modbus: primary_total_forward_active_energy
+  0xb4: "meterExportEnergy", // Anker Modbus: primary_total_reverse_active_energy
 };
 
 /**
@@ -115,17 +122,24 @@ export const SOLIX_SOLARBANK_PRODUCT_PREFIX = "AE10";
  * (a uint8) and temperature from the `0xa4` BMS status blob. The 4 PV-string channels (`0xc6`–`0xc9`),
  * the AC currents (`0xb2`/`0xb3`) and export energy (`0xb4`) are not yet confirmed, so they stay raw
  * `channel_<hex>` until a capture pins them.
+ *
+ * Names are annotated with the equivalent register from Anker's OWN vendor integration for the newer
+ * Modbus-TCP Solarbank generation (which includes a "Solarbank 4 E5000 Pro" config — the same product as
+ * `AE103`, a newer hardware rev), cross-checking each meaning. Their integration splits our signed
+ * `batteryPower` into `battery_charging_power` / `battery_discharging_power` off one register, and exposes
+ * a single `pv_power` total rather than our four per-string channels; `socketPower` (the on-board AC
+ * outlet) has no register there. Same quantities, different transport.
  */
 export const SOLIX_SOLARBANK_FIELD_NAMES: Readonly<Record<number, string>> = {
-  0xab: "photovoltaicPower", // total PV input across the strings
-  0xac: "batteryPower",
-  0xbc: "chargePower",
-  0xad: "dischargePower",
-  0xae: "acPlugPower",
-  0xaf: "socketPower", // the unit's own on-board AC socket (an appliance plugged into the Solarbank)
-  0xc4: "gridInputPower",
-  0xc5: "homeLoadPower",
-  0xc6: "pv1Power", // the four PV-string inputs (0 when a string is unused / dark)
+  0xab: "photovoltaicPower", // total PV input across the strings — Anker Modbus: pv_power
+  0xac: "batteryPower", // signed net pack power — Anker Modbus: battery_charging_power − battery_discharging_power
+  0xbc: "chargePower", // Anker Modbus: battery_charging_power
+  0xad: "dischargePower", // Anker Modbus: battery_discharging_power
+  0xae: "acPlugPower", // AC plug, signed — Anker Modbus: ac_grid_output_power
+  0xaf: "socketPower", // the unit's own on-board AC socket (an appliance plugged into the Solarbank) — no Anker register
+  0xc4: "gridInputPower", // Anker Modbus: grid_import_power
+  0xc5: "homeLoadPower", // Anker Modbus: load_power
+  0xc6: "pv1Power", // the four PV-string inputs (0 when a string is unused / dark); Anker exposes only a pv_power total
   0xc7: "pv2Power",
   0xc8: "pv3Power",
   0xc9: "pv4Power",
@@ -140,10 +154,41 @@ export const SOLIX_SOLARBANK_FIELD_NAMES: Readonly<Record<number, string>> = {
  * stays raw `state_<hex>` until confirmed the same way.
  */
 export const SOLIX_STATE_FIELD_NAMES: Readonly<Record<number, string>> = {
-  0xa9: "mode", // current operating (EMS) mode (1 custom, 2 self-consumption, 4 rapid charge, 7 smart, 8 dynamic tariff)
+  0xa9: "mode", // current operating (EMS) mode — decode the value with SOLIX_EMS_MODES
   0xaa: "maxLoad", // configured max home load (W) — matches get_site_device_param max_load
   // NOTE `0xab` is grid-in/out-related power but its exact meaning is not yet pinned, so it stays raw
   // `state_ab` (a diagnostic a consumer can watch) rather than being asserted under a guessed name.
+};
+
+/**
+ * The Solarbank's operating (EMS) mode value → a stable name, for labelling the `mode` field
+ * ({@link SOLIX_STATE_FIELD_NAMES} `0xa9`). Value → English label:
+ * - `0` selfConsumption — "Self-Consumption Mode"
+ * - `1` timeOfUse — "Time Of Use Mode"
+ * - `3` thirdPartyControl — "Third-Party Controlled"
+ * - `4` custom — "Custom Mode"
+ * - `5` socketOverlay — "Socket Overlay Mode"
+ * - `6` smart — "Smart Mode"
+ * - `7` dynamicTariff — "Dynamic Tariff Mode"
+ *
+ * These are Anker's OWN enumeration, taken from the vendor's official Modbus integration for the
+ * Solarbank 4 E5000 Pro (register `operating_mode`, gated by the `0x8006` capability mask). Value `2`
+ * is unassigned there, so there are seven modes across values `{0,1,3,4,5,6,7}`, not eight.
+ *
+ * EVIDENCE NOTE: the enumeration is authoritative for Anker's newer Modbus-TCP hardware rev; this SDK
+ * decodes the OLDER cloud/MQTT `AE103` over ff09, and its `0xa9` was not independently confirmed to use
+ * these same numbers (an earlier reverse-engineered read suggested a different set). Adopting Anker's
+ * official numbering here on that basis; a live "set each mode in the app, read `0xa9`" capture should
+ * confirm it, and if a value disagrees this map is the one place to correct.
+ */
+export const SOLIX_EMS_MODES: Readonly<Record<number, string>> = {
+  0: "selfConsumption", // Self-Consumption Mode (Anker: self_consumption, 0x8006 BIT0)
+  1: "timeOfUse", // Time Of Use Mode (Anker: tou_mode, BIT1)
+  3: "thirdPartyControl", // Third-Party Controlled (Anker: third_party_control, BIT5)
+  4: "custom", // Custom Mode (Anker: custom_mode, BIT2)
+  5: "socketOverlay", // Socket Overlay Mode (Anker: socket_overlay_mode, BIT4)
+  6: "smart", // Smart Mode (Anker: smart_mode, BIT3)
+  7: "dynamicTariff", // Dynamic Tariff Mode (Anker: dynamic_pricing, BIT6)
 };
 
 /**
