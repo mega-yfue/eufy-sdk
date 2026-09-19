@@ -155,6 +155,7 @@ describe("Solix Solarbank (AE103 / ats_ax170) decoding", () => {
     [0xc4, f32(0)], // grid input
     [0xc5, f32(360)], // home load
     [0xc6, f32(120)], // PV string 1
+    [0xb1, f32(5.7)], // battery current (A) — candidate
     [0xba, Buffer.from([0x03, 0x70, 0x08, 0x08, 0x01])], // ba FLAGS 0x70: bit 0x20 SET ⇒ ambient light OFF
   ]);
 
@@ -162,6 +163,8 @@ describe("Solix Solarbank (AE103 / ats_ax170) decoding", () => {
     const v = solixReadings(decodeSolixParamFrame(FRAME)!, "AE103");
     expect(v.batterySoc).toBe(12); // from the a3 uint8, not a float channel
     expect(v.batteryTemperature).toBe(24); // from the a4 BMS blob, self-validated against a3 SOC
+    expect(v.batteryHealth).toBe(100); // SOH % — the byte after SOC in the a4 BMS blob
+    expect(v.batteryCurrent).toBeCloseTo(5.7, 1); // b1 — candidate
     expect(v.batteryPower).toBeCloseTo(510, 0);
     expect(v.chargePower).toBeCloseTo(510, 0);
     expect(v.dischargePower).toBe(0);
@@ -210,10 +213,12 @@ describe("Solix Solarbank (AE103 / ats_ax170) decoding", () => {
       [0xa9, Buffer.from([0x01, 0x02])], // mode = 2 (self-consumption)
       [0xaa, Buffer.from([0x02, 0x20, 0x03])], // u16 LE 0x0320 = 800 (max_load)
       [0xab, f32(-30)], // AC-socket export limit, watts
+      [0xbf, Buffer.from([0x01, 0x00])], // fault status bitfield = 0 (no fault) — candidate
     ]);
     const v = solixStateReadings(decodeSolixParamFrame(frame)!);
     expect(v.mode).toBe(2);
     expect(v.maxLoad).toBe(800);
+    expect(v.faultStatus).toBe(0); // bf — candidate error/fault bitfield
     expect(v.state_a5).toBe(12);
     expect(v.state_a6).toBe(20);
     // ab is exposed RAW only (its meaning isn't pinned) — no guessed name is asserted.

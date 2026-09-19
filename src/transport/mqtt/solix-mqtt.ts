@@ -129,6 +129,9 @@ export const SOLIX_SOLARBANK_FIELD_NAMES: Readonly<Record<number, string>> = {
   0xc7: "pv2Power",
   0xc8: "pv3Power",
   0xc9: "pv4Power",
+  // CANDIDATE (not yet live-correlated): 0xb1 reads 0 at idle and ~5.7 while the pack cycles
+  // (~5.7 A × ~50 V ≈ 280 W), which fits the app's `batteryCurrent` magnitude. Named tentatively.
+  0xb1: "batteryCurrent",
 };
 
 /**
@@ -142,6 +145,9 @@ export const SOLIX_SOLARBANK_FIELD_NAMES: Readonly<Record<number, string>> = {
 export const SOLIX_STATE_FIELD_NAMES: Readonly<Record<number, string>> = {
   0xa9: "mode", // current operating (EMS) mode (1 custom, 2 self-consumption, 4 rapid charge, 7 smart, 8 dynamic tariff)
   0xaa: "maxLoad", // configured max home load (W) — matches get_site_device_param max_load
+  // CANDIDATE (not yet live-correlated): 0xbf is an error/fault bitfield — the app's own debug line
+  // `updateDeviceStateInfo----faultStatus` names it. Emitted raw as a number for a consumer to watch.
+  0xbf: "faultStatus",
   // NOTE `0xab` is grid-in/out-related power but its exact meaning is not yet pinned, so it stays raw
   // `state_ab` (a diagnostic a consumer can watch) rather than being asserted under a guessed name.
 };
@@ -248,11 +254,14 @@ export function solixReadings(frame: SolixParamFrame, productCode: string): Reco
  *
  * - **SOC** (`batterySoc`, %) is tag `0xa3`, a `uint8` (so it is skipped by the float loop and by the
  *   `< 0xa6` guard).
- * - **Temperature** (`batteryTemperature`, °C) + **health** come from the `0xa4` BMS status blob (after
- *   its leading type byte), whose trailing struct is `[… TEMP 01 SOC SOH 00 01 00 02]`. The parse is
- *   **self-validated**: the SOC byte inside the blob must equal tag `0xa3`, else the blob is a
- *   different/empty variant (the realtime frame carries an empty `0xa4`) and temperature is withheld
- *   rather than read from the wrong offset.
+ * - **Temperature** (`batteryTemperature`, °C) + **health** (`batteryHealth`, %) come from the `0xa4`
+ *   BMS status blob (after its leading type byte), whose trailing struct is
+ *   `[… TEMP 01 SOC SOH 00 01 00 02]`: temperature is the byte two before the SOC byte, health (SOH) the
+ *   byte one after it. The parse is **self-validated**: the SOC byte inside the blob must equal tag
+ *   `0xa3`, else the blob is a different/empty variant (the realtime frame carries an empty `0xa4`) and
+ *   both are withheld rather than read from the wrong offset. `batteryHealth` is a CANDIDATE: its offset
+ *   in the BMS blob is confirmed and its value (100 on a captured pack) fits a state-of-health percentage
+ *   and the app's own `bmsHealth` field, but that it is SOH specifically is not yet hardware-correlated.
  * - **SOC limits** (`dischargeLimit`/`chargeLimit`, %) come from tag `0xb5`'s SETTINGS-blob variant —
  *   type `0x04` with exactly 3 payload bytes, `[discharge, output cutoff, charge]`. Confirmed live:
  *   moving discharge 10%→5% moved `b5[1]` 0x0a→0x05 while charge held at `b5[3]`=0x64. The FAST telemetry
@@ -271,6 +280,7 @@ function addSolarbankScalars(frame: SolixParamFrame, out: Record<string, number>
     const body = frame.fields.get(0xa4)?.subarray(1);
     if (body && body.length >= 8 && body[body.length - 6] === soc) {
       out.batteryTemperature = body[body.length - 8]!;
+      out.batteryHealth = body[body.length - 5]!; // SOH % — candidate; byte after the validated SOC
     }
   }
   const b5 = frame.fields.get(0xb5);
