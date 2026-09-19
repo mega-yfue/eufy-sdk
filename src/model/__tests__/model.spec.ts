@@ -238,7 +238,7 @@ describe("doorbell — confirmed against real T8214", () => {
     expect(r.capabilities).toContain("doorbell");
     const chime = r.properties.find((p) => p.name === "chimeSwitch");
     expect(chime?.paramType).toBe(1702);
-    expect(chime?.provenance).toBe("mega");
+    expect(chime?.provenance).toBe("verified");
     // the stale ids must NOT be in the doorbell schema anymore
     expect(r.properties.some((p) => [2015, 2022, 1306].includes(p.paramType))).toBe(false);
   });

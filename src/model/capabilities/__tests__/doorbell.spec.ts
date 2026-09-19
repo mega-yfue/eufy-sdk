@@ -168,19 +168,24 @@ describe("doorbell capability module", () => {
     });
   });
 
-  describe("buildCommand — chime/image throw path", () => {
+  describe("buildCommand — the wireless chime, on its own captured wire", () => {
     /**
-     * 1702's READ is confirmed on a T8214; the WRITE never was. Its 1703/1704 siblings share the param
-     * range, which is not evidence of a shared frame — and a wrong guess on a fire-and-forget P2P write
-     * looks exactly like success. So no setter exists on either entry point — the fluent object has no
-     * `setChimeSwitch`, and the intent path says WHY rather than answering `undefined`, which would
-     * report an uncaptured wire as a device that lacks the feature. The READ it does have is unaffected.
+     * 1702 rides the same 136-byte direct-binary struct as its 1703 sibling, captured from the app on a
+     * T8210 (OFF sent 0, ON sent 1) and replayed through this surface on that device — so the setter
+     * exists, on `ctx.channel`, and the value is a plain boolean rather than the range-sharing guess the
+     * member refused before.
      */
-    it("chimeSwitch is NOT settable — the intent path throws 'wire unverified' rather than guessing", () => {
-      expect(() => buildCommand("chimeSwitch", true, ctx(2))).toThrow(/chimeSwitch write wire unverified/);
+    it("chimeSwitch on/off → direct-binary scalar for 1702, on ctx.channel", () => {
+      expect(buildCommand("chimeSwitch", true, ctx(2))).toEqual({
+        kind: "set-param",
+        param: DOORBELL_CMD.CHIME_SWITCH,
+        value: 1,
+        form: "direct-binary",
+        channel: 2,
+      });
+      expect(buildCommand("chimeSwitch", false, ctx(3))).toMatchObject({ value: 0, channel: 3 });
       const { acts } = bind<DoorbellActions>("doorbell", ctx(2));
-      expect("setChimeSwitch" in acts).toBe(false);
-      expect(DOORBELL.properties.some((p) => p.name === "chimeSwitch")).toBe(true);
+      expect("setChimeSwitch" in acts).toBe(true);
     });
 
     it("an unhandled action returns undefined (falls through to another module)", () => {
