@@ -309,6 +309,13 @@ export function solixReadings(frame: SolixParamFrame, productCode: string): Reco
  *   moving discharge 10%→5% moved `b5[1]` 0x0a→0x05 while charge held at `b5[3]`=0x64. The FAST telemetry
  *   frame (msgtype 0x05, ~7 s) also carries a `0xb5` type-`0x04` blob, but a 25-byte one whose bytes are
  *   not the limits — hence the exact length gate.
+ * - **Cycles** (`batteryCycles`, count) is tag `0xde`, a type-`0x04` blob whose payload is a `uint32` LE
+ *   (`de[1..4]`). A CANDIDATE: the value read `31` and held constant across a capture, and it lives in the
+ *   BMS-blob tag range where a cumulative counter belongs. The identification rests on ruling the
+ *   alternative out — on a pack only a few days old, a *days-since-install* counter would read single
+ *   digits, not 31, so 31 is a cumulative charge/discharge cycle count (factory/QA cycles + a few days of
+ *   use), not an age. Not yet hardware-labelled; a same-value read that increments ~+1/day (or +2 on a
+ *   two-cycle day) against the app's own cycle figure would confirm it.
  * - **Ambient light** is NOT emitted here. Tag `0xba` bit `0x20` tracks only this SDK's own
  *   `set_device_attrs` write; an app-side toggle goes via an `…/req` cmd-17 `a4` and leaves `ba`
  *   unchanged, so on every ~7 s frame `ba` would clobber the correct value read from the command
@@ -330,6 +337,8 @@ function addSolarbankScalars(frame: SolixParamFrame, out: Record<string, number>
     out.dischargeLimit = b5[1]!;
     out.chargeLimit = b5[3]!;
   }
+  const de = frame.fields.get(0xde);
+  if (de && de[0] === 0x04 && de.length >= 5) out.batteryCycles = de.readUInt32LE(1);
 }
 
 /** A live telemetry sample emitted by {@link SolixMqtt} as a `reading` event. */

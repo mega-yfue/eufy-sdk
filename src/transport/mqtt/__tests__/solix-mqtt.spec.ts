@@ -156,6 +156,7 @@ describe("Solix Solarbank (AE103 / ats_ax170) decoding", () => {
     [0xc4, f32(0)], // grid input
     [0xc5, f32(360)], // home load
     [0xc6, f32(120)], // PV string 1
+    [0xde, Buffer.from([0x04, 31, 0, 0, 0, 0, 0, 0, 0])], // cycles blob: type 0x04 + uint32 LE = 31 (candidate)
     [0xba, Buffer.from([0x03, 0x70, 0x08, 0x08, 0x01])], // ba FLAGS 0x70: bit 0x20 SET ⇒ ambient light OFF
   ]);
 
@@ -164,6 +165,7 @@ describe("Solix Solarbank (AE103 / ats_ax170) decoding", () => {
     expect(v.batterySoc).toBe(12); // from the a3 uint8, not a float channel
     expect(v.batteryTemperature).toBe(24); // from the a4 BMS blob, self-validated against a3 SOC
     expect(v.batteryHealth).toBe(100); // SOH % — the byte after SOC in the a4 BMS blob
+    expect(v.batteryCycles).toBe(31); // cycle count — uint32 in the 0xde blob (candidate)
     expect(v.batteryPower).toBeCloseTo(510, 0);
     expect(v.chargePower).toBeCloseTo(510, 0);
     expect(v.dischargePower).toBe(0);
@@ -179,8 +181,18 @@ describe("Solix Solarbank (AE103 / ats_ax170) decoding", () => {
     expect(v["channel_ac"]).toBeCloseTo(510, 0);
   });
 
+  it("reads batteryCycles as a uint32 from the 0xde blob (so it holds past 255 cycles)", () => {
+    const frame = buildFrame([
+      [0xa1, Buffer.from([0x34])],
+      [0xa3, Buffer.from([0x01, 40])],
+      [0xde, Buffer.from([0x04, 0x2c, 0x01, 0, 0, 0, 0, 0, 0])], // uint32 LE 0x12c = 300
+    ]);
+    expect(solixReadings(decodeSolixParamFrame(frame)!, "AE103").batteryCycles).toBe(300);
+  });
+
   it("does NOT apply the Solarbank table to a meter frame (tag meanings differ per family)", () => {
     const meter = solixReadings(decodeSolixParamFrame(FRAME)!, "AE1X0");
+    expect(meter.batteryCycles).toBeUndefined(); // 0xde is Solarbank-family only
     expect(meter.batteryPower).toBeUndefined();
     expect(meter.batterySoc).toBeUndefined(); // a3 is a status byte on the meter, not SOC
     expect(meter.meterVoltageL1).toBeCloseTo(510, 0); // 0xac gets the METER name instead
