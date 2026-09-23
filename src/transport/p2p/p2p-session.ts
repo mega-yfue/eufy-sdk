@@ -1609,6 +1609,10 @@ export class P2PSession extends EventEmitter {
    * Low-level: send a `CMD_SET_PAYLOAD` (1350) wrapping `{account_id, cmd:<subCmd>, mChannel,
    * payload, transaction}` over the level-1 channel. The reply arrives as a `NOTIFY_PAYLOAD`
    * (1351) frame (level-1 decrypted, surfaced via the `data` event / `frame.json`).
+   *
+   * `opts.key` makes it a keyed envelope: the sealed per-command key rides ahead of the other fields
+   * as the value's `key`, and the value goes out unencrypted, encryption-type 0, with `=` written
+   * `=` — the form the vendor app sends one in, and the one form the device reads it in.
    */
   sendSetPayload(
     subCmd: number,
@@ -1619,24 +1623,27 @@ export class P2PSession extends EventEmitter {
       omitPayload?: boolean;
       wrapCmd?: number;
       rawValue?: Record<string, unknown>;
+      key?: string;
     } = {},
   ): void {
     if (!this.connectAddress) throw new Error("not connected");
     const channel = opts.channel ?? 0;
+    const keyed = opts.key !== undefined;
     // CMD_SET_PAYLOAD wrapper (reversed from the v6 serializer): inner `cmd` = subCmd,
     // plus mChannel + mValue3:0; the payload object carries any params ({} when none).
     // No `transaction` field in the SET_PAYLOAD value. `rawValue` overrides for testing.
     const inner: Record<string, unknown> = opts.rawValue ?? {
+      ...(keyed ? { key: opts.key } : {}),
       account_id: opts.accountId ?? "",
       cmd: subCmd,
       mChannel: channel,
       mValue3: 0,
       ...(opts.omitPayload ? {} : { payload }),
     };
-    const value = JSON.stringify(inner);
+    const value = keyed ? JSON.stringify(inner).replace(/=/g, "\\u003d") : JSON.stringify(inner);
     const body = Buffer.concat([
       buildCommandHeader(this.seqNumber, opts.wrapCmd ?? CMD_SET_PAYLOAD),
-      buildStringCommandPayload(value, channel, this.level1Key, 1),
+      buildStringCommandPayload(value, channel, keyed ? undefined : this.level1Key, 1),
     ]);
     this.seqNumber = (this.seqNumber + 1) & 0xffff;
     this.logger.debug(`[p2p] ${this.cfg.stationSn} sendSetPayload subCmd=${subCmd}`);

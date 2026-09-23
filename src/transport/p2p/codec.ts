@@ -9,7 +9,7 @@
  * Every UDP packet is `[msgType:2][payloadLen:2 BE][payload]`. Every P2P data
  * frame inside a DATA packet starts with the ASCII magic "XZYH".
  */
-import { createCipheriv, createDecipheriv, createECDH, createHmac, timingSafeEqual } from "node:crypto";
+import { createCipheriv, createDecipheriv, createECDH, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 export interface Address {
   host: string;
@@ -217,6 +217,34 @@ export function eciesUnwrap(
   } catch {
     return undefined;
   }
+}
+
+/** The two random inputs of {@link eciesWrap}, injectable so a spec can pin an envelope's bytes. */
+export interface EciesWrapOptions {
+  /** The ephemeral P-256 private key for the exchange (32 bytes); generated fresh when absent. */
+  ephemeralPrivateKey?: Buffer;
+  /** The AES-128-CBC IV, which the envelope carries (16 bytes); random when absent. */
+  iv?: Buffer;
+}
+
+/**
+ * The sealing counterpart of {@link eciesUnwrap} with `verifyHmac` and `pkcs7` both set.
+ *
+ * Seals `plaintext` for `peerPublicKey` (a P-256 point, compressed or uncompressed) as
+ * `ephemeralPub(33, compressed) ‖ iv(16) ‖ ct ‖ HMAC(32)`: `S = ECDH_X(ephemeral, peer)` →
+ * `kdf = eufyKDF(S)` → `ct = AES-128-CBC(kdf[0:16], iv, PKCS7(plaintext))`, tagged
+ * `HMAC-SHA256(kdf[16:48], iv ‖ ct)`.
+ */
+export function eciesWrap(plaintext: Buffer, peerPublicKey: Buffer, options: EciesWrapOptions = {}): Buffer {
+  const ecdh = createECDH("prime256v1");
+  if (options.ephemeralPrivateKey) ecdh.setPrivateKey(options.ephemeralPrivateKey);
+  else ecdh.generateKeys();
+  const kdf = eufyKdf(ecdh.computeSecret(peerPublicKey), 48);
+  const iv = options.iv ?? randomBytes(16);
+  const cipher = createCipheriv("aes-128-cbc", kdf.subarray(0, 16), iv);
+  const ct = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const tag = createHmac("sha256", kdf.subarray(16, 48)).update(iv).update(ct).digest();
+  return Buffer.concat([ecdh.getPublicKey(null, "compressed"), iv, ct, tag]);
 }
 
 /**

@@ -946,6 +946,37 @@ export class MegaHttpClient {
   }
 
   /**
+   * The device's long-lived P-256 public key, as the cloud publishes it for key-wrapped commands
+   * (`type=2`): 64 bytes hex with no `04` prefix. A plain authed GET on the security-app host — the
+   * one read here that is neither signed nor body-encrypted, matching how the app fetches it.
+   * Cached per serial for the client's lifetime; the key does not rotate in normal operation.
+   */
+  async getDevicePublicKey(deviceSn: string): Promise<string> {
+    const cached = this.devicePublicKeys.get(deviceSn);
+    if (cached) return cached;
+    const url = `https://${this.securityAppHost()}/v1/app/public_key/query?device_sn=${encodeURIComponent(deviceSn)}&type=2`;
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { ...this.baseHeaders(), ...this.authTokenHeaders() },
+      signal: AbortSignal.timeout(20_000),
+    });
+    const env = parseMaybeJson(await res.text()) as ApiEnvelope<{ public_key?: string }> | undefined;
+    const key = env?.data?.public_key;
+    if (res.status !== 200 || env?.code !== 0 || typeof key !== "string" || !key.length) {
+      throw new MegaApiError(
+        `public_key/query failed (${res.status}/${env?.code}): ${env?.msg ?? "no public key"}`,
+        env?.code,
+        res.status,
+      );
+    }
+    this.devicePublicKeys.set(deviceSn, key);
+    return key;
+  }
+
+  /** Per-serial cache for {@link getDevicePublicKey}. */
+  private readonly devicePublicKeys = new Map<string, string>();
+
+  /**
    * Signed+encrypted POST to the security-app data host (face recognition, etc.).
    * Despite the different host, these endpoints use the SAME algo_ecdh pipeline as
    * the mega hosts (captured header set: `x-encryption-info: algo_ecdh` +
