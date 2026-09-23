@@ -27,6 +27,12 @@ import {
   StationKeyUnavailableError,
   StationUnreachableError,
 } from "../../core/contracts.js";
+import {
+  buildKeyedActuatePayload,
+  KEYED_PAYLOAD_CMD,
+  KEYED_PAYLOAD_SEQ_ERROR,
+  keyedPayloadReportCode,
+} from "./keyed-payload.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { assertNever } from "../../core/util.js";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -264,6 +270,16 @@ export class P2PCommandRouter {
   private readonly talkbacks = new Map<string, Talkback>();
   /** cipher_id → ECC private key (one eufylife get_ciphers call per cipher), shared across (re)opens. */
   private readonly cipherKeyCache = new Map<number, string | undefined>();
+
+  /**
+   * The last `seq_num` sent to each device over the keyed-payload wire, accepted or refused. The device keeps
+   * the highest number it has accepted and refuses one not above it, so every later number is issued above
+   * this one; a device absent here has not been sent one in this process.
+   */
+  private readonly keyedSequences = new Map<string, number>();
+
+  /** The keyed-payload command in flight per device, which the next one for that device waits on. */
+  private readonly keyedQueue = new Map<string, Promise<void>>();
 
   constructor(private readonly deps: P2PRouterDeps) {
     this.manager = new SessionManager({
@@ -620,6 +636,9 @@ export class P2PCommandRouter {
         return;
       case "ff09-actuate":
         await this.sendFf09Actuate(sn, cmd);
+        return;
+      case "keyed-payload-actuate":
+        await this.sendKeyedPayloadActuate(sn, cmd);
         return;
       case "ff09-autolock":
         await this.sendFf09Autolock(sn, cmd);
@@ -1647,6 +1666,172 @@ export class P2PCommandRouter {
       resolved,
     );
   }
+
+  /**
+   * **`keyed-payload-actuate` intent** — the classic Wi-Fi lock's actuation: the sealed fields from
+   * {@link buildKeyedActuatePayload}, sent as a keyed envelope through {@link P2PSession.sendSetPayload}
+   * on the lock's device channel. No session key is waited for — the envelope seals its own per-command
+   * key for the device's public key (fetched from the cloud, cached per serial), so it goes as soon as
+   * the session is up. The device shows the acting member by display name, which lives on the device
+   * record's `member` rather than in the intent, so it is read here and falls back to the account name
+   * the intent carries.
+   *
+   * The device answers, so the outcome is read rather than assumed: {@link awaitKeyedReply} settles each
+   * send on the replies, and {@link climbKeyedSequence} carries a {@link KEYED_PAYLOAD_SEQ_ERROR} refusal
+   * past the sequence mark the device keeps. Commands run one at a time per device: the replies carry no
+   * correlation id, so one command's answer must never be read as another's.
+   */
+  private sendKeyedPayloadActuate(sn: string, cmd: Ff09Identity): Promise<void> {
+    return this.serializeKeyed(sn, async () => {
+      const dev = await this.deviceFor(sn);
+      const member = ((dev.raw ?? {}) as Record<string, unknown>).member as Record<string, unknown> | undefined;
+      const userName = typeof member?.nick_name === "string" && member.nick_name ? member.nick_name : cmd.username;
+      const devicePublicKey = await this.deps.mega.getDevicePublicKey(sn);
+      const resolved = await this.resolveSession(sn, { waitLevel2: false });
+      const send = (seqNum: number): void => {
+        const { key, payload } = buildKeyedActuatePayload(cmd, devicePublicKey, userName, { seqNum });
+        resolved.session.sendSetPayload(KEYED_PAYLOAD_CMD.ON_OFF_LOCK, payload, {
+          accountId: cmd.adminUserId,
+          channel: resolved.channel,
+          key,
+        });
+      };
+      await this.climbKeyedSequence(sn, (seqNum) =>
+        this.awaitKeyedReply(sn, resolved.session, resolved.channel, () => send(seqNum)),
+      );
+    });
+  }
+
+  /** Run `work` once every keyed-payload command already queued for `sn` has settled. */
+  private serializeKeyed<T>(sn: string, work: () => Promise<T>): Promise<T> {
+    const previous = this.keyedQueue.get(sn) ?? Promise.resolve();
+    const run = previous.then(work);
+    const settled = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.keyedQueue.set(sn, settled);
+    void settled.then(() => {
+      if (this.keyedQueue.get(sn) === settled) this.keyedQueue.delete(sn);
+    });
+    return run;
+  }
+
+  /**
+   * Run `attempt` at the device's next sequence, climbing past each {@link KEYED_PAYLOAD_SEQ_ERROR}
+   * refusal until the device accepts, another result arrives, or {@link KEYED_CLIMB_MS} is spent.
+   *
+   * A device's first number in a process is a small random seed — the scale the vendor app's own
+   * counters run at — and every later one is the previous plus one. A refusal adds a step that starts at
+   * {@link KEYED_SEQ_FIRST_STEP} and doubles per refusal, so a mark any distance above is passed in a
+   * logarithmic number of round trips; the step stops doubling at {@link KEYED_SEQ_STEP_CEILING}, so the
+   * number a climb lands on stays within that distance of the mark it passed and the counter's growth
+   * across many processes stays linear rather than geometric. Every number sent is recorded, accepted or
+   * refused, so the next command starts above it.
+   *
+   * @param attempt sends at the given sequence and answers the device's result code for it.
+   */
+  private async climbKeyedSequence(sn: string, attempt: (seqNum: number) => Promise<number>): Promise<void> {
+    const last = this.keyedSequences.get(sn);
+    let seqNum = last === undefined ? Math.trunc(Math.random() * 1000) : last + 1;
+    let step = P2PCommandRouter.KEYED_SEQ_FIRST_STEP;
+    const deadline = Date.now() + P2PCommandRouter.KEYED_CLIMB_MS;
+    for (;;) {
+      this.keyedSequences.set(sn, seqNum);
+      const code = await attempt(seqNum);
+      if (code === 0) return;
+      if (code !== KEYED_PAYLOAD_SEQ_ERROR || Date.now() >= deadline) {
+        throw new Error(`keyed-payload command rejected by ${sn} with code ${code}`);
+      }
+      seqNum += step;
+      step = Math.min(step * 2, P2PCommandRouter.KEYED_SEQ_STEP_CEILING);
+    }
+  }
+
+  /** The sequence step a first refusal adds; each refusal after it doubles the step. */
+  private static readonly KEYED_SEQ_FIRST_STEP = 1000;
+
+  /** The step at which a climb stops doubling and continues in fixed strides. */
+  private static readonly KEYED_SEQ_STEP_CEILING = 64_000;
+
+  /** How long one command keeps climbing past refusals before giving up with the device's code. */
+  private static readonly KEYED_CLIMB_MS = 30_000;
+
+  /**
+   * Send one keyed-payload command and answer the device's result for it, read from the two replies the
+   * device gives on the command's channel: the `SET_PAYLOAD` echo (a `commandResult`), at once, carrying
+   * the result as an int32; and, when the command changed the device's state, a `NOTIFY_PAYLOAD` about
+   * two seconds later carrying it again as a {@link KEYED_PAYLOAD_CMD.STATE_REPORT} document.
+   *
+   * - A report with any result but a sequence refusal settles the command with that result, whether or
+   *   not the echo was read.
+   * - An echo of `0` settles the command as accepted once {@link KEYED_NOTIFY_MS} pass without a report:
+   *   a command the device was already in the state of is accepted and echoed but changes nothing, and
+   *   draws no report.
+   * - An echo with any other result settles the command with it at once — except a sequence refusal,
+   *   which the device states twice, as the echo and as a report. The second is waited for, up to
+   *   {@link KEYED_REFUSAL_TWIN_MS}, so the resend that follows cannot read it as its own answer.
+   * - No reply within {@link KEYED_ECHO_MS} is a command that never landed, and rejects.
+   *
+   * Both listeners are armed before the send, and only replies on `channel` are read.
+   */
+  private awaitKeyedReply(sn: string, session: P2PSession, channel: number, send: () => void): Promise<number> {
+    return new Promise<number>((resolve, reject) => {
+      let echoed = false;
+      let refused = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const settle = (outcome: () => void): void => {
+        if (timer) clearTimeout(timer);
+        session.off("commandResult", onResult);
+        session.off("data", onData);
+        outcome();
+      };
+      const expire = (ms: number, onExpiry: () => void): void => {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(onExpiry, ms);
+      };
+      const onRefusal = (): void => {
+        if (echoed) return;
+        if (refused) return settle(() => resolve(KEYED_PAYLOAD_SEQ_ERROR));
+        refused = true;
+        expire(P2PCommandRouter.KEYED_REFUSAL_TWIN_MS, () => settle(() => resolve(KEYED_PAYLOAD_SEQ_ERROR)));
+      };
+      const onResult = (r: { code: number; channel: number }): void => {
+        if (r.channel !== channel) return;
+        if (r.code === KEYED_PAYLOAD_SEQ_ERROR) return onRefusal();
+        if (r.code !== 0) return settle(() => resolve(r.code));
+        echoed = true;
+        refused = false;
+        expire(P2PCommandRouter.KEYED_NOTIFY_MS, () => settle(() => resolve(0)));
+      };
+      const onData = (f: P2PFrame): void => {
+        if (f.channel !== channel || f.commandId !== CommandType.CMD_NOTIFY_PAYLOAD) return;
+        const code = keyedPayloadReportCode(f.json);
+        if (code === undefined) return;
+        if (code === KEYED_PAYLOAD_SEQ_ERROR) return onRefusal();
+        settle(() => resolve(code));
+      };
+      session.on("commandResult", onResult);
+      session.on("data", onData);
+      expire(P2PCommandRouter.KEYED_ECHO_MS, () =>
+        settle(() => reject(new Error(`keyed-payload command to ${sn} drew no reply`))),
+      );
+      try {
+        send();
+      } catch (e) {
+        settle(() => reject(e));
+      }
+    });
+  }
+
+  /** How long a keyed-payload command waits for any reply before it is taken as never having landed. */
+  private static readonly KEYED_ECHO_MS = 6000;
+
+  /** How long an accepted command waits for the state report before it is taken as having changed nothing. */
+  private static readonly KEYED_NOTIFY_MS = 5000;
+
+  /** How long a refusal waits for its twin report before the resend goes out. */
+  private static readonly KEYED_REFUSAL_TWIN_MS = 500;
 
   /**
    * **`ff09-actuate` intent** — build the `ff09` AES-128-CBC frame ({@link buildFf09Frame}, shared with the

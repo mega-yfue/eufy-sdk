@@ -36,6 +36,11 @@ export interface FamilyContext {
    * `"eufy_home_tuya"` devices are on the ThingClips/Tuya Cloud platform, not Anker AIoT MQTT.
    */
   category?: string;
+  /**
+   * Full device serial, when known. The one family split that no type number expresses: the vendor
+   * reuses one DeviceType across generations of a product and distinguishes them by serial.
+   */
+  serial?: string;
 }
 
 // ── DeviceType sets ─────────────────────────────────────────────────────────────────────────────
@@ -154,3 +159,15 @@ export const isAiotVacuum = (ctx: FamilyContext): boolean => ctx.category !== "e
  * vacuums receive the same write actions as AIoT ones, routed by the facade's `routeCommand`.
  */
 export const isTuyaVacuum = (ctx: FamilyContext): boolean => ctx.category === "eufy_home_tuya";
+
+/**
+ * The classic Wi-Fi smart lock — the unit whose actuation rides a per-command ECDH-wrapped key rather than
+ * the shared `ff09` frame: DeviceType 51 with a serial in the `T8520` range whose seventh character is `2`,
+ * the one range driven on hardware. The DeviceType alone does not identify it, since later units share the
+ * number and take the `ff09` frame, and a device whose serial is unknown is not guessed either way.
+ */
+export const isClassicWifiLock = (ctx: FamilyContext): boolean =>
+  ctx.deviceType === DeviceType.LOCK_WIFI &&
+  typeof ctx.serial === "string" &&
+  ctx.serial.startsWith("T8520") &&
+  ctx.serial.charAt(6) === "2";
