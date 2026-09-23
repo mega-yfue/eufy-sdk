@@ -139,7 +139,8 @@ function recordSetting(param: number, value: number, ctx: CommandContext): Comma
  *
  * It is also a STATIC fact about a model, not a live reading of what is powering the device. Nothing
  * here handles a unit whose supply can change — a camera moved onto a battery base, say. Moot for these
- * three, which have no cell to charge, and stated because the shape of the guard does not say so.
+ * listed mains-only models, which have no cell to charge, and stated because the shape of the guard
+ * does not say so.
  *
  * An explicit list, NOT a `device-family.ts` predicate (`isFloodLight`/`isIndoorCamera`): composing
  * those would over-reach — not every floodlight or indoor cam is mains-only, and this must assert mains
@@ -147,14 +148,33 @@ function recordSetting(param: number, value: number, ctx: CommandContext): Comma
  * Evidence bars differ: T8425 (Floodlight Cam) is confirmed on owned hardware; T8419 (Indoor Cam) is
  * taken from the app's own mains-cam handling (see the note on `publishedWorkingModeDomain`); T8410
  * (Indoor Cam Pan & Tilt) is confirmed mains-only by the maintainer, reported after a live unit showed
- * a battery level, a cell temperature and both solar reads it cannot have.
+ * a battery level, a cell temperature and both solar reads it cannot have. T8423 (Floodlight Cam 2 Pro)
+ * is mains-only and reports no physical-cell values.
  *
- * KNOWN, ACCEPTED trade: because the capability stays, `poweredOf` (camera.ts) still resolves these as
- * `battery`, so a live stream is budgeted as if cell-powered. An unnecessary power budget is cheap; a
- * phantom battery icon is a support ticket — so the visible entity is fixed here and the budget is
- * left as-is (a `poweredOf` refinement would be a separate change).
+ * The same model evidence also determines the camera's live-media power tier.
  */
-const MAINS_CAMERA_MODELS = ["T8425", "T8419", "T8410"] as const;
+const MAINS_CAMERA_MODELS = ["T8425", "T8423", "T8419", "T8410"] as const;
+
+/**
+ * Camera power tier from the resolved battery capability, confirmed mains-only models, and the app's
+ * charge-status bitfield. Solar statuses 4/5/12/20 still draw from a cell; other charging statuses
+ * indicate an external supply. An absent or malformed status remains battery-budgeted.
+ */
+export function cameraPowerTier(
+  model: string | undefined,
+  capabilities: ReadonlySet<string>,
+  chargeStatus?: string | number | boolean,
+): "wired" | "battery" {
+  if (
+    !capabilities.has("battery") ||
+    MAINS_CAMERA_MODELS.some((prefix) => (model ?? "").toUpperCase().startsWith(prefix))
+  )
+    return "wired";
+  if (chargeStatus === undefined) return "battery";
+  const status = Number(chargeStatus);
+  if (!Number.isInteger(status) || status < 0 || [0, 2, 4, 5, 12, 20].includes(status)) return "battery";
+  return "wired";
+}
 
 /** False for a mains camera whose battery params are sentinels — gates every physical-cell read. */
 const notMainsCamera = (ctx: AvailabilityContext): boolean => {

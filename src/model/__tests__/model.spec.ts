@@ -267,17 +267,17 @@ describe("doorbell — confirmed against real T8214", () => {
 });
 
 describe("Device — state + graceful unknown params", () => {
-  const rec: CloudRecord = { deviceType: 9, model: "T8423", params: {} };
+  const rec: CloudRecord = { deviceType: 9, model: "T8114", params: {} };
 
   it("coerces known params into named, typed properties", () => {
-    const dev = Device.fromRecord("T8423CAM001", { ...rec, params: { 1101: "57", 1011: "1" } });
+    const dev = Device.fromRecord("T8000P0000000000", { ...rec, params: { 1101: "57", 1011: "1" } });
     expect(dev.has("battery")).toBe(true);
     expect(dev.getProperty("battery")?.value).toBe(57); // number coercion
     expect(dev.getProperty("motionDetection")?.value).toBe(true); // bool coercion
   });
 
   it("retains unrecognised params as unknown_<paramType> passthrough (never dropped)", () => {
-    const dev = Device.fromRecord("T8423CAM001", { ...rec, params: { 999999: "raw-value" } });
+    const dev = Device.fromRecord("T8000P0000000000", { ...rec, params: { 999999: "raw-value" } });
     const key = `${UNKNOWN_PARAM_PREFIX}999999`;
     expect(dev.getProperty(key)?.value).toBe("raw-value");
   });

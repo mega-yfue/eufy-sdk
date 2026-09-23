@@ -297,6 +297,8 @@ export interface MemberDeps {
   ctx: CommandContext;
   sink: CommandSink;
   read: CapabilityStateReader;
+  /** Latest uncoerced parameter value, for semantics that the typed property does not preserve. */
+  readRaw?: (paramType: number) => string | number | boolean | undefined;
   rawDp?: RawDpCodec;
   /**
    * The media provider, when the device is bound to one.

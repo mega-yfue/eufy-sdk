@@ -76,6 +76,7 @@ import {
   type RawParams,
 } from "../model/index.js";
 import { isHomeBase } from "../model/device-family.js";
+import { BATTERY_PARAM, cameraPowerTier } from "../model/capabilities/battery.js";
 import { DeviceRegistry, type ParamChange } from "./device-registry.js";
 import type {
   EufyMegaOptions,
@@ -1654,7 +1655,8 @@ export class EufyMega extends EventEmitter {
 
   /**
    * A station's power tier for the P2P lifecycle: a HomeBase/station is `"wired"` (persistent); a
-   * standalone device is `"battery"` iff its resolved capabilities include `battery`, else `"wired"`.
+   * standalone device uses the camera power tier inferred from its resolved battery capability,
+   * model and reported charge status.
    * Keyed on the STATION's own power, never a child's (a battery cam attached to a wired HomeBase draws
    * from the base's persistent session). Reads capabilities on the client side — no model type leaks to
    * transport (the router only ever sees the `"wired"|"battery"` string).
@@ -1670,7 +1672,7 @@ export class EufyMega extends EventEmitter {
       category: d.category,
       params: d.params ?? {},
     }).capabilities;
-    return caps.includes("battery") ? "battery" : "wired";
+    return cameraPowerTier(d.model, new Set(caps), d.params?.[BATTERY_PARAM.BATTERY_STATUS]);
   }
 
   /**
