@@ -1425,9 +1425,11 @@ export class P2PCommandRouter {
    *
    * A session whose {@link P2PSession.pathAnswering} is false is closed and re-resolved before it is handed
    * over: the station answers every heartbeat, so a path silent past several of them is gone. A session
-   * reporting nothing about its path is not reporting that evidence and is handed over as it is. Replaced at
-   * most once per resolution, so a station whose replacement is silent too is returned rather than closed
-   * again.
+   * reporting nothing about its path is not reporting that evidence and is handed over as it is. Cached live
+   * sources on the replaced session are discarded before closing it: each source captures its original session,
+   * so returning one after the replacement would send media starts to the dead path. Sources on independent
+   * media sessions remain attached. Replaced at most once per resolution, so a station whose replacement is
+   * silent too is returned rather than closed again.
    */
   private async resolveSession(
     sn: string,
@@ -1449,6 +1451,9 @@ export class P2PCommandRouter {
     }
     if (session.pathAnswering === false && !rebuilt) {
       (this.deps.logger ?? noopLogger).debug(`[p2p] ${parentSn} path stopped answering — rebuilding before use`);
+      for (const [key, sessionKey] of [...this.liveSessionKeys]) {
+        if (sessionKey === parentSn) this.dropLiveSource(key);
+      }
       await this.manager
         .close(parentSn)
         .catch((error) => this.reportError(error instanceof Error ? error : new Error(String(error))));
