@@ -269,6 +269,47 @@ describe("SharedLiveSource", () => {
     expect(source.state).toBe("stopped");
   });
 
+  it.each([0, -1, 0.5, Number.NaN, "fast", 3e9])("uses safe battery timing defaults for %s", (invalid) => {
+    const { source, last } = mk({
+      powered: "battery",
+      batteryBudgetMs: invalid as number,
+      budgetGraceMs: invalid as number,
+    });
+    const consumer = source.attach();
+    let notices = 0;
+    let stopped = false;
+    consumer.on("budget", () => notices++);
+    consumer.on("stop", () => (stopped = true));
+    last().video(frame(true));
+
+    vi.advanceTimersByTime(44_999);
+    expect(notices).toBe(0);
+    vi.advanceTimersByTime(1);
+    expect(notices).toBe(1);
+    vi.advanceTimersByTime(9_999);
+    expect(stopped).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(stopped).toBe(true);
+  });
+
+  it("uses the battery default when extend() receives an invalid delay", () => {
+    const { source, last } = mk({ powered: "battery" });
+    const consumer = source.attach();
+    let notices = 0;
+    consumer.on("budget", (notice) => {
+      notices++;
+      if (notices === 1) notice.extend(3e9);
+    });
+    last().video(frame(true));
+
+    vi.advanceTimersByTime(45_000);
+    expect(notices).toBe(1);
+    vi.advanceTimersByTime(44_999);
+    expect(notices).toBe(1);
+    vi.advanceTimersByTime(1);
+    expect(notices).toBe(2);
+  });
+
   it("extend() re-pushes the battery budget and cancels the auto-stop", () => {
     const { source, last } = mk({ powered: "battery", batteryBudgetMs: 45000, budgetGraceMs: 10000 });
     const c = source.attach();
