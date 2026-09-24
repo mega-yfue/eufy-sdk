@@ -1,9 +1,9 @@
 import { CusPushEvent } from "../push-events.js";
 import { asBool } from "../../core/util.js";
 import { setStationScalar, setPayload, setScalar } from "./access.js";
-import type { AvailabilityContext, CapabilityModule, CommandContext } from "./types.js";
-import { accepts, propertiesOf, type Members, type Surface } from "./members.js";
-import type { Command } from "../../core/contracts.js";
+import type { AvailabilityContext, CapabilityActions, CapabilityModule, CommandContext } from "./types.js";
+import { accepts, propertiesOf, type MemberDeps, type Members, type Surface } from "./members.js";
+import type { Command, PowerOverride } from "../../core/contracts.js";
 
 /**
  * The P2P **param-type ids** this battery/power capability reads and writes — the `param_type` a device
@@ -86,11 +86,16 @@ export type PowerSourceName = (typeof PowerSource)[keyof typeof PowerSource];
 /**
  * Bound battery/power state and controls — the object returned by `dev.battery()`.
  *
- * Every getter, setter, argument type and description is DERIVED from `BATTERY_MEMBERS`; there is
- * nothing this capability does that the table cannot state, so nothing is written out here. All writes
- * are fire-and-forget; confirm a change by re-reading.
+ * Parameter-backed getters, setters, argument types and descriptions derive from `BATTERY_MEMBERS`.
+ * The local operating-power claim is a bound action because it is independent of device parameters.
+ * Device writes are fire-and-forget; confirm a change by re-reading.
  */
-export type BatteryActions = Surface<typeof BATTERY_MEMBERS>;
+export type BatteryActions = Surface<typeof BATTERY_MEMBERS> & {
+  /** The local operating-power claim, when bound to an SDK client. */
+  powerOverride?: () => PowerOverride;
+  /** Replace the local claim without sending a device command. */
+  setPowerOverride?: (override: PowerOverride) => void;
+};
 
 /**
  * Reinterpret the reported power source (1293), whose wire form VARIES BY MODEL: a plain int on some
@@ -149,31 +154,20 @@ function recordSetting(param: number, value: number, ctx: CommandContext): Comma
  * taken from the app's own mains-cam handling (see the note on `publishedWorkingModeDomain`); T8410
  * (Indoor Cam Pan & Tilt) is confirmed mains-only by the maintainer, reported after a live unit showed
  * a battery level, a cell temperature and both solar reads it cannot have. T8423 (Floodlight Cam 2 Pro)
- * is mains-only and reports no physical-cell values.
+ * is mains-only: the vendor's Floodlight Cam 2 Pro FAQ says it has no battery and requires a
+ * 110-240 V constant supply. The exact set of cell sentinels it reports remains unverified.
  *
  * The same model evidence also determines the camera's live-media power tier.
  */
 const MAINS_CAMERA_MODELS = ["T8425", "T8423", "T8419", "T8410"] as const;
 
 /**
- * Camera power tier from the resolved battery capability, confirmed mains-only models, and the app's
- * charge-status bitfield. Solar statuses 4/5/12/20 still draw from a cell; other charging statuses
- * indicate an external supply. An absent or malformed status remains battery-budgeted.
+ * Camera power tier from the resolved battery capability and confirmed mains-only models. A device
+ * with a cell remains battery-budgeted even when it reports charging: the charge-status bitfield does
+ * not establish that external input can sustain a persistent session or unbounded live stream.
  */
-export function cameraPowerTier(
-  model: string | undefined,
-  capabilities: ReadonlySet<string>,
-  chargeStatus?: string | number | boolean,
-): "wired" | "battery" {
-  if (
-    !capabilities.has("battery") ||
-    MAINS_CAMERA_MODELS.some((prefix) => (model ?? "").toUpperCase().startsWith(prefix))
-  )
-    return "wired";
-  if (chargeStatus === undefined) return "battery";
-  const status = Number(chargeStatus);
-  if (!Number.isInteger(status) || status < 0 || [0, 2, 4, 5, 12, 20].includes(status)) return "battery";
-  return "wired";
+export function cameraPowerTier(model: string | undefined, capabilities: ReadonlySet<string>): "wired" | "battery" {
+  return !capabilities.has("battery") || !notMainsCamera({ model }) ? "wired" : "battery";
 }
 
 /** False for a mains camera whose battery params are sentinels — gates every physical-cell read. */
@@ -514,6 +508,13 @@ export const BATTERY: CapabilityModule = {
   description: "Battery level, charging, health, temperature, and solar input.",
   members: BATTERY_MEMBERS,
   properties: propertiesOf(BATTERY_MEMBERS),
+  actions({ ctx, powerOverride }: MemberDeps): CapabilityActions {
+    if (!powerOverride || !notMainsCamera(ctx)) return {};
+    return {
+      powerOverride: () => powerOverride.getOverride(),
+      setPowerOverride: (override: PowerOverride) => powerOverride.setOverride(override),
+    };
+  },
   /** A reported battery-level param (1101) is the verified proof the device is battery-powered. */
   detection: { evidenceParams: [BATTERY_PARAM.BATTERY] },
   /**

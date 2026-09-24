@@ -3,8 +3,8 @@ import { DeviceType } from "../device-types.js";
 import { isIndoorCamera, isIndoorCamMini, isIndoorPanTiltS350 } from "../device-family.js";
 import { setScalar, setPayload, setJson, hasCapability } from "./access.js";
 import { AUDIO_CMD } from "./audio.js";
-import { accepts, method, propertiesOf, provided, type Members, type Surface, type MemberDeps } from "./members.js";
-import { BATTERY_PARAM, cameraPowerTier } from "./battery.js";
+import { accepts, propertiesOf, provided, type Members, type Surface, type MemberDeps } from "./members.js";
+import { cameraPowerTier } from "./battery.js";
 import type { CapabilityModule, CapabilityActions, CommandContext } from "./types.js";
 import { CameraDisabledError, type Command, type MediaProvider } from "../../core/contracts.js";
 
@@ -430,11 +430,11 @@ function statusLedCommand(on: boolean, ctx: CommandContext): Command {
 
 /**
  * How this camera is powered, as every media egress needs to be told: a battery device is streamed
- * under a budget, a wired one unbounded. The model and latest raw charge status refine the resolved
- * battery capability. Every egress gets the same current tier because any can create the shared source.
+ * under a budget, a mains-only one unbounded. Every egress supplies the same default; a bound media
+ * provider may apply a local operating-power override before opening or updating a shared source.
  */
-function poweredOf(ctx: CommandContext, readRaw?: MemberDeps["readRaw"]): "wired" | "battery" {
-  return cameraPowerTier(ctx.model, ctx.capabilities ?? new Set(), readRaw?.(BATTERY_PARAM.BATTERY_STATUS));
+function poweredOf(ctx: CommandContext): "wired" | "battery" {
+  return cameraPowerTier(ctx.model, ctx.capabilities ?? new Set());
 }
 
 /**
@@ -488,13 +488,6 @@ function refuseWhenDisabled(ctx: CommandContext, read: (name: string) => { value
  * @internal
  */
 export const CAMERA_MEMBERS = {
-  /** Current live-media power tier, including an externally powered battery device. */
-  powerTier: method(
-    ({ ctx, readRaw }) =>
-      () =>
-        poweredOf(ctx, readRaw),
-    "Current power tier for live media: wired or battery-budgeted.",
-  ),
   /**
    * The READ is the *disable*-bit convention (1035 "0" ⇒ ON, 2001 direct); the WRITE polarity is
    * family-dependent — see `powerValue` / `isEnableBitPolarity`. Battery/solo cams report the state under
@@ -815,19 +808,19 @@ export const CAMERA_MEMBERS = {
   ),
   snapshotLive: provided(
     "media",
-    (m, { ctx, read, readRaw }) =>
+    (m, { ctx, read }) =>
       async (opts?: Parameters<MediaProvider["snapshotLive"]>[0]) => {
         refuseWhenDisabled(ctx, read);
-        return m.snapshotLive({ powered: poweredOf(ctx, readRaw), ...opts });
+        return m.snapshotLive({ powered: poweredOf(ctx), ...opts });
       },
     "Fresh still decoded from a short live burst.",
   ),
   live: provided(
     "media",
-    (m, { ctx, read, readRaw }) =>
+    (m, { ctx, read }) =>
       async (opts?: Parameters<MediaProvider["live"]>[0]) => {
         refuseWhenDisabled(ctx, read);
-        return m.live({ powered: poweredOf(ctx, readRaw), ...opts });
+        return m.live({ powered: poweredOf(ctx), ...opts });
       },
     "Open a managed live stream.",
   ),
@@ -842,21 +835,21 @@ export const CAMERA_MEMBERS = {
   ),
   openReadable: provided(
     "media",
-    (m, { ctx, read, readRaw }) =>
+    (m, { ctx, read }) =>
       m.openReadable &&
       (async (opts?: Parameters<NonNullable<MediaProvider["openReadable"]>>[0]) => {
         refuseWhenDisabled(ctx, read);
-        return m.openReadable!({ powered: poweredOf(ctx, readRaw), ...opts });
+        return m.openReadable!({ powered: poweredOf(ctx), ...opts });
       }),
     "Open a node:stream Readable of the live feed.",
   ),
   recordFragments: provided(
     "media",
-    (m, { ctx, read, readRaw }) =>
+    (m, { ctx, read }) =>
       m.recordFragments &&
       ((opts?: Parameters<NonNullable<MediaProvider["recordFragments"]>>[0]) => {
         refuseWhenDisabled(ctx, read);
-        return m.recordFragments!({ powered: poweredOf(ctx, readRaw), ...opts });
+        return m.recordFragments!({ powered: poweredOf(ctx), ...opts });
       }),
     "Continuous fragmented-MP4 (CMAF) recording.",
   ),
@@ -869,11 +862,11 @@ export const CAMERA_MEMBERS = {
    */
   talkback: provided(
     "media",
-    (m, { ctx, readRaw }) =>
+    (m, { ctx }) =>
       m.talkback &&
       ctx.paramIds.has(AUDIO_CMD.AUDIO_SPEAKER) &&
       ((opts?: Parameters<NonNullable<MediaProvider["talkback"]>>[0]) =>
-        m.talkback!({ powered: poweredOf(ctx, readRaw), ...opts })),
+        m.talkback!({ powered: poweredOf(ctx), ...opts })),
     "Push audio from the host to the camera's speaker.",
   ),
 } as const satisfies Members;

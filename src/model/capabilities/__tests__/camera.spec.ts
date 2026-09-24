@@ -158,8 +158,7 @@ describe("camera capability module", () => {
     expect(CAMERA.detection?.codecs).toEqual(["camera"]);
   });
 
-  it("exposes the same current power tier used by live media", async () => {
-    let status = "0";
+  it("budgets media on a battery camera regardless of charging status", async () => {
     const seen: string[] = [];
     const media: MediaProvider = {
       snapshotLive: async (opts) => {
@@ -172,32 +171,10 @@ describe("camera capability module", () => {
     const c = ctx(0, { model: "T8214", capabilities: new Set(["camera", "battery"]) });
     const { acts } = bind<CameraActions>("camera", c, {
       media,
-      readRaw: () => status,
     });
-    expect(acts.powerTier()).toBe("battery");
     await acts.snapshotLive!();
-    status = "1";
-    expect(acts.powerTier()).toBe("wired");
     await acts.snapshotLive!();
-    status = "4";
-    expect(acts.powerTier()).toBe("battery");
-    expect(seen).toEqual(["battery", "wired"]);
-  });
-
-  it("updates a bound camera's tier when a later parameter report changes the supply", () => {
-    const dev = Device.fromRecord("T8000P0000000000", {
-      model: "T8214",
-      deviceType: 16,
-      params: { 1101: "42", 2111: "0" },
-    });
-    dev.bindActions(ctx(0, { model: "T8214", capabilities: new Set(dev.capabilities) }), {
-      dispatch: async () => undefined,
-    });
-    expect(dev.camera?.()?.powerTier()).toBe("battery");
-    dev.applyParams({ 2111: "1" });
-    expect(dev.camera?.()?.powerTier()).toBe("wired");
-    dev.applyParams({ 2111: "4" });
-    expect(dev.camera?.()?.powerTier()).toBe("battery");
+    expect(seen).toEqual(["battery", "battery"]);
   });
 
   describe("buildCommand — emits transport-neutral intents (wire chosen by the resolver)", () => {
@@ -739,7 +716,6 @@ describe("camera capability module", () => {
  */
 type Exact<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
 declare const cam: CameraActions;
-const _powerTier: Exact<ReturnType<typeof cam.powerTier>, "wired" | "battery"> = true;
 
 // A getter is optional (evidence-gated) and narrowed to what the member declares it is stored as.
 const _enabled: Exact<typeof cam.enabled, boolean | undefined> = true;
@@ -772,7 +748,6 @@ const _recordArg: Exact<Parameters<NonNullable<typeof cam.record>>[0], number> =
 const _talkbackNotFalse: Exact<false extends typeof cam.talkback ? true : false, false> = true;
 
 export const _surfaceAssertions = [
-  _powerTier,
   _enabled,
   _watermark,
   _noPrivacyGetter,

@@ -34,17 +34,31 @@ const evidenced = (over: Partial<CommandContext> = {}): CommandContext => ({
 });
 
 describe("battery capability module", () => {
-  it("classifies mains models and charge status without treating solar charging as mains", () => {
+  it("classifies mains-only cameras while budgeting every camera with a physical cell", () => {
     const battery = new Set(["battery"]);
-    expect(cameraPowerTier("T8425P00", battery, 0)).toBe("wired");
+    expect(cameraPowerTier("T8425P00", battery)).toBe("wired");
     expect(cameraPowerTier("T8423P00", battery)).toBe("wired");
-    expect(cameraPowerTier("T8410P00", battery, 0)).toBe("wired");
+    expect(cameraPowerTier("T8410P00", battery)).toBe("wired");
     expect(cameraPowerTier("T8114P00", new Set())).toBe("wired");
-    expect(cameraPowerTier("T8114P00", battery, 0)).toBe("battery");
-    expect(cameraPowerTier("T8214P00", battery, 1)).toBe("wired");
-    expect(cameraPowerTier("T8214P00", battery, 4)).toBe("battery");
+    expect(cameraPowerTier("T8114P00", battery)).toBe("battery");
     expect(cameraPowerTier("T8214P00", battery)).toBe("battery");
-    expect(cameraPowerTier("T8214P00", battery, "invalid")).toBe("battery");
+  });
+
+  it("offers the same local power override on every bound battery device", () => {
+    let override: "auto" | "always-on" | "battery" = "auto";
+    const powerOverride = {
+      getOverride: () => override,
+      setOverride: (next: typeof override) => {
+        override = next;
+      },
+    };
+    const camera = bind<BatteryActions>("battery", evidenced(), { powerOverride }).acts;
+    const sensor = bind<BatteryActions>("battery", evidenced({ codec: "sensor" }), { powerOverride }).acts;
+    expect(camera.powerOverride?.()).toBe("auto");
+    sensor.setPowerOverride?.("always-on");
+    expect(camera.powerOverride?.()).toBe("always-on");
+    camera.setPowerOverride?.("battery");
+    expect(sensor.powerOverride?.()).toBe("battery");
   });
   it("exposes WorkingMode + PowerSource enums with the app's canonical values", () => {
     expect(WorkingMode.OptimalBatteryLife).toBe("Optimal Battery Life");

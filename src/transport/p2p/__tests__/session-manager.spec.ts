@@ -51,6 +51,26 @@ describe("SessionManager lifecycle", () => {
     expect(mgr.get("ST") !== undefined).toBe(true);
   });
 
+  it("reconciles an already-idle session when its power claim changes", async () => {
+    let tier: PowerTier = "wired";
+    const mgr = new SessionManager({ poweredFor: () => tier, batteryIdleMs: 1000 });
+    const session = fakeSession();
+    await mgr.acquire("ST", async () => session, "ST");
+    mgr.retain("ST");
+    mgr.release("ST");
+    tier = "battery";
+    mgr.refreshPower("ST");
+    await vi.advanceTimersByTimeAsync(500);
+    tier = "wired";
+    mgr.refreshPower("ST");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(session.close).not.toHaveBeenCalled();
+    tier = "battery";
+    mgr.refreshPower("ST");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(session.close).toHaveBeenCalledOnce();
+  });
+
   it("a new user cancels a pending idle-close", async () => {
     const mgr = managerFor("battery");
     const session = fakeSession();

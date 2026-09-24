@@ -25,7 +25,13 @@ import type {
   PropertyValue,
   ResolvedDevice,
 } from "./types.js";
-import type { CommandSink, MediaProvider, Ff09SettingsReader, RawDpCodec } from "../core/contracts.js";
+import type {
+  CommandSink,
+  MediaProvider,
+  Ff09SettingsReader,
+  RawDpCodec,
+  PowerOverrideController,
+} from "../core/contracts.js";
 import { noopLogger, type Logger } from "../core/logger.js";
 import { structuralEqual } from "../core/util.js";
 import { resolveDevice, resolveProperties } from "./registry.js";
@@ -181,8 +187,6 @@ export class Device {
   private deviceName?: string;
   /** Live property values, keyed by property name (or `unknown_<pt>`). */
   private readonly state = new Map<string, PropertyValue>();
-  /** Latest uncoerced parameter values, including values withheld from the public property schema. */
-  private readonly rawParams = new Map<number, string | number | boolean>();
   /**
    * Bound action objects per capability the device HAS, keyed by camelCased capability id
    * (`light`, `ptz`, `camera`). Empty until {@link bindActions} runs — a bare model object
@@ -299,12 +303,13 @@ export class Device {
     media?: MediaProvider,
     ff09Settings?: Ff09SettingsReader,
     rawDp?: RawDpCodec,
+    powerOverride?: PowerOverrideController,
   ): void {
     this.actionMap = buildActions(this.capabilities, {
       ctx,
       sink,
       read: (name) => this.getProperty(name),
-      readRaw: (paramType) => this.rawParams.get(paramType),
+      powerOverride,
       media,
       ff09Settings,
       rawDp,
@@ -449,7 +454,6 @@ export class Device {
     for (const [rawKey, rawVal] of Object.entries(params)) {
       const pt = Number(rawKey);
       if (!Number.isFinite(pt)) continue;
-      this.rawParams.set(pt, rawVal);
       // Naming precedence: a capability's PropertySpec (curated) → the param dictionary (all
       // known ids in this namespace) → `unknown_<pt>` passthrough (never dropped). The dict def is
       // always consulted (even when a capability spec exists) because `encoding` lives there.

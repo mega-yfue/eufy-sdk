@@ -723,6 +723,15 @@ export interface SharedSourceHints {
   preBufferSeconds?: number;
 }
 
+/** A local operating-power claim; `auto` returns to the SDK's evidence-based policy. */
+export type PowerOverride = "auto" | "always-on" | "battery";
+
+/** Read or replace one device's local operating-power claim without writing to the device. */
+export interface PowerOverrideController {
+  getOverride(): PowerOverride;
+  setOverride(override: PowerOverride): void;
+}
+
 /**
  * The **media / device-query boundary** — the second transport, for operations that RETURN data (a
  * still, a live stream, a recording, a P2P request/reply query). The client implements it (P2P media
