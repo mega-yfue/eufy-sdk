@@ -78,6 +78,27 @@ describe("shared live source construction", () => {
     }
   });
 
+  it("tears down on the next tick when live() receives zero linger", async () => {
+    vi.useFakeTimers();
+    try {
+      const session = {
+        on: () => {},
+        off: () => {},
+        startLiveMedia: vi.fn(),
+        stopLiveMedia: vi.fn(),
+      };
+      const router = routerWithSession({ warn: vi.fn(), debug: vi.fn() }, session);
+      const consumer = await router.mediaProviderFor("T8000P0000000000").live({ lingerMs: 0 });
+      consumer.stop();
+
+      expect(session.stopLiveMedia).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(session.stopLiveMedia).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("builds the source with the power hint the first caller passed", async () => {
     const router = routerWithSession({ warn: vi.fn() });
     const source = await router.sharedLiveSourceFor("T8000P0000000000", { powered: "battery" });

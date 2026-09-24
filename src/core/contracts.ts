@@ -713,8 +713,8 @@ export interface SharedSourceHints {
    */
   powered?: "wired" | "battery";
   /**
-   * Seconds of already-captured media the pull retains for a later drain; `0`, absent, non-finite and
-   * negative values retain none.
+   * Seconds of already-captured media the pull retains for a later drain; `0`, absent, non-finite,
+   * negative, and windows longer than 2,147,483,647 ms retain none.
    *
    * Retention costs memory on every frame and only a caller knows whether anything will drain it, so it
    * is never assumed. Media can only be retained while the pull is running, so a window answers "what did

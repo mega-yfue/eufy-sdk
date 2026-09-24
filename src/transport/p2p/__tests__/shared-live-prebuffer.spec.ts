@@ -74,6 +74,7 @@ describe("prebuffer drain bounds", () => {
     expect(buffered[0].timestampMs).toBe(8_000);
   });
 
+  /** A finite request beyond the timer range still drains no more than the configured window. */
   it("caps a large drain request at the configured window", () => {
     const { source, last } = mk({ preBufferSeconds: 4 });
     source.attach();

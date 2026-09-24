@@ -42,9 +42,8 @@ import type {
 /** Largest delay Node accepts before clamping a timer to 1 ms. */
 const MAX_TIMER_DELAY_MS = 0x7fffffff;
 
-/** A valid Node timer delay in milliseconds; explicit zero can schedule next-tick teardown. */
-function timerMs(value: number | undefined, fallback: number, allowZero = false): number {
-  if (allowZero && value === 0) return 0;
+/** A finite delay within Node's supported timer range, or the supplied fallback. */
+function timerMs(value: number | undefined, fallback: number): number {
   return value !== undefined && Number.isFinite(value) && value >= 1 && value <= MAX_TIMER_DELAY_MS ? value : fallback;
 }
 
@@ -444,7 +443,7 @@ export class SharedLiveSource {
   private readonly tag: string;
 
   constructor(private readonly opts: SharedLiveSourceOptions) {
-    this.lingerMs = timerMs(opts.lingerMs, 8000, true);
+    this.lingerMs = opts.lingerMs === 0 ? 1 : timerMs(opts.lingerMs, 8000);
     this.maxQueue = opts.maxQueue ?? 900;
     this.preBufferMs = timerMs((opts.preBufferSeconds ?? 0) * 1000, 0);
     this.warmRetryMs = timerMs(opts.warmRetryMs, 2000);
@@ -858,9 +857,11 @@ export class SharedLiveSource {
       .map((item) => item.frame);
   }
 
+  /** A finite request is capped at the retained window before its duration is validated. */
   private bufferedMedia(seconds: number): TimedMediaFrame[] {
-    const requested = Number.isFinite(seconds) ? timerMs(Math.min(seconds * 1000, this.preBufferMs), 0) : 0;
-    if (requested <= 0 || !this.ring.length) return [];
+    if (!Number.isFinite(seconds) || !this.ring.length) return [];
+    const requested = timerMs(Math.min(seconds * 1000, this.preBufferMs), 0);
+    if (requested <= 0) return [];
     const start = this.windowStart(Date.now() - requested);
     return this.isKeyframe(this.ring[start]) ? this.ring.slice(start) : [];
   }
