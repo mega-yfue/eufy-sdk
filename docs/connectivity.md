@@ -81,6 +81,10 @@ explicit choice for a device whose installation can support a persistent session
 the claim updates an open shared stream and an idle standalone station session immediately. An attached
 camera's claim affects its stream; its HomeBase owns the station session.
 
+A confirmed mains-only model can still expose `battery()` for power settings because its record reports
+battery-family parameters. Its physical-cell readings are withheld, and its default is already wired,
+so it does not expose `setPowerOverride()` as a bound action.
+
 To restore claims when constructing a new client, pass `powerOverrides: { [deviceSn]: "always-on" }`.
 Runtime changes are held in the client instance and are not saved in the login session.
 

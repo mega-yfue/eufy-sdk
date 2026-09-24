@@ -39,12 +39,13 @@ describe("battery capability module", () => {
     expect(cameraPowerTier("T8425P00", battery)).toBe("wired");
     expect(cameraPowerTier("T8423P00", battery)).toBe("wired");
     expect(cameraPowerTier("T8410P00", battery)).toBe("wired");
+    expect(cameraPowerTier("T8410C", battery)).toBe("wired");
     expect(cameraPowerTier("T8114P00", new Set())).toBe("wired");
     expect(cameraPowerTier("T8114P00", battery)).toBe("battery");
     expect(cameraPowerTier("T8214P00", battery)).toBe("battery");
   });
 
-  it("offers the same local power override on every bound battery device", () => {
+  it("offers the local power override for devices with physical cells, not mains-only models", () => {
     let override: "auto" | "always-on" | "battery" = "auto";
     const powerOverride = {
       getOverride: () => override,
@@ -59,6 +60,9 @@ describe("battery capability module", () => {
     expect(camera.powerOverride?.()).toBe("always-on");
     camera.setPowerOverride?.("battery");
     expect(sensor.powerOverride?.()).toBe("battery");
+    const mains = bind<BatteryActions>("battery", evidenced({ model: "T8410C" }), { powerOverride }).acts;
+    expect(mains.powerOverride).toBeUndefined();
+    expect(mains.setPowerOverride).toBeUndefined();
   });
   it("exposes WorkingMode + PowerSource enums with the app's canonical values", () => {
     expect(WorkingMode.OptimalBatteryLife).toBe("Optimal Battery Life");
