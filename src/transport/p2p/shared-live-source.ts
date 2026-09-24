@@ -45,6 +45,14 @@ function durationMs(seconds: number | undefined): number {
   return Number.isFinite(milliseconds) && milliseconds > 0 ? milliseconds : 0;
 }
 
+/** Largest delay Node accepts before clamping a timer to 1 ms. */
+const MAX_TIMER_DELAY_MS = 0x7fffffff;
+
+/** A valid Node timer delay in milliseconds, with the default used for invalid input. */
+function positiveMs(value: number | undefined, fallback: number): number {
+  return value !== undefined && Number.isFinite(value) && value >= 1 && value <= MAX_TIMER_DELAY_MS ? value : fallback;
+}
+
 /**
  * Whether two coded configurations describe the same decoder — the test an announcement is gated on.
  *
@@ -444,8 +452,8 @@ export class SharedLiveSource {
     this.lingerMs = opts.lingerMs ?? 8000;
     this.maxQueue = opts.maxQueue ?? 900;
     this.preBufferMs = durationMs(opts.preBufferSeconds);
-    this.warmRetryMs = opts.warmRetryMs ?? 2000;
-    this.warmTimeoutMs = opts.warmTimeoutMs ?? 20000;
+    this.warmRetryMs = positiveMs(opts.warmRetryMs, 2000);
+    this.warmTimeoutMs = positiveMs(opts.warmTimeoutMs, 20000);
     this.powered = opts.powered ?? "wired";
     this.batteryBudgetMs = opts.batteryBudgetMs ?? 45000;
     this.budgetGraceMs = opts.budgetGraceMs ?? 10000;

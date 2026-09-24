@@ -214,6 +214,20 @@ describe("SharedLiveSource", () => {
     expect(last().nudged).toBe(at);
   });
 
+  it.each([0, -1, 0.5, Number.NaN, "fast", 3e9])("uses safe defaults for invalid warm-up timing %s", (invalid) => {
+    const { source, last } = mk({ warmRetryMs: invalid as number, warmTimeoutMs: invalid as number });
+    const consumer = source.attach();
+    consumer.on("error", () => undefined);
+    vi.advanceTimersByTime(1999);
+    expect(last().nudged).toBe(0);
+    vi.advanceTimersByTime(1);
+    expect(last().nudged).toBe(1);
+    vi.advanceTimersByTime(17999);
+    expect(source.state).toBe("warming");
+    vi.advanceTimersByTime(1);
+    expect(source.state).toBe("stopped");
+  });
+
   it("stalls: emits error to consumers and tears down when no keyframe arrives in the warm window", () => {
     const { source, last } = mk({ warmRetryMs: 2000, warmTimeoutMs: 6000 });
     const c = source.attach();
