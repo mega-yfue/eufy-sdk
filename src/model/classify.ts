@@ -51,6 +51,7 @@ import { PRINTER_CATEGORY_RE } from "../core/types.js";
 const STATION_TYPES: ReadonlySet<number> = new Set([
   DeviceType.STATION,
   DeviceType.HB3,
+  DeviceType.STATION_9000,
   DeviceType.MINIBASE_CHIME,
   DeviceType.HOMEBASE_MINI,
   DeviceType.NVR_S4_MAX,
@@ -177,7 +178,9 @@ function isKnownSecurityType(deviceType: number): boolean {
  *    EXCEPT `T8520`-prefixed which can be lock variants — still lock.
  *  - `T74xx` → **lock** (SmartSafe 7400-series).
  *  - `T80xx` / `T8001` / `T8002` / `T8010` / `T8030` / `T8023` / `T8025` → **station**
- *    (HomeBase / HomeBase 2 / 3 / Mini), and `T8N00` (NVR) / `T8E00` (PoE NVR) → station.
+ *    (HomeBase / HomeBase 2 / 3 / Mini), `T9000` (the app's own model registry files it as family
+ *    `STATION_9000`, the one station family outside the T8 band), and `T8N00` (NVR) / `T8E00` (PoE
+ *    NVR) → station.
  *  - `T89xx` (entry/motion/water/siren sensors, e.g. T8900/T8910/T8920) → **sensor**.
  *  - `T87xx` keypad (`T8960`) → **keypad**.
  *  - any other `T8…` security T-code → **camera** (the default security family).
@@ -207,6 +210,7 @@ export function codecFromModel(model: string | undefined): Codec | undefined {
   //  HomeBase family: T8001/T8002/T8010/T8023/T8025/T8030 ; NVR: T8N00 ; PoE NVR: T8E00.
   if (/^T8(00[0-9]|010|023|025|030)/.test(m)) return "station";
   if (/^T8N0/.test(m) || /^T8E0/.test(m)) return "station";
+  if (/^T9000/.test(m)) return "station";
 
   // SmartSafe (T74xx) — lock-family actuation.
   if (/^T74/.test(m)) return "lock";

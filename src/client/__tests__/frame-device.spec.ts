@@ -9,6 +9,7 @@ const HUB = "T8000P0000000000";
 const CAM_CH0 = "T8000P0000000001";
 const SENSOR_CH16 = "T8000P0000000002";
 const NO_CHANNEL = "T8000P0000000003";
+const TWIN_CH0 = "T8000P0000000004";
 const STANDALONE = "T8000P0000000009";
 
 /**
@@ -62,5 +63,17 @@ describe("frame → device resolution", () => {
   it("resolves nothing for a channel no device claims", () => {
     const r = registryWith([{ sn: HUB, raw: {} }, attached(SENSOR_CH16, 16)]);
     expect(r.serialForFrame(HUB, 42)).toBeUndefined();
+  });
+
+  it("lets no device claim a channel two attached devices both state, whichever order they arrived in", () => {
+    const forward = registryWith([{ sn: HUB, raw: {} }, attached(CAM_CH0, 0), attached(TWIN_CH0, 0)]);
+    const reversed = registryWith([attached(TWIN_CH0, 0), attached(CAM_CH0, 0), { sn: HUB, raw: {} }]);
+    expect(forward.serialForFrame(HUB, 0)).toBeUndefined();
+    expect(reversed.serialForFrame(HUB, 0)).toBeUndefined();
+  });
+
+  it("counts every attached device towards a clash, whatever its kind", () => {
+    const r = registryWith([{ sn: HUB, raw: {} }, attached(SENSOR_CH16, 16), attached(CAM_CH0, 16)]);
+    expect(r.serialForFrame(HUB, 16)).toBeUndefined();
   });
 });

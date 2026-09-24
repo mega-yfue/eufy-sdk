@@ -17,9 +17,9 @@
   "//typescript": "Pinned a major behind the SDK on purpose: TypeDoc reads the compiler through its JS API, and TypeScript 7 is the Go compiler with no JS API. Bumping it fails `npm ci` on TypeDoc's peer range. Dependabot is told to skip it — see .github/dependabot.yml.",
   "devDependencies": {
     "typedoc": "^0.28.20",
-    "typedoc-plugin-markdown": "^4.13.0",
+    "typedoc-plugin-markdown": "^4.13.1",
     "typedoc-vitepress-theme": "^1.1.4",
     "typescript": "^6.0.3",
-    "vitepress": "^2.0.0-alpha.19"
+    "vitepress": "^2.0.0-alpha.20"
   }
 }

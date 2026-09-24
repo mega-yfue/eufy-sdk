@@ -169,6 +169,27 @@ export class StationUnreachableError extends Error {
 }
 
 /**
+ * Work on a device was refused: its channel within its station cannot be established from the device records.
+ *
+ * A device attached to a HomeBase is addressed by a channel within that station: a media start and every
+ * per-channel command name it. When its record states no channel, or another device attached to the same station
+ * states the same one, any channel chosen would address whichever device actually holds it (streaming another
+ * camera's video under this serial), so nothing is sent. The `station-channel-unresolved` trace says which.
+ */
+export class DeviceChannelUnresolvedError extends Error {
+  constructor(
+    /** The device that could not be addressed. */
+    readonly sn: string,
+    /** The station it is attached to. */
+    readonly stationSn: string,
+    options?: { cause?: unknown },
+  ) {
+    super(`${sn} has no usable channel on station ${stationSn}, so nothing was sent to it`, options);
+    this.name = "DeviceChannelUnresolvedError";
+  }
+}
+
+/**
  * How a live stream ended before its first video keyframe: the warm-up deadline elapsed, the source
  * reported an error, or the source ended on its own.
  */

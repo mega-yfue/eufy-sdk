@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolvedStationSn } from "../device-registry.js";
+import { resolvedStationSn } from "../../transport/p2p/station-channels.js";
 
 /**
  * Which station a device's traffic belongs to.

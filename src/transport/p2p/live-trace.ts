@@ -127,6 +127,12 @@ export type LiveTrace =
       stationAdmin: "self" | "other" | "unstated";
       stationModel?: string;
     }
+  /**
+   * The call's device has no usable channel on the station it resolved: its record states none (`missing`), or
+   * another device attached to the same station states the same one (`shared`). The call is refused with
+   * `DeviceChannelUnresolvedError` and nothing is sent.
+   */
+  | { phase: "station-channel-unresolved"; issue: "missing" | "shared" }
   /** A shared source began warming, with the interval it re-issues on and the deadline it fails at. */
   | { phase: "warming"; retryMs: number; deadlineMs: number }
   /**

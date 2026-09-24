@@ -1,20 +1,4 @@
 /**
- * The station a device's traffic belongs to, from its cloud record and its own serial.
- *
- * `parent_sn` carries the parent on a HomeBase-attached device. `station_sn` is frequently absent there —
- * empty on every attached sensor of a T8010 — and serves only as a fallback. An empty string states no
- * station.
- *
- * A device naming no parent answers its own serial, so every device has a station.
- */
-export function resolvedStationSn(raw: Record<string, unknown>, sn: string): string {
-  const parent = typeof raw.parent_sn === "string" && raw.parent_sn ? raw.parent_sn : undefined;
-  if (parent && parent !== sn) return parent;
-  const station = typeof raw.station_sn === "string" && raw.station_sn ? raw.station_sn : undefined;
-  return station ?? sn;
-}
-
-/**
  * DeviceRegistry — the device list/record/capability-resolution collaborator behind {@link EufyMega}.
  *
  * The facade owns orchestration + event fan-out; this owns the resolution logic: fetching + merging
@@ -25,6 +9,12 @@ export function resolvedStationSn(raw: Record<string, unknown>, sn: string): str
  */
 import { MegaApiError, MegaHttpClient, OWNER_ONLY_CODE, SessionExpiredError } from "../transport/http/mega-client.js";
 import { noopLogger, type Logger } from "../core/logger.js";
+import {
+  resolvedStationSn,
+  stationChannels,
+  stationOf,
+  type StationChannel,
+} from "../transport/p2p/station-channels.js";
 import { classifyDevice, type DeviceClass, type EufyDevice, type RealtimeKind } from "../core/types.js";
 import { inspectParams, resolveDevice, type Capability, type Codec, type DeviceInspection } from "../model/index.js";
 
@@ -194,6 +184,9 @@ export class DeviceRegistry {
   private devices: EufyDevice[] = [];
   /** Per-(station, channel) capability cache for {@link capabilitiesForFrame}; `null` = negative hit. */
   private readonly frameCapsCache = new Map<string, ReadonlySet<Capability> | null>();
+  /** {@link stationChannels} of {@link channelMapFor}, the roster it was computed over. */
+  private channelMap = new Map<string, StationChannel>();
+  private channelMapFor?: EufyDevice[];
   /**
    * Serials whose per-device param overlay has been refused. The call is owner-gated, so on a shared or
    * member account it fails for the whole life of the client — retrying it every refresh spends a request
@@ -472,7 +465,7 @@ export class DeviceRegistry {
 
     const raw = dev.raw as Record<string, unknown> | undefined;
     const deviceType = typeof raw?.["device_type"] === "number" ? (raw["device_type"] as number) : undefined;
-    const station = this.stationOf(dev);
+    const station = stationOf(dev);
     return {
       deviceType,
       model: dev.model,
@@ -623,41 +616,42 @@ export class DeviceRegistry {
   }
 
   /**
-   * The parent station a device's frames arrive under.
-   *
-   * `parent_sn` on the cloud record is the field that is actually populated for a HomeBase-attached
-   * device — `stationSn` is frequently absent (observed empty on every attached sensor of a T8010),
-   * so keying on it alone silently resolves an attached device to ITSELF and no frame ever matches.
-   * Mirrors the router's own session-keying precedence, which is the source of truth for which
-   * station a device's traffic belongs to. Answering the device's OWN serial is what "stands alone"
-   * means, so this is also the topology signal `record()`/`capsOf` hand the resolver.
-   */
-  private stationOf(dev: EufyDevice): string {
-    return dev.stationSn ?? resolvedStationSn((dev.raw ?? {}) as Record<string, unknown>, dev.sn);
-  }
-
-  /**
    * The device a `(station, channel)` pair refers to — a station fans out to attached devices by
    * `device_channel`, while a standalone device is its own station at channel 0.
    *
-   * A device claims a channel only when its record actually STATES one. Treating a missing
-   * `device_channel` as 0 turns every such device into a rival claimant for channel 0, where a
-   * station legitimately has an attached device already, and the winner is then decided by cloud list
-   * order — so the same frame resolves to different devices across refreshes. The resolved serial now
-   * decides where realtime state is written, not just which decoders may run, so an ambiguous answer
+   * A device claims a channel only when its record actually STATES one that no other device attached to
+   * the same station also states ({@link stationChannels}). Treating a missing `device_channel` as 0, or
+   * letting two claimants of one channel both hold it, leaves the winner to cloud list order — which a
+   * partial refresh reorders — so the same frame resolves to different devices across refreshes. The resolved
+   * serial decides where realtime state is written, not just which decoders may run, so an ambiguous answer
    * writes one device's params onto another.
    *
    * An attached device that names the channel wins over the station itself, which is what a station
-   * fanning traffic out by channel means; the station answers for channel 0 only when nothing is
-   * attached there, which is also the standalone case (a device is its own station).
+   * fanning traffic out by channel means. A channel two attached devices both state belongs to one of them,
+   * which cannot be told apart, so it answers nothing rather than the station. The station answers for
+   * channel 0 only when nothing attached states it, which is also the standalone case (a device is its own
+   * station).
    */
   private deviceForFrame(stationSn: string, channel: number): EufyDevice | undefined {
-    const attached = this.devices.find((d) => {
-      const stated = (d.raw as Record<string, any> | undefined)?.device_channel;
-      return typeof stated === "number" && stated === channel && d.sn !== stationSn && this.stationOf(d) === stationSn;
-    });
-    if (attached) return attached;
+    const channels = this.stationChannelMap();
+    let claimed = false;
+    for (const d of this.devices) {
+      if (d.sn === stationSn || stationOf(d) !== stationSn) continue;
+      const c = channels.get(d.sn);
+      if (c && "channel" in c && c.channel === channel) return d;
+      if (c && "claimed" in c && c.claimed === channel) claimed = true;
+    }
+    if (claimed) return undefined;
     return channel === 0 ? this.devices.find((d) => d.sn === stationSn) : undefined;
+  }
+
+  /** {@link stationChannels} over the current roster, recomputed only when the roster itself is replaced. */
+  private stationChannelMap(): Map<string, StationChannel> {
+    if (this.channelMapFor !== this.devices) {
+      this.channelMap = stationChannels(this.devices);
+      this.channelMapFor = this.devices;
+    }
+    return this.channelMap;
   }
 
   /**
@@ -710,7 +704,7 @@ export class DeviceRegistry {
   /** Resolve a record's capabilities the way `getDevice` does, so gating matches `device.has()`. */
   private capsOf(dev: EufyDevice): ReadonlySet<Capability> {
     const raw = (dev.raw ?? {}) as Record<string, any>;
-    const station = this.stationOf(dev);
+    const station = stationOf(dev);
     return new Set(
       resolveDevice({
         deviceType: raw.device_type,
