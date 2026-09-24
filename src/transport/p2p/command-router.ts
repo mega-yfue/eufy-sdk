@@ -373,12 +373,13 @@ export class P2PCommandRouter {
     const dev = this.recordFor(sn);
     if (!dev) return;
     const station = this.stationKeyOf(sn);
-    const raw = (dev.raw ?? {}) as Record<string, unknown>;
-    const channel = typeof raw.device_channel === "number" ? raw.device_channel : 0;
-    const key = `${station}:${channel}`;
-    this.liveSources.get(key)?.setPowerTier(tier);
-    const opts = this.liveSourceOpts.get(key);
-    if (opts) this.liveSourceOpts.set(key, { ...opts, powered: tier });
+    const address = stationChannels(this.deps.listDevices()).get(sn);
+    if (address && "channel" in address) {
+      const key = `${station}:${address.channel}`;
+      this.liveSources.get(key)?.setPowerTier(tier);
+      const opts = this.liveSourceOpts.get(key);
+      if (opts) this.liveSourceOpts.set(key, { ...opts, powered: tier });
+    }
     if (station === sn) this.manager.refreshPower(station);
   }
 
