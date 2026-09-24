@@ -373,7 +373,7 @@ export class P2PCommandRouter {
     this.powerUpdates.set(sn, { revision: (this.powerUpdates.get(sn)?.revision ?? 0) + 1, tier });
     const dev = this.recordFor(sn);
     if (!dev) return;
-    const station = this.stationKeyFor(dev);
+    const station = this.stationKeyOf(sn);
     const raw = (dev.raw ?? {}) as Record<string, unknown>;
     const channel = typeof raw.device_channel === "number" ? raw.device_channel : 0;
     const key = `${station}:${channel}`;
