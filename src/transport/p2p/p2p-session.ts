@@ -73,14 +73,9 @@ const LOOKUP_RETRY_MS = 1_000;
  * The receive buffer a session's socket asks the OS for.
  *
  * A station sends a keyframe as one burst: measured on a HomeBase 3, up to 161 video datagrams of 1074 bytes
- * arrived within 10 ms. The kernel queues a burst like that only as far as the socket's receive buffer
- * reaches and drops the rest before the socket is read, and the Linux default of 212992 bytes holds roughly
- * 90 such datagrams once per-datagram overhead is counted. Each drop is a forward sequence gap, and a gap
- * discards the frame it falls in, so a keyframe that overflows the buffer never decodes. 4 MiB queues seconds
- * of a live stream, which covers a burst while the event loop is busy elsewhere.
- *
- * The OS caps the request (`net.core.rmem_max` on Linux); {@link P2PSession.connect} warns when it granted
- * less.
+ * within 10 ms. With the Linux default buffer of 212992 bytes, the kernel dropped part of such bursts before
+ * the socket was read, and the frames those datagrams belonged to arrived incomplete. 4 MiB queues many
+ * such bursts, so a keyframe survives the event loop being busy elsewhere for a moment.
  */
 const RECEIVE_BUFFER_BYTES = 4 * 1024 * 1024;
 /**
@@ -340,6 +335,8 @@ export class P2PSession extends EventEmitter {
   private connected = false;
   private connecting = false;
   private closed = false;
+  /** Whether a short receive buffer has been reported, so a reconnect does not repeat the same warning. */
+  private receiveBufferReported = false;
   private connectAddress?: Address;
   private seqNumber = 0;
   /**
@@ -659,18 +656,32 @@ export class P2PSession extends EventEmitter {
   }
 
   /**
-   * Warn when the OS granted a bound socket less receive buffer than {@link RECEIVE_BUFFER_BYTES}.
+   * Ask the OS for {@link RECEIVE_BUFFER_BYTES} on a bound socket, and warn once per session when it grants
+   * less or refuses.
    *
-   * The OS lowers the request silently, and the loss that follows reads as datagram gaps on a healthy
-   * network, so the granted size is compared once per connect. Linux reports twice the size it accounts
-   * against the cap, which a granted size at or above the request covers.
+   * The request is made here rather than through `createSocket`'s `recvBufferSize`: Node applies that option
+   * inside the bind callback, where a refusal is thrown out of reach of this session and ends the process.
+   * FreeBSD refuses a size above `kern.ipc.maxsockbuf`, whose default is below the request; Linux and macOS
+   * lower it silently, and the loss that follows looks like datagram gaps on a healthy network.
+   *
+   * Linux reports twice the size it counts against `net.core.rmem_max`, so there the warning fires only once
+   * that cap is below half the request. The advice names the cap that grants the full request.
    */
-  private warnOnCappedReceiveBuffer(socket: dgram.Socket): void {
-    const granted = socket.getRecvBufferSize();
-    if (granted >= RECEIVE_BUFFER_BYTES) return;
+  private requestReceiveBuffer(socket: dgram.Socket): void {
+    let granted: number;
+    try {
+      socket.setRecvBufferSize(RECEIVE_BUFFER_BYTES);
+      granted = socket.getRecvBufferSize();
+    } catch {
+      granted = 0;
+    }
+    if (granted >= RECEIVE_BUFFER_BYTES || this.receiveBufferReported) return;
+    this.receiveBufferReported = true;
     this.logger.warn(
-      `[p2p] ${this.cfg.stationSn} UDP receive buffer is ${granted} bytes, below the ${RECEIVE_BUFFER_BYTES} requested; ` +
-        `live video can drop keyframe bursts. On Linux, raise net.core.rmem_max to at least ${RECEIVE_BUFFER_BYTES}.`,
+      `[p2p] ${this.cfg.stationSn} UDP receive buffer below the ${RECEIVE_BUFFER_BYTES} bytes requested` +
+        (granted > 0 ? ` (granted ${granted})` : " (request refused)") +
+        `; live video can lose keyframes. Raise the OS limit (net.core.rmem_max on Linux, ` +
+        `kern.ipc.maxsockbuf on BSD) to at least ${RECEIVE_BUFFER_BYTES}.`,
     );
   }
 
@@ -687,7 +698,7 @@ export class P2PSession extends EventEmitter {
       this.level2Reprompted = false;
     }
 
-    const socket = dgram.createSocket({ type: "udp4", recvBufferSize: RECEIVE_BUFFER_BYTES });
+    const socket = dgram.createSocket("udp4");
     this.socket = socket;
     socket.on("message", (msg, rinfo) => this.onMessage(msg, rinfo));
     socket.on("error", (e) => this.emit("error", e));
@@ -699,7 +710,7 @@ export class P2PSession extends EventEmitter {
         } catch {
           /* broadcast not permitted — cloud path still works */
         }
-        this.warnOnCappedReceiveBuffer(socket);
+        this.requestReceiveBuffer(socket);
         resolve();
       });
     });

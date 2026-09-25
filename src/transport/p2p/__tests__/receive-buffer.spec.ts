@@ -4,16 +4,13 @@ import { P2PSession } from "../p2p-session.js";
 
 /**
  * A session's socket asks for a receive buffer large enough to queue a keyframe burst, and says so when the OS
- * granted less.
+ * granted less or refused.
  *
- * The OS caps the request without an error, so the granted size is stubbed here: what the test host's kernel
- * would grant is not what is under test.
+ * What the OS grants is stubbed: the test host's own limits are not what is under test.
  */
 const REQUESTED = 4 * 1024 * 1024;
 
-async function connectOnce(granted?: number) {
-  if (granted !== undefined) vi.spyOn(dgram.Socket.prototype, "getRecvBufferSize").mockReturnValue(granted);
-  const createSocket = vi.spyOn(dgram, "createSocket");
+function newSession() {
   const warn = vi.fn();
   const session = new P2PSession({
     stationSn: "T8000P0000000000",
@@ -22,9 +19,17 @@ async function connectOnce(granted?: number) {
     logger: { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() },
   });
   session.on("error", () => undefined);
+  return { session, warn };
+}
+
+async function connectAndClose(session: P2PSession) {
   await session.connect();
   await session.close();
-  return { createSocket, warn };
+}
+
+function grant(size: number) {
+  vi.spyOn(dgram.Socket.prototype, "setRecvBufferSize").mockImplementation(() => undefined);
+  vi.spyOn(dgram.Socket.prototype, "getRecvBufferSize").mockReturnValue(size);
 }
 
 afterEach(() => {
@@ -32,19 +37,42 @@ afterEach(() => {
 });
 
 describe("the receive buffer a session's socket asks for", () => {
-  it("requests 4 MiB when the socket is created", async () => {
-    const { createSocket } = await connectOnce(REQUESTED);
-    expect(createSocket).toHaveBeenCalledWith({ type: "udp4", recvBufferSize: REQUESTED });
-  });
-
-  it("warns once when the OS granted less, naming the Linux cap to raise", async () => {
-    const { warn } = await connectOnce(212992 * 2);
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0]?.[0]).toContain("net.core.rmem_max");
+  it("requests 4 MiB on the bound socket", async () => {
+    grant(REQUESTED);
+    const { session } = newSession();
+    await connectAndClose(session);
+    expect(dgram.Socket.prototype.setRecvBufferSize).toHaveBeenCalledWith(REQUESTED);
   });
 
   it("stays silent when the OS granted at least the request", async () => {
-    const { warn } = await connectOnce(REQUESTED * 2);
+    grant(REQUESTED * 2);
+    const { session, warn } = newSession();
+    await connectAndClose(session);
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("warns with the granted size when the OS lowered the request", async () => {
+    grant(212992 * 2);
+    const { session, warn } = newSession();
+    await connectAndClose(session);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toContain("granted 425984");
+  });
+
+  it("connects and warns instead of throwing when the OS refuses the request", async () => {
+    vi.spyOn(dgram.Socket.prototype, "setRecvBufferSize").mockImplementation(() => {
+      throw new Error("ENOBUFS");
+    });
+    const { session, warn } = newSession();
+    await expect(connectAndClose(session)).resolves.toBeUndefined();
+    expect(warn.mock.calls[0]?.[0]).toContain("request refused");
+  });
+
+  it("warns once per session, not again on a reconnect", async () => {
+    grant(212992 * 2);
+    const { session, warn } = newSession();
+    await connectAndClose(session);
+    await connectAndClose(session);
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 });
