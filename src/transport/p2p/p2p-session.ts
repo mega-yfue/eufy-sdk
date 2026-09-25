@@ -70,6 +70,20 @@ const HEARTBEAT_MS = 5_000;
 const PATH_SILENCE_MS = HEARTBEAT_MS * 3;
 const LOOKUP_RETRY_MS = 1_000;
 /**
+ * The receive buffer a session's socket asks the OS for.
+ *
+ * A station sends a keyframe as one burst: measured on a HomeBase 3, up to 161 video datagrams of 1074 bytes
+ * arrived within 10 ms. The kernel queues a burst like that only as far as the socket's receive buffer
+ * reaches and drops the rest before the socket is read, and the Linux default of 212992 bytes holds roughly
+ * 90 such datagrams once per-datagram overhead is counted. Each drop is a forward sequence gap, and a gap
+ * discards the frame it falls in, so a keyframe that overflows the buffer never decodes. 4 MiB queues seconds
+ * of a live stream, which covers a burst while the event loop is busy elsewhere.
+ *
+ * The OS caps the request (`net.core.rmem_max` on Linux); {@link P2PSession.connect} warns when it granted
+ * less.
+ */
+const RECEIVE_BUFFER_BYTES = 4 * 1024 * 1024;
+/**
  * How long a station is given to answer a lookup before the connection gives up on it and closes.
  *
  * The whole deadline for reaching a station: the lookups are re-sent every second until one is answered, and
@@ -644,6 +658,22 @@ export class P2PSession extends EventEmitter {
     return this.connected;
   }
 
+  /**
+   * Warn when the OS granted a bound socket less receive buffer than {@link RECEIVE_BUFFER_BYTES}.
+   *
+   * The OS lowers the request silently, and the loss that follows reads as datagram gaps on a healthy
+   * network, so the granted size is compared once per connect. Linux reports twice the size it accounts
+   * against the cap, which a granted size at or above the request covers.
+   */
+  private warnOnCappedReceiveBuffer(socket: dgram.Socket): void {
+    const granted = socket.getRecvBufferSize();
+    if (granted >= RECEIVE_BUFFER_BYTES) return;
+    this.logger.warn(
+      `[p2p] ${this.cfg.stationSn} UDP receive buffer is ${granted} bytes, below the ${RECEIVE_BUFFER_BYTES} requested; ` +
+        `live video can drop keyframe bursts. On Linux, raise net.core.rmem_max to at least ${RECEIVE_BUFFER_BYTES}.`,
+    );
+  }
+
   /** Open the socket and start the lookup → hole-punch handshake. */
   async connect(): Promise<void> {
     if (this.connecting || this.connected) return;
@@ -657,7 +687,7 @@ export class P2PSession extends EventEmitter {
       this.level2Reprompted = false;
     }
 
-    const socket = dgram.createSocket("udp4");
+    const socket = dgram.createSocket({ type: "udp4", recvBufferSize: RECEIVE_BUFFER_BYTES });
     this.socket = socket;
     socket.on("message", (msg, rinfo) => this.onMessage(msg, rinfo));
     socket.on("error", (e) => this.emit("error", e));
@@ -669,6 +699,7 @@ export class P2PSession extends EventEmitter {
         } catch {
           /* broadcast not permitted — cloud path still works */
         }
+        this.warnOnCappedReceiveBuffer(socket);
         resolve();
       });
     });
