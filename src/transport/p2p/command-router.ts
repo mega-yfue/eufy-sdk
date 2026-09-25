@@ -16,6 +16,7 @@ import type {
   Ff09Identity,
   AutoLockSnapshot,
   MediaProvider,
+  RecordingDownload,
   ScalarForm,
   AacEncoder,
   SharedSourceHints,
@@ -24,6 +25,7 @@ import type {
 } from "../../core/contracts.js";
 import {
   DeviceChannelUnresolvedError,
+  RecordingDownloadError,
   StationKeyUnavailableError,
   StationUnreachableError,
 } from "../../core/contracts.js";
@@ -49,6 +51,7 @@ import { decodeP2PCloudIPs } from "./codec.js";
 import { P2P_ENVELOPE } from "./envelope.js";
 import { freshestLanIp } from "./lan-ip.js";
 import { captureSnapshotFromShared, recordClip } from "./media.js";
+import { decodeRecording, homeBase2RecordingPath, receiveRecording } from "./recording-download.js";
 import type { FfmpegLevel } from "../ffmpeg.js";
 import { LiveStream } from "./live-stream.js";
 import { SharedLiveSource, type Consumer } from "./shared-live-source.js";
@@ -264,6 +267,8 @@ export class P2PCommandRouter {
   private readonly talkbacks = new Map<string, Talkback>();
   /** cipher_id → ECC private key (one eufylife get_ciphers call per cipher), shared across (re)opens. */
   private readonly cipherKeyCache = new Map<number, string | undefined>();
+  /** The recording download in flight per station; a station serves one at a time. */
+  private readonly recordingDownloads = new Map<string, Promise<unknown>>();
 
   constructor(private readonly deps: P2PRouterDeps) {
     this.manager = new SessionManager({
@@ -690,6 +695,7 @@ export class P2PCommandRouter {
       talkback: (opts) => this.openTalkback(sn, opts),
       p2pQuery: (subCmd, opts) => this.p2pQuery(sn, subCmd, opts),
       p2pControlQuery: (param, data, opts) => this.p2pControlQuery(sn, param, data, opts),
+      downloadRecording: (opts) => this.downloadRecording(sn, opts),
       record: async (seconds, opts) => {
         const { session, channel, accountId, homeBaseAttached } = await this.resolveSession(sn, {
           waitLevel2: "soft",
@@ -706,6 +712,60 @@ export class P2PCommandRouter {
         });
       },
     };
+  }
+
+  /**
+   * Download one recording a HomeBase 2 (T8010) holds for an attached camera, then decode it
+   * ({@link decodeRecording}). The station model is the gate: the path layout and frame formats are
+   * confirmed on that station only, so any other topology rejects with `unsupported` before anything is
+   * sent. Downloads queue per station.
+   */
+  private async downloadRecording(
+    sn: string,
+    opts: { recording: string; cipherId: number; timeoutMs?: number; signal?: AbortSignal },
+  ): Promise<RecordingDownload> {
+    const { session, parentSn, channel, accountId, homeBaseAttached } = await this.resolveSession(sn, {
+      signal: opts.signal,
+    });
+    if (!homeBaseAttached || this.recordFor(parentSn)?.model !== "T8010") {
+      throw new RecordingDownloadError("unsupported", `recording download is not confirmed on ${sn}'s station`);
+    }
+    const path = homeBase2RecordingPath(channel, opts.recording);
+    if (!path) throw new RecordingDownloadError("invalid-recording", `no recording named ${opts.recording}`);
+    const eccKey = await this.recordingKeyFor(opts.cipherId, accountId, parentSn);
+    if (!eccKey) {
+      throw new RecordingDownloadError("key-unavailable", `cipher ${opts.cipherId} could not be obtained`);
+    }
+    const previous = this.recordingDownloads.get(parentSn) ?? Promise.resolve();
+    const run = previous
+      .catch(() => undefined)
+      .then(() =>
+        receiveRecording(session, { path, accountId, channel, timeoutMs: opts.timeoutMs, signal: opts.signal }),
+      );
+    this.recordingDownloads.set(parentSn, run);
+    try {
+      return decodeRecording((await run).frames, eccKey);
+    } finally {
+      if (this.recordingDownloads.get(parentSn) === run) this.recordingDownloads.delete(parentSn);
+    }
+  }
+
+  /**
+   * The ECC private key of exactly `cipherId`, from the shared cache or one `get_ciphers` call. Unlike the
+   * session's gateway lookup, a different cipher answered in its place is not accepted.
+   */
+  private async recordingKeyFor(cipherId: number, accountId: string, stationSn: string): Promise<string | undefined> {
+    const cached = this.cipherKeyCache.get(cipherId);
+    if (cached !== undefined) return cached;
+    try {
+      const ciphers = await this.deps.mega.getCiphers([cipherId], accountId, stationSn);
+      const ecc = ciphers.find((c) => Number(c.cipher_id) === cipherId)?.ecc_private_key;
+      if (ecc !== undefined) this.cipherKeyCache.set(cipherId, ecc);
+      return ecc;
+    } catch (e) {
+      this.reportError(e instanceof Error ? e : new Error(String(e)));
+      return undefined;
+    }
   }
 
   /**

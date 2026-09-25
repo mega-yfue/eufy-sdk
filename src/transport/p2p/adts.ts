@@ -92,6 +92,24 @@ export function parseAdtsHeader(buf: Buffer, offset = 0): AdtsHeader | undefined
 }
 
 /**
+ * The 7-byte ADTS header (no CRC, buffer fullness "variable") that frames one raw AAC-LC, 16 kHz, mono
+ * access unit of `payloadLength` bytes, so that header and payload together read back through
+ * {@link parseAdtsHeader} as a supported frame.
+ */
+export function buildAdtsHeader(payloadLength: number): Buffer {
+  const frameLength = payloadLength + HEADER_LEN_NO_CRC;
+  return Buffer.from([
+    0xff,
+    0xf1,
+    (PROFILE_AAC_LC << 6) | (FREQ_INDEX_16K << 2) | (CHANNELS_MONO >> 2),
+    ((CHANNELS_MONO & 0x03) << 6) | ((frameLength >> 11) & 0x03),
+    (frameLength >> 3) & 0xff,
+    ((frameLength & 0x07) << 5) | 0x1f,
+    0xfc,
+  ]);
+}
+
+/**
  * Whether a header describes the audio parameters the device's path is fixed at — AAC-LC, 16 kHz,
  * mono. A stream at any other rate or channel count is rejected rather than resampled: the device has
  * no way to be told otherwise, so passing it through would produce audio at the wrong pitch and speed.

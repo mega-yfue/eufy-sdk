@@ -852,6 +852,13 @@ export const CAMERA_MEMBERS = {
       }),
     "Continuous fragmented-MP4 (CMAF) recording.",
   ),
+  downloadRecording: provided(
+    "media",
+    (m) =>
+      m.downloadRecording &&
+      ((opts: Parameters<NonNullable<MediaProvider["downloadRecording"]>>[0]) => m.downloadRecording!(opts)),
+    "Download a recording the station holds → H.264 and AAC elementary streams.",
+  ),
   /**
    * Push audio from the host to this camera's speaker. Gated on the **speaker** param specifically —
    * not the `audio` capability, which resolves on a microphone alone and would advertise a speaker the

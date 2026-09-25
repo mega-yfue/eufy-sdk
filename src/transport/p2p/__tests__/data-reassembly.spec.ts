@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildCommandHeader,
   buildRawCommandPayload,
@@ -59,6 +59,10 @@ function harness() {
 }
 
 describe("P2P data reassembly", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("ignores a retransmitted continuation without discarding the frame being assembled", () => {
     const { feed, received, gapTraces } = harness();
     const payload = Buffer.alloc(48, 7);
@@ -77,7 +81,8 @@ describe("P2P data reassembly", () => {
     expect(gapTraces()).toHaveLength(0);
   });
 
-  it("drops an incomplete frame on a genuine forward sequence gap and resynchronizes", () => {
+  it("drops an incomplete frame on a forward sequence gap that is never filled, and resynchronizes", () => {
+    vi.useFakeTimers();
     const { feed, received, debug } = harness();
     const incomplete = commandFrame(40, 1300, Buffer.alloc(48, 7)).subarray(0, 20);
 
@@ -85,6 +90,8 @@ describe("P2P data reassembly", () => {
     feed(dataPacket(42, Buffer.alloc(8)));
     feed(dataPacket(43, commandFrame(43, 1301, Buffer.from([1, 2, 3]))));
 
+    expect(received).toHaveLength(0);
+    vi.advanceTimersByTime(400);
     expect(received).toHaveLength(1);
     expect(received[0]!.commandId).toBe(1301);
     expect(debug).toHaveBeenCalledWith(
@@ -94,11 +101,13 @@ describe("P2P data reassembly", () => {
   });
 
   it("traces a bounded number of datagram gaps however many the channel drops", () => {
+    vi.useFakeTimers();
     const { feed, gapTraces } = harness();
 
     for (let i = 0; i < 40; i++) {
       feed(dataPacket(100 + i * 3, commandFrame(100 + i * 3, 1300, Buffer.alloc(48, 7)).subarray(0, 20)));
     }
+    vi.advanceTimersByTime(40 * 400);
 
     expect(gapTraces().length).toBeGreaterThan(0);
     expect(gapTraces().length).toBeLessThanOrEqual(8);
@@ -169,6 +178,77 @@ describe("P2P data reassembly", () => {
     feed(dataPacket(1_001, frame.subarray(24)));
 
     expect(received).toHaveLength(1);
+    expect(received[0]!.raw).toEqual(payload);
+  });
+
+  it("holds datagrams that overtook a missing one and completes the frame when it is retransmitted", () => {
+    const { feed, received, gapTraces } = harness();
+    const payload = Buffer.alloc(64, 7);
+    const frame = commandFrame(60, 1300, payload);
+
+    feed(dataPacket(60, frame.subarray(0, 24)));
+    feed(dataPacket(62, frame.subarray(40, 56)));
+    feed(dataPacket(63, frame.subarray(56)));
+    expect(received).toHaveLength(0);
+    feed(dataPacket(61, frame.subarray(24, 40)));
+
+    expect(received).toHaveLength(1);
+    expect(received[0]!.raw).toEqual(payload);
+    expect(gapTraces()).toHaveLength(0);
+  });
+
+  it("keeps later frames when the hole is finally given up", () => {
+    vi.useFakeTimers();
+    const { feed, received } = harness();
+    const lost = commandFrame(70, 1300, Buffer.alloc(64, 7));
+    const next = Buffer.from([4, 5, 6]);
+
+    feed(dataPacket(70, lost.subarray(0, 24)));
+    feed(dataPacket(72, lost.subarray(40)));
+    feed(dataPacket(73, commandFrame(73, 1301, next)));
+    vi.advanceTimersByTime(400);
+
+    expect(received.map(({ commandId }) => commandId)).toEqual([1301]);
+    expect(received[0]!.raw).toEqual(next);
+  });
+
+  it("gives the hole up at once when too many datagrams are held behind it", () => {
+    const { feed, received } = harness();
+    const frames = Array.from({ length: 513 }, (_, i) => commandFrame(i, 1301, Buffer.from([i & 0xff])));
+
+    feed(dataPacket(0, frames[0]!));
+    for (let i = 2; i <= 514; i++) feed(dataPacket(i, frames[i - 2]!));
+
+    expect(received).toHaveLength(514);
+  });
+
+  it("carries a frame header cut by the datagram boundary into the next datagram", () => {
+    const { feed, received } = harness();
+    const first = commandFrame(80, 1300, Buffer.alloc(20, 1));
+    const second = commandFrame(80, 1301, Buffer.alloc(30, 2));
+    const third = commandFrame(80, 1300, Buffer.alloc(10, 3));
+    const stream = Buffer.concat([first, second, third]);
+    const cut = first.length + 6;
+
+    feed(dataPacket(80, stream.subarray(0, cut)));
+    feed(dataPacket(81, stream.subarray(cut)));
+
+    expect(received.map(({ commandId }) => commandId)).toEqual([1300, 1301, 1300]);
+    expect(received[1]!.raw).toEqual(Buffer.alloc(30, 2));
+    expect(received[2]!.raw).toEqual(Buffer.alloc(10, 3));
+  });
+
+  it("drops held datagrams when the device restarts its numbering", () => {
+    vi.useFakeTimers();
+    const { feed, received } = harness();
+    const payload = Buffer.from([7, 8, 9]);
+
+    feed(dataPacket(30_000, commandFrame(30_000, 1300, Buffer.alloc(48, 7)).subarray(0, 20)));
+    feed(dataPacket(30_002, Buffer.alloc(8)));
+    feed(dataPacket(0, commandFrame(0, 1301, payload)));
+    vi.advanceTimersByTime(400);
+
+    expect(received.map(({ commandId }) => commandId)).toEqual([1301]);
     expect(received[0]!.raw).toEqual(payload);
   });
 });

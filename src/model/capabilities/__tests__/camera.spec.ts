@@ -610,6 +610,22 @@ describe("camera capability module", () => {
         record: async () => Buffer.alloc(0),
       };
       expect("openReadable" in camera(ctx(), media).acts).toBe(false);
+      expect("downloadRecording" in camera(ctx(), media).acts).toBe(false);
+    });
+
+    it("a stored-recording download passes the pushed recording name and cipher id through unchanged", async () => {
+      const seen: unknown[] = [];
+      const recording = { video: Buffer.from([1]), frames: 1, missingFrames: 0, durationMs: 0, fps: 0 };
+      const media: MediaProvider = {
+        snapshotLive: async () => ({ jpeg: Buffer.alloc(0), width: 1, height: 1 }),
+        live: async () => ({}) as never,
+        record: async () => Buffer.alloc(0),
+        downloadRecording: async (opts) => (seen.push(opts), recording),
+      };
+      const { acts } = camera(ctx(), media);
+
+      await expect(acts.downloadRecording!({ recording: "20260101120000", cipherId: 1 })).resolves.toBe(recording);
+      expect(seen).toEqual([{ recording: "20260101120000", cipherId: 1 }]);
     });
   });
 

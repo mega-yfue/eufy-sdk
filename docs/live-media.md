@@ -321,6 +321,41 @@ an optional convenience sink — resolved on `PATH`, or set `ffmpegPath` on the 
 you ship; the raw keyframe bytes are always available dependency-free via `openReadable` / the event
 stream.)
 
+## Recordings stored on a HomeBase 2
+
+A HomeBase 2 (T8010) keeps each event recording of its attached cameras, and names it in the event push:
+`payload.p` is the recording name and `cipher` the key id it was stored under. `downloadRecording`
+fetches that recording over the station's P2P session and decodes it; it does not wake the camera.
+
+```ts
+import { RecordingDownloadError } from "@mega-yfue/eufy-sdk";
+
+eufy.on("push", async (ev) => {
+  const recording = ev.payload.p;
+  if (!ev.deviceSn || typeof recording !== "string" || ev.cipher === undefined) return;
+  const cam = (await eufy.getDevice(ev.deviceSn)).camera?.();
+  try {
+    const clip = await cam?.downloadRecording?.({ recording, cipherId: ev.cipher });
+    // clip.video: Annex-B H.264 · clip.audio: AAC-LC 16 kHz mono ADTS · clip.fps, clip.durationMs
+  } catch (error) {
+    if (error instanceof RecordingDownloadError) console.log(error.reason);
+  }
+});
+```
+
+The download is confirmed on recordings that had finished. How the station answers for a recording it is
+still writing is not established, so issue the download once the camera's configured clip length has
+elapsed since the push. Downloads queue one at a time per station, and the transfer runs faster than real
+time: a 12.8 s recording took about 6 s.
+
+The result is elementary streams, not a container: `video` is Annex-B H.264 and `audio` (when present) is
+AAC-LC in ADTS framing. `fps` and `durationMs` come from the camera's own frame stamps, and `missingFrames`
+counts frames the camera numbered that never arrived. Muxing is the caller's; for example with ffmpeg,
+`-framerate <fps> -f h264 -i video.h264 -f aac -i audio.aac -c copy clip.mp4`.
+
+The download is confirmed on a HomeBase 2 only. Any other station rejects with `RecordingDownloadError`
+reason `unsupported` before anything is sent.
+
 ## Talkback — audio the other way
 
 `cam.talkback()` opens the reverse path: audio from the host, out of the camera's speaker. It is

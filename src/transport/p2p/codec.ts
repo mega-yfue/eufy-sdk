@@ -386,6 +386,36 @@ export function buildIntStringCommandPayload(
 }
 
 /**
+ * Build a **string-pair** command body: five zero bytes, then `strValue` and `strValueSub`, each in the
+ * 128-byte-chunk length form ({@link stringWithLength}), AES-128-ECB encrypted (level-1) like
+ * {@link buildStringCommandPayload} when `key` is given. `CMD_DOWNLOAD_VIDEO` (1024) takes this shape on a
+ * HomeBase 2: `strValue` = the recording's path on the station, `strValueSub` = the station admin
+ * `account_id`, on the camera's channel. Confirmed on a HomeBase 2 (T8010): the station answers with the
+ * recording's frames and a `CMD_DOWNLOAD_FINISH` (1304).
+ */
+export function buildStringPairCommandPayload(
+  strValue: string,
+  strValueSub: string,
+  channel = 0,
+  key?: Buffer,
+  encType = 1,
+): Buffer {
+  const encrypted = !!key && key.length === 16;
+  const body = Buffer.concat([Buffer.alloc(5), stringWithLength(strValue), stringWithLength(strValueSub)]);
+  const data = encrypted ? encryptP2PData(paddingP2PData(body), key!) : body;
+  const header = Buffer.allocUnsafe(2);
+  header.writeUInt16LE(data.length, 0);
+  return Buffer.concat([
+    header,
+    Buffer.from([0x00, 0x00]),
+    Buffer.from([0x01, 0x00]),
+    Buffer.from([channel, encrypted ? encType : 0x00]),
+    Buffer.from([0x00, 0x00]),
+    data,
+  ]);
+}
+
+/**
  * Build a command body around an ALREADY-encrypted (or plaintext) `data` buffer with an explicit
  * `signCode` — used for level-2 (`signCode 8`, AES-256-GCM) commands like the media-start 1350 the
  * app sends. Same on-wire layout as `buildStringCommandPayload` but the caller supplies the body and
