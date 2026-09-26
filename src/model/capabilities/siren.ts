@@ -33,7 +33,7 @@ export const SIREN_CMD = {
   ALARM_TEST: 1826,
   /** Manually stop a sounding alarm (app `APP_CMD_SIREN_SENSOR_MANUAL_STOP_ALARM`). */
   MANUAL_STOP: 1871,
-  /** Station-family HomeBase duration alarm, verified live on T8010 (app `SET_TONE_FILE`). */
+  /** Station-family HomeBase duration alarm, verified live on T8010 and T8030 (app `SET_TONE_FILE`). */
   HOMEBASE_TONE: 1201,
   /** HomeBase alarm volume percentage (app `CMD_SET_HUB_SPK_VOLUME`). */
   HUB_SPK_VOLUME: 1235,
@@ -79,9 +79,9 @@ export type SirenActions = Surface<typeof SIREN_MEMBERS>;
 /** Reported HomeBase alarm params that prove the alarm-output configuration surface. */
 const HUB_ALARM_EVIDENCE = [SIREN_CMD.HUB_ALARM_TONE, 1282] as const;
 
-/** Whether this bound device uses the station-family manual HomeBase alarm wire. */
+/** Whether this bound device uses the station-family manual HomeBase alarm wire (verified on T8010 and T8030). */
 function isStationAlarmOutput(ctx: CommandContext): boolean {
-  return ctx.deviceType === DeviceType.STATION;
+  return ctx.deviceType === DeviceType.STATION || ctx.deviceType === DeviceType.HB3;
 }
 
 /** Whether a station-family HomeBase also reports an alarm-output configuration parameter. */

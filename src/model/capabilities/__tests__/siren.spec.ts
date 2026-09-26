@@ -201,12 +201,15 @@ describe("siren capability module", () => {
       await expect(siren.acts.setAlarmTone!(3)).rejects.toThrow(/alarmTone: 3 is not a valid value/);
     });
 
-    it("binds the verified duration trigger and zero-duration stop on the station channel", async () => {
+    it.each([
+      { deviceType: DeviceType.STATION, model: "T8010" },
+      { deviceType: DeviceType.HB3, model: "T8030" },
+    ])("binds the verified duration trigger and zero-duration stop on the station channel ($model)", async ({ deviceType, model }) => {
       const { acts, sent } = sirenOf({
         channel: 0,
         codec: "station",
-        deviceType: DeviceType.STATION,
-        model: "T8010",
+        deviceType,
+        model,
         accountName: "tester",
         capabilities: new Set(["siren"]),
         paramIds: new Set([1279, 1280, 1281, 1282, 61008, 1825, 61006]),
