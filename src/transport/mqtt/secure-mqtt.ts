@@ -27,16 +27,14 @@ import { parseSecureTopic, subscribeTopics } from "./topics.js";
 const SUBACK_FAILURE = 0x80;
 
 /**
- * The SUBACK return codes a rejected `subscribeAsync` carries. The MQTT engine rejects the WHOLE
- * request when any one grant has the {@link SUBACK_FAILURE} bit (`Subscribe error: Unspecified error`)
- * and attaches the SUBACK it received as `packet`; answers `undefined` for a rejection that carries no
- * SUBACK — a dropped connection, a client that is not connected — which is a transport failure, not a
- * refusal.
+ * Whether a rejected `subscribeAsync` is the broker refusing the filter. The MQTT engine rejects the
+ * WHOLE request when any one grant has the {@link SUBACK_FAILURE} bit (`Subscribe error: Unspecified
+ * error`) and attaches the SUBACK it received as `packet`. A rejection that carries no SUBACK — a
+ * dropped connection, a client that is not connected — is a transport failure and answers false.
  */
-function refusedGrants(err: unknown): readonly number[] | undefined {
+function isRefusal(err: unknown): boolean {
   const granted = (err as { packet?: { granted?: unknown } } | null)?.packet?.granted;
-  if (!Array.isArray(granted)) return undefined;
-  return granted.filter((g): g is number => typeof g === "number");
+  return Array.isArray(granted) && granted.some((g) => typeof g === "number" && (g & SUBACK_FAILURE) !== 0);
 }
 
 /**
@@ -256,8 +254,7 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
         granted.push(topic);
         return;
       }
-      const codes = refusedGrants(outcome.reason);
-      if (!codes?.some((code) => (code & SUBACK_FAILURE) !== 0)) throw outcome.reason;
+      if (!isRefusal(outcome.reason)) throw outcome.reason;
       denied.push(topic);
     });
     return { granted, denied };
