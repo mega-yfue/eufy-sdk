@@ -2145,7 +2145,7 @@ export class EufyMega extends EventEmitter {
       // Enrich the transport-neutral push with its human event label (the transport stays
       // capability-blind — the id→name mapping is a model concern).
       if (ev.eventName === undefined && ev.eventType != null) ev.eventName = detectionName(ev.eventType);
-      if (ev.thumbnailCandidate) void this.observeStoredImage(ev.thumbnailCandidate);
+      if (ev.thumbnailCandidate) void this.observeStoredImage(ev.thumbnailCandidate, ev.deviceSn);
       this.emit("push", ev); // raw normalized push (low-level escape hatch)
       // Capabilities map the push eventType → a semantic event (motion / doorbellPress / lockState…).
       const signal = {
@@ -2194,17 +2194,27 @@ export class EufyMega extends EventEmitter {
     return client;
   }
 
-  /** Admit only exact, account-known devices with resolved snapshot evidence into the passive store. */
-  private async observeStoredImage(candidate: NonNullable<PushEvent["thumbnailCandidate"]>): Promise<void> {
-    if (!this.storedImages || candidate.attribution.kind !== "device") return;
+  /**
+   * Admit only exact, account-known devices with resolved snapshot evidence into the passive store; a
+   * station-only candidate is admitted under the event's device serial.
+   */
+  private async observeStoredImage(
+    candidate: NonNullable<PushEvent["thumbnailCandidate"]>,
+    eventDeviceSn?: string,
+  ): Promise<void> {
+    if (!this.storedImages) return;
+    const { attribution } = candidate;
+    const deviceSn =
+      attribution.kind === "device" ? attribution.deviceSn : attribution.kind === "station" ? eventDeviceSn : undefined;
+    if (!deviceSn) return;
     const account = this.mega.auth?.userId;
     if (!account) return;
     try {
       if (!this.registry.list().length) await this.registry.getDevices();
       if (this.mega.auth?.userId !== account) return;
-      const caps = this.registry.capabilitiesForDevice(candidate.attribution.deviceSn);
+      const caps = this.registry.capabilitiesForDevice(deviceSn);
       if (caps && hasProvidedAction(caps, "snapshotStored")) {
-        this.storedImages.observe(candidate.attribution.deviceSn, candidate.url);
+        this.storedImages.observe(deviceSn, candidate.url);
       }
     } catch (e) {
       this.reportError(e);

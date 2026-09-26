@@ -259,8 +259,9 @@ try {
 
 `snapshotStored(): Promise<Buffer>` returns the latest qualifying push thumbnail retained for that
 device. Acquisition happens eagerly when the push arrives, before any snapshot call. A candidate must
-be attributed to one exact account-known device that has snapshot capability evidence; ambiguous or
-station-only candidates are ignored.
+be attributed to one exact account-known device that has snapshot capability evidence; ambiguous
+candidates are ignored. A candidate that names no device is attributed to the push's device serial when
+that serial is such a device.
 
 The call itself is passive: it does not wait for an acquisition, access storage, make an HTTP request,
 open P2P, start live media, or transcode. If no JPEG is retained it rejects with

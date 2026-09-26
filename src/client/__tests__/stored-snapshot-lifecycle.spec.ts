@@ -3,6 +3,7 @@ import type { PersistedSession, SessionStore } from "../../core/store.js";
 import type { EufyDevice } from "../../core/types.js";
 import type { ThumbnailCandidate } from "../../transport/push/types.js";
 import { LoginStatus, type LoginResult } from "../../transport/http/mega-client.js";
+import { PushClient } from "../../transport/push/push-client.js";
 import { EufyMega } from "../eufy-mega.js";
 import { LiveSnapshotUnavailableError } from "../../core/contracts.js";
 
@@ -86,7 +87,7 @@ type ClientInternals = {
     require(sn: string): EufyDevice;
     capabilitiesForDevice(sn: string): ReadonlySet<string> | undefined;
   };
-  observeStoredImage(candidate: ThumbnailCandidate): Promise<void>;
+  observeStoredImage(candidate: ThumbnailCandidate, eventDeviceSn?: string): Promise<void>;
   p2p: { mediaProviderFor(sn: string): { snapshotLive(opts?: unknown): Promise<unknown> } };
   mediaProviderFor(sn: string): {
     snapshotLive(opts?: unknown): Promise<{ jpeg: Buffer; width: number; height: number; retained?: true }>;
@@ -195,18 +196,39 @@ describe("stored snapshot client lifecycle", () => {
     expect(client.download).toHaveBeenCalledWith(IMAGE_URL, "XXXXXXX-000001-XXXXX");
   });
 
-  it.each([
-    ["ambiguous", { url: IMAGE_URL, attribution: { kind: "ambiguous" } }],
-    ["station-attributed", { url: IMAGE_URL, attribution: { kind: "station", stationSn: CAMERA_SN } }],
-    ["unknown-device", exactCandidate(UNKNOWN_SN)],
-    ["device without snapshot evidence", exactCandidate(NO_SNAPSHOT_SN)],
-  ] satisfies Array<[string, ThumbnailCandidate]>)("discards a %s candidate", async (_label, candidate) => {
-    const { internals, download } = makeClient();
+  it("admits a station-only candidate under the event's device serial, keyed by its parent station", async () => {
+    const client = makeClient();
+    const stationSn = "T8000P0000000004";
+    const child = { ...cameraRecord(CAMERA_SN), stationSn, p2pDid: undefined };
+    const station = { ...cameraRecord(stationSn), p2pDid: "XXXXXXX-000001-XXXXX" };
+    client.list.mockReturnValue([child, station]);
+    const image = jpeg("station-only");
+    client.download.mockResolvedValue(image);
+    const action = await storedSnapshotAction(client.eufy);
 
-    await internals.observeStoredImage(candidate);
+    await client.internals.observeStoredImage({ url: IMAGE_URL, attribution: { kind: "station" } }, CAMERA_SN);
 
-    expect(download).not.toHaveBeenCalled();
+    expect(client.download).toHaveBeenCalledWith(IMAGE_URL, "XXXXXXX-000001-XXXXX");
+    await vi.waitFor(async () => expect(action()).resolves.toEqual(image));
   });
+
+  const stationOnly: ThumbnailCandidate = { url: IMAGE_URL, attribution: { kind: "station", stationSn: CAMERA_SN } };
+
+  it.each([
+    ["ambiguous", { url: IMAGE_URL, attribution: { kind: "ambiguous" } }, CAMERA_SN],
+    ["station-attributed without an event device serial", stationOnly, undefined],
+    ["unknown-device", exactCandidate(UNKNOWN_SN), undefined],
+    ["device without snapshot evidence", exactCandidate(NO_SNAPSHOT_SN), undefined],
+  ] satisfies Array<[string, ThumbnailCandidate, string | undefined]>)(
+    "discards a %s candidate",
+    async (_label, candidate, eventDeviceSn) => {
+      const { internals, download } = makeClient();
+
+      await internals.observeStoredImage(candidate, eventDeviceSn);
+
+      expect(download).not.toHaveBeenCalled();
+    },
+  );
 
   it("clearSession clears retained bytes and makes a stale bound action require login", async () => {
     const client = makeClient();
@@ -238,6 +260,41 @@ describe("stored snapshot client lifecycle", () => {
     await client.eufy.login();
 
     await expect(action()).rejects.toMatchObject({ reason: "not-observed" });
+  });
+});
+
+describe("a push thumbnail reaches the stored-image admission", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it("with the push's device serial, so a station-only candidate can be admitted", async () => {
+    const eufy = new EufyMega({
+      email: "user@example.invalid",
+      password: "unused",
+      autoRealtime: false,
+      pushStore: {
+        load: () => ({
+          creds: { fid: "f", androidId: "0", securityToken: "0", fcmToken: "t", createdAt: 0 },
+          persistentIds: [],
+        }),
+        save: () => {},
+        clear: () => {},
+      },
+    });
+    Object.defineProperty((eufy as any).mega, "auth", {
+      configurable: true,
+      get: () => ({ userId: "u", authToken: "t" }),
+    });
+    vi.spyOn((eufy as any).mega, "registerPushToken").mockResolvedValue(undefined);
+    vi.spyOn(PushClient.prototype, "connect").mockImplementation(function (this: PushClient) {
+      this.emit("connect");
+    });
+    const observe = vi.spyOn(eufy as any, "observeStoredImage").mockResolvedValue(undefined);
+    const candidate: ThumbnailCandidate = { url: IMAGE_URL, attribution: { kind: "station" } };
+
+    const client = await (eufy as any).startPush();
+    client.emit("push", { deviceSn: CAMERA_SN, payload: {}, thumbnailCandidate: candidate });
+
+    expect(observe).toHaveBeenCalledWith(candidate, CAMERA_SN);
   });
 });
 
