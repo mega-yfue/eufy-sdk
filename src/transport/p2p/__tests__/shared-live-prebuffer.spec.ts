@@ -74,6 +74,16 @@ describe("prebuffer drain bounds", () => {
     expect(buffered[0].timestampMs).toBe(8_000);
   });
 
+  /** A finite request beyond the timer range still drains no more than the configured window. */
+  it("caps a large drain request at the configured window", () => {
+    const { source, last } = mk({ preBufferSeconds: 4 });
+    source.attach();
+    deliver(last(), { from: 0, to: 6_000, stepMs: 500, gopMs: 2_000 });
+
+    expect(source.ringBuffer(3e9)).toEqual(source.ringBuffer(4));
+    expect(source.ringBuffer(4)).not.toEqual([]);
+  });
+
   /** Asking for none is a request, not an omission: it must not be read as "whatever is retained". */
   it("hands over nothing at all when no window is asked for", () => {
     const { source, last } = mk({ preBufferSeconds: 10 });
@@ -152,7 +162,7 @@ describe("prebuffer retention", () => {
     expect(drained[0].keyframe).toBe(true);
   });
 
-  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1])(
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1, 3e9])(
     "retains nothing when configured with an invalid %s-second window",
     (preBufferSeconds) => {
       const { source, last } = mk({ preBufferSeconds });

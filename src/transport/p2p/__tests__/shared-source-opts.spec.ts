@@ -12,7 +12,10 @@ function poweredOf(source: unknown): string | undefined {
   return (source as { opts: { powered?: string } }).opts.powered;
 }
 
-function routerWithSession(logger: { warn: ReturnType<typeof vi.fn> }) {
+function routerWithSession(
+  logger: { warn: ReturnType<typeof vi.fn>; debug?: ReturnType<typeof vi.fn> },
+  session: Record<string, unknown> = { on: () => {}, off: () => {} },
+) {
   const router = new P2PCommandRouter({
     mega: {} as never,
     logger: logger as never,
@@ -25,7 +28,7 @@ function routerWithSession(logger: { warn: ReturnType<typeof vi.fn> }) {
     onFrame: () => {},
   });
   (router as unknown as { resolveSession: unknown }).resolveSession = async () => ({
-    session: { on: () => {}, off: () => {} },
+    session,
     parentSn: "T8000P0000000000",
     channel: 0,
     accountId: "",
@@ -53,6 +56,49 @@ function interceptSourceOptions(router: P2PCommandRouter): Record<string, unknow
  * the first options were applied to the source.
  */
 describe("shared live source construction", () => {
+  it("uses the default linger when live() receives an invalid delay", async () => {
+    vi.useFakeTimers();
+    try {
+      const session = {
+        on: () => {},
+        off: () => {},
+        startLiveMedia: vi.fn(),
+        stopLiveMedia: vi.fn(),
+      };
+      const router = routerWithSession({ warn: vi.fn(), debug: vi.fn() }, session);
+      const consumer = await router.mediaProviderFor("T8000P0000000000").live({ lingerMs: 3e9 });
+      consumer.stop();
+
+      vi.advanceTimersByTime(7999);
+      expect(session.stopLiveMedia).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(session.stopLiveMedia).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("tears down on the next tick when live() receives zero linger", async () => {
+    vi.useFakeTimers();
+    try {
+      const session = {
+        on: () => {},
+        off: () => {},
+        startLiveMedia: vi.fn(),
+        stopLiveMedia: vi.fn(),
+      };
+      const router = routerWithSession({ warn: vi.fn(), debug: vi.fn() }, session);
+      const consumer = await router.mediaProviderFor("T8000P0000000000").live({ lingerMs: 0 });
+      consumer.stop();
+
+      expect(session.stopLiveMedia).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(session.stopLiveMedia).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("builds the source with the power hint the first caller passed", async () => {
     const router = routerWithSession({ warn: vi.fn() });
     const source = await router.sharedLiveSourceFor("T8000P0000000000", { powered: "battery" });
