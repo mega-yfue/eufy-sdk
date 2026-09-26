@@ -159,6 +159,22 @@ function deviceClassOf(codec: Codec, realtime: RealtimeKind): DeviceClass {
   return cls === "camera" && realtime !== "p2p" ? "other" : cls;
 }
 
+/**
+ * The name the user gave a unit, from a `get_devs_list` record.
+ *
+ * On the clean line (vacuum, mower) `device_name` carries the product's default label ("RoboVac") and
+ * the user's own name for the unit rides in `alias_name`, so the alias is read first there. This field
+ * order is the one a working eufy Clean client uses against the same `get_devs_list` endpoint, and it
+ * matches the observed symptom: every robot on an account listed under the default label. Every other
+ * line keeps `device_name` first, which is where a camera's user-set name is observed.
+ */
+function recordName(raw: any, deviceClass: DeviceClass): string | undefined {
+  if (deviceClass === "vacuum" || deviceClass === "mower") {
+    return raw.alias_name || raw.device_alias_name || raw.device_name || undefined;
+  }
+  return raw.device_name ?? raw.device_alias_name ?? raw.alias_name;
+}
+
 export interface DeviceRegistryDeps {
   mega: MegaHttpClient;
   /** Surface a non-fatal fetch error (a house/body query that failed) without aborting the merge. */
@@ -301,9 +317,10 @@ export class DeviceRegistry {
           category: raw.category,
           params,
         }).codec;
+        const deviceClass = deviceClassOf(codec, c.realtime);
         seen.set(raw.device_sn, {
           sn: raw.device_sn,
-          name: raw.device_name ?? raw.device_alias_name ?? raw.alias_name,
+          name: recordName(raw, deviceClass),
           model: raw.device_model,
           stationSn: resolvedStationSn(raw, raw.device_sn),
           p2pDid: raw.p2p_did,
@@ -311,7 +328,7 @@ export class DeviceRegistry {
           paramUpdatedAt,
           lastSeenMs: lastSeenMsOf(paramUpdatedAt),
           raw,
-          deviceClass: deviceClassOf(codec, c.realtime),
+          deviceClass,
           ...c,
         });
       }
