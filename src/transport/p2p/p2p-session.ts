@@ -372,8 +372,11 @@ export class P2PSession extends EventEmitter {
   private cloudLookup?: { key: string; addresses: Address[] };
   /** Local outbound IPv4 reported inside LOOKUP_WITH_KEY requests. */
   private selfHost?: string;
-  /** In-flight multi-datagram frame per data channel (see onData). */
-  private readonly pendingByDataType = new Map<number, { header: P2PDataFrameHeader; buf: Buffer }>();
+  /**
+   * In-flight multi-datagram frame per data channel (see reassemble): the payload gathered so far under its
+   * parsed header, or, without a header, the start of a frame header cut by the datagram boundary.
+   */
+  private readonly pendingByDataType = new Map<number, { header?: P2PDataFrameHeader; buf: Buffer }>();
   /** Last delivered datagram sequence number per data type. */
   private readonly lastSeqByType = new Map<number, number>();
   /** Held datagrams and their active gap timer, grouped by data type. */
@@ -1831,7 +1834,13 @@ export class P2PSession extends EventEmitter {
     reorder.timer = undefined;
   }
 
-  /** Reassemble one in-sequence datagram body into logical frames. */
+  /**
+   * Reassemble one in-sequence datagram body into logical frames.
+   *
+   * Frames are packed back to back, so a frame header can itself be cut by a datagram boundary. The start
+   * of a header left at the end of a datagram is carried into the next one rather than discarded; dropping
+   * it would lose that frame and every frame after it until a datagram happened to begin on a header.
+   */
   private reassemble(dataType: number, datagramBody: Buffer): void {
     const pending = this.pendingByDataType.get(dataType);
     let body = pending ? Buffer.concat([pending.buf, datagramBody]) : datagramBody;
@@ -1858,6 +1867,13 @@ export class P2PSession extends EventEmitter {
       }
       this.handleFrame(header, payload.subarray(0, header.bytesToRead), dataType);
       body = body.subarray(P2P_DATA_HEADER_BYTES + header.bytesToRead);
+    }
+    if (
+      body.length > 0 &&
+      body.length < P2P_DATA_HEADER_BYTES &&
+      MAGIC_WORD.startsWith(body.subarray(0, 4).toString())
+    ) {
+      this.pendingByDataType.set(dataType, { buf: body });
     }
   }
 

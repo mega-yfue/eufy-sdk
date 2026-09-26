@@ -263,6 +263,24 @@ describe("P2P data reassembly", () => {
     }
   });
 
+  it.each([1, 4, 15])(
+    "carries a frame header cut %i bytes in by the datagram boundary into the next datagram",
+    (cut) => {
+      const { feed, received } = harness();
+      const first = commandFrame(80, 1300, Buffer.alloc(20, 1));
+      const second = commandFrame(80, 1301, Buffer.alloc(30, 2));
+      const third = commandFrame(80, 1300, Buffer.alloc(10, 3));
+      const stream = Buffer.concat([first, second, third]);
+
+      feed(dataPacket(80, stream.subarray(0, first.length + cut)));
+      feed(dataPacket(81, stream.subarray(first.length + cut)));
+
+      expect(received.map(({ commandId }) => commandId)).toEqual([1300, 1301, 1300]);
+      expect(received[1]!.raw).toEqual(Buffer.alloc(30, 2));
+      expect(received[2]!.raw).toEqual(Buffer.alloc(10, 3));
+    },
+  );
+
   it("ignores a repeat from as far back as the device has been seen to repeat", () => {
     const { feed, received } = harness();
     const payload = Buffer.alloc(48, 7);
