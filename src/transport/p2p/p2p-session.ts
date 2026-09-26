@@ -359,8 +359,8 @@ export class P2PSession extends EventEmitter {
   private audioStalled = false;
   private audioRetransmitTimer?: ReturnType<typeof setInterval>;
   private lastPongData?: Buffer;
-  /** When this connection last received a PONG — `undefined` until the first, see {@link pathSilentMs}. */
-  private lastPongAt?: number;
+  /** When the connected peer last answered with P2P traffic, beginning with its CAM_ID. */
+  private lastPeerAt?: number;
   /** Whether the silence has already been stated, so it is traced once per connection rather than per read. */
   private pathStaleTraced = false;
   private lookupTimer?: ReturnType<typeof setInterval>;
@@ -432,18 +432,18 @@ export class P2PSession extends EventEmitter {
   /**
    * How long this connection's path has been silent, or nothing where it has never answered.
    *
-   * A PONG is the station stating that the path is alive. `undefined` is neither alive nor dead: it is a station
-   * that has said nothing either way.
+   * A CAM_ID, PONG, PING, ACK or DATA from the connected peer proves the path is alive. `undefined` means the
+   * peer has not answered yet.
    */
   get pathSilentMs(): number | undefined {
-    return this.lastPongAt === undefined ? undefined : Date.now() - this.lastPongAt;
+    return this.lastPeerAt === undefined ? undefined : Date.now() - this.lastPeerAt;
   }
 
   /**
    * Whether this path can still be committed to, on the evidence the heartbeat gives.
    *
-   * False where a pong arrived and then stopped for {@link PATH_SILENCE_MS}. A station that has never ponged is
-   * not known to be dead, so it answers true.
+   * False where the connected peer answered and then stopped for {@link PATH_SILENCE_MS}. A station that has
+   * never answered is not known to be dead, so it answers true.
    *
    * Traces the silence once per connection, on the read that first observes it.
    */
@@ -820,6 +820,21 @@ export class P2PSession extends EventEmitter {
    */
   private onMessage(msg: Buffer, rinfo: dgram.RemoteInfo, socket = this.socket): void {
     if (!socket) return;
+    const fromConnectedPeer =
+      this.connected &&
+      socket === this.socket &&
+      this.connectAddress?.host === rinfo.address &&
+      this.connectAddress.port === rinfo.port;
+    if (
+      fromConnectedPeer &&
+      (hasHeader(msg, ResponseMessageType.PONG) ||
+        hasHeader(msg, ResponseMessageType.PING) ||
+        hasHeader(msg, ResponseMessageType.ACK) ||
+        hasHeader(msg, ResponseMessageType.DATA))
+    ) {
+      this.lastPeerAt = Date.now();
+      this.pathStaleTraced = false;
+    }
     if (!hasHeader(msg, ResponseMessageType.DATA)) {
       this.logger.debug(
         `[p2p] ${this.cfg.stationSn} <<< ${rinfo.address}:${rinfo.port} header=${msg.subarray(0, 2).toString("hex")} len=${msg.length}`,
@@ -838,9 +853,9 @@ export class P2PSession extends EventEmitter {
     } else if (hasHeader(msg, ResponseMessageType.CAM_ID) || hasHeader(msg, ResponseMessageType.TURN_SERVER_CAM_ID)) {
       this.onConnected({ host: rinfo.address, port: rinfo.port }, socket);
     } else if (hasHeader(msg, ResponseMessageType.PONG)) {
-      this.lastPongData = msg.length > 4 ? msg.subarray(4) : undefined;
-      this.lastPongAt = Date.now();
-      this.pathStaleTraced = false;
+      if (fromConnectedPeer) {
+        this.lastPongData = msg.length > 4 ? msg.subarray(4) : undefined;
+      }
     } else if (hasHeader(msg, ResponseMessageType.PING)) {
       this.send({ host: rinfo.address, port: rinfo.port }, RequestMessageType.PONG, undefined, socket); // echo
     } else if (hasHeader(msg, ResponseMessageType.ACK)) {
@@ -917,6 +932,8 @@ export class P2PSession extends EventEmitter {
     }
     this.connected = true;
     this.connectedAtMs = Date.now();
+    this.lastPeerAt = this.connectedAtMs;
+    this.pathStaleTraced = false;
     this.connecting = false;
     this.connectAddress = addr;
     if (this.lookupTimer) clearInterval(this.lookupTimer);
@@ -926,10 +943,15 @@ export class P2PSession extends EventEmitter {
     // Nudge the station to start reporting, then heartbeat.
     this.sendCommand(CMD_GATEWAYINFO);
     this.send(addr, RequestMessageType.PING, this.lastPongData);
-    this.heartbeatTimer = setInterval(() => {
-      if (this.connectAddress) this.send(this.connectAddress, RequestMessageType.PING, this.lastPongData);
-    }, HEARTBEAT_MS);
+    this.heartbeatTimer = setInterval(() => this.heartbeat(), HEARTBEAT_MS);
     this.emit("connect");
+  }
+
+  /** Send the next heartbeat and signal a path that has answered nothing for three heartbeat periods. */
+  private heartbeat(): void {
+    if (!this.connectAddress || this.closed) return;
+    this.send(this.connectAddress, RequestMessageType.PING, this.lastPongData);
+    if (!this.pathAnswering) this.emit("pathStale");
   }
 
   /**
