@@ -171,8 +171,10 @@ function turnServers(turn: TurnConfig): NativeIceServer[] {
 
 async function loadNativePeerFactory(): Promise<NativePeerFactory> {
   // `node-datachannel` is an OPTIONAL dependency: only a T9000 (S1 Pro) station needs the WebRTC
-  // transport, so a consumer without one never installs the native addon. Loaded on demand here, with
-  // a clear message if it is missing rather than a bare module-not-found.
+  // transport. It still installs by default (npm installs optionalDependencies; a consumer opts out
+  // with `--omit=optional`, and a failed install of it doesn't fail the overall install). What this
+  // dynamic import buys is deferring the native addon's *load* until a T9000 is actually driven, with
+  // a clear message if it is absent rather than a bare module-not-found.
   let ndc: typeof import("node-datachannel");
   try {
     ndc = await import("node-datachannel");
