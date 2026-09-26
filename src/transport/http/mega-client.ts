@@ -71,6 +71,12 @@ export interface MegaClientConfig {
    * against the account.
    */
   accountName?: string;
+  /**
+   * The mega shard the RTC (T9000) signalling signs on, e.g. `"ie-pr"`. Defaults to the regional
+   * prefix of the `estimate_domain` host (`security-app-ie…` → `ie-pr`), then to {@link regionShard}.
+   * Set it when the account lives on a shard the eu/us classification cannot name.
+   */
+  rtcShard?: string;
   /** Persist + reuse the session (token + session key) across runs. Default: in-memory. */
   store?: SessionStore;
   /** Diagnostics sink. Omit for silence; pass a `Logger` (or `new ConsoleLogger()`) to see logs. */
@@ -333,6 +339,8 @@ export interface SignedRetry {
 export class MegaHttpClient {
   private readonly cfg: Required<Pick<MegaClientConfig, "appName" | "appVersion" | "countryCode">> & MegaClientConfig;
   private region: RegionShard;
+  /** The host `estimate_domain` answered, kept for the RTC shard derivation. */
+  private estimatedDomain = "";
   private bootstrapDomain?: string;
   private sessionKey?: SessionEntry;
   /** Per-host ECDH session keys for non-mega gateways (e.g. eufylife) keyed by host. */
@@ -451,6 +459,33 @@ export class MegaHttpClient {
   }
 
   /**
+   * The shard the RTC signalling (T9000 control channel) signs on — {@link MegaClientConfig.rtcShard}
+   * when pinned, else the regional prefix of the estimated domain (`…-ie-…`/`…-ie.` → `ie-pr`), else
+   * {@link regionShard}. The eu/us classification cannot name shards like `ie-pr`, whose accounts
+   * need the IE sign host and cluster.
+   */
+  get rtcShard(): string {
+    const pinned = this.cfg.rtcShard?.trim();
+    if (pinned) return pinned;
+    const m = /-([a-z]{2})(?:[.-]|$)/i.exec(this.estimatedDomain);
+    if (m) return `${m[1].toLowerCase()}-pr`;
+    return this.region;
+  }
+
+  /** The credentials the RTC signalling needs; `undefined` while logged out. */
+  rtcIdentity(): { authToken: string; userId: string; accountUserId?: string; gtoken: string } | undefined {
+    if (!this.auth_) return undefined;
+    // The same gtoken every authed HTTP call carries — the signalling sign is refused with
+    // "gtoken not equal userid" when it is derived from any other id.
+    return {
+      authToken: this.auth_.authToken,
+      userId: this.auth_.userId,
+      accountUserId: this.auth_.accountUserId,
+      gtoken: gtoken(this.gtokenUserId()),
+    };
+  }
+
+  /**
    * The name commands attribute themselves to — {@link MegaClientConfig.accountName} when the config
    * pins one (trimmed; blank counts as unset), otherwise the logged-in account's display name, which
    * is the login email's local-part (e.g. `someone+tag` for `someone+tag@example.com`) and falls back
@@ -558,6 +593,7 @@ export class MegaHttpClient {
     const env = res.data as ApiEnvelope<Record<string, unknown>>;
     const d = env?.data ?? {};
     const domain = (d.domain ?? d.host ?? d.server_secret_info ?? "") as string;
+    this.estimatedDomain = domain;
     const blob = JSON.stringify(d);
     if (blob.includes("-eu-") || domain.includes("-eu-")) this.region = "eu-pr";
     else if (blob.includes("-us-") || domain.includes("-us-")) this.region = "us-pr";

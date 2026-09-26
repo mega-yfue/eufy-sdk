@@ -26,6 +26,7 @@ import { decodeMapFrame } from "./map-channels.js";
 import { VacuumMapStore } from "../model/index.js";
 import { type P2PSession, type P2PFrame } from "../transport/p2p/p2p-session.js";
 import { P2PCommandRouter } from "../transport/p2p/command-router.js";
+import { RtcCommandRouter } from "../transport/rtc/command-router.js";
 import { jpegGeometry } from "../transport/p2p/media.js";
 import type { PowerTier } from "../transport/p2p/session-manager.js";
 import { MqttCommandRouter } from "../transport/mqtt/command-router.js";
@@ -285,6 +286,7 @@ export class EufyMega extends EventEmitter {
   private readonly prewarmTiers: ReadonlySet<PowerTier>;
   /** Transport-side owner of the P2P sessions + all wire senders. */
   private readonly p2p: P2PCommandRouter;
+  private readonly rtc: RtcCommandRouter;
   /** Transport-side owner of the secure-MQTT ff09 lock/garage command path (sibling of {@link p2p}). */
   private readonly mqtt: MqttCommandRouter;
   /** Transport-side owner of the legacy Tuya REST command path for non-AIoT vacuums (G-series). */
@@ -351,6 +353,21 @@ export class EufyMega extends EventEmitter {
       onError: (e) => this.reportError(e),
       onLevel2Ready: (sn, cipherId) => this.emit("p2pLevel2Ready", { stationSn: sn, cipherId }),
       onFrame: (stationSn, f) => this.onP2PFrame(stationSn, f),
+    });
+    this.rtc = new RtcCommandRouter({
+      identity: () => this.mega.rtcIdentity(),
+      shard: () => this.mega.rtcShard,
+      country: opts.countryCode,
+      accountName: () => this.mega.accountName,
+      findDevice: (sn) => this.registry.list().find((d) => d.sn === sn),
+      logger: opts.logger,
+      icePolicy: opts.rtc?.icePolicy,
+      ackTimeoutMs: opts.rtc?.ackTimeoutMs,
+      connectTimeoutMs: opts.rtc?.connectTimeoutMs,
+      idleCloseMs: opts.rtc?.idleCloseMs,
+      ffmpegPath: opts.ffmpegPath,
+      ffmpegLogLevel: opts.ffmpegLogLevel,
+      onError: (e) => this.reportError(e),
     });
     this.mqtt = new MqttCommandRouter({
       mega: this.mega,
@@ -1069,7 +1086,13 @@ export class EufyMega extends EventEmitter {
    * current. With nothing retained the refusal stands.
    */
   private mediaProviderFor(sn: string): MediaProvider {
-    const media = this.p2p.mediaProviderFor(sn);
+    // A camera on a T9000 has no P2P live; its video rides the station's control channel.
+    const target = this.registry.list().find((d) => d.sn === sn);
+    const media =
+      target &&
+      RtcCommandRouter.claimsMedia(target, (stationSn) => this.registry.list().find((d) => d.sn === stationSn))
+        ? this.rtc.mediaProviderFor(sn)
+        : this.p2p.mediaProviderFor(sn);
     const cache = this.storedImages;
     if (!cache) return media;
     const retainedStill = () => {
@@ -1123,6 +1146,9 @@ export class EufyMega extends EventEmitter {
       if (dev.category === "eufy_home_tuya") return this.tuya.dispatchCommand(sn, cmd);
       return this.mqtt.dispatchCommand(sn, cmd);
     }
+    // A T9000 station has no reachable P2P endpoint: its writes ride the portal control channel.
+    const target = this.registry.list().find((d) => d.sn === sn);
+    if (target && RtcCommandRouter.claimsDevice(target)) return this.rtc.dispatchCommand(sn, cmd);
     return this.p2p.dispatchCommand(sn, cmd);
   }
 
@@ -2254,6 +2280,7 @@ export class EufyMega extends EventEmitter {
     this.pollTimer.cancel();
     this.lastStateAnnounced.clear();
     await this.closeMqttTransports();
+    this.rtc.close();
     await this.p2p.closeAll();
     this.pushClient?.close();
     this.pushClient = undefined;

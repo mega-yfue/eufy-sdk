@@ -56,6 +56,12 @@ export interface WaitForRealtimeOptions {
 }
 
 export interface EufyMegaOptions extends MegaClientConfig {
+  /**
+   * The T9000 (HomeBase Professional) control channel — WebRTC over the portal signalling, since the
+   * T9000 has no reachable P2P endpoint. `icePolicy` MUST stay `relay` (default) or `all`: the hub
+   * completes DTLS only through TURN. See `transport/rtc/command-router.ts`.
+   */
+  rtc?: { icePolicy?: "relay" | "all"; ackTimeoutMs?: number; connectTimeoutMs?: number; idleCloseMs?: number };
   /** Persist FCM push credentials + seen ids across runs (default: in-memory). */
   pushStore?: FcmStore;
   /** Eagerly retain validated push thumbnails in memory for `camera.snapshotStored()` (default `true`). */

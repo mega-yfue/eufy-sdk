@@ -74,6 +74,7 @@
   "dependencies": {
     "jpeg-js": "^0.4.4",
     "mqtt": "^5.16.0",
+    "node-datachannel": "^0.33.4",
     "protobufjs": "^8.8.0"
   },
   "devDependencies": {
