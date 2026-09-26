@@ -228,6 +228,13 @@ interface RetainedDatagram {
 const CMD_SET_PAYLOAD = 1350;
 /** CMD_NOTIFY_PAYLOAD (1351) — the station's unsolicited JSON notification. */
 const CMD_NOTIFY_PAYLOAD = 1351;
+/**
+ * The one reply body read for a result code besides the bare four-byte int32: a `CMD_SET_PAYLOAD` answer of
+ * exactly this many bytes that no decrypt touched, carrying the int32 LE code followed by nothing but zero
+ * padding. A body the level-1 decrypt did open is never read this way, because a short level-1 plaintext is
+ * zero-padded to its block and would present the same tail for a value that is not a result at all.
+ */
+const PADDED_RESULT_BYTES = 132;
 /** CMD_CAMERA_INFO — a camera reporting its OWN params, as a root-level array. */
 const CMD_CAMERA_INFO = 1103;
 const CMD_DATABASE_IMAGE = 1308;
@@ -1899,16 +1906,21 @@ export class P2PSession extends EventEmitter {
     const isMedia = header.commandId === CMD_VIDEO_FRAME || header.commandId === CMD_AUDIO_FRAME;
     // signCode 2/8 → level-2 gateway frame (AES-256-GCM, negotiated key). Try that first
     // when a level-2 key is set; otherwise fall through to the level-1 path.
+    let decrypted = false;
     if (isMedia) {
       /* leave raw */
     } else if ((header.signCode === 2 || header.signCode === 8) && this.level2Key) {
       const dec = this.decryptLevel2(payload, header.signCode);
-      if (dec) data = dec;
+      if (dec) {
+        data = dec;
+        decrypted = true;
+      }
     } else if (header.signCode > 0 && data.length > 0 && data.length % 16 === 0) {
       // signCode 1 → AES-128-ECB with the derivable Level-1 key (control notifications,
       // and many DATA notifications).
       try {
         data = decryptP2PData(data, this.level1Key);
+        decrypted = true;
       } catch {
         /* leave as-is; emit raw */
       }
@@ -1993,7 +2005,12 @@ export class P2PSession extends EventEmitter {
     // and the level-2 path can decline — and ciphertext is neither JSON nor four bytes, so a length
     // test alone would read its first word and report a fabricated code for a command whose answer
     // was never recovered. Media is excluded because its bodies are never control plaintext.
-    if (!isMedia && !frame.json && data.length === 4) {
+    const paddedResult =
+      !decrypted &&
+      header.commandId === CMD_SET_PAYLOAD &&
+      data.length === PADDED_RESULT_BYTES &&
+      data.subarray(4).every((b) => b === 0);
+    if (!isMedia && !frame.json && (data.length === 4 || paddedResult)) {
       this.emit("commandResult", { code: data.readInt32LE(0), channel: header.channel });
     }
     this.emit("data", frame);
