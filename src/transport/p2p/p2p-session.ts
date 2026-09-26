@@ -70,6 +70,15 @@ const HEARTBEAT_MS = 5_000;
 const PATH_SILENCE_MS = HEARTBEAT_MS * 3;
 const LOOKUP_RETRY_MS = 1_000;
 /**
+ * The receive buffer a session's socket asks the OS for.
+ *
+ * A station sends a keyframe as one burst: measured on a HomeBase 3, up to 161 video datagrams of 1074 bytes
+ * within 10 ms. With the Linux default buffer of 212992 bytes, the kernel dropped part of such bursts before
+ * the socket was read, and the frames those datagrams belonged to arrived incomplete. 4 MiB queues many
+ * such bursts, so a keyframe survives the event loop being busy elsewhere for a moment.
+ */
+const RECEIVE_BUFFER_BYTES = 4 * 1024 * 1024;
+/**
  * How long a station is given to answer a lookup before the connection gives up on it and closes.
  *
  * The whole deadline for reaching a station: the lookups are re-sent every second until one is answered, and
@@ -333,6 +342,8 @@ export class P2PSession extends EventEmitter {
   private connected = false;
   private connecting = false;
   private closed = false;
+  /** Whether a short receive buffer has been reported, so a reconnect does not repeat the same warning. */
+  private receiveBufferReported = false;
   private connectAddress?: Address;
   private seqNumber = 0;
   /**
@@ -659,6 +670,31 @@ export class P2PSession extends EventEmitter {
     return this.connected;
   }
 
+  /**
+   * Ask the OS for {@link RECEIVE_BUFFER_BYTES} on a bound socket, and warn once per session when it grants
+   * less or refuses.
+   *
+   * The request is made here rather than through `createSocket`'s `recvBufferSize`: Node applies that option
+   * inside the bind callback, where a refusal is thrown out of reach of this session and ends the process.
+   */
+  private requestReceiveBuffer(socket: dgram.Socket): void {
+    let granted: number;
+    try {
+      socket.setRecvBufferSize(RECEIVE_BUFFER_BYTES);
+      granted = socket.getRecvBufferSize();
+    } catch {
+      granted = 0;
+    }
+    if (granted >= RECEIVE_BUFFER_BYTES || this.receiveBufferReported) return;
+    this.receiveBufferReported = true;
+    this.logger.warn(
+      `[p2p] ${this.cfg.stationSn} UDP receive buffer below the ${RECEIVE_BUFFER_BYTES} bytes requested` +
+        (granted > 0 ? ` (granted ${granted})` : " (request refused)") +
+        `; live video can lose keyframes. Raise the OS limit (net.core.rmem_max on Linux, ` +
+        `kern.ipc.maxsockbuf on BSD) to at least ${RECEIVE_BUFFER_BYTES}.`,
+    );
+  }
+
   /** Open the socket and start the lookup → hole-punch handshake. */
   async connect(): Promise<void> {
     if (this.connecting || this.connected) return;
@@ -684,6 +720,7 @@ export class P2PSession extends EventEmitter {
         } catch {
           /* broadcast not permitted — cloud path still works */
         }
+        this.requestReceiveBuffer(socket);
         resolve();
       });
     });
