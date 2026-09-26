@@ -434,7 +434,7 @@ export class SharedLiveSource {
   private readonly preBufferMs: number;
   private readonly warmRetryMs: number;
   private readonly warmTimeoutMs: number;
-  private readonly powered: "wired" | "battery";
+  private powered: "wired" | "battery";
   private readonly batteryBudgetMs: number;
   private readonly budgetGraceMs: number;
   private readonly logger: Logger;
@@ -460,6 +460,14 @@ export class SharedLiveSource {
 
   get consumerCount(): number {
     return this.consumers.size;
+  }
+
+  /** Reconcile the stream budget when the device's operating power claim changes. */
+  setPowerTier(tier: "wired" | "battery"): void {
+    if (this.powered === tier) return;
+    this.powered = tier;
+    if (tier === "wired") this.clearBudget();
+    else if (!this.disposed && this.stream && this.delivered.keyframe) this.armBudget();
   }
 
   /**
@@ -705,7 +713,7 @@ export class SharedLiveSource {
 
   /** Re-push the battery budget (host called `extend()` from the notice), cancelling the auto-stop. */
   private extendBudget(ms?: number): void {
-    if (this.disposed || !this.stream) return;
+    if (this.disposed || !this.stream || this.powered !== "battery") return;
     this.clearBudget();
     this.budgetTimer.arm(ms ?? this.batteryBudgetMs, () => this.onBudgetExpire());
   }

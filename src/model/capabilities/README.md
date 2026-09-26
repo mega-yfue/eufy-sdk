@@ -299,7 +299,7 @@ state the table cannot hold (a vacuum's model-specific level set, a mode-control
 can honestly be described at all. A module may have both — `buildActions` merges the bound members over
 the `actions()` bag.
 
-A capability that is **all members** (`contact`, `leak`, `smoke`, `co`, `battery`, …) omits `actions()`
+A capability that is **all members** (`contact`, `leak`, `smoke`, `co`, …) omits `actions()`
 entirely. It still gets a fluent accessor, so it still needs a `DeviceActionMap` entry.
 `buildActions` / `ACTION_ACCESSOR_NAMES` include any module with `actions` **or** `members`; getters ride
 the read-through cache automatically.

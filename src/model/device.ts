@@ -25,7 +25,13 @@ import type {
   PropertyValue,
   ResolvedDevice,
 } from "./types.js";
-import type { CommandSink, MediaProvider, Ff09SettingsReader, RawDpCodec } from "../core/contracts.js";
+import type {
+  CommandSink,
+  MediaProvider,
+  Ff09SettingsReader,
+  RawDpCodec,
+  PowerOverrideController,
+} from "../core/contracts.js";
 import { noopLogger, type Logger } from "../core/logger.js";
 import { structuralEqual } from "../core/util.js";
 import { resolveDevice, resolveProperties } from "./registry.js";
@@ -297,11 +303,13 @@ export class Device {
     media?: MediaProvider,
     ff09Settings?: Ff09SettingsReader,
     rawDp?: RawDpCodec,
+    powerOverride?: PowerOverrideController,
   ): void {
     this.actionMap = buildActions(this.capabilities, {
       ctx,
       sink,
       read: (name) => this.getProperty(name),
+      powerOverride,
       media,
       ff09Settings,
       rawDp,

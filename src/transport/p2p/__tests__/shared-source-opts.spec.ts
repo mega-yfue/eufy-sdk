@@ -5,8 +5,9 @@ import { P2PCommandRouter } from "../command-router.js";
  * A shared live source is created once per station+channel; every later caller joins the existing one,
  * so the options it passes are dropped. The failure mode that drop produces is a battery camera
  * streaming unbounded because whichever egress opened the source first did not pass `powered`. Nothing
- * can be re-applied to a pull that already has consumers, so a conflict against a LIVE source is
- * reported — while a source that has since stopped is dropped and rebuilt from the new options.
+ * can be re-applied from a later caller, so a conflict against a LIVE source is reported — while a
+ * source that has since stopped is dropped and rebuilt from the new options. A local power-policy
+ * change is separate: it updates the existing source directly.
  */
 function poweredOf(source: unknown): string | undefined {
   return (source as { opts: { powered?: string } }).opts.powered;
@@ -53,6 +54,22 @@ function interceptSourceOptions(router: P2PCommandRouter): Record<string, unknow
  * the first options were applied to the source.
  */
 describe("shared live source construction", () => {
+  it("uses a power claim changed while the source was waiting for its session", async () => {
+    const router = routerWithSession({ warn: vi.fn() });
+    const pendingSession = Promise.withResolvers<Record<string, unknown>>();
+    (router as any).resolveSession = () => pendingSession.promise;
+    const opening = router.sharedLiveSourceFor("T8000P0000000000", { powered: "wired" });
+    router.updatePowerTier("T8000P0000000000", "battery");
+    pendingSession.resolve({
+      session: { on: () => {}, off: () => {} },
+      parentSn: "T8000P0000000000",
+      channel: 0,
+      accountId: "",
+      homeBaseAttached: false,
+    });
+    expect(poweredOf(await opening)).toBe("battery");
+  });
+
   it("builds the source with the power hint the first caller passed", async () => {
     const router = routerWithSession({ warn: vi.fn() });
     const source = await router.sharedLiveSourceFor("T8000P0000000000", { powered: "battery" });
