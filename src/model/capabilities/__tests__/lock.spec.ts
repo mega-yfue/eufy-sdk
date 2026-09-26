@@ -1,12 +1,16 @@
 import { LOCK, LOCK_SETTING_ID, type LockActions } from "../lock.js";
+import { isClassicWifiLock } from "../../device-family.js";
 import { bind } from "./bind.js";
 import { Device } from "../../device.js";
 import type { CommandContext } from "../types.js";
 import type { CommandSink, Ff09SettingsReader } from "../../../core/contracts.js";
 
 /** The bound `dev.lock()` object — every method is a member, derived in the barrel. */
-const lockOf = (ctx: CommandContext, ff09Settings?: Ff09SettingsReader) =>
-  bind<LockActions>("lock", ctx, { ff09Settings });
+const lockOf = (
+  ctx: CommandContext,
+  ff09Settings?: Ff09SettingsReader,
+  read?: (name: string) => { value: unknown } | undefined,
+) => bind<LockActions>("lock", ctx, { ff09Settings, read });
 
 // A P2P-reachable video smart lock (T8531): full member identity + a p2p_did.
 const p2pCtx: CommandContext = {
@@ -31,6 +35,71 @@ const mqttCtx: CommandContext = {
   accountName: "someone+tag",
   hasP2p: false,
 };
+
+// The classic Wi-Fi lock: DeviceType 51 with a serial the vendor does NOT mark as a later generation.
+const classicCtx: CommandContext = {
+  channel: 0,
+  codec: "lock",
+  deviceType: 51,
+  model: "T8520N",
+  serial: "T8520Q2000000000",
+  paramIds: new Set([6000, 6001]),
+  adminUserId: "0000000000000000000000000000000000000000",
+  shortUserId: "0003",
+  accountName: "someone+tag",
+  hasP2p: true,
+};
+
+describe("lock capability — classic Wi-Fi lock family", () => {
+  it("classifies the classic lock as DeviceType 51 in the driven T8520 serial range, and nothing else", () => {
+    expect(isClassicWifiLock(classicCtx)).toBe(true);
+    // The same DeviceType outside the driven range keeps the ff09 path, and so does type 53, on which no
+    // unit has answered this wire.
+    expect(isClassicWifiLock({ deviceType: 51, serial: "T8520Q8000000000" })).toBe(false);
+    expect(isClassicWifiLock({ deviceType: 51, serial: "T8500K2000000000" })).toBe(false);
+    expect(isClassicWifiLock({ deviceType: 53, serial: "T8520Q2000000000" })).toBe(false);
+    expect(isClassicWifiLock({ deviceType: 189, serial: "T8531K0000000000" })).toBe(false);
+    expect(isClassicWifiLock({ deviceType: 51 })).toBe(false);
+    expect(isClassicWifiLock({ deviceType: 51, serial: "T852" })).toBe(false);
+  });
+
+  it("lock/unlock emit the keyed-payload intent on the classic lock, and ff09 elsewhere", async () => {
+    const classic = lockOf(classicCtx);
+    await classic.acts.lock!();
+    await classic.acts.unlock!();
+    expect(classic.sent.map((c) => c.kind)).toEqual(["keyed-payload-actuate", "keyed-payload-actuate"]);
+    expect(classic.sent[0]).toMatchObject({ engage: true, adminUserId: classicCtx.adminUserId, shortUserId: "0003" });
+    expect(classic.sent[1]).toMatchObject({ engage: false, deviceSn: classicCtx.serial });
+    const video = lockOf(p2pCtx);
+    await video.acts.lock!();
+    expect(video.sent[0].kind).toBe("ff09-actuate");
+  });
+
+  it("withholds the ff09 settings writes on the classic lock, which never takes that frame", () => {
+    const { acts } = lockOf(classicCtx);
+    expect(acts.setAutoLock).toBeUndefined();
+    expect("setAutoLock" in acts).toBe(false);
+    expect(acts.setRainMode).toBeUndefined();
+    expect(lockOf(p2pCtx).acts.setAutoLock).toBeTypeOf("function");
+  });
+
+  it("withholds setAutoLock on the bound device object itself, through Device.bindActions", () => {
+    // The gate reads the serial, which only a command context carries: binding a real device with the
+    // context the facade builds is the path a caller's `dev.lock()` object comes from.
+    const noopSink: CommandSink = { dispatch: async () => undefined };
+    const classic = Device.fromRecord("T8520Q2000000000", {
+      model: "T8520",
+      name: "Smart Lock",
+      params: { 6000: "4", 6001: "66" },
+    });
+    classic.bindActions(classicCtx, noopSink);
+    expect(classic.lock?.()?.lock).toBeTypeOf("function");
+    expect(classic.lock?.()?.setAutoLock).toBeUndefined();
+    const video = Device.fromRecord("T8531K0000000000", { model: "T8531", name: "Smart Lock", params: { 6000: "4" } });
+    video.bindActions(p2pCtx, noopSink);
+    expect(video.lock?.()?.setAutoLock).toBeTypeOf("function");
+  });
+});
 
 describe("lock capability module", () => {
   it("declares the capability + schema", () => {
@@ -282,10 +351,10 @@ const _scrambleOptional: Exact<undefined extends typeof lk.setScramblePasscode ?
 // …and being write-only, they have no getter even so.
 const _noOneTouchGetter: Exact<"oneTouchLock" extends keyof LockActions ? true : false, false> = true;
 
-// A provider-backed member is optional (absent unbound) and keeps the provider's own signature.
-// setAutoLock dispatches to the sink, not the ff09 reader, so every lock-family device has it.
-const _autoLockRequired: Exact<undefined extends typeof lk.setAutoLock ? true : false, false> = true;
-const _autoLockArgs: Exact<Parameters<typeof lk.setAutoLock>, [boolean, (number | undefined)?]> = true;
+// setAutoLock rides the ff09 settings frame, which the classic Wi-Fi lock never takes — so it is
+// family-gated and lands optional, the same way setRainMode does; its signature is unchanged.
+const _autoLockOptional: Exact<undefined extends typeof lk.setAutoLock ? true : false, true> = true;
+const _autoLockArgs: Exact<Parameters<NonNullable<typeof lk.setAutoLock>>, [boolean, (number | undefined)?]> = true;
 const _snapshot: Exact<
   ReturnType<NonNullable<typeof lk.getAutoLockState>>,
   Promise<import("../../../core/contracts.js").AutoLockSnapshot>
@@ -302,7 +371,7 @@ export const _surfaceAssertions = [
   _oneTouchOptional,
   _scrambleOptional,
   _noOneTouchGetter,
-  _autoLockRequired,
+  _autoLockOptional,
   _autoLockArgs,
   _snapshot,
 ];

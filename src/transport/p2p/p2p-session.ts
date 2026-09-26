@@ -228,6 +228,13 @@ interface RetainedDatagram {
 const CMD_SET_PAYLOAD = 1350;
 /** CMD_NOTIFY_PAYLOAD (1351) — the station's unsolicited JSON notification. */
 const CMD_NOTIFY_PAYLOAD = 1351;
+/**
+ * The one reply body read for a result code besides the bare four-byte int32: a `CMD_SET_PAYLOAD` answer of
+ * exactly this many bytes that no decrypt touched, carrying the int32 LE code followed by nothing but zero
+ * padding. A body the level-1 decrypt did open is never read this way, because a short level-1 plaintext is
+ * zero-padded to its block and would present the same tail for a value that is not a result at all.
+ */
+const PADDED_RESULT_BYTES = 132;
 /** CMD_CAMERA_INFO — a camera reporting its OWN params, as a root-level array. */
 const CMD_CAMERA_INFO = 1103;
 const CMD_DATABASE_IMAGE = 1308;
@@ -1670,6 +1677,10 @@ export class P2PSession extends EventEmitter {
    * Low-level: send a `CMD_SET_PAYLOAD` (1350) wrapping `{account_id, cmd:<subCmd>, mChannel,
    * payload, transaction}` over the level-1 channel. The reply arrives as a `NOTIFY_PAYLOAD`
    * (1351) frame (level-1 decrypted, surfaced via the `data` event / `frame.json`).
+   *
+   * `opts.key` makes it a keyed envelope: the sealed per-command key rides ahead of the other fields
+   * as the value's `key`, and the value goes out unencrypted, encryption-type 0, with `=` written
+   * `=` — the form the vendor app sends one in, and the one form the device reads it in.
    */
   sendSetPayload(
     subCmd: number,
@@ -1680,24 +1691,27 @@ export class P2PSession extends EventEmitter {
       omitPayload?: boolean;
       wrapCmd?: number;
       rawValue?: Record<string, unknown>;
+      key?: string;
     } = {},
   ): void {
     if (!this.connectAddress) throw new Error("not connected");
     const channel = opts.channel ?? 0;
+    const keyed = opts.key !== undefined;
     // CMD_SET_PAYLOAD wrapper (reversed from the v6 serializer): inner `cmd` = subCmd,
     // plus mChannel + mValue3:0; the payload object carries any params ({} when none).
     // No `transaction` field in the SET_PAYLOAD value. `rawValue` overrides for testing.
     const inner: Record<string, unknown> = opts.rawValue ?? {
+      ...(keyed ? { key: opts.key } : {}),
       account_id: opts.accountId ?? "",
       cmd: subCmd,
       mChannel: channel,
       mValue3: 0,
       ...(opts.omitPayload ? {} : { payload }),
     };
-    const value = JSON.stringify(inner);
+    const value = keyed ? JSON.stringify(inner).replace(/=/g, "\\u003d") : JSON.stringify(inner);
     const body = Buffer.concat([
       buildCommandHeader(this.seqNumber, opts.wrapCmd ?? CMD_SET_PAYLOAD),
-      buildStringCommandPayload(value, channel, this.level1Key, 1),
+      buildStringCommandPayload(value, channel, keyed ? undefined : this.level1Key, 1),
     ]);
     this.seqNumber = (this.seqNumber + 1) & 0xffff;
     this.logger.debug(`[p2p] ${this.cfg.stationSn} sendSetPayload subCmd=${subCmd}`);
@@ -1899,16 +1913,21 @@ export class P2PSession extends EventEmitter {
     const isMedia = header.commandId === CMD_VIDEO_FRAME || header.commandId === CMD_AUDIO_FRAME;
     // signCode 2/8 → level-2 gateway frame (AES-256-GCM, negotiated key). Try that first
     // when a level-2 key is set; otherwise fall through to the level-1 path.
+    let decrypted = false;
     if (isMedia) {
       /* leave raw */
     } else if ((header.signCode === 2 || header.signCode === 8) && this.level2Key) {
       const dec = this.decryptLevel2(payload, header.signCode);
-      if (dec) data = dec;
+      if (dec) {
+        data = dec;
+        decrypted = true;
+      }
     } else if (header.signCode > 0 && data.length > 0 && data.length % 16 === 0) {
       // signCode 1 → AES-128-ECB with the derivable Level-1 key (control notifications,
       // and many DATA notifications).
       try {
         data = decryptP2PData(data, this.level1Key);
+        decrypted = true;
       } catch {
         /* leave as-is; emit raw */
       }
@@ -1993,7 +2012,12 @@ export class P2PSession extends EventEmitter {
     // and the level-2 path can decline — and ciphertext is neither JSON nor four bytes, so a length
     // test alone would read its first word and report a fabricated code for a command whose answer
     // was never recovered. Media is excluded because its bodies are never control plaintext.
-    if (!isMedia && !frame.json && data.length === 4) {
+    const paddedResult =
+      !decrypted &&
+      header.commandId === CMD_SET_PAYLOAD &&
+      data.length === PADDED_RESULT_BYTES &&
+      data.subarray(4).every((b) => b === 0);
+    if (!isMedia && !frame.json && (data.length === 4 || paddedResult)) {
       this.emit("commandResult", { code: data.readInt32LE(0), channel: header.channel });
     }
     this.emit("data", frame);

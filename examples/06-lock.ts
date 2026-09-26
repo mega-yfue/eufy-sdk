@@ -7,8 +7,9 @@
  *
  * `lock()`/`unlock()` and `setAutoLock(enabled, delaySeconds?)` are LIVE-VERIFIED on both the P2P
  * video lock (T8531) and the MQTT-only garage door (T85D0) — `dev.lock?.()` looks identical either
- * way, the capability picks the transport. `setRainMode(enabled)` is P2P-only (T8531) and OPTIONAL
- * on the returned object — the garage door doesn't have it, so guard with `?.()`.
+ * way, the capability picks the transport and the wire. The classic Wi-Fi lock takes `lock()`/`unlock()`
+ * over its own keyed envelope but none of the settings writes, so `setAutoLock` is OPTIONAL on the
+ * returned object, like `setRainMode(enabled)` (P2P video lock only) — guard both with `?.()`.
  *
  *   EUFY_EMAIL=… EUFY_PASSWORD=… node examples/06-lock.ts <serial> [lock|unlock|autolock-on|autolock-off|rain-on|rain-off]
  *
@@ -45,12 +46,10 @@ async function main(): Promise<void> {
       await lock.unlock();
       break;
     case "autolock-on":
-      console.log("enabling auto-lock (60s delay) …");
-      await lock.setAutoLock(true, 60);
-      break;
     case "autolock-off":
-      console.log("disabling auto-lock …");
-      await lock.setAutoLock(false);
+      if (!lock.setAutoLock) throw new Error(`${sn} has no setAutoLock (classic Wi-Fi lock?)`);
+      console.log(action === "autolock-on" ? "enabling auto-lock (60s delay) …" : "disabling auto-lock …");
+      await (action === "autolock-on" ? lock.setAutoLock(true, 60) : lock.setAutoLock(false));
       break;
     case "rain-on":
     case "rain-off":
