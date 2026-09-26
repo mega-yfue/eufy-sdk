@@ -17,13 +17,9 @@ import {
   EUFYLIFE_LOCAL_KEY_HEX,
   decryptBody,
   encryptBody,
-  encryptLoginPassword,
   finishKeyExchange,
-  genId,
   gtoken,
-  nowSec,
   prepareKeyExchange,
-  signRequest,
 } from "../../core/crypto.js";
 import { MemorySessionStore, isSessionValid, type SessionStore } from "../../core/store.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
@@ -31,6 +27,7 @@ import type { SecureMqttCredentials } from "../mqtt/secure-mqtt.js";
 import { downloadMediaResource, mediaFailureError, MediaDownloadAuthenticationError } from "./media-download.js";
 import { randomPhoneModel, randomUserAgent } from "./phone-model.js";
 import { normalizePushImage } from "./decodeImageV1.js";
+import { loginCredentials, readLoginReply, signedHeaders } from "./passport.js";
 
 export type RegionShard = "eu-pr" | "us-pr";
 
@@ -659,17 +656,11 @@ export class MegaHttpClient {
 
     let last: { code?: number; msg?: string; status?: number } | undefined;
     for (const contentType of order) {
-      const ts = nowSec();
-      const once = genId();
       const headers: Record<string, string> = {
         ...this.baseHeaders(),
         "content-type": contentType,
-        "x-encryption-info": "algo_ecdh",
+        ...signedHeaders(entry, encBody),
         "x-replay-info": "replay",
-        "x-key-ident": entry.keyIdent,
-        "x-request-ts": ts,
-        "x-request-once": once,
-        "x-signature": signRequest(entry.shareKey, ts, once, encBody),
         // Per-call header overrides (e.g. app-name=eufy_security to request a security-scoped
         // MQTT cert on an existing eufy_mega session — see EufyMega.getUserMqttInfo).
         ...headerOverrides,
@@ -1035,13 +1026,7 @@ export class MegaHttpClient {
 
   /** Build the /passport/login body (verify_code empty unless 2FA). */
   private loginBody(opts: { verifyCode?: string; captchaId?: string; answer?: string }): Record<string, unknown> {
-    const { clientPublicKeyHex, encryptedPassword } = encryptLoginPassword(this.cfg.password);
-    const base = {
-      email: this.cfg.email,
-      password: encryptedPassword,
-      ab: this.cfg.countryCode,
-      client_secret_info: { public_key: clientPublicKeyHex },
-    };
+    const base = loginCredentials(this.cfg.email, this.cfg.password, this.cfg.countryCode);
     // Captured shapes: 2FA verify-login is minimal (verify_code + login_id);
     // captcha-solve carries answer + captcha_id; the initial login has empties.
     if (opts.verifyCode) return { ...base, verify_code: opts.verifyCode, login_id: "" };
@@ -1307,19 +1292,15 @@ export class MegaHttpClient {
       if (cap.length)
         this.logger.debug("[mega] captcha/fa:", JSON.stringify(Object.fromEntries(cap.map((k) => [k, res[k]]))));
     }
-    const userId = (res.ap_cloud_user_id ?? res.user_id ?? res.userId) as string | undefined;
-    const accountUserId = (res.user_id ?? res.userId) as string | undefined;
-    const authToken = (res.auth_token ?? res.token) as string | undefined;
-    if (!userId || !authToken) throw new Error(`login returned no session: ${JSON.stringify(res).slice(0, 200)}`);
+    const reply = readLoginReply(res);
+    if (!reply) throw new Error(`login returned no session: ${JSON.stringify(res).slice(0, 200)}`);
+    const { userId, accountUserId, authToken, geoKey } = reply;
 
-    // fa_info.info is non-empty while 2FA is pending; empty once satisfied.
-    const faInfo = (res.fa_info ?? {}) as { info?: string };
-    const needs2fa = !isVerify && !!faInfo.info;
-    if (needs2fa) {
+    if (!isVerify && reply.twoFactorPending) {
       // Keep the limited token: sendVerifyCode() AND the follow-up verify-login must both be authed
       // with it (captured: attempts 4 & 5 carry this token), so the gateway links the code to this
       // pending 2FA session.
-      this.auth_ = { userId, accountUserId, authToken, geoKey: res.geo_key as string | undefined };
+      this.auth_ = { userId, accountUserId, authToken, geoKey };
       // Captcha (if any) is satisfied once we reach the 2FA step — drop its id so a later retry
       // doesn't resubmit an already-consumed challenge. Mark 2FA outstanding (see login()).
       this.pendingCaptchaId = undefined;
@@ -1330,8 +1311,8 @@ export class MegaHttpClient {
 
     this.pendingCaptchaId = undefined;
     this.pending2fa = false;
-    this.auth_ = { userId, accountUserId, authToken, geoKey: res.geo_key as string | undefined };
-    this.tokenExpiresAt = Number(res.token_expires_at ?? 0) || 0;
+    this.auth_ = { userId, accountUserId, authToken, geoKey };
+    this.tokenExpiresAt = reply.tokenExpiresAt;
     // Re-exchange WITH the auth token so the gateway binds the key-ident to the user.
     this.sessionKey = undefined;
     await this.ensureSessionKey();

@@ -3,12 +3,12 @@
  * eufy client uses.
  *
  * Why this is separate from the eufy device client: Solix shares Anker's `algo_ecdh` passport (so
- * {@link prepareKeyExchange} / {@link encryptLoginPassword} / {@link signRequest} are reused verbatim
- * for the login handshake) but exposes a different device backend — its own `app-name`, host, and
- * bootstrap key (`SOLIX_APP_NAME`, `SOLIX_DEFAULT_API_HOST`, {@link SOLIX_LOCAL_KEY_HEX}) —
- * and its authenticated resource reads are PLAIN JSON, carrying only the auth token and a
- * `gtoken = md5(user_id)`, with no per-request encryption or signature. This client therefore does
- * the encrypted passport handshake to obtain a token, then makes plain authenticated reads.
+ * {@link prepareKeyExchange} and the login and signing steps in `./passport.ts` are shared with it) but
+ * exposes a different device backend — its own `app-name`, host, and bootstrap key (`SOLIX_APP_NAME`,
+ * `SOLIX_DEFAULT_API_HOST`, {@link SOLIX_LOCAL_KEY_HEX}) — and its authenticated resource reads are
+ * PLAIN JSON, carrying only the auth token and a `gtoken = md5(user_id)`, with no per-request encryption
+ * or signature. This client therefore does the encrypted passport handshake to obtain a token, then makes
+ * plain authenticated reads.
  *
  * This is the wire client (transport layer): it returns the vendor's typed JSON as received. Building
  * those records into capability-driven `SolixDevice` models is the model layer's job — see
@@ -17,14 +17,10 @@
 import {
   decryptBody,
   encryptBody,
-  encryptLoginPassword,
   finishKeyExchange,
-  genId,
   gtoken,
   md5Hex,
-  nowSec,
   prepareKeyExchange,
-  signRequest,
   SOLIX_LOCAL_KEY_HEX,
   tokenNotExpired,
   type SessionEntry,
@@ -38,6 +34,7 @@ import {
 } from "../../core/index.js";
 import type { SecureMqttCredentials } from "../mqtt/secure-mqtt.js";
 
+import { loginCredentials, readLoginReply, signedHeaders } from "./passport.js";
 import { SOLIX_APP_NAME, SOLIX_DEFAULT_API_HOST, SOLIX_ENDPOINTS, SOLIX_ESTIMATE_HOST } from "./solix-constants.js";
 
 /** The vendor envelope every Solix endpoint answers with (`data` shape varies per endpoint). */
@@ -254,30 +251,20 @@ export class SolixClient {
 
   /** Build the encrypted, signed `/passport/login` request body + headers for the negotiated key. */
   private async postLogin(kx: SessionEntry, verifyCode?: string, limitedToken?: string): Promise<SolixEnvelope> {
-    const { clientPublicKeyHex, encryptedPassword } = encryptLoginPassword(this.password);
     const bodyObj: Record<string, unknown> = {
-      email: this.email,
-      password: encryptedPassword,
-      ab: this.country,
-      client_secret_info: { public_key: clientPublicKeyHex },
+      ...loginCredentials(this.email, this.password, this.country),
       answer: "",
       captcha_id: "",
       verify_code: verifyCode ?? "",
       login_id: "",
     };
     const encBody = encryptBody(JSON.stringify(bodyObj), kx.shareKey);
-    const ts = nowSec();
-    const once = genId();
     return this.post(
       this.apiHost,
       SOLIX_ENDPOINTS.login,
       encBody,
       this.authHeaders({
-        "x-encryption-info": "algo_ecdh",
-        "x-key-ident": kx.keyIdent,
-        "x-request-ts": ts,
-        "x-request-once": once,
-        "x-signature": signRequest(kx.shareKey, ts, once, encBody),
+        ...signedHeaders(kx, encBody),
         ...(limitedToken ? { "x-auth-token": limitedToken } : {}),
       }),
     );
@@ -294,13 +281,11 @@ export class SolixClient {
    * observed refusing the header, which is consistent with the two ids agreeing on the accounts seen.
    */
   private classifyLogin(data: Record<string, unknown>, isVerify: boolean): SolixLoginResult {
-    const userId = (data.ap_cloud_user_id ?? data.user_id) as string | undefined;
-    const authToken = data.auth_token as string | undefined;
-    if (!userId || !authToken)
-      throw new Error(`Solix login returned no session: ${JSON.stringify(data).slice(0, 160)}`);
-    const faInfo = (data.fa_info ?? {}) as { info?: string };
-    if (!isVerify && faInfo.info) {
-      this.pending2fa = { limitedToken: authToken, userId, geoKey: data.geo_key as string | undefined };
+    const reply = readLoginReply(data);
+    if (!reply) throw new Error(`Solix login returned no session: ${JSON.stringify(data).slice(0, 160)}`);
+    const { userId, authToken } = reply;
+    if (!isVerify && reply.twoFactorPending) {
+      this.pending2fa = { limitedToken: authToken, userId, geoKey: reply.geoKey };
       return { status: "2fa", method: "code sent by the passport" };
     }
     this.pending2fa = undefined;
@@ -309,7 +294,7 @@ export class SolixClient {
       userId,
       gtoken: gtoken(userId),
       apiHost: this.apiHost,
-      tokenExpiresAt: Number(data.token_expires_at ?? 0) || 0,
+      tokenExpiresAt: reply.tokenExpiresAt,
     };
     this.persist();
     return { status: "ok", session: this.session_ };
@@ -485,18 +470,12 @@ export class SolixClient {
     if (!this.session_) throw new Error("not authenticated — call login() first");
     const kx = await this.keyExchange();
     const encBody = encryptBody(JSON.stringify(payload), kx.shareKey);
-    const ts = nowSec();
-    const once = genId();
     const env = await this.post(
       this.apiHost,
       path,
       encBody,
       this.baseHeaders({
-        "x-encryption-info": "algo_ecdh",
-        "x-key-ident": kx.keyIdent,
-        "x-request-ts": ts,
-        "x-request-once": once,
-        "x-signature": signRequest(kx.shareKey, ts, once, encBody),
+        ...signedHeaders(kx, encBody),
         "x-auth-token": this.session_.authToken,
         gtoken: this.session_.gtoken,
       }),
