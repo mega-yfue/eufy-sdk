@@ -58,6 +58,7 @@ import {
 import { commandName, CommandType } from "./commands.js";
 import { traceLiveStart, type LiveTrace } from "./live-trace.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
+import { isPrivateIpv4 } from "./lan-ip.js";
 
 const LOCAL_LOOKUP_PORT = 32108;
 const HEARTBEAT_MS = 5_000;
@@ -253,6 +254,8 @@ export interface P2PSessionConfig {
   localAddress?: string;
   /** Disable UDP broadcast local lookup (e.g. cloud-only). Default false. */
   noBroadcast?: boolean;
+  /** Require an RFC-1918 IPv4 peer for this session. */
+  lanOnly?: boolean;
   /**
    * Resolve a station `cipher_id` → its ECC private key hex (from cloud `get_ciphers`). When
    * provided, the session auto-negotiates the **level-2** session key on connect: it reads the
@@ -369,6 +372,8 @@ export class P2PSession extends EventEmitter {
   private cloudLookup?: { key: string; addresses: Address[] };
   /** Local outbound IPv4 reported inside LOOKUP_WITH_KEY requests. */
   private selfHost?: string;
+  /** Non-private candidate hosts refused during this connection attempt. */
+  private readonly refusedHosts = new Set<string>();
   /** In-flight multi-datagram frame per data channel (see onData). */
   private readonly pendingByDataType = new Map<number, { header: P2PDataFrameHeader; buf: Buffer }>();
   /** Last datagram sequence number seen per dataType — used to detect a lost/reordered datagram
@@ -657,6 +662,7 @@ export class P2PSession extends EventEmitter {
     if (this.connecting || this.connected) return;
     this.connecting = true;
     this.closed = false;
+    this.refusedHosts.clear();
     this.connectionGeneration += 1;
     this.resetInboundSequencing();
     if (!this.level2Key) {
@@ -698,7 +704,11 @@ export class P2PSession extends EventEmitter {
     this.lookupTimer = setInterval(() => this.sendLookups(), LOOKUP_RETRY_MS);
     this.connectTimer = setTimeout(() => {
       if (!this.connected) {
-        this.emit("error", new Error(`P2P connect timeout for ${this.cfg.stationSn}`));
+        const refused =
+          this.cfg.lanOnly && this.refusedHosts.size
+            ? `; lanOnly refused non-private candidates ${[...this.refusedHosts].join(", ")}. Set localAddresses for this station or turn lanOnly off`
+            : "";
+        this.emit("error", new Error(`P2P connect timeout for ${this.cfg.stationSn}${refused}`));
         void this.close();
       }
     }, CONNECT_TIMEOUT_MS);
@@ -846,6 +856,10 @@ export class P2PSession extends EventEmitter {
   }
 
   private beginCheckCam(addr: Address, socket: dgram.Socket): void {
+    if (this.cfg.lanOnly && !isPrivateIpv4(addr.host)) {
+      this.refusedHosts.add(addr.host);
+      return;
+    }
     this.logger.debug(`[p2p] ${this.cfg.stationSn} beginCheckCam -> ${addr.host}:${addr.port} (+/-3)`);
     const payload = buildCheckCamPayload(this.cfg.p2pDid);
     // Hole-punch the reported port and a small neighbourhood (NAT remapping).
@@ -900,6 +914,12 @@ export class P2PSession extends EventEmitter {
 
   private onConnected(addr: Address, socket: dgram.Socket): void {
     if (this.connected) return;
+    if (this.cfg.lanOnly && !isPrivateIpv4(addr.host)) {
+      this.refusedHosts.add(addr.host);
+      this.logger.debug(`[p2p] ${this.cfg.stationSn} refusing non-private peer ${addr.host}:${addr.port}`);
+      this.send(addr, RequestMessageType.END, undefined, socket);
+      return;
+    }
     this.stopPunchProbes(socket);
     if (this.socket !== socket) {
       this.socket?.removeAllListeners();
