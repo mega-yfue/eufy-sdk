@@ -4,6 +4,7 @@ import { DISPLAY_PARAMS, SECURITY_PARAMS } from "../../param-dictionary.js";
 import { namespaceForCodec, paramDef } from "../../param-namespace.js";
 import { Device, UNKNOWN_PARAM_PREFIX } from "../../device.js";
 import type { ValueMember } from "../members.js";
+import { bind } from "./bind.js";
 
 /**
  * The record the live T87A0 reported (2026-09-04, redacted). Six params, and what each one becomes is
@@ -31,11 +32,18 @@ const CAPTURED = {
  * other line uses, and three of those six illegible from one capture. So most of what is worth pinning
  * here is absence — that nothing was invented, and that nothing from another line can reach it.
  */
-/** The names a caller actually gets on `dev.display()` — an `unexposed` member contributes none. */
+/**
+ * The names a caller actually gets on `dev.display()`, bound the way a device binds it. Every display id
+ * is reported, so only `unexposed` can keep a member off the surface.
+ */
 const getterNames = (): string[] =>
-  Object.entries(DISPLAY_MEMBERS)
-    .filter(([, m]) => !(m as ValueMember).unexposed)
-    .map(([name]) => name);
+  Object.keys(
+    bind<Record<string, unknown>>("display", {
+      channel: 0,
+      codec: "display",
+      paramIds: new Set(Object.values(DISPLAY_PARAM)),
+    }).acts,
+  );
 
 describe("display capability", () => {
   it("publishes one typed read, and keeps the rest readable without one", () => {
