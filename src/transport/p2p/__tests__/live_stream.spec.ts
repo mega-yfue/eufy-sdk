@@ -17,6 +17,18 @@ describe("LiveStream", () => {
     expect(session.stopped).toBe(1);
   });
 
+  it("ends an active stream when its P2P peer stops answering", () => {
+    const { session, live } = mk();
+    const stopped = vi.fn();
+    live.on("stop", stopped);
+    live.start();
+    session.emit("pathStale");
+    expect(stopped).toHaveBeenCalledOnce();
+    expect(session.stopped).toBe(1);
+    session.emit("pathStale");
+    expect(stopped).toHaveBeenCalledOnce();
+  });
+
   it("emits Annex-B video with the 22-byte header stripped + keyframe flag + resolution", () => {
     const { session, live } = mk();
     const frames: any[] = [];

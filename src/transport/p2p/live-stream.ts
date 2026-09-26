@@ -149,6 +149,8 @@ export class LiveStream extends EventEmitter {
   private readonly unackedHandler = (channel: number) => {
     if (channel === this.channel) this.emit("unacknowledged");
   };
+  /** End an active pull when its connected peer stops answering, so the next pull can resolve a new path. */
+  private readonly pathStaleHandler = () => this.stop();
   private readonly logger: Logger;
 
   constructor(
@@ -174,6 +176,7 @@ export class LiveStream extends EventEmitter {
     this.listening = true;
     this.session.on("data", this.handler);
     this.session.on("liveStartUnacknowledged", this.unackedHandler);
+    this.session.on("pathStale", this.pathStaleHandler);
     this.sendStart();
     const keepAliveMs = this.opts.keepAliveMs ?? DEFAULT_KEEPALIVE_MS;
     if (keepAliveMs > 0) {
@@ -272,6 +275,7 @@ export class LiveStream extends EventEmitter {
     this.listening = false;
     this.session.off("data", this.handler);
     this.session.off("liveStartUnacknowledged", this.unackedHandler);
+    this.session.off("pathStale", this.pathStaleHandler);
     if (this.kaTimer) clearInterval(this.kaTimer);
     this.kaTimer = undefined;
     if (this.stallTimer) clearTimeout(this.stallTimer);
