@@ -248,11 +248,6 @@ describe("arming capability module", () => {
       expect(cmd.channel).toBe(255);
     });
 
-    /**
-     * The union is compile-time only, so a caller whose types were erased (JavaScript, a JSON-RPC bridge)
-     * could ship `custom1` → 3, a mode this wire has no capture for, or any other string as a missing
-     * `mode_id`. Cmd 1255 has no readback, so each would look like success; the refusal has to come first.
-     */
     it.each([["custom1"], ["not-a-mode"], [undefined]])(
       "refuses mode %j before building a frame, and sends nothing",
       async (mode) => {
