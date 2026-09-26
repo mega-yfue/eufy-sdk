@@ -241,6 +241,10 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
    * reconnect — so a batch holding one denied leg would lose the granted legs on the next drop. Alone,
    * a refused filter costs only itself. A rejection that carries no SUBACK is a transport failure and
    * is thrown.
+   *
+   * The cost is one SUBSCRIBE and one SUBACK per filter instead of one per device — four for a
+   * four-leg line. They are sent concurrently, so the wall-clock cost is one round trip. Folding them
+   * back into one request brings back the lost resubscription.
    */
   private async subscribeEach(topics: readonly string[]): Promise<{ granted: string[]; denied: string[] }> {
     const client = this.client;
