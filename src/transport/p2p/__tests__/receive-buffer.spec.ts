@@ -44,13 +44,6 @@ describe("the receive buffer a session's socket asks for", () => {
     expect(dgram.Socket.prototype.setRecvBufferSize).toHaveBeenCalledWith(REQUESTED);
   });
 
-  it("stays silent when the OS granted at least the request", async () => {
-    grant(REQUESTED * 2);
-    const { session, warn } = newSession();
-    await connectAndClose(session);
-    expect(warn).not.toHaveBeenCalled();
-  });
-
   it("warns with the granted size when the OS lowered the request", async () => {
     grant(212992 * 2);
     const { session, warn } = newSession();

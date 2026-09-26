@@ -661,11 +661,6 @@ export class P2PSession extends EventEmitter {
    *
    * The request is made here rather than through `createSocket`'s `recvBufferSize`: Node applies that option
    * inside the bind callback, where a refusal is thrown out of reach of this session and ends the process.
-   * FreeBSD refuses a size above `kern.ipc.maxsockbuf`, whose default is below the request; Linux and macOS
-   * lower it silently, and the loss that follows looks like datagram gaps on a healthy network.
-   *
-   * Linux reports twice the size it counts against `net.core.rmem_max`, so there the warning fires only once
-   * that cap is below half the request. The advice names the cap that grants the full request.
    */
   private requestReceiveBuffer(socket: dgram.Socket): void {
     let granted: number;
