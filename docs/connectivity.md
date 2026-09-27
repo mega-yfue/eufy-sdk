@@ -282,5 +282,6 @@ re-authenticating.
 | `pollMs`              | `600000` (10 min)     | How often cloud params are re-read for changes. `0` disables. Paced to the cloud's own refresh rate.          |
 | `storedSnapshotCache` | `true`                | Eagerly retain qualifying push JPEGs for passive `snapshotStored()`. `false` omits that method.               |
 | `localAddresses`      | —                     | LAN address override per station (`sn` → `host[:port]`) for direct P2P when the record's IP is wrong/blocked. |
+| `lanOnly`             | —                     | Per-station callback requiring a private IPv4 P2P peer; public candidates are refused.                        |
 
 Next: [Live media](/live-media).

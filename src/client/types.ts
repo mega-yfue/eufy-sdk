@@ -67,6 +67,12 @@ export interface EufyMegaOptions extends MegaClientConfig {
    */
   localAddresses?: Record<string, string>;
   /**
+   * Require an RFC-1918 IPv4 peer for a station session. The callback is read for each session;
+   * `false` or absence accepts any peer. A station reachable only through a CGNAT or overlay address
+   * outside RFC-1918 cannot connect with this policy enabled.
+   */
+  lanOnly?: (stationSn: string) => boolean;
+  /**
    * Suppress the `255.255.255.255` local-lookup broadcast (default `false` — broadcast is sent).
    *
    * An unconnected P2P session broadcasts a local lookup **once a second for the whole connect

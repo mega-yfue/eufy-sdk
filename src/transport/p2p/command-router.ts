@@ -228,6 +228,8 @@ export interface P2PRouterDeps {
   sessionIdle?: Pick<SessionManagerOpts, "batteryIdleMs">;
   /** LAN address overrides for direct P2P, keyed by parent-station serial (host or host:port). */
   localAddresses?: Record<string, string>;
+  /** Station session restriction from {@link EufyMegaOptions.lanOnly}. */
+  lanOnly?: (stationSn: string) => boolean;
   /** Suppress the `255.255.255.255` local-lookup broadcast; cloud lookup and a known LAN address still run. */
   noBroadcast?: boolean;
 }
@@ -493,6 +495,7 @@ export class P2PCommandRouter {
       p2pDid: did,
       cloudAddresses: conn ? decodeP2PCloudIPs(conn) : undefined,
       localAddress,
+      lanOnly: this.deps.lanOnly?.(stationSn),
       dskKey,
       noBroadcast: this.deps.noBroadcast,
       resolveCipherKey: async (cipherId: number) => {
