@@ -1,5 +1,5 @@
 import { LiveStream, DEFAULT_KEEPALIVE_MS } from "../live-stream.js";
-import { STATION_CHANNEL, type P2PSession } from "../p2p-session.js";
+import { P2PSession, STATION_CHANNEL } from "../p2p-session.js";
 import { FakeP2PSession, START_CODE, p2pAudioFrame, p2pVideoFrame } from "./live-source-fixtures.js";
 
 describe("LiveStream", () => {
@@ -15,6 +15,41 @@ describe("LiveStream", () => {
     expect(session.started).toBe(1);
     live.stop();
     expect(session.stopped).toBe(1);
+  });
+
+  it("ends an active stream when its P2P peer stops answering", () => {
+    const { session, live } = mk();
+    const stopped = vi.fn();
+    live.on("stop", stopped);
+    live.start();
+    session.emit("pathStale");
+    expect(stopped).toHaveBeenCalledOnce();
+    expect(session.stopped).toBe(1);
+    session.emit("pathStale");
+    expect(stopped).toHaveBeenCalledOnce();
+    expect(session.listenerCount("pathStale")).toBe(0);
+  });
+
+  it("emits the stale event on a heartbeat only after the session reports a dead path", () => {
+    const session = new P2PSession({ stationSn: "T8000P0000000000", p2pDid: "XXXXXXX-000000-XXXXX" });
+    const internals = session as unknown as {
+      connectAddress?: { host: string; port: number };
+      heartbeat: () => void;
+      send: ReturnType<typeof vi.fn>;
+    };
+    internals.connectAddress = { host: "203.0.113.1", port: 32100 };
+    internals.send = vi.fn();
+    const answering = vi.spyOn(session, "pathAnswering", "get");
+    const stale = vi.fn();
+    session.on("pathStale", stale);
+
+    answering.mockReturnValue(true);
+    internals.heartbeat();
+    expect(stale).not.toHaveBeenCalled();
+
+    answering.mockReturnValue(false);
+    internals.heartbeat();
+    expect(stale).toHaveBeenCalledOnce();
   });
 
   it("emits Annex-B video with the 22-byte header stripped + keyframe flag + resolution", () => {

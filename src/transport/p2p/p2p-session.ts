@@ -973,10 +973,15 @@ export class P2PSession extends EventEmitter {
     // Nudge the station to start reporting, then heartbeat.
     this.sendCommand(CMD_GATEWAYINFO);
     this.send(addr, RequestMessageType.PING, this.lastPongData);
-    this.heartbeatTimer = setInterval(() => {
-      if (this.connectAddress) this.send(this.connectAddress, RequestMessageType.PING, this.lastPongData);
-    }, HEARTBEAT_MS);
+    this.heartbeatTimer = setInterval(() => this.heartbeat(), HEARTBEAT_MS);
     this.emit("connect");
+  }
+
+  /** Send a heartbeat and report a path whose previously answering peer has stopped responding. */
+  private heartbeat(): void {
+    if (!this.connectAddress || this.closed) return;
+    this.send(this.connectAddress, RequestMessageType.PING, this.lastPongData);
+    if (!this.pathAnswering) this.emit("pathStale");
   }
 
   /**
