@@ -241,6 +241,8 @@ export class P2PCommandRouter {
   private readonly liveSources = new Map<string, SharedLiveSource>();
   /** The options each live source was built from, so a later caller's conflicting ones can be reported. */
   private readonly liveSourceOpts = new Map<string, SharedLiveOpts>();
+  /** Latest power-policy revision per device, so a claim changed during a cold open wins over its old options. */
+  private readonly powerUpdates = new Map<string, { revision: number; tier: PowerTier }>();
   /**
    * The session each live source pulls over — the station's own serial, or the source's own media
    * session key.
@@ -363,6 +365,22 @@ export class P2PCommandRouter {
   stationKeyOf(sn: string): string {
     const dev = this.recordFor(sn);
     return dev ? stationOf(dev) : sn;
+  }
+
+  /** Apply a changed operating power tier to open media and standalone session idle timers. */
+  updatePowerTier(sn: string, tier: PowerTier): void {
+    this.powerUpdates.set(sn, { revision: (this.powerUpdates.get(sn)?.revision ?? 0) + 1, tier });
+    const dev = this.recordFor(sn);
+    if (!dev) return;
+    const station = this.stationKeyOf(sn);
+    const address = stationChannels(this.deps.listDevices()).get(sn);
+    if (address && "channel" in address) {
+      const key = `${station}:${address.channel}`;
+      this.liveSources.get(key)?.setPowerTier(tier);
+      const opts = this.liveSourceOpts.get(key);
+      if (opts) this.liveSourceOpts.set(key, { ...opts, powered: tier });
+    }
+    if (station === sn) this.manager.refreshPower(station);
   }
 
   /** Reset only a standalone device's session; an attached device must not close its shared HomeBase. */
@@ -843,6 +861,11 @@ export class P2PCommandRouter {
     opts: SharedLiveOpts = {},
     mayOpenOwnSession = false,
   ): Promise<SharedLiveSource> {
+    const powerRevision = this.powerUpdates.get(sn)?.revision ?? 0;
+    const currentOpts = (): SharedLiveOpts => {
+      const update = this.powerUpdates.get(sn);
+      return update && update.revision !== powerRevision ? { ...opts, powered: update.tier } : opts;
+    };
     const { session, parentSn, channel, accountId, homeBaseAttached } = await this.resolveSession(sn, {
       waitLevel2: "soft",
       requireLevel2ForAttached: true,
@@ -871,22 +894,23 @@ export class P2PCommandRouter {
         this.liveSessionKeys.delete(key);
         throw error;
       }
+      const sourceOpts = currentOpts();
       source = new SharedLiveSource({
         makeStream: (ctx) =>
           new LiveStream(held.session, {
             channel,
             accountId,
             homeBaseAttached,
-            eccPrivateKey: opts.eccPrivateKey,
-            keepAliveMs: opts.keepAliveMs,
+            eccPrivateKey: sourceOpts.eccPrivateKey,
+            keepAliveMs: sourceOpts.keepAliveMs,
             reassertWanted: ctx.reassertWanted,
             logger,
           }),
-        lingerMs: opts.lingerMs,
-        preBufferSeconds: opts.preBufferSeconds,
-        powered: opts.powered,
-        batteryBudgetMs: opts.batteryBudgetMs,
-        budgetGraceMs: opts.budgetGraceMs,
+        lingerMs: sourceOpts.lingerMs,
+        preBufferSeconds: sourceOpts.preBufferSeconds,
+        powered: sourceOpts.powered,
+        batteryBudgetMs: sourceOpts.batteryBudgetMs,
+        budgetGraceMs: sourceOpts.budgetGraceMs,
         logger,
         label: key,
         onActive: () => this.manager.retain(sessionKey),
@@ -896,10 +920,10 @@ export class P2PCommandRouter {
         onSessionUnreachable: () => this.replaceUnreachableSession(sn, key, held),
       });
       this.liveSources.set(key, source);
-      this.liveSourceOpts.set(key, opts);
+      this.liveSourceOpts.set(key, sourceOpts);
       return source;
     }
-    this.warnIgnoredLiveOpts(key, opts);
+    this.warnIgnoredLiveOpts(key, currentOpts());
     return source;
   }
 

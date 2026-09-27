@@ -158,6 +158,25 @@ describe("camera capability module", () => {
     expect(CAMERA.detection?.codecs).toEqual(["camera"]);
   });
 
+  it("budgets media on a battery camera regardless of charging status", async () => {
+    const seen: string[] = [];
+    const media: MediaProvider = {
+      snapshotLive: async (opts) => {
+        seen.push(opts?.powered ?? "missing");
+        return { jpeg: Buffer.alloc(0), width: 1, height: 1 };
+      },
+      live: async () => ({}) as never,
+      record: async () => Buffer.alloc(0),
+    };
+    const c = ctx(0, { model: "T8214", capabilities: new Set(["camera", "battery"]) });
+    const { acts } = bind<CameraActions>("camera", c, {
+      media,
+    });
+    await acts.snapshotLive!();
+    await acts.snapshotLive!();
+    expect(seen).toEqual(["battery", "battery"]);
+  });
+
   describe("buildCommand — emits transport-neutral intents (wire chosen by the resolver)", () => {
     it("on/off → a set-param 'auto' scalar for CAMERA_ENABLE (wire decided downstream)", () => {
       expect(buildCommand("on", true, ctx(1))).toEqual({

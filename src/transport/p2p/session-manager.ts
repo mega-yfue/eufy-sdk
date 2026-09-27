@@ -233,6 +233,13 @@ export class SessionManager {
     if (e.retained === 0) this.armIdle(key, e);
   }
 
+  /** Re-evaluate idle timers for a station after its operating power claim changes. */
+  refreshPower(station: string): void {
+    for (const [key, entry] of this.entries) {
+      if (entry.station === station && entry.session && entry.retained === 0) this.armIdle(key, entry);
+    }
+  }
+
   /**
    * Hold a session warm for `commandKeepAliveMs` after a control command, then release. A burst of
    * commands each re-holds before the previous release fires, so the session never idles mid-burst.
