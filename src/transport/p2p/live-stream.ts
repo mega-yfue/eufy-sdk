@@ -149,7 +149,7 @@ export class LiveStream extends EventEmitter {
   private readonly unackedHandler = (channel: number) => {
     if (channel === this.channel) this.emit("unacknowledged");
   };
-  /** End an active pull when its connected peer stops answering, so the next pull can resolve a new path. */
+  /** Stops this stream when the session reports its path stale. */
   private readonly pathStaleHandler = () => this.stop();
   private readonly logger: Logger;
 
