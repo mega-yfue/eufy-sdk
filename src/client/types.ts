@@ -55,6 +55,9 @@ export interface WaitForRealtimeOptions {
   timeoutMs?: number;
 }
 
+/** Local operating-power claim; `auto` uses the SDK's evidence-based tier. */
+export type PowerOverride = "auto" | "always-on" | "battery";
+
 export interface EufyMegaOptions extends MegaClientConfig {
   /** Persist FCM push credentials + seen ids across runs (default: in-memory). */
   pushStore?: FcmStore;
@@ -113,6 +116,13 @@ export interface EufyMegaOptions extends MegaClientConfig {
    * can sleep (default 300000 = 5 min). Wired stations stay persistent.
    */
   p2pIdleMs?: number;
+  /**
+   * Initial local operating-power claims by device serial. `always-on` keeps P2P sessions persistent
+   * and live media unbounded; `battery` enforces both battery limits. `EufyMega.setPowerOverride()`
+   * can change or clear a claim at runtime. These values are
+   * SDK policy, never commands sent to a device, and are not stored in the login session.
+   */
+  powerOverrides?: Record<string, Exclude<PowerOverride, "auto">>;
   /**
    * How long a speculative pre-warm holds the session it opened, in ms (default 28000). Applies only to
    * the events {@link EufyMegaOptions.prewarmEvents} opts into; pre-warm is off until then.

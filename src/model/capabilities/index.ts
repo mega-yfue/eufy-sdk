@@ -62,6 +62,7 @@ export {
   resolveRecordingQualityTier,
 } from "./camera.js";
 export {
+  cameraPowerTier,
   WorkingMode,
   PowerSource,
   resolveWorkingMode,
