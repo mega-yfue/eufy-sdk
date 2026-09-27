@@ -64,6 +64,7 @@ export {
 export {
   WorkingMode,
   PowerSource,
+  cameraPowerTier,
   resolveWorkingMode,
   resolveWorkingModeValue,
   WORKING_MODE_MAPS,
@@ -826,7 +827,7 @@ export type CapabilityAccessors = {
 
 /**
  * Every fluent-accessor name the SDK knows — the camelCased id of every module with a `members` table
- * or an `actions()` factory. A module needs only ONE of the two: `battery` is all members and `ptz` all
+ * or an `actions()` factory. A module needs only ONE of the two: `contact` is all members and `ptz` all
  * hand-written actions. The runtime twin of {@link DeviceActionMap}'s keys (types erase at
  * build). A projection of `MODULES`, so `device.ts` stays capability-agnostic. A device installs the
  * subset it has: see {@link accessorNamesFor}.

@@ -430,9 +430,8 @@ function statusLedCommand(on: boolean, ctx: CommandContext): Command {
 
 /**
  * How this camera is powered, as every media egress needs to be told: a battery device is streamed
- * under a budget, a wired one unbounded. Read off the resolved capabilities, except that a confirmed
- * mains-only model (see `cameraPowerTier` in battery.ts) is wired even with `battery` resolved. Given
- * to EVERY egress, since any of them may be the call that creates the shared source.
+ * under a budget, a mains-only one unbounded. Every egress supplies the same default; a bound media
+ * provider may apply a local operating-power override before opening or updating a shared source.
  */
 function poweredOf(ctx: CommandContext): "wired" | "battery" {
   return cameraPowerTier(ctx.model, ctx.capabilities ?? new Set());

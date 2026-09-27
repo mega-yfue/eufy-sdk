@@ -13,10 +13,10 @@ A successful `login()` starts the **always-on, battery-safe** channels:
   push independently of P2P.
 - **Secure MQTT** — started only if the account has appliances (vacuum / light / plug / display).
 
-Neither touches your cameras, so neither drains a battery. **P2P is not opened on login** — it comes up
-on demand (below). Wired stations (HomeBases, mains-powered cameras) are the exception: their P2P
-session is warmed at login and kept persistent, because a wired device doesn't drain and its realtime
-keeps device state fresh.
+Neither touches your cameras, so neither drains a battery. **P2P is not opened on login** for a
+standalone battery camera — it comes up on demand (below). HomeBases, mains-only cameras, and standalone
+devices with an explicit `always-on` claim are exceptions: their P2P sessions are warmed at login and
+kept persistent.
 
 ```ts
 const eufy = new EufyMega({ email, password, countryCode });
@@ -37,8 +37,7 @@ that.
   P2P pull — so a host polling a device every ~15 s does not drain the battery.
 - **Stored snapshots don't wake the camera.** `snapshotStored()` only reads a push thumbnail already
   retained in memory; it performs no network or P2P work when called.
-- **Wired cameras / HomeBases** stay connected (they don't drain), so their realtime state is always
-  live.
+- **Mains-only cameras / HomeBases** stay connected, so their realtime state is always live.
 
 The tier is decided per **station** (`parentSn`), and there is **one P2P session per station**, not per
 device — only a genuinely standalone battery device idle-detaches.
@@ -60,6 +59,34 @@ Battery drain has two windows, one per state — the same power model, enforced 
   watching (`extend()`), else it auto-stops the stream — which then releases the session and lets the
   idle-detach take over. Configure/consume it on the stream itself — see
   [Live media → Power budget](/live-media).
+
+### Local operating-power override
+
+Every bound device with the `battery()` capability can carry a local operating-power claim. It changes
+the SDK's session and live-stream policy; it sends no command to the device and does not alter battery
+level or charging readings.
+
+```ts
+const deviceSn = "T8000P0000000000"; // synthetic example
+const dev = await eufy.getDevice(deviceSn);
+dev.battery?.()?.setPowerOverride?.("always-on"); // persistent standalone P2P, unbounded live stream
+dev.battery?.()?.powerOverride?.(); // "always-on"
+dev.battery?.()?.setPowerOverride?.("battery"); // restore battery limits immediately
+dev.battery?.()?.setPowerOverride?.("auto"); // clear the local claim
+```
+
+`auto` budgets a device with a physical battery even if it reports charging. Charging proves input is
+present, but does not prove that input can sustain a continuous stream. An `always-on` claim is an
+explicit choice for a device whose installation can support a persistent session and stream. Changing
+the claim updates an open shared stream and an idle standalone station session immediately. An attached
+camera's claim affects its stream; its HomeBase owns the station session.
+
+A confirmed mains-only model can still expose `battery()` for power settings because its record reports
+battery-family parameters. Its physical-cell readings are withheld, and its default is already wired,
+so it does not expose `setPowerOverride()` as a bound action.
+
+To restore claims when constructing a new client, pass `powerOverrides: { [deviceSn]: "always-on" }`.
+Runtime changes are held in the client instance and are not saved in the login session.
 
 ### Battery cameras behind a wired HomeBase
 

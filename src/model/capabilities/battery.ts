@@ -1,9 +1,9 @@
 import { CusPushEvent } from "../push-events.js";
 import { asBool } from "../../core/util.js";
 import { setStationScalar, setPayload, setScalar } from "./access.js";
-import type { AvailabilityContext, CapabilityModule, CommandContext } from "./types.js";
-import { accepts, propertiesOf, type Members, type Surface } from "./members.js";
-import type { Command } from "../../core/contracts.js";
+import type { AvailabilityContext, CapabilityActions, CapabilityModule, CommandContext } from "./types.js";
+import { accepts, propertiesOf, type MemberDeps, type Members, type Surface } from "./members.js";
+import type { Command, PowerOverride } from "../../core/contracts.js";
 
 /**
  * The P2P **param-type ids** this battery/power capability reads and writes — the `param_type` a device
@@ -86,11 +86,16 @@ export type PowerSourceName = (typeof PowerSource)[keyof typeof PowerSource];
 /**
  * Bound battery/power state and controls — the object returned by `dev.battery()`.
  *
- * Every getter, setter, argument type and description is DERIVED from `BATTERY_MEMBERS`; there is
- * nothing this capability does that the table cannot state, so nothing is written out here. All writes
- * are fire-and-forget; confirm a change by re-reading.
+ * Parameter-backed getters, setters, argument types and descriptions derive from `BATTERY_MEMBERS`.
+ * The local operating-power claim is a bound action because it is independent of device parameters.
+ * Device writes are fire-and-forget; confirm a change by re-reading.
  */
-export type BatteryActions = Surface<typeof BATTERY_MEMBERS>;
+export type BatteryActions = Surface<typeof BATTERY_MEMBERS> & {
+  /** The local operating-power claim, when bound to an SDK client. */
+  powerOverride?: () => PowerOverride;
+  /** Replace the local claim without sending a device command. */
+  setPowerOverride?: (override: PowerOverride) => void;
+};
 
 /**
  * Reinterpret the reported power source (1293), whose wire form VARIES BY MODEL: a plain int on some
@@ -139,7 +144,8 @@ function recordSetting(param: number, value: number, ctx: CommandContext): Comma
  *
  * It is also a STATIC fact about a model, not a live reading of what is powering the device. Nothing
  * here handles a unit whose supply can change — a camera moved onto a battery base, say. Moot for these
- * three, which have no cell to charge, and stated because the shape of the guard does not say so.
+ * listed mains-only models, which have no cell to charge, and stated because the shape of the guard
+ * does not say so.
  *
  * An explicit list, NOT a `device-family.ts` predicate (`isFloodLight`/`isIndoorCamera`): composing
  * those would over-reach — not every floodlight or indoor cam is mains-only, and this must assert mains
@@ -503,6 +509,13 @@ export const BATTERY: CapabilityModule = {
   description: "Battery level, charging, health, temperature, and solar input.",
   members: BATTERY_MEMBERS,
   properties: propertiesOf(BATTERY_MEMBERS),
+  actions({ ctx, powerOverride }: MemberDeps): CapabilityActions {
+    if (!powerOverride || !notMainsCamera(ctx)) return {};
+    return {
+      powerOverride: () => powerOverride.getOverride(),
+      setPowerOverride: (override: PowerOverride) => powerOverride.setOverride(override),
+    };
+  },
   /** A reported battery-level param (1101) is the verified proof the device is battery-powered. */
   detection: { evidenceParams: [BATTERY_PARAM.BATTERY] },
   /**
