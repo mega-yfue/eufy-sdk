@@ -1622,8 +1622,8 @@ export class EufyMega extends EventEmitter {
     await this.p2p.ensureStation(this.p2p.stationKeyOf(deviceSn), signal);
   }
 
-  /** Eagerly open P2P sessions for WIRED stations only (persistent — they don't drain). Battery
-   *  stations stay closed until an on-demand open. Best-effort per station. */
+  /** Eagerly open P2P sessions whose idle window is persistent. Timed stations stay closed until an
+   * on-demand open. Best-effort per station. */
   private async warmWiredP2P(
     readiness = createPlaneReadiness(),
     signal?: AbortSignal,
@@ -1631,7 +1631,8 @@ export class EufyMega extends EventEmitter {
     const wired = new Set<string>();
     for (const d of this.registry.p2pDevices()) {
       const key = this.p2p.stationKeyOf(d.sn);
-      if (this.stationPower(key) === "wired") wired.add(key);
+      const idleMs = this.opts.p2pIdleMsByStation?.[key];
+      if (idleMs === null || (idleMs === undefined && this.stationPower(key) === "wired")) wired.add(key);
     }
     readiness.required = wired.size;
     readiness.pending = wired.size;

@@ -333,6 +333,26 @@ describe("EufyMega auto-realtime", () => {
     expect((c.eufy as any).p2p.ensureStation).toHaveBeenCalledTimes(2);
   });
 
+  it("warms persistent stations and leaves timed stations on demand", async () => {
+    const c = makeClient({ mqtt: 0 }, { p2pIdleMsByStation: { battery: null, wiredTimed: 1000 } });
+    c.wired.mockRestore();
+    vi.spyOn((c.eufy as any).registry, "p2pDevices").mockReturnValue([
+      { sn: "battery" },
+      { sn: "wiredTimed" },
+      { sn: "wiredDefault" },
+    ]);
+    vi.spyOn((c.eufy as any).p2p, "stationKeyOf").mockImplementation((...args: unknown[]) => args[0]);
+    vi.spyOn(c.eufy as any, "stationPower").mockImplementation((...args: unknown[]) =>
+      args[0] === "battery" ? "battery" : "wired",
+    );
+    const ensure = vi.spyOn((c.eufy as any).p2p, "ensureStation").mockResolvedValue(undefined);
+
+    const readiness = await (c.eufy as any).warmWiredP2P();
+
+    expect(readiness).toEqual({ required: 2, ready: 2, failed: 0, pending: 0 });
+    expect(ensure.mock.calls.map(([sn]) => sn).sort()).toEqual(["battery", "wiredDefault"]);
+  });
+
   it("a successful login triggers auto-realtime", async () => {
     const c = makeClient({ mqtt: 0 });
     const ensure = vi.spyOn(c.eufy as any, "ensureRealtime").mockResolvedValue(undefined);

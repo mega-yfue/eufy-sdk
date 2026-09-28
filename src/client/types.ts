@@ -116,8 +116,9 @@ export interface EufyMegaOptions extends MegaClientConfig {
   /**
    * P2P idle windows by station serial, independent of the device's reported power tier. `null`
    * keeps an idle session connected; a non-negative millisecond value closes it after that window.
-   * Unlisted stations use their normal wired or battery policy. This changes session lifetime only;
-   * media pulls keep their own `powered` setting and budget.
+   * Unlisted stations use their normal wired or battery policy. Persistent stations are eligible for
+   * auto-realtime warm-up; timed stations open on demand. Media pulls keep their own `powered` setting
+   * and budget.
    */
   p2pIdleMsByStation?: Readonly<Record<string, number | null>>;
   /**
