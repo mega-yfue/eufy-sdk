@@ -3,7 +3,7 @@
  * open. It exists to stop battery-powered cameras draining: a persistent P2P session runs a
  * 5 s PING heartbeat forever (keeping the device awake), so instead of opening every station eagerly
  * and holding it open, this opens a station's session **on demand** (first command / stream / pre-warm)
- * and **auto-closes** it after an idle window whose length depends on the station's power tier.
+ * and **auto-closes** it after an idle window whose length defaults to the station's power tier.
  *
  * Pure transport: it knows nothing about capabilities or events. The power tier per station
  * (`wired` = mains HomeBase / plugged camera → persistent; `battery` = standalone battery cam → short
@@ -14,7 +14,8 @@
  * retains it while any viewer is attached; a control command and a speculative pre-warm (e.g. a doorbell
  * ring) each take a **hold**, which retains it and then releases itself when its timer expires. When the
  * counter hits zero the idle timer arms; a new retain cancels it. `wired` stations use an infinite
- * window (never auto-close); `battery` stations a short one.
+ * window (never auto-close); `battery` stations a short one. An explicit station idle window takes
+ * precedence over either default.
  *
  * A hold is distinguished from an attached viewer only for {@link SessionManager.resetWhenUnused},
  * which may close through expiring holds but must wait for a real viewer.
@@ -72,6 +73,12 @@ interface SessionEntry {
 export interface SessionManagerOpts {
   /** Idle window for battery stations (ms). Default {@link BATTERY_IDLE_MS}. */
   batteryIdleMs?: number;
+  /**
+   * Explicit idle windows by station serial. `null` keeps a station connected after its last user
+   * releases it; a non-negative millisecond value arms an idle close. Entries take precedence over
+   * the power-tier default, including for sessions filed under a separate media key.
+   */
+  idleMsByStation?: Readonly<Record<string, number | null>>;
   /** Keepalive a single command holds after dispatch (ms). Default {@link COMMAND_KEEPALIVE_MS}. */
   commandKeepAliveMs?: number;
   /**
@@ -112,6 +119,10 @@ export class SessionManager {
   private readonly logger: Logger;
 
   constructor(private readonly opts: SessionManagerOpts = {}) {
+    for (const idleMs of Object.values(opts.idleMsByStation ?? {})) {
+      if (idleMs !== null && (!Number.isFinite(idleMs) || idleMs < 0))
+        throw new RangeError("station idle window must be a non-negative finite number or null");
+    }
     this.logger = opts.logger ?? noopLogger;
   }
 
@@ -273,11 +284,12 @@ export class SessionManager {
    */
   private armIdle(key: string, e: SessionEntry): void {
     e.idle.cancel();
-    if ((this.opts.poweredFor?.(e.station) ?? "wired") !== "battery") {
-      this.logger.debug(`[session ${key}] idle (nothing retained) — staying persistent (wired)`);
+    const explicit = this.opts.idleMsByStation?.[e.station];
+    if (explicit === null || (explicit === undefined && (this.opts.poweredFor?.(e.station) ?? "wired") !== "battery")) {
+      this.logger.debug(`[session ${key}] idle (nothing retained) — staying persistent`);
       return;
     }
-    const idleMs = this.opts.batteryIdleMs ?? BATTERY_IDLE_MS;
+    const idleMs = explicit ?? this.opts.batteryIdleMs ?? BATTERY_IDLE_MS;
     this.logger.debug(`[session ${key}] idle (nothing retained) — detaching in ${idleMs}ms unless reused`);
     e.idle.arm(idleMs, () => this.onIdle(key));
   }

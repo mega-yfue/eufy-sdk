@@ -114,6 +114,13 @@ export interface EufyMegaOptions extends MegaClientConfig {
    */
   p2pIdleMs?: number;
   /**
+   * P2P idle windows by station serial, independent of the device's reported power tier. `null`
+   * keeps an idle session connected; a non-negative millisecond value closes it after that window.
+   * Unlisted stations use their normal wired or battery policy. This changes session lifetime only;
+   * media pulls keep their own `powered` setting and budget.
+   */
+  p2pIdleMsByStation?: Readonly<Record<string, number | null>>;
+  /**
    * How long a speculative pre-warm holds the session it opened, in ms (default 28000). Applies only to
    * the events {@link EufyMegaOptions.prewarmEvents} opts into; pre-warm is off until then.
    *

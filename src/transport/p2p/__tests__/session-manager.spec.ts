@@ -51,6 +51,45 @@ describe("SessionManager lifecycle", () => {
     expect(mgr.get("ST") !== undefined).toBe(true);
   });
 
+  it("keeps a battery station persistent when its idle window is explicitly disabled", async () => {
+    const mgr = new SessionManager({
+      poweredFor: () => "battery",
+      batteryIdleMs: 1000,
+      idleMsByStation: { ST: null },
+    });
+    const session = fakeSession();
+    await mgr.acquire("ST", async () => session, "ST");
+    mgr.retain("ST");
+    mgr.release("ST");
+
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(session.close).not.toHaveBeenCalled();
+  });
+
+  it("applies a station idle window to a wired station's control and media sessions", async () => {
+    const mgr = new SessionManager({ poweredFor: () => "wired", idleMsByStation: { ST: 1000 } });
+    const control = fakeSession("control");
+    const media = fakeSession("media");
+    mgr.register("ST", control, "ST");
+    mgr.register("ST#live:2", media, "ST");
+    mgr.retain("ST");
+    mgr.retain("ST#live:2");
+    mgr.release("ST");
+    mgr.release("ST#live:2");
+
+    await vi.advanceTimersByTimeAsync(999);
+    expect(control.close).not.toHaveBeenCalled();
+    expect(media.close).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(control.close).toHaveBeenCalledOnce();
+    expect(media.close).toHaveBeenCalledOnce();
+  });
+
+  it("rejects invalid station idle windows", () => {
+    expect(() => new SessionManager({ idleMsByStation: { ST: -1 } })).toThrow(RangeError);
+    expect(() => new SessionManager({ idleMsByStation: { ST: Infinity } })).toThrow(RangeError);
+  });
+
   it("a new user cancels a pending idle-close", async () => {
     const mgr = managerFor("battery");
     const session = fakeSession();

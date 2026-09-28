@@ -339,7 +339,7 @@ export class EufyMega extends EventEmitter {
       ffmpegLogLevel: opts.ffmpegLogLevel,
       ffmpegPath: opts.ffmpegPath,
       poweredFor: (parentSn) => this.stationPower(parentSn),
-      sessionIdle: { batteryIdleMs: opts.p2pIdleMs },
+      sessionIdle: { batteryIdleMs: opts.p2pIdleMs, idleMsByStation: opts.p2pIdleMsByStation },
       localAddresses: opts.localAddresses,
       noBroadcast: opts.noBroadcast,
       listDevices: () => this.registry.list(),

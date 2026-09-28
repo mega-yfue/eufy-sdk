@@ -225,7 +225,7 @@ export interface P2PRouterDeps {
    */
   poweredFor?: (parentSn: string) => PowerTier;
   /** Idle/keepalive window overrides for the session lifecycle (see {@link SessionManagerOpts}). */
-  sessionIdle?: Pick<SessionManagerOpts, "batteryIdleMs">;
+  sessionIdle?: Pick<SessionManagerOpts, "batteryIdleMs" | "idleMsByStation">;
   /** LAN address overrides for direct P2P, keyed by parent-station serial (host or host:port). */
   localAddresses?: Record<string, string>;
   /** Suppress the `255.255.255.255` local-lookup broadcast; cloud lookup and a known LAN address still run. */
