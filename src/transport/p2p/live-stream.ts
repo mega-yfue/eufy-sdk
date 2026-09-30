@@ -15,7 +15,7 @@
  * `error`.
  */
 import { EventEmitter } from "node:events";
-import { STATION_CHANNEL, type P2PSession, type P2PFrame } from "./p2p-session.js";
+import { PATH_SILENCE_MS, STATION_CHANNEL, type P2PSession, type P2PFrame } from "./p2p-session.js";
 import { AccessUnitAssembler, VideoFrameDecoder } from "./video.js";
 import { sniffAnnexbCodec } from "./annexb.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
@@ -139,6 +139,8 @@ export class LiveStream extends EventEmitter {
   private tracedDecodeFailures = 0;
   private tracedFirstForeignFrame = false;
   private stallTimer?: ReturnType<typeof setTimeout>;
+  /** Most recent frame from this stream's camera, regardless of its decode result. */
+  private lastOwnMediaAt?: number;
   /**
    * The channel this stream starts, stops, traces under and matches its own abandonment on. An omitted
    * channel resolves to {@link STATION_CHANNEL} — the value the session resolves it to.
@@ -149,8 +151,11 @@ export class LiveStream extends EventEmitter {
   private readonly unackedHandler = (channel: number) => {
     if (channel === this.channel) this.emit("unacknowledged");
   };
-  /** Stops this stream when the session reports its path stale. */
-  private readonly pathStaleHandler = () => this.stop();
+  /** Stops this stream after both the command path and its own media have been silent. */
+  private readonly pathStaleHandler = () => {
+    if (this.lastOwnMediaAt !== undefined && Date.now() - this.lastOwnMediaAt < PATH_SILENCE_MS) return;
+    this.stop();
+  };
   private readonly logger: Logger;
 
   constructor(
@@ -174,6 +179,7 @@ export class LiveStream extends EventEmitter {
   start(): this {
     if (this.listening) return this;
     this.listening = true;
+    this.lastOwnMediaAt = undefined;
     this.session.on("data", this.handler);
     this.session.on("liveStartUnacknowledged", this.unackedHandler);
     this.session.on("pathStale", this.pathStaleHandler);
@@ -307,6 +313,7 @@ export class LiveStream extends EventEmitter {
       this.trace({ phase: "first-video-command", signCode: f.signCode, accepted });
     }
     if (!accepted) return;
+    if (f.commandId === CMD_VIDEO_FRAME || f.commandId === CMD_AUDIO_FRAME) this.lastOwnMediaAt = Date.now();
     try {
       if (f.commandId === CMD_VIDEO_FRAME) {
         for (const unit of this.units.push(f.data, (payload) => this.annexbOf(payload, f.signCode))) {

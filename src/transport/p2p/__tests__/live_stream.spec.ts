@@ -1,5 +1,5 @@
 import { LiveStream, DEFAULT_KEEPALIVE_MS } from "../live-stream.js";
-import { P2PSession, STATION_CHANNEL } from "../p2p-session.js";
+import { PATH_SILENCE_MS, P2PSession, STATION_CHANNEL } from "../p2p-session.js";
 import { FakeP2PSession, START_CODE, p2pAudioFrame, p2pVideoFrame } from "./live-source-fixtures.js";
 
 describe("LiveStream", () => {
@@ -28,6 +28,24 @@ describe("LiveStream", () => {
     session.emit("pathStale");
     expect(stopped).toHaveBeenCalledOnce();
     expect(session.listenerCount("pathStale")).toBe(0);
+  });
+
+  it("keeps a stream with recent own-camera media open during a control reply gap", () => {
+    vi.useFakeTimers();
+    try {
+      const { session, live } = mk();
+      const stopped = vi.fn();
+      live.on("stop", stopped);
+      live.start();
+      session.push(p2pVideoFrame({ keyframe: true, nal: Buffer.from([0x67, 1, 2, 3]) }));
+      session.emit("pathStale");
+      expect(stopped).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(PATH_SILENCE_MS);
+      session.emit("pathStale");
+      expect(stopped).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("emits the stale event on a heartbeat only after the session reports a dead path", () => {

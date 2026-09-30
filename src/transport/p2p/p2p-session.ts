@@ -67,7 +67,7 @@ const HEARTBEAT_MS = 5_000;
  * Three heartbeats. The station answers every PING, so one missed answer is a lost datagram and three is the
  * path being gone.
  */
-const PATH_SILENCE_MS = HEARTBEAT_MS * 3;
+export const PATH_SILENCE_MS = HEARTBEAT_MS * 3;
 const LOOKUP_RETRY_MS = 1_000;
 /**
  * The receive buffer a session's socket asks the OS for.
@@ -979,7 +979,7 @@ export class P2PSession extends EventEmitter {
 
   /** Send a heartbeat and report a path whose previously answering peer has stopped responding. */
   private heartbeat(): void {
-    if (!this.connectAddress || this.closed) return;
+    if (!this.connectAddress) return;
     this.send(this.connectAddress, RequestMessageType.PING, this.lastPongData);
     if (!this.pathAnswering) this.emit("pathStale");
   }
