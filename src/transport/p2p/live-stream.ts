@@ -26,6 +26,8 @@ const CMD_VIDEO_FRAME = 1300;
 const CMD_AUDIO_FRAME = 1301;
 const VIDEO_HEADER_LEN = 0x16; // 22-byte CMD_VIDEO_FRAME header before the Annex-B payload
 const AUDIO_HEADER_LEN = 0x10; // 16-byte CMD_AUDIO_FRAME header before the audio payload
+/** How long delivered media prevents a heartbeat-only stop decision. */
+const RECENT_MEDIA_MS = 15_000;
 /** Byte offset of the codec id between the frame-size and frame-number fields. */
 const AUDIO_TYPE_OFFSET = 0x05;
 const SC4 = Buffer.from([0, 0, 0, 1]);
@@ -139,6 +141,8 @@ export class LiveStream extends EventEmitter {
   private tracedDecodeFailures = 0;
   private tracedFirstForeignFrame = false;
   private stallTimer?: ReturnType<typeof setTimeout>;
+  /** Time of the last video or audio frame delivered from this stream's camera. */
+  private lastDeliveredMediaAt?: number;
   /**
    * The channel this stream starts, stops, traces under and matches its own abandonment on. An omitted
    * channel resolves to {@link STATION_CHANNEL} — the value the session resolves it to.
@@ -149,8 +153,11 @@ export class LiveStream extends EventEmitter {
   private readonly unackedHandler = (channel: number) => {
     if (channel === this.channel) this.emit("unacknowledged");
   };
-  /** Stops this stream when the session reports its path stale. */
-  private readonly pathStaleHandler = () => this.stop();
+  /** Stops this stream once both selected-peer replies and its delivered media are silent. */
+  private readonly pathStaleHandler = () => {
+    if (this.lastDeliveredMediaAt !== undefined && Date.now() - this.lastDeliveredMediaAt < RECENT_MEDIA_MS) return;
+    this.stop();
+  };
   private readonly logger: Logger;
 
   constructor(
@@ -174,6 +181,7 @@ export class LiveStream extends EventEmitter {
   start(): this {
     if (this.listening) return this;
     this.listening = true;
+    this.lastDeliveredMediaAt = undefined;
     this.session.on("data", this.handler);
     this.session.on("liveStartUnacknowledged", this.unackedHandler);
     this.session.on("pathStale", this.pathStaleHandler);
@@ -322,6 +330,7 @@ export class LiveStream extends EventEmitter {
           // config NAL, so they inherit the last-known codec.
           if (unit.keyframe) this.lastCodec = sniffAnnexbCodec(unit.data) ?? this.lastCodec;
           this.settleKeepalive();
+          this.lastDeliveredMediaAt = Date.now();
           this.emit("video", {
             keyframe: unit.keyframe,
             width: unit.width,
@@ -338,6 +347,7 @@ export class LiveStream extends EventEmitter {
           if (!codec) {
             this.logger.debug(`[live] dropping audio frame: unknown codec id ${codecId ?? "missing"}`);
           } else {
+            this.lastDeliveredMediaAt = Date.now();
             this.emit("audio", { codec, data: audio });
           }
         }

@@ -30,6 +30,49 @@ describe("LiveStream", () => {
     expect(session.listenerCount("pathStale")).toBe(0);
   });
 
+  it("keeps delivering media through a reply gap and stops when both signals are silent", () => {
+    vi.useFakeTimers();
+    try {
+      const { session, live } = mk({ keepAliveMs: 0 });
+      const stopped = vi.fn();
+      const video = vi.fn();
+      live.on("stop", stopped);
+      live.on("video", video);
+      live.start();
+
+      session.push(p2pVideoFrame({ keyframe: true, nal: Buffer.from([0x67, 1, 2, 3]) }));
+      expect(video).toHaveBeenCalledOnce();
+      session.emit("pathStale");
+      expect(stopped).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(10_000);
+      session.push(p2pVideoFrame({ keyframe: false, nal: Buffer.from([0x41, 9]) }));
+      expect(video).toHaveBeenCalledTimes(2);
+
+      vi.advanceTimersByTime(14_999);
+      session.emit("pathStale");
+      expect(stopped).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(1);
+      session.emit("pathStale");
+      expect(stopped).toHaveBeenCalledOnce();
+      expect(session.listenerCount("pathStale")).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not treat a sibling camera's media as proof that this stream is active", () => {
+    const { session, live } = mk({ channel: 1, homeBaseAttached: true, keepAliveMs: 0 });
+    const video = vi.fn();
+    live.on("video", video);
+    live.start();
+    session.push(p2pVideoFrame({ keyframe: true, channel: 2, nal: Buffer.from([0x67, 1, 2, 3]) }));
+    session.emit("pathStale");
+    expect(video).not.toHaveBeenCalled();
+    expect(session.stopped).toBe(1);
+  });
+
   it("emits the stale event on a heartbeat only after the session reports a dead path", () => {
     const session = new P2PSession({ stationSn: "T8000P0000000000", p2pDid: "XXXXXXX-000000-XXXXX" });
     const internals = session as unknown as {
