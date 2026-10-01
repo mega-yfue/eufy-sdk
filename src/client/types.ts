@@ -67,6 +67,12 @@ export interface EufyMegaOptions extends MegaClientConfig {
    */
   localAddresses?: Record<string, string>;
   /**
+   * Decide whether a station's P2P session may select a peer address. Returning `false` rejects that
+   * candidate before the handshake or connection; absence accepts all peers. Cloud lookup brokers remain
+   * reachable regardless of this decision. The decision applies to each control and media session.
+   */
+  acceptP2PPeer?: (stationSn: string, peer: { readonly host: string; readonly port: number }) => boolean;
+  /**
    * Suppress the `255.255.255.255` local-lookup broadcast (default `false` — broadcast is sent).
    *
    * An unconnected P2P session broadcasts a local lookup **once a second for the whole connect
