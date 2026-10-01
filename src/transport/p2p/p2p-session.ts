@@ -67,7 +67,7 @@ const HEARTBEAT_MS = 5_000;
  * Three heartbeats. The station answers every PING, so one missed answer is a lost datagram and three is the
  * path being gone.
  */
-export const PATH_SILENCE_MS = HEARTBEAT_MS * 3;
+const PATH_SILENCE_MS = HEARTBEAT_MS * 3;
 const LOOKUP_RETRY_MS = 1_000;
 /**
  * The receive buffer a session's socket asks the OS for.
