@@ -239,6 +239,8 @@ export interface P2PRouterDeps {
   sessionIdle?: Pick<SessionManagerOpts, "batteryIdleMs">;
   /** LAN address overrides for direct P2P, keyed by parent-station serial (host or host:port). */
   localAddresses?: Record<string, string>;
+  /** Host decision on a station's P2P peer candidate. */
+  acceptP2PPeer?: (stationSn: string, peer: { readonly host: string; readonly port: number }) => boolean;
   /** Suppress the `255.255.255.255` local-lookup broadcast; cloud lookup and a known LAN address still run. */
   noBroadcast?: boolean;
 }
@@ -501,11 +503,13 @@ export class P2PCommandRouter {
   ): P2PSession {
     const conn = (raw?.p2p_conn ?? raw?.app_conn) as string | undefined;
     const adminUserId = ((raw?.member as any)?.admin_user_id as string) || this.deps.mega.auth?.userId || "";
+    const acceptP2PPeer = this.deps.acceptP2PPeer;
     const session: P2PSession = new P2PSession({
       stationSn,
       p2pDid: did,
       cloudAddresses: conn ? decodeP2PCloudIPs(conn) : undefined,
       localAddress,
+      acceptPeer: acceptP2PPeer ? (peer) => acceptP2PPeer(stationSn, peer) : undefined,
       dskKey,
       noBroadcast: this.deps.noBroadcast,
       resolveCipherKey: (cipherId: number): Promise<string | undefined> =>

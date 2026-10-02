@@ -276,6 +276,8 @@ export interface P2PSessionConfig {
   localAddress?: string;
   /** Disable UDP broadcast local lookup (e.g. cloud-only). Default false. */
   noBroadcast?: boolean;
+  /** Return false to refuse a P2P peer before handshake or connection; cloud lookup is unaffected. */
+  acceptPeer?: (peer: { readonly host: string; readonly port: number }) => boolean;
   /**
    * Resolve a station `cipher_id` → its ECC private key hex (from cloud `get_ciphers`). When
    * provided, the session auto-negotiates the **level-2** session key on connect: it reads the
@@ -448,6 +450,8 @@ export class P2PSession extends EventEmitter {
   private cloudLookup?: { key: string; addresses: Address[] };
   /** Local outbound IPv4 reported inside LOOKUP_WITH_KEY requests. */
   private selfHost?: string;
+  /** Peer refusals already warned about during this connection attempt. */
+  private readonly warnedRefusedPeers = new Set<string>();
   /**
    * In-flight multi-datagram frame per data channel (see reassemble): the payload gathered so far under its
    * parsed header, or, without a header, the start of a frame header cut by the datagram boundary.
@@ -768,6 +772,7 @@ export class P2PSession extends EventEmitter {
     if (this.connecting || this.connected) return;
     this.connecting = true;
     this.closed = false;
+    this.warnedRefusedPeers.clear();
     this.connectionGeneration += 1;
     this.resetInboundSequencing();
     if (!this.level2Key) {
@@ -965,7 +970,26 @@ export class P2PSession extends EventEmitter {
     }
   }
 
+  /** Refuse a peer when host policy rejects it or throws, and report the candidate at the decision point. */
+  private acceptsPeer(addr: Address): boolean {
+    let reason = "";
+    try {
+      if (this.cfg.acceptPeer?.(addr) !== false) return true;
+    } catch (error) {
+      reason = `: peer callback threw${error instanceof Error ? `: ${error.message}` : ""}`;
+    }
+    const peer = `${addr.host}:${addr.port}`;
+    const message = `[p2p] ${this.cfg.stationSn} refusing peer ${peer}${reason}`;
+    if (this.warnedRefusedPeers.has(peer)) this.logger.debug(message);
+    else {
+      this.warnedRefusedPeers.add(peer);
+      this.logger.warn(message);
+    }
+    return false;
+  }
+
   private beginCheckCam(addr: Address, socket: dgram.Socket): void {
+    if (!this.acceptsPeer(addr)) return;
     this.logger.debug(`[p2p] ${this.cfg.stationSn} beginCheckCam -> ${addr.host}:${addr.port} (+/-3)`);
     const payload = buildCheckCamPayload(this.cfg.p2pDid);
     // Hole-punch the reported port and a small neighbourhood (NAT remapping).
@@ -1020,6 +1044,10 @@ export class P2PSession extends EventEmitter {
 
   private onConnected(addr: Address, socket: dgram.Socket): void {
     if (this.connected) return;
+    if (!this.acceptsPeer(addr)) {
+      this.send(addr, RequestMessageType.END, undefined, socket);
+      return;
+    }
     this.stopPunchProbes(socket);
     if (this.socket !== socket) {
       this.socket?.removeAllListeners();
