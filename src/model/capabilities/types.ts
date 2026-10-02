@@ -257,6 +257,8 @@ export interface AvailabilityContext {
    * cannot do what its name promises there.
    */
   homeBaseAttached?: boolean;
+  /** Serial of the covering station, when the device record names one. */
+  stationSerial?: string;
 }
 
 export interface CommandContext extends AvailabilityContext {

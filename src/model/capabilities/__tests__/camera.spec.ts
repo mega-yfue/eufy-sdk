@@ -404,13 +404,13 @@ describe("camera capability module", () => {
     });
 
     /**
-     * Every family writes the on/off param, the privacy envelope (6250) none of them.
+     * These captured families retain the on/off param route.
      *
      * Confirmed against the current app's own frames: across six cameras of four device types and both
      * topologies every on/off it sent was `1035`, and the capture carries no `6250` frame. The envelope also
      * has no level-1 form, so it is unsendable on a session that never negotiates a key.
      */
-    it("every family writes the on/off param, none the privacy envelope", () => {
+    it("the remaining captured families write the on/off param", () => {
       for (const deviceType of [
         DeviceType.INDOOR_COST_DOWN_CAMERA,
         DeviceType.INDOOR_PT_CAMERA_S350,

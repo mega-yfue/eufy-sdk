@@ -445,9 +445,17 @@ writeFileSync(
 
 if (generated.length) {
   try {
-    execFileSync("npx", ["tsc", "-p", join(OUT, "tsconfig.json")], { cwd: ROOT, stdio: "pipe" });
+    execFileSync(
+      process.execPath,
+      [join(ROOT, "node_modules", "typescript", "bin", "tsc"), "-p", join(OUT, "tsconfig.json")],
+      {
+        cwd: ROOT,
+        stdio: "pipe",
+      },
+    );
   } catch (err) {
     const output = `${err.stdout ?? ""}${err.stderr ?? ""}`;
+    if (!output.trim()) problems.push(`TypeScript checker failed without diagnostics: ${err.message}`);
     for (const line of output.split("\n")) {
       // `name.ts(LINE,COL): error TSxxxx: message` → the source line that produced it.
       const m = /^(?<name>[^(]+)\((?<line>\d+),(?<col>\d+)\):\s*(?<rest>.*)$/.exec(line.trim());

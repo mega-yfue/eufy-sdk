@@ -1,9 +1,6 @@
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { captureSnapshotFromShared } from "../media.js";
-import { SharedLiveSource } from "../shared-live-source.js";
+import { vi } from "vitest";
+import { fakeFfmpeg } from "./live-source-fixtures.js";
 import type { LiveStreamHandle, LiveVideoFrame } from "../../../core/contracts.js";
 
 class FakeStream extends EventEmitter implements LiveStreamHandle {
@@ -21,7 +18,31 @@ class FakeStream extends EventEmitter implements LiveStreamHandle {
   }
 }
 
-const settle = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const ffmpeg = fakeFfmpeg(() => ({ stderr: "synthetic decode failure", exitCode: 1 }));
+let holdDecode = false;
+let finishDecode: (() => void) | undefined;
+
+vi.mock("../../ffmpeg.js", () => ({
+  spawnFfmpeg: (args: string[]) => {
+    const child = ffmpeg.spawnFfmpeg(args) as EventEmitter;
+    if (holdDecode) {
+      const emit = child.emit.bind(child);
+      child.emit = (event, ...values) => {
+        if (event === "close") {
+          finishDecode = () => {
+            emit(event, ...values);
+          };
+          return true;
+        }
+        return emit(event, ...values);
+      };
+    }
+    return child;
+  },
+}));
+
+const { captureSnapshotFromShared } = await import("../media.js");
+const { SharedLiveSource } = await import("../shared-live-source.js");
 
 function frame(): LiveVideoFrame {
   // a bogus keyframe — enough to prime; the ffmpeg decode is expected to fail (unit env)
@@ -73,9 +94,6 @@ describe("captureSnapshotFromShared (V6 snapshot as consumer)", () => {
    * for a still that had already taken everything it needed.
    */
   it("releases the station as soon as it has collected, without waiting for the decode", async () => {
-    const decoder = mkdtempSync(join(tmpdir(), "eufy-sdk-slow-decoder-"));
-    const executable = join(decoder, "decoder");
-    writeFileSync(executable, "#!/bin/sh\nsleep 1\nexit 1\n", { mode: 0o755 });
     const streams: FakeStream[] = [];
     const source = new SharedLiveSource({
       makeStream: () => {
@@ -88,14 +106,26 @@ describe("captureSnapshotFromShared (V6 snapshot as consumer)", () => {
     streams[0].video(frame());
     const held = source.consumerCount;
 
-    const capture = captureSnapshotFromShared(source, { timeoutMs: 1000, ffmpegPath: executable });
-    expect(source.consumerCount).toBe(held + 1);
-    await settle(300);
-
-    expect(source.consumerCount, "the station is free while the decode is still running").toBe(held);
-    await expect(capture).rejects.toBeInstanceOf(Error);
-    watcher.detach();
-    rmSync(decoder, { force: true, recursive: true });
+    holdDecode = true;
+    try {
+      let settled = false;
+      const capture = captureSnapshotFromShared(source, { timeoutMs: 1000 });
+      const failed = expect(
+        capture.finally(() => {
+          settled = true;
+        }),
+      ).rejects.toBeInstanceOf(Error);
+      expect(source.consumerCount).toBe(held + 1);
+      await vi.waitFor(() => expect(finishDecode).toBeDefined());
+      expect(settled).toBe(false);
+      expect(source.consumerCount, "the station is free while the decode is still running").toBe(held);
+      finishDecode!();
+      await failed;
+    } finally {
+      holdDecode = false;
+      finishDecode = undefined;
+      watcher.detach();
+    }
   });
 
   it("attaches nothing for a capture already abandoned before it starts", async () => {

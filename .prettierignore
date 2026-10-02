@@ -3,6 +3,10 @@ dist/
 package-lock.json
 *.log
 
+# Symlink aliases become plain target-path files on Windows; format the source instead.
+AGENTS.md
+CLAUDE.md
+
 # generated API reference (TypeDoc output)
 docs/api/
 

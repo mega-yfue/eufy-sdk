@@ -117,12 +117,12 @@ function coerce(
 
 /**
  * Whether two property manifests are the same for adoption purposes — compared on the fields a device
- * fact can change (name, writability, and the per-model `enumValues`), not the whole spec (its `decode`
+ * fact can change (name, writability, polarity, and the per-model `enumValues`), not the whole spec (its `decode`
  * is a function, and paramType/kind never vary by context).
  */
 function sameManifest(a: readonly PropertySpec[], b: readonly PropertySpec[]): boolean {
   if (a.length !== b.length) return false;
-  const sig = (p: PropertySpec) => JSON.stringify([p.name, p.writable, p.enumValues ?? null]);
+  const sig = (p: PropertySpec) => JSON.stringify([p.name, p.writable, p.invert, p.enumValues ?? null]);
   const bSigs = new Set(b.map(sig));
   return a.every((p) => bSigs.has(sig(p)));
 }
@@ -265,7 +265,12 @@ export class Device {
    */
   reresolve(rec: CloudRecord): Capability[] {
     this.adoptIdentity(rec);
-    const next = resolveDevice(rec);
+    const effectiveRecord = {
+      ...rec,
+      model: this.model,
+      parentSn: this.stationSn === this.sn ? undefined : this.stationSn,
+    };
+    const next = resolveDevice(effectiveRecord);
     const gained = next.capabilities.filter((c) => !this.capSet.has(c));
     const capabilities = [...new Set([...this.capabilities, ...next.capabilities])];
     // Properties depend on device facts (deviceType/model/category drive `available` gates and
@@ -273,7 +278,7 @@ export class Device {
     // even without a capability gain — otherwise an enriched record (e.g. deviceType arriving on a
     // later poll) would leave a stale manifest. Recomputing for the union also keeps a retained
     // capability's properties from being dropped.
-    const properties = resolveProperties(rec, next.codec, capabilities);
+    const properties = resolveProperties(effectiveRecord, next.codec, capabilities);
     if (!gained.length && sameManifest(properties, this.properties)) return [];
     this.resolveInto({ ...next, capabilities, properties });
     return gained;
@@ -539,6 +544,7 @@ export class Device {
         model: this.model,
         capabilities: new Set(this.capabilities),
         homeBaseAttached: this.stationSn !== this.sn,
+        stationSerial: this.stationSn,
       }),
     };
   }

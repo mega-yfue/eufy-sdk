@@ -6,3 +6,7 @@
 *.mjs  text diff eol=lf
 *.json text diff eol=lf
 *.md   text diff eol=lf
+*.yml  text diff eol=lf
+*.yaml text diff eol=lf
+*.css  text diff eol=lf
+*.sh   text diff eol=lf

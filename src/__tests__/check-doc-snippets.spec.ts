@@ -35,6 +35,27 @@ function run(dir: string): { code: number; output: string } {
 }
 
 describe("the doc-snippet checker", () => {
+  it("fails when the compiler cannot start instead of reporting unchecked snippets as valid", () => {
+    const dir = mkdtempSync(join(tmpdir(), "doc-snippets-compiler-"));
+    const preload = join(dir, "fail-compiler.cjs");
+    try {
+      writeFileSync(
+        preload,
+        'require("node:child_process").execFileSync = () => { throw new Error("synthetic compiler launch failure"); };\n' +
+          'require("node:module").syncBuiltinESMExports();\n',
+      );
+      expect(() =>
+        execFileSync(
+          process.execPath,
+          ["--require", preload, "scripts/ci/check-doc-snippets.mjs", "--docs", join(FIXTURES, "clean")],
+          { cwd: ROOT, stdio: "pipe" },
+        ),
+      ).toThrow(/TypeScript checker failed without diagnostics: synthetic compiler launch failure/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("catches both of the bugs it was built for, at the lines they are on", () => {
     const { code, output } = run(join(FIXTURES, "broken"));
     expect(code).not.toBe(0);

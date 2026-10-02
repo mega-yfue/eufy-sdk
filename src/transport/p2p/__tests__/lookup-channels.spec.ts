@@ -66,11 +66,16 @@ describe("the lookup channels a connect can ask on", () => {
 });
 
 /** Bind a local UDP peer for the connection test. */
-async function peer(): Promise<dgram.Socket> {
+async function peer(port = 0): Promise<dgram.Socket> {
   const socket = dgram.createSocket("udp4");
-  socket.bind(0, "127.0.0.1");
-  await once(socket, "listening");
-  return socket;
+  socket.bind(port, "127.0.0.1");
+  try {
+    await once(socket, "listening");
+    return socket;
+  } catch (error) {
+    socket.close();
+    throw error;
+  }
 }
 
 /** A port can be rebound once its lookup socket has closed. */
@@ -100,6 +105,8 @@ describe("cloud lookup source ports", () => {
     let selectedPort: number | undefined;
     let pingPort: number | undefined;
     const connected = vi.fn();
+    /** Occupy the hole-punch neighbourhood so sequential ephemeral ports cannot hit lookup sockets. */
+    const neighbours: dgram.Socket[] = [];
     const session = new P2PSession({
       stationSn: STATION_SN,
       p2pDid: P2P_DID,
@@ -128,6 +135,14 @@ describe("cloud lookup source ports", () => {
       if (hasHeader(msg, RequestMessageType.PING)) pingPort = remote.port;
     });
     try {
+      for (let port = Math.max(1, stationPort - 3); port <= Math.min(65535, stationPort + 3); port++) {
+        if (port === stationPort || port === cloudPort) continue;
+        try {
+          neighbours.push(await peer(port));
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
+        }
+      }
       await session.connect();
       await vi.waitFor(() => expect(connected).toHaveBeenCalledOnce());
       expect(lookupPorts.size).toBe(8);
@@ -140,6 +155,7 @@ describe("cloud lookup source ports", () => {
       await session.close();
       cloud.close();
       station.close();
+      for (const socket of neighbours) socket.close();
     }
   });
 });

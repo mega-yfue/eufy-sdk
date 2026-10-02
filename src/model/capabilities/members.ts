@@ -59,6 +59,8 @@ export interface ValueMember {
   enumValuesFor?: (ctx: AvailabilityContext) => Record<number, string> | undefined;
   provenance?: PropertySpec["provenance"];
   invert?: boolean;
+  /** Per-device read polarity; undefined retains the static default. */
+  invertFor?: (ctx: AvailabilityContext) => boolean | undefined;
   description: string;
   /** The wire, or absent for read-only. `undefined` from it = this value is not one we accept. */
   write?: (value: boolean | number | string, ctx: CommandContext) => Command | undefined;
@@ -621,7 +623,7 @@ export function propertiesOf(members: Members, ctx?: AvailabilityContext): Prope
         unit: m.unit,
         enumValues,
         provenance: m.provenance,
-        invert: promoted?.invert ?? m.invert,
+        invert: promoted?.invert ?? (ctx ? m.invertFor?.(ctx) : undefined) ?? m.invert,
         decode: m.coerce,
         // A member with a getter-side `decode` reads a field out of a structured payload, so the
         // stored value is that payload — see `PropertySpec.raw`.
