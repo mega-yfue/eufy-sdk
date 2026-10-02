@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EufyMega } from "../eufy-mega.js";
 import { LoginStatus, SessionExpiredError } from "../../transport/http/mega-client.js";
+import { LegacyPushClient } from "../../transport/http/legacy-push-client.js";
 import { PushClient } from "../../transport/push/push-client.js";
 import type { EufyDevice } from "../../core/types.js";
 
@@ -452,5 +453,140 @@ describe("EufyMega sessionExpired event", () => {
     // Only the plain error reaches `error`.
     expect(errors).toHaveLength(1);
     expect(errors[0]?.message).toBe("transient boom");
+  });
+});
+
+describe("EufyMega dual push registration", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it("registers the exact same FCM token on Mega and legacy independently", async () => {
+    const pushStore = {
+      load: () => ({
+        creds: {
+          fid: "synthetic-fid",
+          androidId: "1",
+          securityToken: "synthetic-security-token",
+          fcmToken: "shared-fcm-token",
+          createdAt: 0,
+        },
+        persistentIds: [],
+      }),
+      save: vi.fn(),
+      clear: vi.fn(),
+    };
+
+    const legacyPushStore = {
+      load: vi.fn(() => ({
+        authToken: "legacy-token",
+        userId: "legacy-user",
+        openudid: "legacy-openudid",
+        serialNumber: "legacy-serial",
+        country: "ES",
+        apiBase: "https://security-app-eu.eufylife.com",
+        tokenExpiresAt: Date.now() + 60_000,
+      })),
+      save: vi.fn(),
+      clear: vi.fn(),
+    };
+
+    const eufy = new EufyMega({
+      email: "t@example.com",
+      password: "x",
+      pushStore,
+      legacyPushStore,
+    });
+
+    Object.defineProperty((eufy as any).mega, "auth", {
+      configurable: true,
+      get: () => ({ userId: "u", authToken: "t" }),
+    });
+
+    const megaRegister = vi.spyOn((eufy as any).mega, "registerPushToken").mockResolvedValue(undefined);
+
+    const legacyRegister = vi.spyOn(LegacyPushClient.prototype, "registerPushToken").mockResolvedValue(true);
+
+    const legacyCheck = vi.spyOn(LegacyPushClient.prototype, "checkPushToken").mockResolvedValue(false);
+
+    let pushClient!: PushClient;
+
+    vi.spyOn(PushClient.prototype, "connect").mockImplementation(function (this: PushClient) {
+      pushClient = this;
+    });
+
+    const start = (eufy as any).startPush();
+
+    await vi.waitFor(() => expect(pushClient).toBeDefined());
+    pushClient.emit("connect");
+
+    const connected = await start;
+
+    expect(megaRegister).toHaveBeenCalledWith("shared-fcm-token");
+    expect(legacyRegister).toHaveBeenCalledWith("shared-fcm-token");
+    expect(legacyCheck).not.toHaveBeenCalled();
+
+    connected.close();
+  });
+
+  it("still attempts legacy registration when Mega registration fails", async () => {
+    const pushStore = {
+      load: () => ({
+        creds: {
+          fid: "synthetic-fid",
+          androidId: "1",
+          securityToken: "synthetic-security-token",
+          fcmToken: "shared-fcm-token",
+          createdAt: 0,
+        },
+        persistentIds: [],
+      }),
+      save: vi.fn(),
+      clear: vi.fn(),
+    };
+
+    const legacyPushStore = {
+      load: vi.fn(() => null),
+      save: vi.fn(),
+      clear: vi.fn(),
+    };
+
+    const eufy = new EufyMega({
+      email: "t@example.com",
+      password: "x",
+      pushStore,
+      legacyPushStore,
+    });
+
+    Object.defineProperty((eufy as any).mega, "auth", {
+      configurable: true,
+      get: () => ({ userId: "u", authToken: "t" }),
+    });
+
+    const boom = new Error("Mega registration failed");
+    const errors: Error[] = [];
+    eufy.on("error", (error) => errors.push(error));
+
+    vi.spyOn((eufy as any).mega, "registerPushToken").mockRejectedValue(boom);
+
+    const legacyRegister = vi.spyOn(LegacyPushClient.prototype, "registerPushToken").mockResolvedValue(true);
+
+    vi.spyOn(LegacyPushClient.prototype, "checkPushToken").mockResolvedValue(true);
+
+    let pushClient!: PushClient;
+
+    vi.spyOn(PushClient.prototype, "connect").mockImplementation(function (this: PushClient) {
+      pushClient = this;
+    });
+
+    const start = (eufy as any).startPush();
+
+    await vi.waitFor(() => expect(pushClient).toBeDefined());
+    pushClient.emit("connect");
+
+    const connected = await start;
+
+    expect(legacyRegister).toHaveBeenCalledWith("shared-fcm-token");
+    expect(errors).toContain(boom);
+
+    connected.close();
   });
 });

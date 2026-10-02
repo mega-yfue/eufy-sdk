@@ -6,6 +6,8 @@
  * class — TS declaration merging requires both in the same module.
  */
 import type { MegaClientConfig, SessionExpiredError } from "../transport/http/mega-client.js";
+import type { LegacyPushSession } from "../transport/http/legacy-push-client.js";
+import type { SessionStore } from "../core/store.js";
 import type { FcmStore } from "../transport/push/store.js";
 import type { FfmpegLevel } from "../transport/ffmpeg.js";
 import type { DeviceEventMap } from "../model/capabilities/index.js";
@@ -58,6 +60,14 @@ export interface WaitForRealtimeOptions {
 export interface EufyMegaOptions extends MegaClientConfig {
   /** Persist FCM push credentials + seen ids across runs (default: in-memory). */
   pushStore?: FcmStore;
+
+  /**
+   * Optional classic eufy Security session used only to register the same FCM
+   * token on the legacy push backend. Some security accounts still route push
+   * events through that registration even though device/cloud operations have
+   * migrated to Mega.
+   */
+  legacyPushStore?: SessionStore<LegacyPushSession>;
   /** Eagerly retain validated push thumbnails in memory for `camera.snapshotStored()` (default `true`). */
   storedSnapshotCache?: boolean;
   /**

@@ -16,3 +16,5 @@ export {
   type SolixPersisted,
   type SolixSessionStore,
 } from "./solix-client.js";
+
+export { LegacyPushClient, type LegacyPushClientOptions, type LegacyPushSession } from "./legacy-push-client.js";

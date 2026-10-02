@@ -15,6 +15,7 @@
  */
 import { EventEmitter } from "node:events";
 import { MegaHttpClient, LoginStatus, SessionExpiredError, type LoginResult } from "../transport/http/mega-client.js";
+import { LegacyPushClient } from "../transport/http/legacy-push-client.js";
 import { SecureMqtt, isNotAuthorized, type SecureMqttCredentials } from "../transport/mqtt/secure-mqtt.js";
 import { mqttAppName, mqttScopeFor, type MqttScope } from "../transport/mqtt/topics.js";
 import { buildAppShapedClientId, mqttUuidFrom } from "../transport/mqtt/app-client-id.js";
@@ -2128,13 +2129,37 @@ export class EufyMega extends EventEmitter {
     }
     const persistedCreds = persisted.creds;
 
-    // Tell the eufy cloud to push this account's events to our token (best-effort
-    // — the MCS socket still receives even if this call's exact shape drifts).
+    // Register the SAME FCM token independently on both push backends.
+    //
+    // Security accounts are currently transitional: device/cloud operations can
+    // be fully migrated to Mega while event delivery is still associated with
+    // the classic eufy Security push registration. A failure on one backend must
+    // therefore never prevent the other registration attempt.
+    const pushToken = persisted.creds.fcmToken;
+    let megaRegistered = false;
+    let legacyRegistered = false;
+
     try {
-      await this.mega.registerPushToken(persisted.creds.fcmToken);
+      await this.mega.registerPushToken(pushToken);
+      megaRegistered = true;
     } catch (e) {
       this.reportError(e);
     }
+
+    if (this.opts.legacyPushStore) {
+      try {
+        const legacyPush = new LegacyPushClient({
+          store: this.opts.legacyPushStore,
+          logger: this.opts.logger,
+        });
+
+        legacyRegistered = await legacyPush.registerPushToken(pushToken);
+      } catch (e) {
+        this.reportError(e);
+      }
+    }
+
+    this.opts.logger?.debug(`[push] registration mega=${megaRegistered} legacy=${legacyRegistered}`);
 
     const client = new PushClient(persisted.creds, this.opts.logger);
     client.setPersistentIds(persisted.persistentIds);
