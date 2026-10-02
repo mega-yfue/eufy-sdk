@@ -2149,6 +2149,10 @@ export class EufyMega extends EventEmitter {
     if (this.opts.legacyPushStore) {
       try {
         const legacyPush = new LegacyPushClient({
+          email: this.opts.email,
+          password: this.opts.password,
+          country: this.opts.countryCode ?? "GB",
+          openudid: this.mega.openudid,
           store: this.opts.legacyPushStore,
           logger: this.opts.logger,
         });

@@ -30,10 +30,16 @@ describe("LegacyPushClient", () => {
     const store = new MemorySessionStore<LegacyPushSession>();
     store.save({ ...SESSION });
 
-    const fetchMock = vi.fn(async () => response({ code: 0, msg: "Succeed." }));
+    const fetchMock = vi.fn<typeof fetch>(async (_input, _init) => response({ code: 0, msg: "Succeed." }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const client = new LegacyPushClient({ store });
+    const client = new LegacyPushClient({
+      email: "test@example.com",
+      password: "test-password",
+      country: "ES",
+      openudid: "test-openudid",
+      store,
+    });
 
     await expect(client.registerPushToken("same-fcm-token")).resolves.toBe(true);
 
@@ -48,7 +54,7 @@ describe("LegacyPushClient", () => {
     });
 
     const headers = options?.headers as Record<string, string>;
-    expect(headers["x-auth-token"]).toBe("legacy-auth-token");
+    expect(headers["X-Auth-Token"]).toBe("legacy-auth-token");
     expect(headers.gtoken).toMatch(/^[a-f0-9]{32}$/);
     expect(headers.Openudid).toBe("test-openudid");
     expect(headers.Sn).toBe("test-serial");
@@ -59,7 +65,7 @@ describe("LegacyPushClient", () => {
     store.save({ ...SESSION, apiBase: undefined });
 
     const fetchMock = vi
-      .fn()
+      .fn<typeof fetch>()
       .mockResolvedValueOnce(
         response({
           code: 0,
@@ -70,7 +76,13 @@ describe("LegacyPushClient", () => {
 
     vi.stubGlobal("fetch", fetchMock);
 
-    const client = new LegacyPushClient({ store });
+    const client = new LegacyPushClient({
+      email: "test@example.com",
+      password: "test-password",
+      country: "ES",
+      openudid: "test-openudid",
+      store,
+    });
 
     await expect(client.registerPushToken("fcm-token")).resolves.toBe(true);
 
@@ -87,10 +99,16 @@ describe("LegacyPushClient", () => {
 
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => response({ code: 401, msg: "Unauthorized" }, 401)),
+      vi.fn<typeof fetch>(async (_input, _init) => response({ code: 401, msg: "Unauthorized" }, 401)),
     );
 
-    const client = new LegacyPushClient({ store });
+    const client = new LegacyPushClient({
+      email: "test@example.com",
+      password: "test-password",
+      country: "ES",
+      openudid: "test-openudid",
+      store,
+    });
 
     await expect(client.registerPushToken("fcm-token")).resolves.toBe(false);
     expect(store.load()).toBeNull();
@@ -100,10 +118,16 @@ describe("LegacyPushClient", () => {
     const store = new MemorySessionStore<LegacyPushSession>();
     store.save({ ...SESSION });
 
-    const fetchMock = vi.fn(async () => response({ code: 0, msg: "Succeed." }));
+    const fetchMock = vi.fn<typeof fetch>(async (_input, _init) => response({ code: 0, msg: "Succeed." }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const client = new LegacyPushClient({ store });
+    const client = new LegacyPushClient({
+      email: "test@example.com",
+      password: "test-password",
+      country: "ES",
+      openudid: "test-openudid",
+      store,
+    });
 
     await expect(client.checkPushToken()).resolves.toBe(true);
 
@@ -115,22 +139,69 @@ describe("LegacyPushClient", () => {
     });
   });
 
-  it("refuses an expired persisted session without making a request", async () => {
+  it("re-authenticates an expired session and then registers the FCM token", async () => {
     const store = new MemorySessionStore<LegacyPushSession>();
+
     store.save({
       ...SESSION,
       tokenExpiresAt: Date.now() - 1,
     });
 
-    const fetchMock = vi.fn();
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        response({
+          code: 0,
+          data: {
+            domain: "security-app-eu.eufylife.com",
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        response({
+          code: 0,
+          msg: "Succeed.",
+          data: {
+            auth_token: "fresh-legacy-token",
+            user_id: "fresh-user-id",
+            token_expires_at: Math.floor(Date.now() / 1000) + 3600,
+            server_secret_info: {},
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        response({
+          code: 0,
+          msg: "Succeed.",
+        }),
+      );
+
     vi.stubGlobal("fetch", fetchMock);
 
-    const client = new LegacyPushClient({ store });
+    const client = new LegacyPushClient({
+      email: "test@example.com",
+      password: "test-password",
+      country: "ES",
+      openudid: "test-openudid",
+      store,
+    });
 
-    await expect(client.registerPushToken("fcm-token")).rejects.toThrow(
-      "legacy push session is unavailable or expired",
-    );
+    await expect(client.registerPushToken("fresh-fcm-token")).resolves.toBe(true);
 
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://extend.eufylife.com/domain/ES");
+
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("https://security-app-eu.eufylife.com/v2/passport/login_sec");
+
+    expect(fetchMock.mock.calls[2]?.[0]).toBe("https://security-app-eu.eufylife.com/v1/apppush/register_push_token");
+
+    const persisted = store.load();
+
+    expect(persisted?.authToken).toBe("fresh-legacy-token");
+    expect(persisted?.userId).toBe("fresh-user-id");
+    expect(persisted?.openudid).toBe("test-openudid");
+    expect(persisted?.apiBase).toBe("https://security-app-eu.eufylife.com");
+    expect(persisted?.tokenExpiresAt).toBeGreaterThan(Date.now());
   });
 });
