@@ -14,8 +14,9 @@
  * when a command/stream/doorbell-ring needs it and closed when idle, so the camera can sleep.
  */
 import { EventEmitter } from "node:events";
+import { MemorySessionStore } from "../core/store.js";
 import { MegaHttpClient, LoginStatus, SessionExpiredError, type LoginResult } from "../transport/http/mega-client.js";
-import { LegacyPushClient } from "../transport/http/legacy-push-client.js";
+import { LegacyPushClient, type LegacyPushSession } from "../transport/http/legacy-push-client.js";
 import { SecureMqtt, isNotAuthorized, type SecureMqttCredentials } from "../transport/mqtt/secure-mqtt.js";
 import { mqttAppName, mqttScopeFor, type MqttScope } from "../transport/mqtt/topics.js";
 import { buildAppShapedClientId, mqttUuidFrom } from "../transport/mqtt/app-client-id.js";
@@ -2146,21 +2147,19 @@ export class EufyMega extends EventEmitter {
       this.reportError(e);
     }
 
-    if (this.opts.legacyPushStore) {
-      try {
-        const legacyPush = new LegacyPushClient({
-          email: this.opts.email,
-          password: this.opts.password,
-          country: this.opts.countryCode ?? "GB",
-          openudid: this.mega.openudid,
-          store: this.opts.legacyPushStore,
-          logger: this.opts.logger,
-        });
+    try {
+      const legacyPush = new LegacyPushClient({
+        email: this.opts.email,
+        password: this.opts.password,
+        country: this.opts.countryCode ?? "GB",
+        openudid: this.mega.openudid,
+        store: this.opts.legacyPushStore ?? new MemorySessionStore<LegacyPushSession>(),
+        logger: this.opts.logger,
+      });
 
-        legacyRegistered = await legacyPush.registerPushToken(pushToken);
-      } catch (e) {
-        this.reportError(e);
-      }
+      legacyRegistered = await legacyPush.registerPushToken(pushToken);
+    } catch (e) {
+      this.reportError(e);
     }
 
     this.opts.logger?.debug(`[push] registration mega=${megaRegistered} legacy=${legacyRegistered}`);

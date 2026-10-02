@@ -62,10 +62,13 @@ export interface EufyMegaOptions extends MegaClientConfig {
   pushStore?: FcmStore;
 
   /**
-   * Optional classic eufy Security session used only to register the same FCM
-   * token on the legacy push backend. Some security accounts still route push
-   * events through that registration even though device/cloud operations have
-   * migrated to Mega.
+   * Persist the classic eufy Security session used only for legacy push
+   * registration. Some security accounts still route events through that
+   * backend even though device/cloud operations have migrated to Mega.
+   *
+   * Defaults to an in-memory store, so dual-backend push registration works
+   * without host configuration. Supplying a store avoids a legacy re-login
+   * after process restarts.
    */
   legacyPushStore?: SessionStore<LegacyPushSession>;
   /** Eagerly retain validated push thumbnails in memory for `camera.snapshotStored()` (default `true`). */

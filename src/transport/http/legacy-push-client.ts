@@ -251,31 +251,5 @@ export class LegacyPushClient {
     return false;
   }
 
-  async checkPushToken(): Promise<boolean> {
-    const session = this.usableSession();
-    if (!session) return false;
 
-    const apiBase = session.apiBase ?? (await this.discoverApiBase(session.country));
-
-    const response = await fetch(`${apiBase}/v1/app/review/app_push_check`, {
-      method: "POST",
-      headers: this.authHeaders(session),
-      body: JSON.stringify({
-        app_type: "eufySecurity",
-        transaction: `${Date.now()}`,
-      }),
-    });
-
-    if (response.status === 401) {
-      this.opts.store.clear();
-      return false;
-    }
-
-    try {
-      const body = (await response.json()) as LegacyEnvelope;
-      return response.ok && body.code === 0;
-    } catch {
-      return false;
-    }
-  }
 }

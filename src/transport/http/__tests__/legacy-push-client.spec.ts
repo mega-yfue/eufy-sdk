@@ -114,31 +114,6 @@ describe("LegacyPushClient", () => {
     expect(store.load()).toBeNull();
   });
 
-  it("checks push registration with the legacy app_push_check endpoint", async () => {
-    const store = new MemorySessionStore<LegacyPushSession>();
-    store.save({ ...SESSION });
-
-    const fetchMock = vi.fn<typeof fetch>(async (_input, _init) => response({ code: 0, msg: "Succeed." }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    const client = new LegacyPushClient({
-      email: "test@example.com",
-      password: "test-password",
-      country: "ES",
-      openudid: "test-openudid",
-      store,
-    });
-
-    await expect(client.checkPushToken()).resolves.toBe(true);
-
-    const [url, options] = fetchMock.mock.calls[0]!;
-    expect(url).toBe("https://security-app-eu.eufylife.com/v1/app/review/app_push_check");
-
-    expect(JSON.parse(String(options?.body))).toMatchObject({
-      app_type: "eufySecurity",
-    });
-  });
-
   it("re-authenticates an expired session and then registers the FCM token", async () => {
     const store = new MemorySessionStore<LegacyPushSession>();
 
