@@ -66,6 +66,7 @@ export {
   PowerSource,
   resolveWorkingMode,
   resolveWorkingModeValue,
+  cameraPowerTier,
   WORKING_MODE_MAPS,
   type WorkingModeName,
   type PowerSourceName,
