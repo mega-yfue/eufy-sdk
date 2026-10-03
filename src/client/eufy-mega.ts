@@ -2035,18 +2035,22 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * Restart a HomeBase.
+   * Restart a station: a HomeBase, or a camera-family device that is its own station.
    *
-   * **HomeBases only** — restart is a hub operation, so a non-HomeBase serial (a camera, an NVR)
-   * throws rather than doing nothing. The hub drops its connection and returns after a minute or two,
-   * so everything behind it is briefly offline. Verified on real hardware.
+   * The restart is `RESTART_HUB` on the station's broadcast channel, so it reaches whatever owns the
+   * P2P session. A standalone camera or doorbell owns its own session and is the station it restarts.
+   * A camera attached to a HomeBase is not — the same frame would restart its HomeBase — so its serial
+   * throws, as does any non-camera serial, rather than doing nothing. The device drops its connection
+   * and returns after a minute or two; a HomeBase takes everything behind it offline meanwhile.
+   * Verified on real hardware against a HomeBase.
    */
   async reboot(sn: string): Promise<void> {
     const ctx = await this.commandContext(sn);
-    if (!isHomeBase({ deviceType: ctx.deviceType, model: ctx.model })) {
+    const standaloneCamera = ctx.codec === "camera" && this.p2p.stationKeyOf(sn) === sn;
+    if (!isHomeBase({ deviceType: ctx.deviceType, model: ctx.model }) && !standaloneCamera) {
       throw new Error(
-        `reboot: ${sn} is not a HomeBase (deviceType ${ctx.deviceType ?? "?"}, model ${ctx.model ?? "?"}) — ` +
-          `restart is a hub-only operation`,
+        `reboot: ${sn} is neither a HomeBase nor a standalone camera (deviceType ${ctx.deviceType ?? "?"}, ` +
+          `model ${ctx.model ?? "?"}) — restart addresses the station that owns the P2P session`,
       );
     }
     await this.p2p.rebootStation(sn);
