@@ -904,13 +904,23 @@ export class MegaHttpClient {
   }
 
   async registerPushToken(token: string): Promise<void> {
-    // Real endpoint (com.eufy.security.push_functional.PushManager) is
-    // `register_push_token` — `/app/push/register` 404s. Fields match the
-    // app's PushManager: is_notification_enable + token (+ empty voip_token).
+    // Register on both push backends: some Security accounts still route events through
+    // the classic Security backend even though their normal cloud session is Mega.
     await this.post("push", "/app/push/register_push_token", {
       is_notification_enable: true,
       token,
       voip_token: "",
+    });
+
+    await this.securityAppPost("/v1/apppush/register_push_token", {
+      is_notification_enable: true,
+      token,
+      transaction: String(Date.now()),
+    });
+
+    await this.securityAppPost("/v1/app/review/app_push_check", {
+      app_type: "eufySecurity",
+      transaction: String(Date.now()),
     });
   }
 
