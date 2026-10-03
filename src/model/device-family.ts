@@ -123,6 +123,8 @@ export const isOutdoorPanTilt = (ctx: FamilyContext): boolean => has(OUTDOOR_PT_
 export const isFloodLight = (ctx: FamilyContext): boolean => has(FLOODLIGHT_TYPES, ctx.deviceType);
 /** HomeBase-family hub (has a speaker/alarm) — a station EXCLUDING the NVRs, per `HOMEBASE_TYPES`. */
 export const isHomeBase = (ctx: FamilyContext): boolean => has(HOMEBASE_TYPES, ctx.deviceType);
+/** HomeBase S1 Pro (`STATION_9000`), the station the app drives over its WebRTC control channel. */
+export const isStation9000 = (ctx: FamilyContext): boolean => ctx.deviceType === DeviceType.STATION_9000;
 /** Wired doorbell (DeviceType.DOORBELL). */
 export const isWiredDoorbell = (ctx: FamilyContext): boolean => ctx.deviceType === DeviceType.DOORBELL;
 

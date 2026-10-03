@@ -28,6 +28,8 @@ export interface PersistedSession {
   authToken: string;
   geoKey?: string;
   region: RegionShard;
+  /** The host `estimate_domain` answered; it names shards the region classification cannot (`ie`). */
+  estimatedDomain?: string;
   openudid: string;
   /** This install's reported device model + media user-agent, generated once and reused. */
   phoneModel?: string;

@@ -27,10 +27,11 @@ const pkg = JSON.parse(readFileSync("package.json", "utf8"));
  * Every runtime dependency, kept out of the bundle.
  *
  * Bundling one would defeat the lazy loads it is there to preserve and ship a second copy of a
- * package the consumer already resolves. Read from `dependencies` so adding one cannot silently
- * change what is inlined.
+ * package the consumer already resolves. Read from both `dependencies` and `peerDependencies` (a
+ * native, on-demand package like `node-datachannel` is an optional peer) so adding one cannot
+ * silently change what is inlined.
  */
-const external = Object.keys(pkg.dependencies ?? {});
+const external = [...Object.keys(pkg.dependencies ?? {}), ...Object.keys(pkg.peerDependencies ?? {})];
 
 // Written over the entry point it was built from. esbuild resolves and loads every input before it
 // writes anything, so overwriting the entry is safe and saves staging the output somewhere else only
