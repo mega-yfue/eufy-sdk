@@ -80,6 +80,14 @@ arrives on three transports and is deduped across them, and its FCM push carries
 cloud poll an entry sensor's movement is therefore announced twice, idempotently: use `contactState` for
 the door, `propertyChanged` for everything else.
 
+## Poll completion
+
+`pollCompleted` is emitted after a cloud-param poll finishes successfully, including a poll with no
+changed values or device report timestamps. It carries no payload and does not synthesize a
+`deviceState` event. A failed query, partial inventory refresh or unfinished poll emits no completion.
+Poll freshness does not establish device availability, authentication health or push continuity;
+those remain separate signals.
+
 ## One change, announced once
 
 A state can reach the SDK on more than one transport at a time. An entry sensor's contact is the clear

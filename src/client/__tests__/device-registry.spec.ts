@@ -476,6 +476,7 @@ describe("pollChanges — account roster", () => {
     await reg.pollChanges();
 
     const outage = await reg.pollChanges();
+    expect(outage.complete).toBe(false);
     expect(
       reg
         .list()
@@ -485,6 +486,7 @@ describe("pollChanges — account roster", () => {
     expect(outage.removed).toEqual([]);
 
     const recovered = await reg.pollChanges();
+    expect(recovered.complete).toBe(true);
     expect(recovered.added).toEqual([]); // not rediscovered
     expect(recovered.removed).toEqual([]);
   });

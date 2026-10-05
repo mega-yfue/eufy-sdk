@@ -338,6 +338,12 @@ export type EufyMegaEventMap = {
    */
   deviceState: [state: DeviceState];
   /**
+   * A cloud-param poll completed with every inventory query successful and its changes applied.
+   * Emitted even when nothing changed. Failed, partial, unfinished and superseded polls do not emit it.
+   * This is poll freshness only, not device availability or push/session continuity.
+   */
+  pollCompleted: [];
+  /**
    * A verified vendor-wire availability observation. Duplicate states are coalesced; silence,
    * `lastSeenMs`, operation failure and transport lifecycle never emit or clear this event.
    */

@@ -1459,6 +1459,7 @@ export class EufyMega extends EventEmitter {
    * {@link deviceState} answers an initial reading.
    */
   private async pollOnce(): Promise<void> {
+    const epoch = this.realtimeEpoch;
     try {
       const diff = await this.registry.pollChanges();
       for (const dev of diff.added) this.emit("deviceAdded", dev);
@@ -1469,6 +1470,7 @@ export class EufyMega extends EventEmitter {
           this.emitSemantic(out.event, out.payload, { refresh: out.refresh });
       for (const dev of diff.reported) this.emit("deviceState", this.stateOf(dev));
       for (const change of diff.params) await this.widenCapabilities(change.deviceSn);
+      if (diff.complete && epoch === this.realtimeEpoch) this.emit("pollCompleted");
     } catch (e) {
       this.reportError(e);
     }
