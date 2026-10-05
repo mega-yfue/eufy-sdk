@@ -58,7 +58,7 @@ export interface ParamChange {
  * What one poll pass observed: params whose value moved, devices that joined or left the account, and
  * devices that merely re-reported. All four come from a single device-list fetch.
  */
-export interface PollDiff {
+interface PollDiff {
   /** Every cloud inventory query in this refresh succeeded; no cached subset was retained. */
   complete: boolean;
   params: ParamChange[];
