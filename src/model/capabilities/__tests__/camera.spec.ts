@@ -404,18 +404,13 @@ describe("camera capability module", () => {
     });
 
     /**
-     * Every family writes the on/off param, the privacy envelope (6250) none of them.
+     * Every family but the S350 one writes the on/off param.
      *
      * Confirmed against the current app's own frames: across six cameras of four device types and both
-     * topologies every on/off it sent was `1035`, and the capture carries no `6250` frame. The envelope also
-     * has no level-1 form, so it is unsendable on a session that never negotiates a key.
+     * topologies every on/off it sent was `1035`. None of those cameras was an S350.
      */
-    it("every family writes the on/off param, none the privacy envelope", () => {
-      for (const deviceType of [
-        DeviceType.INDOOR_COST_DOWN_CAMERA,
-        DeviceType.INDOOR_PT_CAMERA_S350,
-        DeviceType.OUTDOOR_PT_CAMERA,
-      ]) {
+    it("every non-S350 family writes the on/off param, none the privacy envelope", () => {
+      for (const deviceType of [DeviceType.INDOOR_COST_DOWN_CAMERA, DeviceType.OUTDOOR_PT_CAMERA]) {
         expect(buildCommand("on", true, ctx(2, { deviceType }))).toMatchObject({
           kind: "set-param",
           param: CAMERA_CMD.CAMERA_ENABLE,
@@ -424,9 +419,47 @@ describe("camera capability module", () => {
         });
       }
     });
+
+    /**
+     * Live: on an S350 (T8416), app privacy mode is a state 1035 never touches — a 1035 "on" left the camera
+     * in privacy, recording nothing. Its power is the 6250 privacy switch, as in bropat/eufy-security-client.
+     */
+    it("S350 family writes the 6250 privacy switch: ON ⇒ switch 0, OFF ⇒ switch 1, one auto frame", () => {
+      for (const deviceType of [
+        DeviceType.INDOOR_PT_CAMERA_S350,
+        DeviceType.INDOOR_PT_CAMERA_E30,
+        DeviceType.INDOOR_PT_CAMERA_C220,
+      ]) {
+        expect(buildCommand("on", true, ctx(5, { deviceType }))).toEqual({
+          kind: "set-payload",
+          cmd: CAMERA_CMD.PRIVACY_ENABLE,
+          payload: { switch: 0 },
+          channel: 5,
+          mValue3: 0,
+          form: "auto",
+        });
+        expect(buildCommand("off", false, ctx(5, { deviceType }))).toMatchObject({
+          cmd: CAMERA_CMD.PRIVACY_ENABLE,
+          payload: { switch: 1 },
+        });
+      }
+    });
   });
 
   describe("enabled — family-aware read (param + polarity)", () => {
+    // S350: privacy on (6250="1") is camera off, whatever the stale 1035 says.
+    it('S350 reads its power from 6250: "1" ⇒ disabled, "0" ⇒ enabled', () => {
+      const s350 = (privacy: string) =>
+        Device.fromRecord("SN", {
+          deviceType: DeviceType.INDOOR_PT_CAMERA_S350,
+          model: "T8416",
+          category: "eufy_security",
+          params: { 1035: "0", 6250: privacy },
+        });
+      expect(s350("1").getProperty("enabled")?.value).toBe(false);
+      expect(s350("0").getProperty("enabled")?.value).toBe(true);
+    });
+
     // Battery/solo cam reports on/off under 1035 (disable bit → "0" ⇒ ON). Verified live: T8114.
     it('1035="0" reads enabled=true (inverted disable bit)', () => {
       const dev = Device.fromRecord("SN", {
@@ -816,20 +849,41 @@ describe("camera enablement — observed write", () => {
     expect(observationFor(DeviceType.INDOOR_PT_CAMERA, [], true)).toBeUndefined();
   });
 
-  /**
-   * Every family observes the param it reports. The app was captured writing `1035` to cameras of each, so
-   * the wire written and the wire read agree everywhere and a readback can confirm any of them.
-   */
-  it("observes every family, including the outdoor-PT and S350 ones", () => {
-    expect(observationFor(DeviceType.INDOOR_PT_CAMERA_S350, [CAMERA_ENABLE], true)).toEqual({
-      param: CAMERA_ENABLE,
-      expected: 0,
-      observed: true,
-    });
+  /** Outdoor-PT is written on the param it reports, so a readback of it confirms the write. */
+  it("observes the outdoor-PT family on the param it reports", () => {
     expect(observationFor(DeviceType.OUTDOOR_PT_CAMERA, [CAMERA_ENABLE], true)).toEqual({
       param: CAMERA_ENABLE,
       expected: 0,
       observed: true,
     });
+  });
+
+  /**
+   * The S350 family is written on 6250, so only 6250 confirms it: the 1035 it also reports never follows.
+   * Live, an S350's cloud record carried 1035 and no 6250 — that write dispatches unobserved.
+   */
+  it("observes the S350 family on 6250 only", () => {
+    expect(observationFor(DeviceType.INDOOR_PT_CAMERA_S350, [CAMERA_ENABLE, 6250], true)).toEqual({
+      param: 6250,
+      expected: 0,
+      observed: true,
+    });
+    expect(observationFor(DeviceType.INDOOR_PT_CAMERA_S350, [CAMERA_ENABLE, 6250], false)).toEqual({
+      param: 6250,
+      expected: 1,
+      observed: false,
+    });
+    expect(observationFor(DeviceType.INDOOR_PT_CAMERA_S350, [CAMERA_ENABLE], true)).toBeUndefined();
+  });
+
+  it("names S350 enablement unreflected until the device reports 6250", () => {
+    const reflects = CAMERA_MEMBERS.enabled.readReflectsWrite;
+    const s350 = (ids: number[]) =>
+      ({ channel: 0, codec: "camera", deviceType: DeviceType.INDOOR_PT_CAMERA_S350, paramIds: new Set(ids) }) as never;
+    expect(reflects(s350([CAMERA_ENABLE]))).toBe(false);
+    expect(reflects(s350([CAMERA_ENABLE, 6250]))).toBe(true);
+    expect(reflects({ channel: 0, codec: "camera", deviceType: 9, paramIds: new Set([CAMERA_ENABLE]) } as never)).toBe(
+      true,
+    );
   });
 });
