@@ -378,11 +378,12 @@ export class DeviceRegistry {
       this.lastRefreshPartial || !base
         ? []
         : [...base.devices.entries()].filter(([sn]) => !present.has(sn)).map(([, state]) => state.device);
+    const complete = !this.lastRefreshPartial;
     this.pollSnapshot = {
       devices: new Map(devices.map((d) => [d.sn, { device: d, lastSeenMs: d.lastSeenMs, params: { ...d.params } }])),
-      complete: !this.lastRefreshPartial,
+      complete,
     };
-    return { params, added, removed, reported, complete: !this.lastRefreshPartial };
+    return { params, added, removed, reported, complete };
   }
 
   /** Devices driven over eufy secure-MQTT — named positively (not "everything that isn't P2P"), so a

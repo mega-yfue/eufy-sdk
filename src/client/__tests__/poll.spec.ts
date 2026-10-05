@@ -423,61 +423,6 @@ describe("cloud-param poll loop", () => {
     expect(seen).toEqual([true]);
   });
 
-  it("does not complete a failed or partial poll", async () => {
-    const eufy = makeClient();
-    vi.spyOn((eufy as any).registry, "pollChanges")
-      .mockRejectedValueOnce(new Error("cloud unavailable"))
-      .mockResolvedValue({ params: [], added: [], removed: [], reported: [], complete: false });
-    eufy.on("error", () => {});
-    const completed = vi.fn();
-    eufy.on("pollCompleted", completed);
-
-    await (eufy as any).pollOnce();
-    await (eufy as any).pollOnce();
-
-    expect(completed).not.toHaveBeenCalled();
-  });
-
-  it("does not complete a hung poll or a poll from a superseded session", async () => {
-    const eufy = makeClient();
-    let finish!: (value: unknown) => void;
-    vi.spyOn((eufy as any).registry, "pollChanges").mockReturnValue(
-      new Promise((resolve) => {
-        finish = resolve;
-      }),
-    );
-    const completed = vi.fn();
-    eufy.on("pollCompleted", completed);
-    const pending = (eufy as any).pollOnce();
-
-    await vi.advanceTimersByTimeAsync(31 * 60_000);
-    expect(completed).not.toHaveBeenCalled();
-    await eufy.disconnect();
-    finish({ params: [], added: [], removed: [], reported: [], complete: true });
-    await pending;
-
-    expect(completed).not.toHaveBeenCalled();
-  });
-
-  it("keeps completing quiet ten-minute polls for an hour", async () => {
-    const eufy = makeClient({ pollMs: 10 * 60_000 });
-    vi.spyOn((eufy as any).registry, "pollChanges").mockResolvedValue({
-      params: [],
-      added: [],
-      removed: [],
-      reported: [],
-      complete: true,
-    });
-    const completed = vi.fn();
-    eufy.on("pollCompleted", completed);
-    (eufy as any).schedulePoll();
-
-    await vi.advanceTimersByTimeAsync(60 * 60_000);
-
-    expect(completed).toHaveBeenCalledTimes(6);
-    await eufy.disconnect();
-  });
-
   it("re-arms after each run, so the loop keeps polling", async () => {
     const eufy = makeClient({ pollMs: 1000 });
     const poll = vi

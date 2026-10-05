@@ -83,11 +83,8 @@ the door, `propertyChanged` for everything else.
 ## Poll completion
 
 `pollCompleted` is emitted after a cloud-param poll finishes successfully, including a poll with no
-changed values or device report timestamps. It carries no payload and does not synthesize a
-`deviceState` event. Completion requires all changes to be applied within the same realtime session.
-A failed query, partial inventory refresh, unfinished poll or superseded session emits no completion.
-Poll freshness does not establish device availability, authentication health or push continuity;
-those remain separate signals.
+changed values or device report timestamps. It carries no payload. Completion requires every inventory
+query to succeed and all changes to be applied.
 
 ## One change, announced once
 

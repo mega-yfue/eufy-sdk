@@ -339,8 +339,7 @@ export type EufyMegaEventMap = {
   deviceState: [state: DeviceState];
   /**
    * A cloud-param poll completed with every inventory query successful and its changes applied.
-   * Emitted even when nothing changed. Failed, partial, unfinished and superseded polls do not emit it.
-   * This is poll freshness only, not device availability or push/session continuity.
+   * Emitted even when nothing changed.
    */
   pollCompleted: [];
   /**
