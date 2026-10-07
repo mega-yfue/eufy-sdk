@@ -165,6 +165,7 @@ export interface SharedLiveOpts extends SharedSourceHints, AbortableCall {
  * report members that were never a shared-source concern as "ignored".
  */
 const SHARED_LIVE_OPT_KEYS = [
+  "streamType",
   "eccPrivateKey",
   "keepAliveMs",
   "lingerMs",
@@ -945,6 +946,9 @@ export class P2PCommandRouter {
       requireLevel2ForAttached: true,
       signal: opts.signal,
     });
+    if (!homeBaseAttached && opts.streamType === 1) {
+      throw new RangeError("streamType 1 is unverified for own-session cameras");
+    }
     const key = `${parentSn}:${channel}`;
     let source = this.liveSources.get(key);
     if (source && source.state === "stopped") {
@@ -974,6 +978,7 @@ export class P2PCommandRouter {
             channel,
             accountId,
             homeBaseAttached,
+            streamType: opts.streamType,
             eccPrivateKey: opts.eccPrivateKey,
             keepAliveMs: opts.keepAliveMs,
             reassertWanted: ctx.reassertWanted,

@@ -38,6 +38,16 @@ function harness() {
     send,
     debug: logger.debug,
     sentFrame: (index: number) => send.mock.calls[index]![2] as Buffer,
+    decodedFrame: (index: number) => {
+      const data = send.mock.calls[index]![2] as Buffer;
+      const header = parseDataFrameHeader(data.subarray(4));
+      const encrypted = data.subarray(FRAME_BODY_OFFSET, FRAME_BODY_OFFSET + header.bytesToRead);
+      return JSON.parse(
+        decryptP2PData(encrypted, Buffer.from(p2pCommandEncryptionKey(STATION_SN, P2P_DID)))
+          .toString("utf8")
+          .replace(/\0+$/, ""),
+      );
+    },
     acknowledge: (sequence: number) =>
       target.onAck(frameMessage(ResponseMessageType.ACK, buildAckPayload(P2PDataTypeHeader.DATA, sequence))),
   };
@@ -62,20 +72,20 @@ describe("live start acknowledgement diagnostics", () => {
   });
 
   it("uses the current app's own-session START_LIVE fields", () => {
-    const { session, sentFrame } = harness();
+    const { session, decodedFrame } = harness();
 
     session.startLiveMedia(0, ADMIN_ACCOUNT_ID);
-    const data = sentFrame(0);
-    const header = parseDataFrameHeader(data.subarray(4));
-    const encrypted = data.subarray(FRAME_BODY_OFFSET, FRAME_BODY_OFFSET + header.bytesToRead);
-    const value = JSON.parse(
-      decryptP2PData(encrypted, Buffer.from(p2pCommandEncryptionKey(STATION_SN, P2P_DID)))
-        .toString("utf8")
-        .replace(/\0+$/, ""),
-    );
+    const value = decodedFrame(0);
 
     expect(value).toMatchObject({ commandType: 1000 });
     expect(value.data).toMatchObject({ cmd: 1000, msg_id: 1, extValue: 1000, streamtype: 2, video_type: 12 });
+  });
+
+  it("rejects the unverified own-session stream type without sending a start", () => {
+    const { session, send } = harness();
+
+    expect(() => session.startLiveMedia(0, ADMIN_ACCOUNT_ID, false, { streamType: 1 })).toThrow(RangeError);
+    expect(send).not.toHaveBeenCalled();
   });
 
   it("repeats an unacknowledged live start byte-identically", () => {

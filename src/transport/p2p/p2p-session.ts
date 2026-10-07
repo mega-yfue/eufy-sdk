@@ -1073,12 +1073,15 @@ export class P2PSession extends EventEmitter {
    * `opts.force` sends a real start on a channel this session already counts as started, and yields to a
    * start still awaiting acknowledgement — that one is already being repeated byte-identically and is
    * abandoned at its own deadline.
+   *
+   * `opts.streamType` selects the attached start's `streamtype` field; absent means 1. Own-session
+   * starts use the verified value 2 and reject an explicit 1.
    */
   startLiveMedia(
     channel: number = STATION_CHANNEL,
     accountId = "",
     homeBaseAttached = false,
-    opts?: { force?: boolean },
+    opts?: { force?: boolean; streamType?: 1 | 2 },
   ): void {
     if (homeBaseAttached) {
       this.tracedDatagramGaps = 0;
@@ -1088,9 +1091,15 @@ export class P2PSession extends EventEmitter {
         action: "start",
         level2: !!this.level2Key,
       });
-      this.sendMediaPayloadLevel2(CMD_START_REALTIME_MEDIA, channel, accountId, {});
+      this.sendMediaPayloadLevel2(
+        CMD_START_REALTIME_MEDIA,
+        channel,
+        accountId,
+        opts?.streamType === undefined ? {} : { streamtype: opts.streamType },
+      );
       return;
     }
+    if (opts?.streamType === 1) throw new RangeError("streamType 1 is unverified for own-session cameras");
     const want: "l1" | "l2" = this.level2Key ? "l2" : "l1";
     if (opts?.force) {
       for (const pending of this.unackedLiveStarts.values()) if (pending.channel === channel) return;

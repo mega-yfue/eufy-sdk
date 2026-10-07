@@ -87,6 +87,8 @@ export interface LiveStreamOptions {
   eccPrivateKey?: Buffer;
   /** Admin account id — required for the level-2 (`signCode 8`) media-start payload selecting a camera. */
   accountId?: string;
+  /** Live stream type sent on every start; absent keeps the session's topology-specific default. */
+  streamType?: 1 | 2;
   /**
    * Re-send the media start every N ms to hold the stream open. Defaults to
    * {@link DEFAULT_KEEPALIVE_MS}; pass `0` to disable.
@@ -259,7 +261,10 @@ export class LiveStream extends EventEmitter {
 
   private sendStart(force?: boolean): void {
     try {
-      this.session.startLiveMedia(this.opts.channel, this.opts.accountId, this.opts.homeBaseAttached, { force });
+      this.session.startLiveMedia(this.opts.channel, this.opts.accountId, this.opts.homeBaseAttached, {
+        force,
+        streamType: this.opts.streamType,
+      });
     } catch (e) {
       // Non-fatal: the session may be mid-reconnect; the warm-up retry will re-issue the start.
       this.logger.debug(`[live] startLiveMedia deferred (session not ready): ${e instanceof Error ? e.message : e}`);

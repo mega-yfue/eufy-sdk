@@ -30,6 +30,20 @@ Consequences a host should rely on:
 - **Linger, then stop.** When the last consumer detaches the source lingers briefly (so a quick
   re-attach reuses it) and then stops the pull. You don't manage the pull; you manage your consumer.
 
+`streamType: 1 | 2` selects the live start's `streamtype` field. Omission keeps the P2P defaults:
+1 for HomeBase-attached cameras and 2 for cameras with their own session. The first opener fixes
+the choice for the shared pull; later consumers join it, and conflicting hints are logged and ignored.
+Retries and session recovery retain the choice.
+For a camera with its own session, 2 is the only verified value; requesting 1 rejects the live call.
+
+```ts
+const stream = await cam?.live?.({ streamType: 2 });
+```
+
+The values have device-specific effects. In a controlled test on a HomeBase-attached T8214, changing
+only this field from 2 to 1 made motion switch the encoded split view to picture-in-picture;
+2 retained the split view through motion. This does not establish the values' meaning on other cameras.
+
 ## Several cameras behind one station
 
 A camera behind a HomeBase reads the station's inbound feed, and the station **tags each media frame with
