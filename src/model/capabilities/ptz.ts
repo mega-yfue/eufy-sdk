@@ -188,8 +188,21 @@ function hasZoomEvidence(ctx: CommandContext): boolean {
  * either, so the level is NOT fixed here.
  */
 export function rotateCommand(direction: PtzDirection, ctx: CommandContext, zoom = 1.0): Command {
+  if (ctx.deviceType !== undefined && ROTATE_SET_PAYLOAD_TYPES.has(ctx.deviceType)) {
+    return setPayload(
+      PTZ_CMD.PTZ_ROTATE,
+      { cmd_type: 1, rotate_type: PTZ_ROTATE[direction] },
+      ctx,
+      0,
+      undefined,
+      "auto",
+    );
+  }
   return setJson(PTZ_CMD.PTZ_ROTATE, { cmd_type: 1, rotate_type: PTZ_ROTATE[direction], zoom }, ctx);
 }
+
+/** DeviceTypes whose rotate (6030) rides the `SET_PAYLOAD` envelope rather than the 1700 wrapper. */
+const ROTATE_SET_PAYLOAD_TYPES: ReadonlySet<number> = new Set<number>([DeviceType.FLOODLIGHT_CAMERA_8423]);
 
 /**
  * Digital-zoom as a transport-neutral {@link Command}. The V6 app's `SetPictureZoomParser` builds a
