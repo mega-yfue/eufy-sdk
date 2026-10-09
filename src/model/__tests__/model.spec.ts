@@ -268,6 +268,23 @@ describe("doorbell — confirmed against real T8214", () => {
     expect(r.name).toBe("Wired Doorbell 2K");
   });
 
+  it("marks each manifest property with whether the device has reported it", () => {
+    // ha-eufy-sdk#64: a host showed every capability member, so the ones a camera never reports sat
+    // on unknown. The flag is the getter's evidence; the property stays listed to decode a later push.
+    const r = resolveDevice({ model: "T8113", deviceType: 1, params: { 1101: "80" } });
+    const spec = (name: string) => r.properties.find((p) => p.name === name);
+    expect(spec("battery")?.reported).toBe(true);
+    expect(spec("soloSensitivity")?.reported).toBe(false);
+    expect(spec("solarIntensity")?.reported).toBe(false);
+  });
+
+  it("flips a property to reported once a fresher record carries its param", () => {
+    const dev = Device.fromRecord("T8113R", { model: "T8113", deviceType: 1, params: { 1101: "80" } });
+    expect(dev.properties.find((p) => p.name === "solarIntensity")?.reported).toBe(false);
+    dev.reresolve({ model: "T8113", deviceType: 1, params: { 1101: "80", 1309: "3" } });
+    expect(dev.properties.find((p) => p.name === "solarIntensity")?.reported).toBe(true);
+  });
+
   it("decodes real doorbell param values (chime on, ringtone vol 80, notification JSON)", () => {
     const dev = Device.fromRecord("T8214DB", {
       model: "T8214",
