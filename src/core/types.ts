@@ -58,6 +58,8 @@ export interface EufyDevice {
    * every attached sensor of a T8010 — and serves only as a fallback for a device naming no parent.
    */
   stationSn?: string;
+  /** The device's channel on its station, as its record states it (`device_channel`); absent where it states none. */
+  channel?: number;
   /** Present (and non-empty) for P2P devices. */
   p2pDid?: string;
   /**

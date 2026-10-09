@@ -173,7 +173,7 @@ describe("arming capability module", () => {
 
   it("ARMING_CMD names the wire ids (no bare literals)", () => {
     expect(ARMING_CMD.SET_ARMING).toBe(1224);
-    expect(ARMING_CMD.ALARM_DELAY_CONFIG).toBe(1255);
+    expect(ARMING_CMD.SET_ALL_ACTION).toBe(1255);
   });
 
   it("AlarmDelaySeconds is exactly the app's own picker preset list", () => {
@@ -255,6 +255,70 @@ describe("arming capability module", () => {
       const malformed = {} as any;
       await expect(acts.setAlarmDelayConfig(AlarmDelayMode.away, malformed)).rejects.toThrow();
       expect(sent).toEqual([]);
+    });
+  });
+
+  /**
+   * The Device Control Notification checkbox, replayed on a T8010: the reported table written back whole on
+   * cmd 1255, channel 0, with only one device's flag 0x08 changed. Synthetic table, captured shape.
+   */
+  describe("device notification (replayed on a T8010)", () => {
+    const homeTable = {
+      mode_id: 1,
+      account_id: "0".repeat(40),
+      devices: [
+        { device_channel: 0, action: 0x01000009 },
+        { device_channel: 1, action: 0x01000021 },
+        { device_channel: 17, action: 0x01000008 },
+      ],
+      count_down_alarm: { channel_list: [], delay_time: 0 },
+      count_down_arm: { channel_list: [], delay_time: 0 },
+    };
+    const awayTable = { ...homeTable, mode_id: 0, devices: [{ device_channel: 1, action: 0x00000009 }] };
+    const t8010: CommandContext = { ...ctx, model: "T8010" };
+    const read = (name: string) =>
+      name === "homeActionTable" ? { value: homeTable } : name === "awayActionTable" ? { value: awayTable } : undefined;
+
+    it("reads a device's flag per mode and channel, and nothing for an unlisted channel or table", () => {
+      const { acts } = bind<ArmingActions>("arming", t8010, { read });
+      expect(acts.deviceNotification(AlarmDelayMode.home, 0)).toBe(true);
+      expect(acts.deviceNotification(AlarmDelayMode.home, 1)).toBe(false);
+      expect(acts.deviceNotification(AlarmDelayMode.away, 1)).toBe(true);
+      expect(acts.deviceNotification(AlarmDelayMode.home, 33)).toBeUndefined();
+      expect(bind<ArmingActions>("arming", t8010).acts.deviceNotification(AlarmDelayMode.home, 0)).toBeUndefined();
+    });
+
+    it("writes the whole table back with only that channel's flag 0x08 changed", async () => {
+      const { acts, sent } = bind<ArmingActions>("arming", t8010, { read });
+      await acts.setDeviceNotification(AlarmDelayMode.home, 1, true);
+      const { account_id: _account, ...expected } = homeTable;
+      expect(sent).toEqual([
+        {
+          kind: "set-json-raw",
+          cmd: 1255,
+          channel: 0,
+          data: {
+            ...expected,
+            devices: [
+              { device_channel: 0, action: 0x01000009 },
+              { device_channel: 1, action: 0x01000029 },
+              { device_channel: 17, action: 0x01000008 },
+            ],
+          },
+        },
+      ]);
+      await acts.setDeviceNotification(AlarmDelayMode.away, 1, false);
+      expect(sent[1]).toMatchObject({ data: { mode_id: 0, devices: [{ device_channel: 1, action: 0x00000001 }] } });
+    });
+
+    it("rejects, sending nothing, without a table listing the channel or on another station model", async () => {
+      const unlisted = bind<ArmingActions>("arming", t8010, { read });
+      await expect(unlisted.acts.setDeviceNotification(AlarmDelayMode.home, 33, true)).rejects.toThrow();
+      const noTable = bind<ArmingActions>("arming", t8010);
+      await expect(noTable.acts.setDeviceNotification(AlarmDelayMode.home, 1, true)).rejects.toThrow();
+      const otherBase = bind<ArmingActions>("arming", { ...ctx, model: "T8030" }, { read });
+      await expect(otherBase.acts.setDeviceNotification(AlarmDelayMode.home, 1, true)).rejects.toThrow();
+      expect([...unlisted.sent, ...noTable.sent, ...otherBase.sent]).toEqual([]);
     });
   });
 });

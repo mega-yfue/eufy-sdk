@@ -1696,7 +1696,7 @@ export class P2PCommandRouter {
    * **`set-json-raw` intent** — bare JSON, no envelope: outer P2P cmd = `outerCmd` itself, plaintext
    * exactly `{account_id,...data}` (`session.sendRawLevel2` with no wrapper). Reversed from a live
    * capture of the app's own SET_SNOOZE_TIME (1271) frame — see `param-dictionary.ts`'s `1271` entry
-   * (`snoozeTime`); the alarm-delay config (1255, `arming.ts`'s `ARMING_CMD.ALARM_DELAY_CONFIG`) reuses
+   * (`snoozeTime`); the alarm-delay config (1255, `arming.ts`'s `ARMING_CMD.SET_ALL_ACTION`) reuses
    * the same bare-JSON shape.
    */
   private async sendJsonRaw(
