@@ -268,6 +268,20 @@ describe("doorbell — confirmed against real T8214", () => {
     expect(r.name).toBe("Wired Doorbell 2K");
   });
 
+  it("reads a variant model code's row from its base T-code", () => {
+    // ha-eufy-sdk#38: a T8210C reported no doorbell because only the exact T8210 had a row.
+    for (const model of ["T8210C", "T8210-C", "t8210c"]) {
+      const r = resolveDevice({ model, deviceType: 7 });
+      expect(r.capabilities).toContain("doorbell");
+      expect(r.name).toBe("Video Doorbell");
+    }
+  });
+
+  it("keeps an exact model code's own row, and leaves an unrelated code unmatched", () => {
+    expect(resolveDevice({ model: "T84A1", deviceType: 30 }).name).toBe("Wall Light Cam S100");
+    expect(resolveDevice({ model: "T8210ABC", deviceType: 7 }).name).not.toBe("Video Doorbell");
+  });
+
   it("decodes real doorbell param values (chime on, ringtone vol 80, notification JSON)", () => {
     const dev = Device.fromRecord("T8214DB", {
       model: "T8214",
