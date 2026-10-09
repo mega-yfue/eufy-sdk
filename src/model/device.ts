@@ -122,7 +122,7 @@ function coerce(
  */
 function sameManifest(a: readonly PropertySpec[], b: readonly PropertySpec[]): boolean {
   if (a.length !== b.length) return false;
-  const sig = (p: PropertySpec) => JSON.stringify([p.name, p.writable, p.enumValues ?? null]);
+  const sig = (p: PropertySpec) => JSON.stringify([p.name, p.writable, p.reported ?? null, p.enumValues ?? null]);
   const bSigs = new Set(b.map(sig));
   return a.every((p) => bSigs.has(sig(p)));
 }
