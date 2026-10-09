@@ -199,6 +199,17 @@ function dedupeCaps(caps: Capability[]): Capability[] {
 }
 
 /**
+ * A model's curated row. Its exact T-code wins; otherwise a variant code (`T8210C`, `T8113-Z`: the base
+ * T-code plus a 1–2 character suffix, with or without a dash) reads its base T-code's row.
+ */
+function registryRow(model: string | undefined): RegistryEntry | undefined {
+  const key = model?.trim().toUpperCase();
+  if (!key) return undefined;
+  const base = /^(T[0-9A-Z]{4})-?[0-9A-Z]{1,2}$/.exec(key)?.[1];
+  return MODEL_REGISTRY[key] ?? (base ? MODEL_REGISTRY[base] : undefined);
+}
+
+/**
  * Resolve a cloud device record into its full model shape via the 3-tier lookup.
  *
  * Capability precedence (earlier = wins on property-name conflicts in `mergeProperties`):
@@ -208,8 +219,7 @@ function dedupeCaps(caps: Capability[]): Capability[] {
  * @returns the resolved `{ codec, capabilities, properties, name, source }`.
  */
 export function resolveDevice(rec: CloudRecord): ResolvedDevice {
-  const modelKey = rec.model?.trim().toUpperCase();
-  const row = modelKey ? MODEL_REGISTRY[modelKey] : undefined;
+  const row = registryRow(rec.model);
 
   // Codec: a curated row's codec wins; otherwise classify (device_type → model → camera default).
   const codec = row?.codec ?? classify(rec);
