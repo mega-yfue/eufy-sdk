@@ -57,15 +57,29 @@ describe("suction — AIoT vs legacy guard (negative exclusion)", () => {
 
 describe("suction — supportedLevels from dpCatalog", () => {
   it("returns the catalog range for DP 158 when present", () => {
-    const catalog: DpCatalog = { enumRanges: new Map([[SUCTION_DP.SUCTION, [0, 1, 2, 3]]]) };
+    const catalog: DpCatalog = { enumRanges: new Map([[SUCTION_DP.SUCTION, ["0", "1", "2", "3"]]]) };
     const { acts } = bind<SuctionActions>("suction", suctionCtx("T2351", "eufy_home", catalog));
     expect(acts.supportedLevels).toEqual([0, 1, 2, 3]);
   });
 
   it("filters out catalog values that are not valid SuctionLevel entries", () => {
-    const catalog: DpCatalog = { enumRanges: new Map([[SUCTION_DP.SUCTION, [0, 1, 2, 99]]]) };
+    const catalog: DpCatalog = { enumRanges: new Map([[SUCTION_DP.SUCTION, ["0", "1", "2", "99"]]]) };
     const { acts } = bind<SuctionActions>("suction", suctionCtx(undefined, "eufy_home", catalog));
     expect(acts.supportedLevels).toEqual([0, 1, 2]);
+  });
+
+  it("maps a catalog range of level names onto the SuctionLevel scale", () => {
+    const catalog: DpCatalog = {
+      enumRanges: new Map([[SUCTION_DP.SUCTION, ["Quiet", "Standard", "Turbo", "Max"]]]),
+    };
+    const { acts } = bind<SuctionActions>("suction", suctionCtx("T2351", "eufy_home", catalog));
+    expect(acts.supportedLevels).toEqual([0, 1, 2, 3]);
+  });
+
+  it("drops a level name outside the SuctionLevel scale", () => {
+    const catalog: DpCatalog = { enumRanges: new Map([[SUCTION_DP.SUCTION, ["Quiet", "Hurricane", "Max"]]]) };
+    const { acts } = bind<SuctionActions>("suction", suctionCtx(undefined, "eufy_home", catalog));
+    expect(acts.supportedLevels).toEqual([0, 3]);
   });
 
   it("returns undefined when the catalog has no entry for DP 158", () => {

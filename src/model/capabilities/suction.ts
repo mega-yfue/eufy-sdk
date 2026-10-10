@@ -44,6 +44,16 @@ const SUCTION_LABEL: Record<number, string> = enumLabels(SuctionLevel);
 const ALL_SUCTION_LEVELS: readonly SuctionLevelValue[] = [0, 1, 2, 3, 4, 5];
 
 /**
+ * The {@link SuctionLevel} a catalog range member stands for: a level name (`"Quiet"`) or its numeric
+ * string (`"0"`). `undefined` for a member outside the known scale.
+ */
+function levelFromCatalog(member: string): SuctionLevelValue | undefined {
+  if (Object.hasOwn(SuctionLevel, member)) return SuctionLevel[member as keyof typeof SuctionLevel];
+  const n = Number(member);
+  return Number.isInteger(n) && n in SUCTION_LABEL ? (n as SuctionLevelValue) : undefined;
+}
+
+/**
  * The label for a raw suction int, per the app's `SuctionEnum`, or `undefined` for a value outside the
  * known scale. The mapping is global (not per-model) — see {@link SuctionLevel}.
  */
@@ -60,8 +70,8 @@ export function suctionLevelName(value: number): string | undefined {
 export type SuctionActions = Surface<typeof SUCTION_MEMBERS> & {
   /**
    * The suction levels this device supports, sourced from the per-SKU `get_product_data_point` catalog
-   * range for DP 158. Narrower than the full six {@link SuctionLevel} values on many models — a T2351
-   * reports `[0, 1, 2, 3]`.
+   * range for DP 158. Narrower than the full six {@link SuctionLevel} values on many models — a T2351's
+   * catalog lists `Quiet`, `Standard`, `Turbo` and `Max`, which answers `[0, 1, 2, 3]`.
    *
    * `undefined` when the catalog is absent or does not cover DP 158. Only meaningful on devices where
    * `setSuctionLevel` is installed (AIoT vacuums).
@@ -147,7 +157,7 @@ export const SUCTION: CapabilityModule = {
    */
   actions({ ctx }: MemberDeps): CapabilityActions {
     const catalogRange = ctx.dpCatalog?.enumRanges.get(SUCTION_DP.SUCTION);
-    const supportedLevels = catalogRange?.filter((v): v is SuctionLevelValue => v in SUCTION_LABEL);
+    const supportedLevels = catalogRange?.map(levelFromCatalog).filter((v): v is SuctionLevelValue => v !== undefined);
     return { supportedLevels } as unknown as CapabilityActions;
   },
 };
