@@ -33,7 +33,7 @@ function makeRouter() {
 
   const deps: P2PRouterDeps = {
     mega: {} as P2PRouterDeps["mega"],
-    listDevices: () => [{ sn: SN, stationSn: STATION_SN, raw: { device_channel: 1 } } as any],
+    listDevices: () => [{ sn: SN, stationSn: STATION_SN, channel: 1, raw: { device_channel: 1 } } as any],
     ensureDevices: async () => {},
     onConnect: () => {},
     onClose: () => {},

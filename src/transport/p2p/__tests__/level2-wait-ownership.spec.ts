@@ -31,6 +31,7 @@ function setup(hasLevel2Key: boolean, attached = true) {
       {
         sn: DEVICE_SN,
         stationSn: attached ? STATION_SN : DEVICE_SN,
+        channel: 1,
         raw: {
           ...(attached ? { parent_sn: STATION_SN } : {}),
           device_channel: 1,

@@ -10,7 +10,7 @@ const STANDALONE = "T8000P0000000009";
 
 const hub = (sn: string) => ({ sn, raw: {} }) as never;
 const on = (station: string, sn: string, channel?: number) =>
-  ({ sn, raw: { parent_sn: station, ...(channel === undefined ? {} : { device_channel: channel }) } }) as never;
+  ({ sn, raw: { parent_sn: station }, ...(channel === undefined ? {} : { channel }) }) as never;
 
 describe("stationChannels", () => {
   it("keeps distinct stated channels as they are", () => {
@@ -36,7 +36,7 @@ describe("stationChannels", () => {
   });
 
   it("addresses a standalone device by the channel it states, else 0", () => {
-    const map = stationChannels([hub(STANDALONE), { sn: HUB, raw: { device_channel: 2 } } as never]);
+    const map = stationChannels([hub(STANDALONE), { sn: HUB, raw: {}, channel: 2 } as never]);
     expect(map.get(STANDALONE)).toEqual({ channel: 0 });
     expect(map.get(HUB)).toEqual({ channel: 2 });
   });

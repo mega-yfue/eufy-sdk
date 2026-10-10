@@ -25,6 +25,7 @@ function router(hasLevel2Key = true) {
         {
           sn: CAMERA,
           stationSn: STATION_SN,
+          channel: 0,
           raw: { parent_sn: STATION_SN, device_channel: 0, member: { admin_user_id: ACCOUNT_ID } },
         },
       ] as never,

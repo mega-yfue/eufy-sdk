@@ -25,6 +25,7 @@ const registryWith = (devices: Roster[]) => {
 };
 const attached = (sn: string, channel?: number): Roster => ({
   sn,
+  ...(channel === undefined ? {} : { channel: channel }),
   raw: { parent_sn: HUB, ...(channel === undefined ? {} : { device_channel: channel }) },
 });
 

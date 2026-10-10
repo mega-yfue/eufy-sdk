@@ -281,16 +281,16 @@ describe("arming capability module", () => {
 
     it("reads a device's flag per mode and channel, and nothing for an unlisted channel or table", () => {
       const { acts } = bind<ArmingActions>("arming", t8010, { read });
-      expect(acts.deviceNotification(AlarmDelayMode.home, 0)).toBe(true);
-      expect(acts.deviceNotification(AlarmDelayMode.home, 1)).toBe(false);
-      expect(acts.deviceNotification(AlarmDelayMode.away, 1)).toBe(true);
-      expect(acts.deviceNotification(AlarmDelayMode.home, 33)).toBeUndefined();
-      expect(bind<ArmingActions>("arming", t8010).acts.deviceNotification(AlarmDelayMode.home, 0)).toBeUndefined();
+      expect(acts.deviceNotification!(AlarmDelayMode.home, 0)).toBe(true);
+      expect(acts.deviceNotification!(AlarmDelayMode.home, 1)).toBe(false);
+      expect(acts.deviceNotification!(AlarmDelayMode.away, 1)).toBe(true);
+      expect(acts.deviceNotification!(AlarmDelayMode.home, 33)).toBeUndefined();
+      expect(bind<ArmingActions>("arming", t8010).acts.deviceNotification!(AlarmDelayMode.home, 0)).toBeUndefined();
     });
 
     it("writes the whole table back with only that channel's flag 0x08 changed", async () => {
       const { acts, sent } = bind<ArmingActions>("arming", t8010, { read });
-      await acts.setDeviceNotification(AlarmDelayMode.home, 1, true);
+      await acts.setDeviceNotification!(AlarmDelayMode.home, 1, true);
       const { account_id: _account, ...expected } = homeTable;
       expect(sent).toEqual([
         {
@@ -307,18 +307,37 @@ describe("arming capability module", () => {
           },
         },
       ]);
-      await acts.setDeviceNotification(AlarmDelayMode.away, 1, false);
+      await acts.setDeviceNotification!(AlarmDelayMode.away, 1, false);
       expect(sent[1]).toMatchObject({ data: { mode_id: 0, devices: [{ device_channel: 1, action: 0x00000001 }] } });
     });
 
-    it("rejects, sending nothing, without a table listing the channel or on another station model", async () => {
+    it("rejects, sending nothing, without a table listing the channel", async () => {
       const unlisted = bind<ArmingActions>("arming", t8010, { read });
-      await expect(unlisted.acts.setDeviceNotification(AlarmDelayMode.home, 33, true)).rejects.toThrow();
+      await expect(unlisted.acts.setDeviceNotification!(AlarmDelayMode.home, 33, true)).rejects.toThrow();
       const noTable = bind<ArmingActions>("arming", t8010);
-      await expect(noTable.acts.setDeviceNotification(AlarmDelayMode.home, 1, true)).rejects.toThrow();
-      const otherBase = bind<ArmingActions>("arming", { ...ctx, model: "T8030" }, { read });
-      await expect(otherBase.acts.setDeviceNotification(AlarmDelayMode.home, 1, true)).rejects.toThrow();
-      expect([...unlisted.sent, ...noTable.sent, ...otherBase.sent]).toEqual([]);
+      await expect(noTable.acts.setDeviceNotification!(AlarmDelayMode.home, 1, true)).rejects.toThrow();
+      expect([...unlisted.sent, ...noTable.sent]).toEqual([]);
+    });
+
+    it("is absent on another station model", () => {
+      const { acts } = bind<ArmingActions>("arming", { ...ctx, model: "T8030" }, { read });
+      expect(acts.deviceNotification).toBeUndefined();
+      expect(acts.setDeviceNotification).toBeUndefined();
+    });
+
+    it("builds a second write on the first while the reported table lags", async () => {
+      const { acts, sent } = bind<ArmingActions>("arming", t8010, { read });
+      await acts.setDeviceNotification!(AlarmDelayMode.home, 0, false);
+      await acts.setDeviceNotification!(AlarmDelayMode.home, 17, false);
+      expect(sent[1]).toMatchObject({
+        data: {
+          devices: [
+            { device_channel: 0, action: 0x01000001 },
+            { device_channel: 1, action: 0x01000021 },
+            { device_channel: 17, action: 0x01000000 },
+          ],
+        },
+      });
     });
   });
 });

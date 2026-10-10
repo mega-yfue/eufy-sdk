@@ -23,7 +23,7 @@ function session() {
 function setup() {
   const first = session();
   const replacement = session();
-  const camera = { sn: CAMERA, stationSn: STATION, raw: { parent_sn: STATION, device_channel: 1 } };
+  const camera = { sn: CAMERA, stationSn: STATION, channel: 1, raw: { parent_sn: STATION, device_channel: 1 } };
   const station = { sn: STATION, stationSn: STATION, raw: {} };
   const router = new P2PCommandRouter({
     mega: {} as never,

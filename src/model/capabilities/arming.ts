@@ -311,30 +311,23 @@ function alarmDelayCommand(mode: AlarmDelayMode, config: AlarmDelayConfig, ctx: 
   return setJsonRaw(ARMING_CMD.SET_ALL_ACTION, data, ctx, STATION_CHANNEL);
 }
 
+/** How long a reported action table may lag a write before it is trusted again: it follows within 15 s. */
+const ACTION_TABLE_LAG_MS = 15_000;
+
 /**
- * Build the write of one device's notification flag in `mode`: the whole reported table, with only the
- * {@link DEVICE_NOTIFY_FLAG} of `channel` changed. Throws, sending nothing, on a station other than a
- * T8010, the one whose write is confirmed on channel 0, or a table that does not list `channel`, since only that table states the
- * entry's other flags. `account_id` is left to the sink, which injects the acting account's.
+ * One device's notification flag in `table` changed, or `undefined` when `table` does not list `channel`,
+ * since only the table states the entry's other flags. `account_id` is dropped: the sink injects the
+ * acting account's.
  */
-function deviceNotificationCommand(
-  read: CapabilityStateReader,
-  mode: DeviceNotificationMode,
-  channel: number,
-  on: boolean,
-  ctx: CommandContext,
-): Command {
-  const table = actionTable(read, mode);
-  if (ctx.model !== "T8010" || !table?.devices.some((d) => d.device_channel === channel)) {
-    throw new Error(`arming: no ${mode} action table lists channel ${channel} [${describeDevice(ctx)}]`);
-  }
+function withDeviceNotification(table: ActionTable | undefined, channel: number, on: boolean): ActionTable | undefined {
+  if (!table?.devices.some((d) => d.device_channel === channel)) return undefined;
   const { account_id: _account, ...rest } = table;
   const devices = table.devices.map((d) =>
     d.device_channel === channel
       ? { ...d, action: on ? d.action | DEVICE_NOTIFY_FLAG : d.action & ~DEVICE_NOTIFY_FLAG }
       : d,
   );
-  return setJsonRaw(ARMING_CMD.SET_ALL_ACTION, { ...rest, devices }, ctx, 0);
+  return { ...rest, devices };
 }
 
 /**
@@ -432,23 +425,33 @@ export const ARMING_MEMBERS = {
         return typeof action === "number" ? (action & DEVICE_NOTIFY_FLAG) !== 0 : undefined;
       },
     "Whether the device on a channel sends a push notification in a guard mode (home/away).",
+    (ctx) => ctx.model === "T8010",
   ),
 
   /**
    * Turn the push notification of the device on `channel` on or off in `mode` (cmd
    * {@link ARMING_CMD.SET_ALL_ACTION}): the station's reported table written back with that one flag
-   * changed. Rejects, sending nothing, where the table is unknown — see `deviceNotificationCommand`.
+   * changed. Rejects, sending nothing, where the table does not list `channel`. Until the reported table
+   * catches up, a write builds on the last one sent for that mode, so a second write does not revert it.
    */
   setDeviceNotification: method(
-    ({ ctx, sink, read }) =>
-      (mode: DeviceNotificationMode, channel: number, on: boolean): Promise<void> => {
-        try {
-          return sink.dispatch(deviceNotificationCommand(read, mode, channel, on, ctx));
-        } catch (e) {
-          return Promise.reject(e);
+    ({ ctx, sink, read }) => {
+      const sent = new Map<DeviceNotificationMode, { table: ActionTable; at: number }>();
+      return (mode: DeviceNotificationMode, channel: number, on: boolean): Promise<void> => {
+        const last = sent.get(mode);
+        const base = last && Date.now() - last.at < ACTION_TABLE_LAG_MS ? last.table : actionTable(read, mode);
+        const table = withDeviceNotification(base, channel, on);
+        if (!table) {
+          return Promise.reject(
+            new Error(`arming: no ${mode} action table lists channel ${channel} [${describeDevice(ctx)}]`),
+          );
         }
-      },
+        sent.set(mode, { table, at: Date.now() });
+        return sink.dispatch(setJsonRaw(ARMING_CMD.SET_ALL_ACTION, table, ctx, 0));
+      };
+    },
     "Turn the push notification of the device on a channel on or off in a guard mode (home/away).",
+    (ctx) => ctx.model === "T8010",
   ),
 } as const satisfies Members;
 

@@ -48,12 +48,6 @@ export function stationOf(dev: EufyDevice): string {
  */
 export type StationChannel = { channel: number } | { issue: "missing" } | { issue: "shared"; claimed: number };
 
-/** The `device_channel` a record states, or `undefined` when it states none. */
-function statedChannel(dev: EufyDevice): number | undefined {
-  const v = (dev.raw as Record<string, unknown> | undefined)?.device_channel;
-  return typeof v === "number" ? v : undefined;
-}
-
 /**
  * The channel each device is addressed by within its station.
  *
@@ -69,7 +63,7 @@ export function stationChannels(devices: readonly EufyDevice[]): Map<string, Sta
   const claimants = new Map<string, Map<number, number>>();
   for (const d of devices) {
     const station = stationOf(d);
-    const stated = statedChannel(d);
+    const stated = d.channel;
     if (d.sn === station || stated === undefined) continue;
     const counts = claimants.get(station) ?? new Map<number, number>();
     counts.set(stated, (counts.get(stated) ?? 0) + 1);
@@ -77,7 +71,7 @@ export function stationChannels(devices: readonly EufyDevice[]): Map<string, Sta
   }
   for (const d of devices) {
     const station = stationOf(d);
-    const stated = statedChannel(d);
+    const stated = d.channel;
     if (d.sn === station) out.set(d.sn, { channel: stated ?? 0 });
     else if (stated === undefined) out.set(d.sn, { issue: "missing" });
     else if ((claimants.get(station)?.get(stated) ?? 0) > 1) out.set(d.sn, { issue: "shared", claimed: stated });
