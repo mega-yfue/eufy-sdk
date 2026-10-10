@@ -106,6 +106,22 @@ describe("ptz capability module", () => {
       const down = rotateCommand(PtzDirection.down, ctx(0)) as Extract<Command, { kind: "set-json" }>;
       expect(down.data).toMatchObject({ rotate_type: 4, zoom: 1.0 });
     });
+
+    it("on a T8423 (deviceType 38) → the level-1-capable SET_PAYLOAD envelope, mValue3 0, no zoom", () => {
+      const t8423 = { ...ctx(0), deviceType: 38 };
+      expect(rotateCommand(PtzDirection.left, t8423)).toEqual({
+        kind: "set-payload",
+        cmd: PTZ_CMD.PTZ_ROTATE,
+        payload: { cmd_type: 1, rotate_type: PTZ_ROTATE.left },
+        channel: 0,
+        mValue3: 0,
+        form: "auto",
+      });
+      expect(buildCommand("rotate", "up", t8423)).toMatchObject({
+        kind: "set-payload",
+        payload: { cmd_type: 1, rotate_type: PTZ_ROTATE.up },
+      });
+    });
   });
 
   describe("zoomCommand", () => {

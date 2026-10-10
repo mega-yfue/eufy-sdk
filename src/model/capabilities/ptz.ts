@@ -16,7 +16,8 @@ import type { Command } from "../../core/contracts.js";
  * span-cruise preview).
  */
 export const PTZ_CMD = {
-  /** Rotate. App `SetPtz…`/`INDOOR_ROTATE`: 1700 wrapper, `{cmd_type,rotate_type,zoom}`. */
+  /** Rotate. App `SetPtz…`/`INDOOR_ROTATE`: 1700 wrapper, `{cmd_type,rotate_type,zoom}`; the T8423 takes it
+   * in the 1350 SET_PAYLOAD envelope as `{cmd_type,rotate_type}`, `mValue3:0`. */
   PTZ_ROTATE: 6030,
   /** Digital zoom. App `SetPictureZoomParser` (`COMMAND_DUAL_CAMERA_ZOOM`): 1350 SET_PAYLOAD sub-command,
    * payload `{x,y,w,h,offset,orgZoom,dstZoom}`. Also the inbound `1351` zoom-notify `cmd`. */
@@ -186,9 +187,15 @@ function hasZoomEvidence(ctx: CommandContext): boolean {
  * Emitted as a `set-json` intent — the capability names only the param + payload; the transport
  * resolver picks the encryption level by topology (standalone → L1, HomeBase → L2). A PT cam can be
  * either, so the level is NOT fixed here.
+ *
+ * The T8423 sends 6030 in the `SET_PAYLOAD` (1350) envelope instead, with `mValue3:0` and no `zoom`.
  */
 export function rotateCommand(direction: PtzDirection, ctx: CommandContext, zoom = 1.0): Command {
-  return setJson(PTZ_CMD.PTZ_ROTATE, { cmd_type: 1, rotate_type: PTZ_ROTATE[direction], zoom }, ctx);
+  const move = { cmd_type: 1, rotate_type: PTZ_ROTATE[direction] };
+  if (ctx.deviceType === DeviceType.FLOODLIGHT_CAMERA_8423) {
+    return setPayload(PTZ_CMD.PTZ_ROTATE, move, ctx, 0, undefined, "auto");
+  }
+  return setJson(PTZ_CMD.PTZ_ROTATE, { ...move, zoom }, ctx);
 }
 
 /**
