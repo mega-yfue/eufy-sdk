@@ -87,8 +87,8 @@ export class RtcSession extends EventEmitter<RtcSessionEvents> {
     });
     this.signaling.on("error", (e) => this.emit("error", e));
 
-    this.peer.on("iceCandidate", (c) => this.signaling.sendInfoCandidate(toWireCandidate(c)));
-    this.peer.on("iceGatheringComplete", () => this.signaling.sendInfoCandidate(""));
+    this.peer.on("iceCandidate", (c) => this.trickle(toWireCandidate(c)));
+    this.peer.on("iceGatheringComplete", () => this.trickle(""));
     this.peer.on("commandChannelOpen", () => {
       if (this.connected) return;
       this.connected = true;
@@ -152,6 +152,15 @@ export class RtcSession extends EventEmitter<RtcSessionEvents> {
     this.peer.close();
     this.settleAuth(new Error("RTC session closed while waiting for signalling auth"));
     this.announceClose();
+  }
+
+  /**
+   * Trickle one local candidate, or the empty end-of-candidates. The native peer reports candidates from
+   * its own thread, after the signalling socket may have closed; with no socket there is nobody to tell.
+   */
+  private trickle(candidate: string): void {
+    if (this.closed || !this.signaling.isOpen) return;
+    this.signaling.sendInfoCandidate(candidate);
   }
 
   private announceClose(): void {

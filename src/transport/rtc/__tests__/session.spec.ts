@@ -132,6 +132,14 @@ describe("RtcSession", () => {
     expect(s.sig.connect).not.toHaveBeenCalled();
   });
 
+  it("drops a local candidate the peer reports after the signalling socket closed", async () => {
+    const s = await authenticated(setup());
+    s.sig.isOpen = false;
+    s.peer.emit("iceCandidate", "our-host");
+    s.peer.emit("iceGatheringComplete");
+    expect(s.sig.sendInfoCandidate).not.toHaveBeenCalled();
+  });
+
   it("runs the whole exchange: grant → offer → answer → trickle → ack → open", async () => {
     const s = await authenticated(setup());
     s.sig.hub({ action: 3, dataType: "scall", data: { status: 100, turn: TURN } });
