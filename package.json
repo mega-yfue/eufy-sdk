@@ -87,6 +87,7 @@
   "devDependencies": {
     "@types/node": "^26.6.3",
     "esbuild": "^0.28.2",
+    "node-datachannel": "^0.33.4",
     "prettier": "^3.9.9",
     "typescript": "^7.0.2",
     "vitest": "^5.0.2"
