@@ -86,6 +86,13 @@ async function rebind(port: number): Promise<void> {
 
 describe("cloud lookup source ports", () => {
   it.each([1, 2])("connects on registered port %i and releases every losing source port", async (winnerOrdinal) => {
+    const receiveBufferRequests = new Map<number, number>();
+    const receiveBuffer = vi.spyOn(dgram.Socket.prototype, "setRecvBufferSize").mockImplementation(function (
+      this: dgram.Socket,
+      size,
+    ) {
+      receiveBufferRequests.set(this.address().port, size);
+    });
     const cloud = await peer();
     const station = await peer();
     const cloudPort = cloud.address().port;
@@ -133,6 +140,7 @@ describe("cloud lookup source ports", () => {
       expect(lookupPorts.size).toBe(8);
       expect(checkPorts).toEqual(new Set([selectedPort]));
       await vi.waitFor(() => expect(pingPort).toBe(selectedPort));
+      expect(receiveBufferRequests.get(selectedPort!)).toBe(4 * 1024 * 1024);
       for (const port of lookupPorts) {
         if (port !== selectedPort) await rebind(port);
       }
@@ -140,6 +148,7 @@ describe("cloud lookup source ports", () => {
       await session.close();
       cloud.close();
       station.close();
+      receiveBuffer.mockRestore();
     }
   });
 });
