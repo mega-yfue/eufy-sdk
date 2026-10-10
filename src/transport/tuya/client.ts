@@ -9,6 +9,7 @@
 import { randomBytes, createHash, createPublicKey, publicEncrypt, constants } from "node:crypto";
 import { deriveTuyaAccount, type TuyaAccount } from "./account.js";
 import { TUYA_CHKEY, HmacSigner, type TuyaSigner } from "./sign.js";
+import { deriveBodyKey, decryptReply, verifyReplySign } from "./et3.js";
 import {
   buildApiParams,
   buildGetDeviceDpsAction,
@@ -122,9 +123,41 @@ export class TuyaClient {
     return buildApiParams(action, { session: this.session, signer: this.signer, env: this.env });
   }
 
-  /** Build + POST an action, returning the parsed envelope. Requires a working signer. */
+  /**
+   * Build + POST an action, returning the parsed envelope. Requires a working signer.
+   *
+   * On an `et=3` reply the envelope's `result` is a base64 AES-128-GCM blob, not an object; this
+   * decrypts it (keyed off the request's `requestId` and the session's `ecode`) and returns the
+   * decrypted inner envelope, so callers read `result` as an object regardless. A non-string `result`
+   * (an error, or an already-plain reply) passes through untouched. See `et3.ts`.
+   */
   async call<T = unknown>(action: TuyaAction): Promise<TuyaEnvelope<T>> {
-    return sendApiRequest<T>(this.buildRequest(action), { endpoint: this.endpoint, http: this.http });
+    const params = this.buildRequest(action);
+    const env = await sendApiRequest<unknown>(params, { endpoint: this.endpoint, http: this.http });
+    return this.decodeReply<T>(env, params.requestId);
+  }
+
+  /**
+   * Decode an et=3 reply in place. When `result` is a non-empty string it is the encrypted blob:
+   * verify the reply sign (when present), decrypt, and parse. The plaintext is itself a standard
+   * `{success, t, result}` envelope, which becomes the returned envelope; anything else is wrapped
+   * so `result` carries the decoded payload.
+   */
+  private decodeReply<T>(env: TuyaEnvelope<unknown>, requestId: string): TuyaEnvelope<T> {
+    if (typeof env.result !== "string" || env.result === "") return env as TuyaEnvelope<T>;
+    const key = deriveBodyKey(requestId, this.session.ecode ?? null);
+    if (
+      typeof env.sign === "string" &&
+      env.t !== undefined &&
+      !verifyReplySign(key, env.result, String(env.t), env.sign)
+    ) {
+      throw new Error("tuya et=3 reply sign mismatch — wrong body key (check ecode) or tampered reply");
+    }
+    const inner = JSON.parse(decryptReply(key, env.result)) as unknown;
+    if (inner !== null && typeof inner === "object" && ("result" in inner || "success" in inner)) {
+      return inner as TuyaEnvelope<T>;
+    }
+    return { ...env, result: inner as T };
   }
 
   /**
@@ -144,7 +177,7 @@ export class TuyaClient {
   async login(eufyUserId: string, phoneCode?: string): Promise<TuyaLoginResult> {
     const account: TuyaAccount = deriveTuyaAccount(eufyUserId, phoneCode);
 
-    const attempt = async (password: string): Promise<TuyaLoginResult | "PASSWD_WRONG"> => {
+    const attempt = async (password: string): Promise<(TuyaLoginResult & { ecode?: string }) | "PASSWD_WRONG"> => {
       const tokenRes = await this.call<{ token?: string; publicKey?: string; exponent?: string }>(
         buildUsernameTokenGetAction(account.countryCode, account.username),
       );
@@ -162,11 +195,11 @@ export class TuyaClient {
       if (!publicKey || !exponent) throw new Error("tuya token.get: missing publicKey/exponent");
 
       const encPasswd = rsaEncryptPassword(password, publicKey, exponent);
-      const loginRes = await this.call<{ sid?: string; uid?: string }>(
+      const loginRes = await this.call<{ sid?: string; uid?: string; ecode?: string }>(
         buildPasswordLoginRegAction(account.countryCode, account.username, encPasswd, token),
       );
       if (loginRes.success && loginRes.result?.sid && loginRes.result?.uid) {
-        return { sid: loginRes.result.sid, uid: loginRes.result.uid };
+        return { sid: loginRes.result.sid, uid: loginRes.result.uid, ecode: loginRes.result.ecode };
       }
       if ((loginRes.errorCode ?? loginRes.errorMsg) === "USER_PASSWD_WRONG") return "PASSWD_WRONG";
       throw new Error(`tuya password.login.reg failed: ${loginRes.errorMsg ?? loginRes.errorCode ?? "no sid/uid"}`);
@@ -178,8 +211,8 @@ export class TuyaClient {
       throw new Error("tuya login: USER_PASSWD_WRONG on both derived password and fallback '12345678'");
     }
 
-    this.session = { ...this.session, sid: result.sid };
-    return result;
+    this.session = { ...this.session, sid: result.sid, ecode: result.ecode };
+    return { sid: result.sid, uid: result.uid };
   }
 
   /**
