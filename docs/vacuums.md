@@ -5,8 +5,8 @@ and robot **mowers**. Vacuums are driven through the `vacuumClean` and `suction`
 every capability they resolve dynamically, so any robot on the Clean line exposes the same fluent API;
 nothing is hardcoded per model.
 
-> **Mowers** are part of the same Clean family but a distinct device type, so their control surface is
-> a later addition — the sections below cover vacuums today.
+> **Mowers** are part of the same Clean family but a distinct device type with their own data points,
+> read through the `mower` capability — see [Mowers](#mowers) below. The other sections cover vacuums.
 
 ```ts
 const dev = await eufy.getDevice(sn);
@@ -226,3 +226,40 @@ both arrive on the scene report; a goto point would have to come from map data t
 
 See [Devices & capabilities](/devices) for how capability resolution works, and the
 [device gallery](/devices-gallery) for the Clean line.
+
+## Mowers
+
+A robot mower (E15, E18, C15) carries the `mower` capability. It is **read-only**: no write has been
+captured against a mower, so it exposes no setter.
+
+```ts
+const mower = dev.mower?.();
+mower?.battery; // 0-100 %
+mower?.cutHeight; // 25-75 mm
+mower?.network; // "None" | "Wifi" | "Cellular"
+```
+
+| read                     | data point | kind          | meaning                             |
+| ------------------------ | ---------- | ------------- | ----------------------------------- |
+| `battery`                | 8          | `percent`     | charge level                        |
+| `volume`                 | 26         | `percent`     | speaker volume                      |
+| `childLock`              | 47         | `boolean`     | child lock on                       |
+| `rainAutoReturn`         | 101        | `boolean`     | return to the station when it rains |
+| `wifiSignal`             | 109        | `percent`     | Wi-Fi signal strength, a percentage |
+| `cutHeight`              | 110        | `millimetres` | cutting height, 25-75               |
+| `mapSaveProgress`        | 118        | `percent`     | progress of saving the map          |
+| `stationUsedTime`        | 125        | `minutes`     | total base-station use              |
+| `bladeUsedTime`          | 126        | `minutes`     | total cutting-blade use             |
+| `edgeTrim`               | 128        | `boolean`     | edge trimming on                    |
+| `workAngleEnabled`       | 130        | `boolean`     | a fixed mowing angle is in use      |
+| `workAngle`              | 131        | `degrees`     | the mowing angle, -90 to 90         |
+| `smartNoGoZones`         | 132        | `boolean`     | smart no-go zones on                |
+| `birdViewCapture`        | 133        | `boolean`     | bird's-eye-view capture on          |
+| `network`                | 134        | `enum`        | the network link in use             |
+| `cellularEnabled`        | 137        | `boolean`     | cellular link enabled               |
+| `edgeDistance`           | 139        | `millimetres` | edge-following distance, signed     |
+| `gpsAntiTheft`           | 140        | `boolean`     | GPS anti-theft on                   |
+| `sparseLawnOptimization` | 141        | `boolean`     | sparse-lawn optimisation on         |
+
+Mowing activity, the map and the mowing session's progress travel in protobuf data points whose layout
+is not yet decoded, so they are not exposed.

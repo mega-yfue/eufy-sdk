@@ -29,6 +29,8 @@ const UNIT_FOR_KIND: Record<string, string> = {
   dbm: "dBm",
   seconds: "s",
   hours: "h",
+  minutes: "min",
+  millimetres: "mm",
   megabytes: "MB",
   degrees: "°",
 };
@@ -40,6 +42,8 @@ const NUMERIC_KINDS = new Set<ValueKind>([
   "dbm",
   "seconds",
   "hours",
+  "minutes",
+  "millimetres",
   "megabytes",
   "degrees",
   "scalar",

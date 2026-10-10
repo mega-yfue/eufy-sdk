@@ -71,6 +71,8 @@ export type Capability =
   | "vacuum_dock"
   | "suction"
   | "locate"
+  // Robot-mower state from its own Tuya DP space (read-only).
+  | "mower"
   // eufy_life smart lighting (own secure-MQTT DP namespace) — the T8L0x line's on/off/brightness/
   // effect control. Distinct from the camera-floodlight `light` capability above.
   | "smart_light"
@@ -93,11 +95,12 @@ export type PropertyValueType = "bool" | "number" | "string" | "enum";
  * one as the other is wrong in a way no type check catches.
  *
  *  - `boolean` — an on/off state (always paired with `type: "bool"`).
- *  - `percent` / `celsius` / `dbm` / `seconds` / `hours` / `megabytes` / `degrees` — a measured quantity
- *    in the unit the device reports it in; each pairs with the matching `unit`. Values are
- *    never converted on the way out — a converted reading is an invented one. `seconds` and `hours`
- *    are separate kinds for exactly that reason: a robot reports a run in seconds and a consumable's
- *    wear in hours, and normalising one into the other would publish a number the device never sent.
+ *  - `percent` / `celsius` / `dbm` / `seconds` / `hours` / `minutes` / `millimetres` / `megabytes` /
+ *    `degrees` — a measured quantity in the unit the device reports it in; each pairs with the
+ *    matching `unit`. Values are never converted on the way out — a converted reading is an invented
+ *    one. `seconds`, `minutes` and `hours` are separate kinds for exactly that reason: a robot reports
+ *    a run in seconds, a mower its blade wear in minutes and a vacuum's consumable wear in hours, and
+ *    normalising one into another would publish a number the device never sent.
  *  - `scalar` — a plain number in no unit at all: a step on a ladder, a mode index, a raw level, a
  *    segment count. Ordered and comparable, but its range and direction are the device's, so nothing
  *    but the device says what a given value means.
@@ -131,6 +134,8 @@ export const KNOWN_VALUE_KINDS = [
   "dbm",
   "seconds",
   "hours",
+  "minutes",
+  "millimetres",
   "megabytes",
   "degrees",
   "scalar",

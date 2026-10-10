@@ -12,15 +12,17 @@
  * @module model/param-namespace
  */
 import type { Codec } from "./types.js";
-import { SECURITY_PARAMS, CLEAN_PARAMS, type ParamDef, DISPLAY_PARAMS } from "./param-dictionary.js";
+import { SECURITY_PARAMS, CLEAN_PARAMS, MOWER_PARAMS, type ParamDef, DISPLAY_PARAMS } from "./param-dictionary.js";
 import { LIFE_PARAMS } from "./life-params.js";
 
 /** The param id spaces this SDK models. */
-export type ParamNamespace = "security" | "clean" | "life" | "print" | "display";
+export type ParamNamespace = "security" | "clean" | "mower" | "life" | "print" | "display";
 
 const TABLES: Record<ParamNamespace, Record<number, ParamDef>> = {
   security: SECURITY_PARAMS,
   clean: CLEAN_PARAMS,
+  // Robot mowers — their own Tuya DP space, so an id stays unnamed rather than reading as a vacuum's.
+  mower: MOWER_PARAMS,
   life: LIFE_PARAMS,
   // 3D-printer (ankermake) id space — empty until a live capture confirms the param↔semantic map
   // (printer-support plan Stage 3). Present so the printer codec resolves to its OWN namespace rather
@@ -43,8 +45,10 @@ export function paramDef(ns: ParamNamespace, paramType: number): ParamDef | unde
  * (which would read another line's dictionary — e.g. a mower's Tuya DPs decoded as security params,
  * mislabelling the security battery id on a device where it means nothing).
  *
- * `mower` shares the **clean** namespace: it's a Clean-line Tuya-DP device (the app's `TuyaP2PMower`
- * family), so its DPs live in the same `~150-180` space as the vacuums.
+ * `mower` is a Clean-line device but reads its OWN namespace: its Tuya product schema numbers its data
+ * points 1-185 with meanings unrelated to a vacuum's (DP 110 is a mower's cutting height and a Tuya
+ * vacuum's session area), so reading them against `CLEAN_PARAMS` would name one product's state with
+ * the other's dictionary.
  *
  * `display` (the T87Ax Smart Display line) reads its own dictionary for the same reason every other
  * line does: nothing in the 8001-8006 range carries a security meaning, so reading those ids against
@@ -61,7 +65,7 @@ const NAMESPACE_BY_CODEC: Record<Codec, ParamNamespace> = {
   lock: "security",
   keypad: "security",
   vacuum: "clean",
-  mower: "clean",
+  mower: "mower",
   light: "life",
   printer: "print",
   display: "display",

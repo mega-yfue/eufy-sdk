@@ -1,5 +1,6 @@
 import { CAPABILITY_MODULES } from "../index.js";
-import { SECURITY_PARAMS, CLEAN_PARAMS, DISPLAY_PARAMS } from "../../param-dictionary.js";
+import { SECURITY_PARAMS, CLEAN_PARAMS, DISPLAY_PARAMS, MOWER_PARAMS } from "../../param-dictionary.js";
+import { namespaceForCodec } from "../../param-namespace.js";
 import { LIFE_PARAMS } from "../../life-params.js";
 import type { CapabilityModule } from "../types.js";
 import type { ValueMember } from "../members.js";
@@ -26,6 +27,7 @@ const KNOWN_IDS = new Set<number>([
   ...Object.keys(CLEAN_PARAMS).map(Number),
   ...Object.keys(LIFE_PARAMS).map(Number),
   ...Object.keys(DISPLAY_PARAMS).map(Number),
+  ...Object.keys(MOWER_PARAMS).map(Number),
 ]);
 
 /**
@@ -99,20 +101,25 @@ describe("property id integrity (cross-module)", () => {
   });
 
   it("no param is owned by two capabilities in the same product line (one-owner rule)", () => {
-    // key = `${line}:${paramType}`; a real device reports one id, so two same-line capabilities
-    // reading it means one is wrong. Only same-meaning shared reads are exempt.
+    // key = `${line}/${namespace}:${paramType}`; a real device reports one id, so two same-line
+    // capabilities reading it in one id space means one is wrong. A line can hold more than one space
+    // (the clean line's vacuums and mowers number their DPs independently), and a module bound to a
+    // codec reads that codec's space. Only same-meaning shared reads are exempt.
     const owners = new Map<string, string[]>();
     for (const [cap, m] of Object.entries(CAPABILITY_MODULES)) {
       const line = (m as Mod).line ?? "security";
+      const codecs = (m as Mod).detection?.codecs ?? [];
+      const spaces = new Set(codecs.map((c) => namespaceForCodec(c)));
+      const space = spaces.size === 1 ? [...spaces][0] : line;
       for (const p of (m as Mod).properties ?? []) {
-        const key = `${line}:${p.paramType}`;
+        const key = `${line}/${space}:${p.paramType}`;
         owners.set(key, [...(owners.get(key) ?? []), `${cap}.${p.name}`]);
       }
     }
     const collisions = [...owners.entries()]
       .filter(([, v]) => v.length > 1)
       .filter(([key]) => {
-        const id = Number(key.split(":")[1]);
+        const id = Number(key.split(":").at(-1));
         return !SHARED_READS.has(id);
       })
       .map(([key, v]) => `${key} claimed by ${v.join(", ")}`);
