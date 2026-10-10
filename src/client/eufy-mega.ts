@@ -1086,6 +1086,13 @@ export class EufyMega extends EventEmitter {
     };
   }
 
+  /** The cloud `device_type` of `parentSn`'s record when it is another device's station; else undefined. */
+  private stationDeviceTypeOf(parentSn: unknown, sn: string): number | undefined {
+    if (typeof parentSn !== "string" || !parentSn || parentSn === sn) return undefined;
+    const raw = (this.registry.list().find((d) => d.sn === parentSn)?.raw ?? {}) as { device_type?: unknown };
+    return typeof raw.device_type === "number" ? raw.device_type : undefined;
+  }
+
   /**
    * Combine explicit P2P media with the optional passive push-thumbnail provider.
    *
@@ -2164,6 +2171,7 @@ export class EufyMega extends EventEmitter {
       hasP2p: P2PCommandRouter.claimsDevice(dev),
       // Topology as the record states it: a parent that isn't the device itself means HomeBase-attached.
       homeBaseAttached: !!raw.parent_sn && raw.parent_sn !== dev.sn,
+      stationDeviceType: this.stationDeviceTypeOf(raw.parent_sn, dev.sn),
       dpCatalog,
     };
   }

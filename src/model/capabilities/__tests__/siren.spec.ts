@@ -330,6 +330,42 @@ describe("siren capability module", () => {
       expect((acts as unknown as Record<string, unknown>).test).toBeUndefined();
     });
 
+    it("sends the portal's SET_PAYLOAD form to a camera behind a HomeBase S1 Pro", async () => {
+      const { acts, sent } = sirenOf({
+        channel: 1,
+        codec: "camera",
+        deviceType: DeviceType.CAMERA2,
+        model: "T8134",
+        homeBaseAttached: true,
+        stationDeviceType: DeviceType.STATION_9000,
+        accountName: "Synthetic Home",
+        capabilities: new Set(["siren"]),
+        paramIds: new Set([1015, 61008, 1825, 61006]),
+      });
+      const alarm = acts as unknown as { trigger?: (s: number) => Promise<void>; stop?: () => Promise<void> };
+
+      await alarm.trigger!(30);
+      await alarm.stop!();
+      expect(sent).toEqual([
+        {
+          kind: "set-payload",
+          cmd: 1202,
+          payload: { time_out: 30, type: 10, channel: 1, username: "Synthetic Home" },
+          channel: 1,
+          mValue3: undefined,
+          form: undefined,
+        },
+        {
+          kind: "set-payload",
+          cmd: 1202,
+          payload: { time_out: 0, type: 10, channel: 1, username: "Synthetic Home" },
+          channel: 1,
+          mValue3: undefined,
+          form: undefined,
+        },
+      ]);
+    });
+
     it.each([
       [DeviceType.CAMERA2, "T8114", false, true],
       [DeviceType.INDOOR_PT_CAMERA, "T8410", false, false],
