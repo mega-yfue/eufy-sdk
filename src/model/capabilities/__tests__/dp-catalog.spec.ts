@@ -27,35 +27,35 @@ describe("parseDpCatalog", () => {
     const catalog = parseDpCatalog({
       data_point_list: [{ dp_id: 158, data_type: "enum", property: [0, 1, 2, 3] }],
     });
-    expect(catalog.enumRanges.get(158)).toEqual([0, 1, 2, 3]);
+    expect(catalog.enumRanges.get(158)).toEqual(["0", "1", "2", "3"]);
   });
 
   it("parses enum range from a JSON-stringified number array", () => {
     const catalog = parseDpCatalog({
       data_point_list: [{ dp_id: 158, data_type: "enum", property: "[0,1,2,3]" }],
     });
-    expect(catalog.enumRanges.get(158)).toEqual([0, 1, 2, 3]);
+    expect(catalog.enumRanges.get(158)).toEqual(["0", "1", "2", "3"]);
   });
 
   it('parses enum range from a JSON-stringified {"range":[...]} object', () => {
     const catalog = parseDpCatalog({
       data_point_list: [{ dp_id: 158, data_type: "enum", property: '{"range":["0","1","2","3"]}' }],
     });
-    expect(catalog.enumRanges.get(158)).toEqual([0, 1, 2, 3]);
+    expect(catalog.enumRanges.get(158)).toEqual(["0", "1", "2", "3"]);
   });
 
   it("parses numeric-string members within a plain array", () => {
     const catalog = parseDpCatalog({
       data_point_list: [{ dp_id: 158, data_type: "Enum", property: ["0", "1", "2"] }],
     });
-    expect(catalog.enumRanges.get(158)).toEqual([0, 1, 2]);
+    expect(catalog.enumRanges.get(158)).toEqual(["0", "1", "2"]);
   });
 
   it("handles string dp_id for enum type", () => {
     const catalog = parseDpCatalog({
       data_point_list: [{ dp_id: "158", data_type: "enum", property: [0, 1, 2, 3] }],
     });
-    expect(catalog.enumRanges.get(158)).toEqual([0, 1, 2, 3]);
+    expect(catalog.enumRanges.get(158)).toEqual(["0", "1", "2", "3"]);
   });
 
   it("skips entries with invalid dp_id — valid entry still parsed", () => {
@@ -67,7 +67,7 @@ describe("parseDpCatalog", () => {
         { dp_id: 158, data_type: "enum", property: [0, 1] },
       ],
     });
-    expect(catalog.enumRanges.get(158)).toEqual([0, 1]);
+    expect(catalog.enumRanges.get(158)).toEqual(["0", "1"]);
   });
 
   it("returns EMPTY_DP_CATALOG when all entries are invalid", () => {
@@ -98,28 +98,35 @@ describe("parseDpCatalog", () => {
       ],
     });
     expect(catalog.enumRanges.size).toBe(1);
-    expect(catalog.enumRanges.get(158)).toEqual([0, 1, 2, 3]);
+    expect(catalog.enumRanges.get(158)).toEqual(["0", "1", "2", "3"]);
     expect(catalog.enumRanges.has(159)).toBe(false);
     expect(catalog.enumRanges.has(160)).toBe(false);
   });
 
-  it("reads a real catalog entry — every field the response actually declares", () => {
+  it("reads a numeric-string range inside a typed property blob", () => {
+    const catalog = parseDpCatalog({
+      data_point_list: [{ dp_id: 158, data_type: "Enum", property: '{"type":"enum","range":["0","1","2","3"]}' }],
+    });
+    expect(catalog.enumRanges.get(158)).toEqual(["0", "1", "2", "3"]);
+  });
+
+  it("reads a T2351 catalog entry, whose range lists level names", () => {
     const catalog = parseDpCatalog({
       data_point_list: [
         {
-          dp_id: 158,
-          code: "suction",
-          name: "Suction",
-          mode: "rw",
+          code: "suction_level",
+          create_time: 0,
           data_type: "Enum",
           desc: "",
-          property: '{"type":"enum","range":["0","1","2","3"]}',
-          create_time: 0,
+          dp_id: 158,
+          mode: "rw",
+          name: "吸力档位",
+          property: '{"range":["Quiet","Standard","Turbo","Max"]}',
           update_time: 0,
         },
       ],
     });
-    expect(catalog.enumRanges.get(158)).toEqual([0, 1, 2, 3]);
+    expect(catalog.enumRanges.get(158)).toEqual(["Quiet", "Standard", "Turbo", "Max"]);
   });
 
   it("reads no range from the pre-confirmation field names — the response declares neither", () => {

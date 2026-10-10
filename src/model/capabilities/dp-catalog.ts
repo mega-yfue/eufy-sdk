@@ -16,10 +16,11 @@
 /** The parsed DP capability catalog for one product SKU. */
 export interface DpCatalog {
   /**
-   * For enum-type DPs: the valid integer values as declared in the catalog.
-   * Absent for non-enum DPs (bool, raw, integer, string).
+   * For enum-type DPs: the range members exactly as the catalog lists them, as strings — value names
+   * (`"Quiet"`) or numeric strings (`"0"`), whichever the SKU's catalog uses. What a member means is
+   * the reading capability's to decide. Absent for non-enum DPs (bool, raw, integer, string).
    */
-  readonly enumRanges: ReadonlyMap<number, readonly number[]>;
+  readonly enumRanges: ReadonlyMap<number, readonly string[]>;
 }
 
 /** Returned whenever the API call fails or the response shape is not recognised. */
@@ -47,7 +48,7 @@ export function parseDpCatalog(raw: unknown): DpCatalog {
   if (!Array.isArray(list) || list.length === 0) return EMPTY_DP_CATALOG;
 
   let found = 0;
-  const enumRanges = new Map<number, readonly number[]>();
+  const enumRanges = new Map<number, readonly string[]>();
 
   for (const entry of list) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
@@ -73,22 +74,22 @@ export function parseDpCatalog(raw: unknown): DpCatalog {
 /**
  * Parse an enum entry's `property` blob into the integer values it allows.
  *
- * The blob is a JSON string in the Tuya schema convention — `{"type":"enum","range":["0","1"]}`,
- * whose members are STRINGS even for a numeric scale. A bare array, or an array already parsed
- * out of JSON, is accepted on the same terms.
+ * The blob is a JSON string in the Tuya schema convention — `{"range":["Quiet","Standard"]}` — whose
+ * members are strings, names or numeric. A bare array, or an array already parsed out of JSON, is
+ * accepted on the same terms; a number member is kept as its decimal string.
  */
-function parseEnumRange(values: unknown): readonly number[] {
+function parseEnumRange(values: unknown): readonly string[] {
   if (values === null || values === undefined) return [];
   // Plain array of numbers or numeric strings
-  if (Array.isArray(values)) return toNumberArray(values);
+  if (Array.isArray(values)) return toMemberArray(values);
   // JSON-stringified: "[0,1,2,3]" or "{\"range\":[\"0\",\"1\",\"2\",\"3\"]}"
   if (typeof values === "string") {
     try {
       const parsed: unknown = JSON.parse(values);
-      if (Array.isArray(parsed)) return toNumberArray(parsed);
+      if (Array.isArray(parsed)) return toMemberArray(parsed);
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
         const obj = parsed as Record<string, unknown>;
-        if (Array.isArray(obj.range)) return toNumberArray(obj.range);
+        if (Array.isArray(obj.range)) return toMemberArray(obj.range);
       }
     } catch {
       // not valid JSON — ignore
@@ -97,11 +98,11 @@ function parseEnumRange(values: unknown): readonly number[] {
   return [];
 }
 
-function toNumberArray(arr: unknown[]): readonly number[] {
-  const result: number[] = [];
+function toMemberArray(arr: unknown[]): readonly string[] {
+  const result: string[] = [];
   for (const v of arr) {
-    const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
-    if (Number.isInteger(n)) result.push(n);
+    if (typeof v === "number" && Number.isFinite(v)) result.push(String(v));
+    else if (typeof v === "string" && v !== "") result.push(v);
   }
   return result;
 }
