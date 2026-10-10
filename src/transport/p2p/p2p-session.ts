@@ -1031,6 +1031,7 @@ export class P2PSession extends EventEmitter {
       socket.removeAllListeners("error");
       socket.on("error", (error) => this.emit("error", error));
       this.socket = socket;
+      this.requestReceiveBuffer(socket);
     }
     this.connected = true;
     this.connectedAtMs = Date.now();
