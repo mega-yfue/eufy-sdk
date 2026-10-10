@@ -207,9 +207,15 @@ export const SECURITY_PARAMS: Record<number, ParamDef> = {
     provenance: "guessed",
   },
   1157: {
-    name: "jsDelayHome",
+    name: "homeActionTable",
     type: "string",
-    provenance: "apk",
+    provenance: "verified",
+    encoding: "base64+json",
+  },
+  1158: {
+    name: "awayActionTable",
+    type: "string",
+    provenance: "verified",
     encoding: "base64+json",
   },
   1159: {

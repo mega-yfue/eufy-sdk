@@ -331,6 +331,7 @@ export class DeviceRegistry {
           name: recordName(raw, deviceClass),
           model: raw.device_model,
           stationSn: resolvedStationSn(raw, raw.device_sn),
+          ...(typeof raw.device_channel === "number" ? { channel: raw.device_channel } : {}),
           p2pDid: raw.p2p_did,
           params,
           paramUpdatedAt,

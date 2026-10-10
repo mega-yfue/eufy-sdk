@@ -52,7 +52,9 @@ describe("the station a call resolves", () => {
 
     const unstated = await resolved({
       listDevices: () =>
-        [{ sn: DEVICE_SN, stationSn: STATION_SN, raw: { parent_sn: STATION_SN, device_channel: 1 } }] as never,
+        [
+          { sn: DEVICE_SN, stationSn: STATION_SN, channel: 1, raw: { parent_sn: STATION_SN, device_channel: 1 } },
+        ] as never,
     });
     expect(unstated, "a record naming no administrator states that, rather than naming another").toMatchObject({
       stationAdmin: "unstated",
@@ -64,6 +66,7 @@ describe("the station a call resolves", () => {
     const attached = (sn: string, channel?: number) => ({
       sn,
       stationSn: STATION_SN,
+      ...(channel === undefined ? {} : { channel: channel }),
       raw: { parent_sn: STATION_SN, ...(channel === undefined ? {} : { device_channel: channel }) },
     });
     const refused = async (devices: unknown[]) => {

@@ -1,7 +1,7 @@
 import { enumLabels } from "../../core/util.js";
 import { describeDevice, setJsonRaw, setPayload } from "./access.js";
 import { accepts, method, propertiesOf, type Members, type Surface } from "./members.js";
-import type { CapabilityModule, CommandContext } from "./types.js";
+import type { CapabilityModule, CapabilityStateReader, CommandContext } from "./types.js";
 import { CusPushEvent } from "../push-events.js";
 import type { Command } from "../../core/contracts.js";
 
@@ -88,7 +88,8 @@ export const ARMING_CMD = {
    */
   SET_ARMING: 1224,
   /**
-   * The per-mode alarm/arm-delay configuration write. ✅ WIRE CAPTURED live on a T8030 (
+   * One guard mode's per-device action table (app `CMD_SET_ALL_ACTION`), which carries the alarm delays
+   * and each device's actions in that mode. ✅ WIRE CAPTURED live on a T8030 (
    * 2026-07-23, both directions): a **bare
    * JSON frame, no `1350`/`1700` envelope** — outer P2P cmd IS `1255` itself, station channel 255,
    * plaintext `{account_id, count_down_alarm:{channel_list,delay_time},
@@ -105,15 +106,42 @@ export const ARMING_CMD = {
    * corresponding GET command (`1310`/inner cmd `40003`, sent by the app right before editing) always
    * replied `{count:0,data:null}` in every capture — genuinely empty, not a decrypt failure (confirmed
    * via the same bidirectional decrypt this finding used) — so the app does NOT read the current
-   * config this way; how it does is still unknown. Without a working GET, safely PATCHING just one
-   * channel in or out of an existing list isn't possible without risking clobbering the rest — so
+   * config this way; a T8010 reports it on its own params instead, see below. Without a working GET,
+   * safely PATCHING just one channel in or out of an existing list isn't possible without risking
+   * clobbering the rest — so
    * this ships as a caller-supplies-everything write instead of guessing a merge.
    * `devices`/`siren_sensor_action` are even less understood (raw per-device action codes, meaning
    * unconfirmed) and MUST come from a value independently read/captured for the target mode —
    * see `AlarmDelayConfig`'s field docs.
+   *
+   * ✅ On a T8010 the app writes the same command for the Device Control screen: header channel 0, the
+   * whole table of the mode `{mode_id, devices, count_down_alarm, count_down_arm}`, acked by an all-zero
+   * 1255 reply. The T8010 reports each table on its own params, Home on 1157 and Away on 1158, and the
+   * reported table follows a write within 15 s. See {@link DEVICE_NOTIFY_FLAG}.
    */
-  ALARM_DELAY_CONFIG: 1255,
+  SET_ALL_ACTION: 1255,
 } as const;
+
+/**
+ * The push-notification flag of a device's `action` in a mode's table, where `action` is
+ * `(mode_id << 24) | flags`. The app's Notification checkbox sets and clears this bit alone, on cameras
+ * (9/1) and sensors (8/0) alike; the other flags are not identified and are carried through unchanged.
+ */
+const DEVICE_NOTIFY_FLAG = 0x08;
+
+/** The guard modes whose device notification is read and written: both replayed on a T8010. */
+export type DeviceNotificationMode = Extract<AlarmDelayMode, "home" | "away">;
+
+/** One mode's action table as reported; every field beside `devices` is carried through untouched. */
+type ActionTable = Record<string, unknown> & { devices: { device_channel: number; action: number }[] };
+
+/** The reported action table of `mode`, or `undefined` when the station reports none. */
+function actionTable(read: CapabilityStateReader, mode: DeviceNotificationMode): ActionTable | undefined {
+  const value = read(`${mode}ActionTable`)?.value;
+  return value && typeof value === "object" && Array.isArray((value as ActionTable).devices)
+    ? (value as ActionTable)
+    : undefined;
+}
 
 /**
  * Guard-mode name → the wire's `mode_type` integer, for every mode a station may REPORT. Fixed (not
@@ -280,7 +308,26 @@ function alarmDelayCommand(mode: AlarmDelayMode, config: AlarmDelayConfig, ctx: 
     devices: config.devices.map((d) => ({ action: d.action, device_channel: d.deviceChannel })),
     siren_sensor_action: config.sirenSensorAction.map((d) => ({ action: d.action, device_channel: d.deviceChannel })),
   };
-  return setJsonRaw(ARMING_CMD.ALARM_DELAY_CONFIG, data, ctx, STATION_CHANNEL);
+  return setJsonRaw(ARMING_CMD.SET_ALL_ACTION, data, ctx, STATION_CHANNEL);
+}
+
+/** How long a reported action table may lag a write before it is trusted again: it follows within 15 s. */
+const ACTION_TABLE_LAG_MS = 15_000;
+
+/**
+ * One device's notification flag in `table` changed, or `undefined` when `table` does not list `channel`,
+ * since only the table states the entry's other flags. `account_id` is dropped: the sink injects the
+ * acting account's.
+ */
+function withDeviceNotification(table: ActionTable | undefined, channel: number, on: boolean): ActionTable | undefined {
+  if (!table?.devices.some((d) => d.device_channel === channel)) return undefined;
+  const { account_id: _account, ...rest } = table;
+  const devices = table.devices.map((d) =>
+    d.device_channel === channel
+      ? { ...d, action: on ? d.action | DEVICE_NOTIFY_FLAG : d.action & ~DEVICE_NOTIFY_FLAG }
+      : d,
+  );
+  return { ...rest, devices };
 }
 
 /**
@@ -364,6 +411,55 @@ export const ARMING_MEMBERS = {
         }
       },
     "Write the full per-mode alarm/arm-delay configuration.",
+  ),
+
+  /**
+   * Whether the device on `channel` sends a push notification in `mode`: its {@link DEVICE_NOTIFY_FLAG}
+   * in the action table the station reports for that mode. `undefined` where the station reports no table
+   * or the table does not list `channel`. A device's channel is `EufyDevice.channel`.
+   */
+  deviceNotification: method(
+    ({ read }) =>
+      (mode: DeviceNotificationMode, channel: number): boolean | undefined => {
+        const action = actionTable(read, mode)?.devices.find((d) => d.device_channel === channel)?.action;
+        return typeof action === "number" ? (action & DEVICE_NOTIFY_FLAG) !== 0 : undefined;
+      },
+    "Whether the device on a channel sends a push notification in a guard mode (home/away).",
+    (ctx) => ctx.model === "T8010",
+  ),
+
+  /**
+   * Turn the push notification of the device on `channel` on or off in `mode` (cmd
+   * {@link ARMING_CMD.SET_ALL_ACTION}): the station's reported table written back with that one flag
+   * changed. Rejects, sending nothing, where the table does not list `channel`. A write builds on the last
+   * one sent for that mode until the station reports a table observed 15 s after it, so a second write does
+   * not revert it; a write whose dispatch rejects is not built on.
+   */
+  setDeviceNotification: method(
+    ({ ctx, sink, read }) => {
+      const sent = new Map<DeviceNotificationMode, { table: ActionTable; at: number }>();
+      return (mode: DeviceNotificationMode, channel: number, on: boolean): Promise<void> => {
+        const last = sent.get(mode);
+        const observed = read(`${mode}ActionTable`)?.ts ?? 0;
+        const base = last && observed < last.at + ACTION_TABLE_LAG_MS ? last.table : actionTable(read, mode);
+        const table = withDeviceNotification(base, channel, on);
+        if (!table) {
+          return Promise.reject(
+            new Error(`arming: no ${mode} action table lists channel ${channel} [${describeDevice(ctx)}]`),
+          );
+        }
+        sent.set(mode, { table, at: Date.now() });
+        return sink.dispatch(setJsonRaw(ARMING_CMD.SET_ALL_ACTION, table, ctx, 0)).catch((err: unknown) => {
+          if (sent.get(mode)?.table === table) {
+            if (last) sent.set(mode, last);
+            else sent.delete(mode);
+          }
+          throw err;
+        });
+      };
+    },
+    "Turn the push notification of the device on a channel on or off in a guard mode (home/away).",
+    (ctx) => ctx.model === "T8010",
   ),
 } as const satisfies Members;
 

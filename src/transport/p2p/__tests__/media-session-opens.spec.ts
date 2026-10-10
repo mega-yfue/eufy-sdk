@@ -70,6 +70,7 @@ function router() {
     sn,
     stationSn: parent ?? sn,
     p2pDid: DID,
+    channel: channel,
     raw: { parent_sn: parent, device_channel: channel, p2p_did: DID, member: { admin_user_id: ACCOUNT_ID } },
   });
   return new P2PCommandRouter({

@@ -49,6 +49,7 @@ function attachedTo(model: string): Partial<P2PRouterDeps> {
         {
           sn: DEVICE_SN,
           stationSn: STATION_SN,
+          channel: 1,
           raw: { parent_sn: STATION_SN, device_channel: 1, member: { admin_user_id: ACCOUNT_ID } },
         },
         { sn: STATION_SN, stationSn: STATION_SN, model, raw: {} },

@@ -104,6 +104,7 @@ export function routerWithSession(
         sn: DEVICE_SN,
         stationSn: STATION_SN,
         model: "T8114",
+        channel: 1,
         raw: { parent_sn: STATION_SN, device_channel: 1, member: { admin_user_id: accountId } },
       } as never,
       // The parent station, listed but endpoint-less: with nothing registered, a cold open fails at
