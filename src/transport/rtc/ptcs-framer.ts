@@ -7,7 +7,7 @@
  *
  *   0   "PTCS"
  *   4   u8   3              constant
- *   5   u8   channel        the logical channel the frame belongs to: 0 command, 2 notify
+ *   5   u8   channel        the logical channel the frame belongs to: 0 command, 2 notify, 5 live
  *   6   u16  sequence       a frame counter: every packet of a frame carries the same value, and it
  *                           steps once per frame
  *   8   u32  frame id       one value per frame, shared by all its packets — the portal uses a ms clock
@@ -36,11 +36,14 @@ const LENGTH_MASK = 0x03ff;
 export const PtcsChannel = {
   COMMAND: 0,
   NOTIFY: 2,
+  LIVE: 5,
 } as const;
 
-/** The link type a received frame belongs to: notify on the notify channel, command otherwise. */
+/** The link type a received frame belongs to: notify and live on their channels, command otherwise. */
 export function linkTypeForChannel(channel: number): number {
-  return channel === PtcsChannel.NOTIFY ? PortalLinkType.NOTIFY : PortalLinkType.COMMAND;
+  if (channel === PtcsChannel.NOTIFY) return PortalLinkType.NOTIFY;
+  if (channel === PtcsChannel.LIVE) return PortalLinkType.LIVE;
+  return PortalLinkType.COMMAND;
 }
 
 /** How long a partly received frame is kept before it is dropped. */

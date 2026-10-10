@@ -11,23 +11,41 @@
  * A command to the station goes on the station channel `255`; an attached device's command shares the
  * station's session and keeps the device's channel. Other command kinds are refused.
  *
- * One session per station, reused across commands and closed after {@link IDLE_CLOSE_MS} without one.
- * Sends on a session are serialised; an ACK is correlated by its outer command and segment, since it
- * carries no inner command. An ACK is not an observation of the resulting state.
+ * One session per station, reused across commands and closed after {@link IDLE_CLOSE_MS} without one;
+ * a live pull holds it open. Sends on a session are serialised; an ACK is correlated by its outer command
+ * and segment, since it carries no inner command. An ACK is not an observation of the resulting state.
+ *
+ * Live view of an attached camera rides the same session (the hub accepts one RTC session per account),
+ * through one shared live source per station: the station serves one camera at a time, so a second
+ * camera is refused until the first one's view ends.
  */
-import type { Command } from "../../core/contracts.js";
+import {
+  LiveSnapshotUnavailableError,
+  type AbortableCall,
+  type Command,
+  type MediaProvider,
+  type SharedSourceHints,
+} from "../../core/contracts.js";
 import type { Logger } from "../../core/logger.js";
+import { abortable } from "../abortable.js";
+import { captureSnapshotFromShared } from "../p2p/media.js";
+import { openReadableFromConsumer } from "../p2p/readable-egress.js";
+import { SharedLiveSource } from "../p2p/shared-live-source.js";
+import { RtcLiveStream } from "./live.js";
 import { RtcSession, type RtcSessionOptions } from "./session.js";
-import { buildPortalPacket, parsePortalPacket, PortalLinkType, SegmentCounter } from "./portal-packet.js";
+import {
+  buildPortalPacket,
+  parsePortalPacket,
+  PORTAL_CMD_SET_PAYLOAD,
+  PORTAL_STATION_CHANNEL,
+  PortalLinkType,
+  SegmentCounter,
+} from "./portal-packet.js";
 
-/** The SET_PAYLOAD envelope. */
-const PORTAL_CMD_SET_PAYLOAD = 1350;
 /** The CONTROL_PAYLOAD envelope for a commandType/data request. */
 const PORTAL_CMD_CONTROL_PAYLOAD = 1700;
 /** The envelope carrying a correlated JSON control result. */
 const PORTAL_CMD_NOTIFY_PAYLOAD = 1351;
-/** The channel a station-wide command is addressed to. */
-const PORTAL_STATION_CHANNEL = 255;
 
 /** How long a command waits for its envelope ACK. */
 const ACK_TIMEOUT_MS = 8_000;
@@ -58,6 +76,13 @@ export interface RtcRoute {
   attached: boolean;
 }
 
+/** The camera a live view is for, on its station's route. */
+export interface RtcLiveRoute extends RtcRoute {
+  cameraSn: string;
+  /** The camera's `device_channel` on the station. */
+  channel: number;
+}
+
 export interface RtcCommandRouterDeps {
   /** The logged-in session's credentials; `undefined` while logged out. */
   identity: () => RtcIdentity | undefined;
@@ -67,7 +92,15 @@ export interface RtcCommandRouterDeps {
   country?: string;
   logger?: Logger;
   onError?: (e: Error) => void;
+  /** ffmpeg for the live still (`ffmpeg` on PATH by default). */
+  ffmpegPath?: string;
   createSession?: (opts: RtcSessionOptions) => RtcSession;
+}
+
+/** A station's live pull: the camera it serves and the shared source, registered before it is built. */
+interface StationLive {
+  cameraSn: string;
+  source: SharedLiveSource;
 }
 
 interface StationSession {
@@ -77,10 +110,24 @@ interface StationSession {
   /** Serialises sends so ACKs can't be attributed to the wrong command. */
   queue: Promise<unknown>;
   idle?: ReturnType<typeof setTimeout>;
+  /** Live pulls holding the session open. */
+  leases: number;
+}
+
+/**
+ * A live start for one camera while the station streams another: the station streams one camera at a
+ * time. A live still refused this way is a {@link LiveSnapshotUnavailableError} with `source-failed`.
+ */
+class StationStreamBusyError extends Error {
+  constructor(stationSn: string, servingSn: string) {
+    super(`rtc live: ${stationSn} is serving ${servingSn}; the station streams one camera at a time`);
+    this.name = "StationStreamBusyError";
+  }
 }
 
 export class RtcCommandRouter {
   private readonly sessions = new Map<string, StationSession>();
+  private readonly lives = new Map<string, StationLive>();
 
   constructor(private readonly deps: RtcCommandRouterDeps) {}
 
@@ -107,9 +154,140 @@ export class RtcCommandRouter {
     return run;
   }
 
-  /** Tear down every station session (logout / shutdown). */
+  /**
+   * The media of a camera on a T9000: live video, a readable feed and a live still over the station's
+   * session. Recording has no wire here and is refused; the optional members it has no wire for are absent.
+   */
+  mediaProviderFor(route: RtcLiveRoute): MediaProvider {
+    return {
+      live: (opts) =>
+        this.withLiveSource(route, opts ?? {}, (source) => this.attachUnlessAborted(source, opts?.signal)),
+      openReadable: (opts) =>
+        this.withLiveSource(route, opts ?? {}, (source) =>
+          openReadableFromConsumer(this.attachUnlessAborted(source, opts?.signal), opts),
+        ),
+      snapshotLive: (opts) =>
+        this.withLiveSource(route, opts ?? {}, (source) =>
+          captureSnapshotFromShared(source, { ...opts, logger: this.deps.logger, ffmpegPath: this.deps.ffmpegPath }),
+        ).catch((e: unknown) => {
+          if (!(e instanceof StationStreamBusyError)) throw e;
+          throw new LiveSnapshotUnavailableError("source-failed", e.message, { cause: e });
+        }),
+      record: async () => {
+        throw new Error(`record is not available for ${route.cameraSn} over the T9000 control channel`);
+      },
+    };
+  }
+
+  /**
+   * Tear down every station session (logout / shutdown). Each live source is disposed before its session
+   * closes, so its consumers end cleanly and its stop still rides the session.
+   */
   close(): void {
+    for (const [sn, live] of this.lives) {
+      this.lives.delete(sn);
+      live.source.dispose();
+    }
     for (const [sn, st] of this.sessions) this.drop(sn, st);
+  }
+
+  /**
+   * Hand `use` the station's live source for this camera, in the same turn the source is created or reused,
+   * so a consumer it attaches is counted before any other caller looks.
+   *
+   * The station streams one camera at a time. Another camera whose source has consumers refuses this one,
+   * before the session is awaited and again after; one with none (never attached, lingering or stopped)
+   * holds nothing a viewer needs, so it is disposed and the slot taken. The first caller's
+   * {@link SharedSourceHints} configure a new source.
+   */
+  private async withLiveSource<T>(
+    route: RtcLiveRoute,
+    opts: SharedSourceHints & AbortableCall,
+    use: (source: SharedLiveSource) => T,
+  ): Promise<Awaited<T>> {
+    opts.signal?.throwIfAborted();
+    this.refuseIfWatched(route);
+    const identity = this.deps.identity();
+    if (!identity) throw new Error(`rtc: not logged in, cannot open ${route.stationSn}`);
+    const accountId = route.adminUserId || identity.userId;
+    const st = await abortable(this.stationSession(route.stationSn, accountId, identity), opts.signal);
+    this.refuseIfWatched(route);
+    const current = this.lives.get(route.stationSn);
+    if (current && (current.cameraSn !== route.cameraSn || current.source.state === "stopped")) {
+      this.deps.logger?.debug?.(
+        `[rtc] ${route.stationSn} releasing the unwatched source of ${current.cameraSn} for ${route.cameraSn}`,
+      );
+      this.lives.delete(route.stationSn);
+      current.source.dispose();
+    }
+    let live = this.lives.get(route.stationSn);
+    if (!live) {
+      live = { cameraSn: route.cameraSn, source: this.newLiveSource(route, st, accountId, opts) };
+      this.lives.set(route.stationSn, live);
+    }
+    return await use(live.source);
+  }
+
+  /** Refuse a camera while another camera on its station has consumers. */
+  private refuseIfWatched(route: RtcLiveRoute): void {
+    const current = this.lives.get(route.stationSn);
+    if (current && current.cameraSn !== route.cameraSn && current.source.consumerCount > 0) {
+      throw new StationStreamBusyError(route.stationSn, current.cameraSn);
+    }
+  }
+
+  /**
+   * Attach a consumer, unless the caller has already abandoned the call. A consumer attached for a caller
+   * that has gone is detached at once, which lets the pull linger and fall away if nothing else holds it.
+   */
+  private attachUnlessAborted(source: SharedLiveSource, signal?: AbortSignal): ReturnType<SharedLiveSource["attach"]> {
+    const consumer = source.attach();
+    if (signal?.aborted) {
+      consumer.detach();
+      signal.throwIfAborted();
+    }
+    return consumer;
+  }
+
+  private newLiveSource(
+    route: RtcLiveRoute,
+    st: StationSession,
+    accountId: string,
+    hints: SharedSourceHints,
+  ): SharedLiveSource {
+    let leased = false;
+    const release = () => {
+      if (!leased) return;
+      leased = false;
+      st.leases = Math.max(0, st.leases - 1);
+      this.touch(route.stationSn, st);
+    };
+    const source: SharedLiveSource = new SharedLiveSource({
+      makeStream: () =>
+        new RtcLiveStream({
+          session: st.session,
+          seg: st.seg,
+          stationSn: route.stationSn,
+          channel: route.channel,
+          accountId,
+          logger: this.deps.logger,
+        }),
+      label: `${route.stationSn}#${route.channel}`,
+      logger: this.deps.logger,
+      powered: hints.powered,
+      preBufferSeconds: hints.preBufferSeconds,
+      onActive: () => {
+        if (leased) return;
+        leased = true;
+        st.leases++;
+        if (st.idle) clearTimeout(st.idle);
+      },
+      onStopped: () => {
+        release();
+        if (this.lives.get(route.stationSn)?.source === source) this.lives.delete(route.stationSn);
+      },
+    });
+    return source;
   }
 
   /**
@@ -194,7 +372,7 @@ export class RtcCommandRouter {
       peer: { logger: this.deps.logger },
     });
     const ready = this.bringUp(sn, session);
-    const st: StationSession = { session, seg: new SegmentCounter(), ready, queue: Promise.resolve() };
+    const st: StationSession = { session, seg: new SegmentCounter(), ready, queue: Promise.resolve(), leases: 0 };
     session.on("error", (e) => this.deps.onError?.(e));
     session.on("close", () => {
       if (this.sessions.get(sn) === st) this.sessions.delete(sn);
@@ -253,6 +431,7 @@ export class RtcCommandRouter {
 
   private touch(sn: string, st: StationSession): void {
     if (st.idle) clearTimeout(st.idle);
+    if (st.leases > 0) return;
     st.idle = setTimeout(() => this.drop(sn, st), IDLE_CLOSE_MS);
     st.idle.unref?.();
   }

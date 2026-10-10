@@ -140,10 +140,11 @@ describe("PtcsFramer", () => {
     expect(() => f.sendFrame(out)).toThrow(/not initialised/);
   });
 
-  it("maps the notify channel to notify and everything else to command", () => {
+  it("maps the notify and live channels to their link types and everything else to command", () => {
     expect(linkTypeForChannel(0)).toBe(PortalLinkType.COMMAND);
     expect(linkTypeForChannel(2)).toBe(PortalLinkType.NOTIFY);
-    expect(linkTypeForChannel(5)).toBe(PortalLinkType.COMMAND);
+    expect(linkTypeForChannel(5)).toBe(PortalLinkType.LIVE);
+    expect(linkTypeForChannel(3)).toBe(PortalLinkType.COMMAND);
   });
 
   it("draws ids from a clock and never repeats one", () => {

@@ -9,6 +9,7 @@
  * (the client gates them on device capabilities and emits typed events). This keeps transport free of
  * any `model/` import — the capability↔transport decorrelation invariant.
  */
+import { abortable } from "../abortable.js";
 import type { MegaHttpClient } from "../http/mega-client.js";
 import type { EufyDevice } from "../../core/types.js";
 import type {
@@ -83,24 +84,6 @@ import { stationChannels, stationOf } from "./station-channels.js";
  * sends are harmless). Bump if drops are seen on marginal links.
  */
 const DIRECT_CMD_SENDS = 5;
-
-/**
- * Settle `work` as it settles, or reject the moment `signal` aborts, whichever comes first.
- *
- * The underlying wait is left to finish on its own: these are shared negotiations whose result other callers
- * are also waiting on, so a caller abandoning its own call must not cancel the work itself. This abandons
- * WAITING, which is the only part that belonged to the caller.
- */
-function abortable<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) return work;
-  signal.throwIfAborted();
-  return Promise.race([
-    work,
-    new Promise<never>((_resolve, reject) => {
-      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
-    }),
-  ]);
-}
 
 /**
  * How long each command is given where the level-2 key is a REQUIREMENT — the HomeBase-routed commands

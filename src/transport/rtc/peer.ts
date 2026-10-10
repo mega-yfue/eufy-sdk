@@ -217,6 +217,16 @@ export class RtcPeer extends EventEmitter<RtcPeerEvents> {
   }
 
   /**
+   * Send bytes on the command channel as they are, without PTCS framing; false when it isn't open. The
+   * portal's data-channel keepalive rides the wire unframed.
+   */
+  sendRaw(bytes: Buffer): boolean {
+    const dc = this.channels.get(COMMAND_CHANNEL);
+    if (!dc?.isOpen()) return false;
+    return dc.sendMessageBinary(bytes);
+  }
+
+  /**
    * Send one portal packet on the command channel, through the framer. False when the channel is not
    * usable or the native send refused a wire packet, so a dropped frame does not read as success.
    */

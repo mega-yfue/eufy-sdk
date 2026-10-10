@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
-import { RtcCommandRouter, type RtcCommandRouterDeps, type RtcRoute } from "../command-router.js";
+import { LiveSnapshotUnavailableError } from "../../../core/contracts.js";
+import { RtcCommandRouter, type RtcCommandRouterDeps, type RtcLiveRoute, type RtcRoute } from "../command-router.js";
 import type { RtcSession, RtcSessionOptions } from "../session.js";
 import { buildPortalHeader, parsePortalHeader, PortalLinkType, PORTAL_HEADER_LENGTH } from "../portal-packet.js";
 
@@ -60,6 +61,9 @@ class FakeSession extends EventEmitter {
       Buffer.concat([buildPortalHeader(commandId, body.length, PORTAL_STATION_CHANNEL, segment, 1), body]),
       linkType,
     );
+  }
+  sendRaw(): boolean {
+    return this.isConnected;
   }
   sendCommand(pkt: Buffer): boolean {
     if (!this.isConnected) return false;
@@ -376,5 +380,197 @@ describe("RtcCommandRouter", () => {
     const { router: out } = makeRouter({ identity: () => undefined });
     await expect(out.dispatchCommand(ST, arming(1))).rejects.toThrow(/not logged in/);
     vi.restoreAllMocks();
+  });
+});
+
+describe("RtcCommandRouter live view", () => {
+  const cam = (cameraSn: string, channel: number): RtcLiveRoute => ({ ...CAM, cameraSn, channel });
+  const ORTO = cam("T8000P0000000002", 2);
+  const PORCH = cam("T8000P0000000003", 3);
+  /** The live starts (inner cmd 1003) a session carried. */
+  const starts = (s: FakeSession) => s.sent.map(sent).filter((p) => p.body.cmd === 1003);
+  /** The live stops (inner cmd 1004) a session carried. */
+  const stops = (s: FakeSession) => s.sent.map(sent).filter((p) => p.body.cmd === 1004);
+  /** A `1300` IDR on the play slot: the 22-byte media header (length, stream type 1, 1920x1080), then the video. */
+  const idr = () => {
+    const video = Buffer.from("000000012601af0e", "hex");
+    const header = Buffer.alloc(22);
+    header.writeUInt32LE(video.length, 0);
+    header[5] = 1;
+    header.writeUInt16LE(1920, 10);
+    header.writeUInt16LE(1080, 12);
+    const body = Buffer.concat([header, video]);
+    return Buffer.concat([buildPortalHeader(1300, body.length, 101, 0, 0), body]);
+  };
+  const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
+
+  it("shares one pull between concurrent viewers of the same camera", async () => {
+    const { router, sessions } = makeRouter();
+    try {
+      const media = router.mediaProviderFor(ORTO);
+      const [a, b] = await Promise.all([media.live(), media.live()]);
+      expect(sessions).toHaveLength(1);
+      expect(starts(sessions[0]!)).toHaveLength(1);
+      a.stop();
+      b.stop();
+    } finally {
+      router.close();
+    }
+  });
+
+  it("refuses a second camera on the same station while the first one's view is up", async () => {
+    const { router } = makeRouter();
+    try {
+      const viewer = await router.mediaProviderFor(ORTO).live();
+      await expect(router.mediaProviderFor(PORCH).live()).rejects.toThrow(/streams one camera at a time/);
+      viewer.stop();
+    } finally {
+      router.close();
+    }
+  });
+
+  it("refuses a second camera's live still as a source failure, so a retained still can answer", async () => {
+    const { router } = makeRouter();
+    try {
+      const viewer = await router.mediaProviderFor(ORTO).live();
+      const still = router.mediaProviderFor(PORCH).snapshotLive();
+      await expect(still).rejects.toBeInstanceOf(LiveSnapshotUnavailableError);
+      await expect(still).rejects.toMatchObject({ reason: "source-failed", retryable: true });
+      await expect(router.mediaProviderFor(PORCH).live()).rejects.not.toBeInstanceOf(LiveSnapshotUnavailableError);
+      viewer.stop();
+    } finally {
+      router.close();
+    }
+  });
+
+  it("ends the viewers when the router closes, sending the stop before the session goes", async () => {
+    const { router, sessions } = makeRouter();
+    const viewer = await router.mediaProviderFor(ORTO).live();
+    sessions[0]!.emit("mediaData", idr());
+    const stopped = vi.fn();
+    const failed = vi.fn();
+    viewer.on("stop", stopped);
+    viewer.on("error", failed);
+    router.close();
+    expect(stopped).toHaveBeenCalled();
+    expect(failed).not.toHaveBeenCalled();
+    expect(stops(sessions[0]!)).toHaveLength(1);
+    expect(sessions[0]!.closed).toBe(true);
+  });
+
+  it("bounds a battery camera's view to its budget, and leaves a wired one unbounded", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    const { router, sessions } = makeRouter();
+    try {
+      const battery = await router.mediaProviderFor(ORTO).live({ powered: "battery" });
+      const notice = vi.fn();
+      battery.on("budget", notice);
+      sessions[0]!.emit("mediaData", idr());
+      await vi.advanceTimersByTimeAsync(45_000);
+      expect(notice).toHaveBeenCalledTimes(1);
+      battery.stop();
+      router.close();
+      const wired = makeRouter();
+      const viewer = await wired.router.mediaProviderFor(ORTO).live();
+      const unbounded = vi.fn();
+      viewer.on("budget", unbounded);
+      wired.sessions[0]!.emit("mediaData", idr());
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(unbounded).not.toHaveBeenCalled();
+      viewer.stop();
+      wired.router.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("frees the station for another camera when the only caller gave up during the bring-up", async () => {
+    const { router } = makeRouter();
+    try {
+      const gaveUp = new AbortController();
+      const pending = router.mediaProviderFor(ORTO).live({ signal: gaveUp.signal });
+      gaveUp.abort(new Error("caller left"));
+      await expect(pending).rejects.toThrow("caller left");
+      await nextTurn();
+      await nextTurn();
+      const viewer = await router.mediaProviderFor(PORCH).live();
+      viewer.stop();
+    } finally {
+      router.close();
+    }
+  });
+
+  it("honours an abort that lands during the bring-up, and one that came before the call", async () => {
+    const { router } = makeRouter();
+    try {
+      const media = router.mediaProviderFor(ORTO);
+      const early = new AbortController();
+      early.abort(new Error("caller gave up"));
+      await expect(media.live({ signal: early.signal })).rejects.toThrow("caller gave up");
+      const late = new AbortController();
+      const pending = media.live({ signal: late.signal });
+      late.abort(new Error("caller left"));
+      await expect(pending).rejects.toThrow("caller left");
+    } finally {
+      router.close();
+    }
+  });
+
+  it("lets another camera take the station while the first one's pull only lingers", async () => {
+    const { router } = makeRouter();
+    try {
+      const viewer = await router.mediaProviderFor(ORTO).live();
+      viewer.stop();
+      const next = await router.mediaProviderFor(PORCH).live();
+      next.stop();
+    } finally {
+      router.close();
+    }
+  });
+
+  it("refuses a caller whose abort lands after the source resolved, leaving the viewer in place", async () => {
+    const { router } = makeRouter();
+    try {
+      const media = router.mediaProviderFor(ORTO);
+      const viewer = await media.live();
+      const controller = new AbortController();
+      const pending = media.live({ signal: controller.signal });
+      queueMicrotask(() => controller.abort(new Error("caller left")));
+      await expect(pending).rejects.toThrow("caller left");
+      await expect(router.mediaProviderFor(PORCH).live()).rejects.toThrow(/streams one camera at a time/);
+      viewer.stop();
+    } finally {
+      router.close();
+    }
+  });
+
+  it("answers a live still whose stream fails as a source failure", async () => {
+    const sessions: FakeSession[] = [];
+    const { router } = makeRouter({
+      createSession: (opts) => {
+        const session = new FakeSession(opts);
+        session.behaviour = "nack";
+        sessions.push(session);
+        return session as unknown as RtcSession;
+      },
+    });
+    try {
+      const still = router.mediaProviderFor(ORTO).snapshotLive();
+      await expect(still).rejects.toBeInstanceOf(LiveSnapshotUnavailableError);
+      await expect(still).rejects.toMatchObject({ reason: "source-failed" });
+      expect(starts(sessions[0]!)).toHaveLength(1);
+    } finally {
+      router.close();
+    }
+  });
+
+  it("has no wire for recording and leaves the optional media members absent", async () => {
+    const { router } = makeRouter();
+    const media = router.mediaProviderFor(ORTO);
+    await expect(media.record(5)).rejects.toThrow(/record is not available/);
+    expect(media.recordFragments).toBeUndefined();
+    expect(media.talkback).toBeUndefined();
+    expect(media.p2pQuery).toBeUndefined();
+    expect(media.p2pControlQuery).toBeUndefined();
   });
 });

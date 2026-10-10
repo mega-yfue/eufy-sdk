@@ -12,6 +12,10 @@
 
 const MAGIC = Buffer.from("XZYH", "ascii");
 export const PORTAL_HEADER_LENGTH = 16;
+/** The SET_PAYLOAD envelope. */
+export const PORTAL_CMD_SET_PAYLOAD = 1350;
+/** The channel a station-wide command is addressed to. */
+export const PORTAL_STATION_CHANNEL = 255;
 
 /** Portal link types — which logical channel a frame belongs to (`worker_sctp_send`). */
 export const PortalLinkType = {
@@ -19,6 +23,8 @@ export const PortalLinkType = {
   COMMAND: 1,
   /** Station-originated frames: pushes, notify payloads, control results. */
   NOTIFY: 3,
+  /** Live video. */
+  LIVE: 5,
 } as const;
 
 export interface PortalHeader {

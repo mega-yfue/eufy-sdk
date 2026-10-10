@@ -23,6 +23,7 @@
 import { EventEmitter } from "node:events";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { RtcPeer, type RtcPeerOptions, type TurnConfig } from "./peer.js";
+import { PortalLinkType } from "./portal-packet.js";
 import { scallJsonToSdp, sdpToScallJson, toWireCandidate } from "./scall-sdp.js";
 import { RtcSignalingClient, type RtcInnerMessage, type RtcSignalingOptions } from "./signaling.js";
 
@@ -39,8 +40,10 @@ export interface RtcSessionEvents {
   connected: [];
   close: [];
   error: [err: Error];
-  /** A reassembled frame: portal packet bytes + the link type it arrived on. */
+  /** A reassembled command or notify frame: portal packet bytes + the link type it arrived on. */
   commandData: [frame: Buffer, linkType: number];
+  /** A reassembled live-video frame. */
+  mediaData: [frame: Buffer];
 }
 
 interface CallPayload {
@@ -108,7 +111,10 @@ export class RtcSession extends EventEmitter<RtcSessionEvents> {
       }
     });
     this.peer.on("error", (e) => this.emit("error", e));
-    this.peer.on("data", (frame, linkType) => this.emit("commandData", frame, linkType));
+    this.peer.on("data", (frame, linkType) => {
+      if (linkType === PortalLinkType.LIVE) this.emit("mediaData", frame);
+      else this.emit("commandData", frame, linkType);
+    });
   }
 
   get isConnected(): boolean {
@@ -133,6 +139,11 @@ export class RtcSession extends EventEmitter<RtcSessionEvents> {
   /** Send one portal packet; false when the command channel isn't open. */
   sendCommand(portalPacket: Buffer): boolean {
     return this.peer.sendCommand(portalPacket);
+  }
+
+  /** Send unframed bytes on the command channel; false when it isn't open. */
+  sendRaw(bytes: Buffer): boolean {
+    return this.peer.sendRaw(bytes);
   }
 
   /**
