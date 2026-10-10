@@ -107,6 +107,16 @@ export const TUYA_SIGN_K =
   "pt585qhmt75hwcynchnps9dnxh9suhwd";
 
 /**
+ * Resolve the app-wide HMAC key {@link TUYA_SIGN_K}: an explicit `override` wins, then the
+ * `TUYA_SIGN_KEY` env var (for custom builds), then the built-in constant. Shared by the request
+ * signer ({@link HmacSigner}) and the et=3 reply body-key derivation (`et3.ts`), which key off the
+ * same `K`.
+ */
+export function resolveSignKey(override?: string): string {
+  return override ?? process.env.TUYA_SIGN_KEY ?? TUYA_SIGN_K;
+}
+
+/**
  * The real {@link TuyaSigner}: `sign = HMAC-SHA256(K, preimage)` as lowercase hex.
  *
  * Uses {@link TUYA_SIGN_K} by default — no configuration required. The env var `TUYA_SIGN_KEY`
@@ -116,7 +126,7 @@ export const TUYA_SIGN_K =
 export class HmacSigner implements TuyaSigner {
   private readonly key: string;
   constructor(key?: string) {
-    this.key = key ?? process.env.TUYA_SIGN_KEY ?? TUYA_SIGN_K;
+    this.key = resolveSignKey(key);
   }
   sign(preimage: string): string {
     return createHmac("sha256", this.key).update(preimage, "utf-8").digest("hex");
