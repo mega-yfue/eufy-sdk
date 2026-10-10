@@ -79,6 +79,38 @@ describe("recording download", () => {
     expect(out).toMatchObject({ frames: 3, missingFrames: 2 });
   });
 
+  it("joins split pictures and omits a continuation whose opening frame was lost", () => {
+    const { eccHex, publicKey } = camera();
+    const key = randomBytes(32);
+    const head = Buffer.concat([slice(1), Buffer.alloc(64_000 - slice(1).length, 0x11)]);
+    const tail = Buffer.alloc(19, 0x22);
+    const frames = [
+      keyframe(key, publicKey, IDR, 0, 0),
+      plainFrame(head, 1, 67),
+      plainFrame(tail, 1, 67),
+      plainFrame(Buffer.alloc(20, 0x33), 2, 134),
+      plainFrame(slice(3), 3, 201),
+    ];
+
+    const out = decodeRecording(frames, eccHex);
+
+    expect(out.video).toEqual(Buffer.concat([IDR, head, tail, slice(3)]));
+    expect(out).toMatchObject({ frames: 3, missingFrames: 1 });
+  });
+
+  it("omits a split picture when its final chunk never arrived", () => {
+    const { eccHex, publicKey } = camera();
+    const key = randomBytes(32);
+    const head = Buffer.concat([slice(1), Buffer.alloc(64_000 - slice(1).length, 0x11)]);
+    const out = decodeRecording(
+      [keyframe(key, publicKey, IDR, 0, 0), plainFrame(head, 1, 67), plainFrame(slice(2), 2, 134)],
+      eccHex,
+    );
+
+    expect(out.video).toEqual(Buffer.concat([IDR, slice(2)]));
+    expect(out).toMatchObject({ frames: 2, missingFrames: 1 });
+  });
+
   it("drops a keyframe sealed for another camera, and the audio that depends on it", () => {
     const { eccHex } = camera();
     const other = camera();
@@ -90,6 +122,30 @@ describe("recording download", () => {
 
     expect(out.video).toEqual(slice(1));
     expect(out.audio).toBeUndefined();
+  });
+
+  it("counts first/interior orphans and a full terminal group once", () => {
+    const { eccHex, publicKey } = camera();
+    const key = randomBytes(32);
+    const stamp = 0xffffffff - 100;
+    const full = Buffer.concat([IDR, Buffer.alloc(64_000 - IDR.length, 1)]);
+    const terminal = keyframe(key, publicKey, full, 4, stamp + 268);
+    const out = decodeRecording(
+      [
+        keyframe(key, publicKey, Buffer.alloc(64_000, 0x33), 0, stamp),
+        keyframe(key, publicKey, Buffer.alloc(9_000, 0x44), 0, stamp),
+        keyframe(key, publicKey, IDR, 1, stamp + 67),
+        keyframe(key, publicKey, Buffer.alloc(64_000, 0x33), 2, stamp + 134),
+        keyframe(key, publicKey, Buffer.alloc(64_000, 0x44), 2, stamp + 134),
+        keyframe(key, publicKey, Buffer.alloc(9_000, 0x55), 2, stamp + 134),
+        keyframe(key, publicKey, IDR, 3, stamp + 201),
+        terminal,
+      ],
+      eccHex,
+    );
+
+    expect(out.video).toEqual(Buffer.concat([IDR, IDR]));
+    expect(out).toMatchObject({ frames: 2, missingFrames: 3, durationMs: 134 });
   });
 
   it("answers undecodable when no video frame decodes", () => {

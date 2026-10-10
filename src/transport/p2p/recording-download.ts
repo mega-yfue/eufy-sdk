@@ -24,7 +24,7 @@ import { createDecipheriv } from "node:crypto";
 import { RecordingDownloadError, type RecordingDownload } from "../../core/contracts.js";
 import { CommandType } from "./commands.js";
 import type { P2PFrame, P2PSession } from "./p2p-session.js";
-import { VIDEO_GCM_AAD, VideoFrameDecoder, parseVideoFrameHeader } from "./video.js";
+import { AccessUnitAssembler, VIDEO_GCM_AAD, VideoFrameDecoder, parseVideoFrameHeader } from "./video.js";
 
 /** Data type a station sends a recording's frames on: the binary channel (`0xd1 0x03`), not live video's. */
 export const RECORDING_DATA_TYPE = 3;
@@ -200,35 +200,42 @@ function openAudio(key: Buffer, nonce: Buffer, tag: Buffer, body: Buffer): Buffe
 }
 
 /**
- * Decode a recording's frames, in arrival order, into elementary streams. Keyframes go through one
- * {@link VideoFrameDecoder}, whose media key then opens the audio; a keyframe that does not open under
- * `eccPrivateKeyHex`, and every audio frame before the first media key, are dropped. Rejects with
+ * Decode a recording's frames, in arrival order, into elementary streams. Split pictures are assembled
+ * before they enter the output; an orphan continuation cannot become its own picture. Keyframes go
+ * through one {@link VideoFrameDecoder}, whose media key then opens the audio; a keyframe that does not
+ * open under `eccPrivateKeyHex`, and every audio frame before the first media key, are dropped. Rejects with
  * {@link RecordingDownloadError} `undecodable` when no video frame decodes.
  */
 export function decodeRecording(frames: readonly RecordingFrame[], eccPrivateKeyHex: string): RecordingDownload {
   const eccPrivateKey = Buffer.from(eccPrivateKeyHex, "hex");
   if (eccPrivateKey.length !== 32) throw new RecordingDownloadError("undecodable", "the cipher key is not a P-256 key");
   const decoder = new VideoFrameDecoder(eccPrivateKey);
+  const assembler = new AccessUnitAssembler();
   const video: Buffer[] = [];
   const audio: Buffer[] = [];
   const numbers = new Set<number>();
+  const receivedNumbers = new Set<number>();
   let firstStamp: number | undefined;
   let lastStamp: number | undefined;
   for (const { commandId, raw } of frames) {
     if (commandId === CommandType.CMD_VIDEO_FRAME) {
       const header = parseVideoFrameHeader(raw);
       if (!header) continue;
-      const h264 = header.keyframe
-        ? decoder.decodeFrame(raw)?.h264
-        : raw.length >= VIDEO_HEADER_LEN + header.payloadLength
-          ? raw.subarray(VIDEO_HEADER_LEN, VIDEO_HEADER_LEN + header.payloadLength)
-          : undefined;
-      if (!h264?.length) continue;
-      video.push(h264);
-      numbers.add(header.sequence);
-      const stamp = raw.readUIntLE(0x0e, 6);
-      firstStamp ??= stamp;
-      lastStamp = stamp;
+      receivedNumbers.add(header.sequence);
+      const units = assembler.push(raw, (payload) =>
+        header.keyframe
+          ? decoder.decodeFrame(payload)?.h264
+          : payload.length >= VIDEO_HEADER_LEN + header.payloadLength
+            ? payload.subarray(VIDEO_HEADER_LEN, VIDEO_HEADER_LEN + header.payloadLength)
+            : undefined,
+      );
+      for (const unit of units) {
+        video.push(unit.data);
+        numbers.add(header.sequence);
+        const stamp = raw.readUIntLE(0x0e, 6);
+        firstStamp ??= stamp;
+        lastStamp = stamp;
+      }
     } else if (commandId === CommandType.CMD_AUDIO_FRAME) {
       const mediaKey = decoder.currentMediaKey;
       if (!mediaKey || raw.length < AUDIO_BODY_START || raw[5] !== AUDIO_CODEC_AAC_LC) continue;
@@ -245,9 +252,10 @@ export function decodeRecording(frames: readonly RecordingFrame[], eccPrivateKey
   }
   if (!video.length) throw new RecordingDownloadError("undecodable", "no video frame of the recording decoded");
   const ordered = [...numbers];
-  let missingFrames = 0;
-  for (let i = 1; i < ordered.length; i++) {
-    const step = (ordered[i]! - ordered[i - 1]!) & 0xffff;
+  const received = [...receivedNumbers];
+  let missingFrames = receivedNumbers.size - numbers.size;
+  for (let i = 1; i < received.length; i++) {
+    const step = (received[i]! - received[i - 1]!) & 0xffff;
     if (step > 1 && step < 0x8000) missingFrames += step - 1;
   }
   const span = ordered.length > 1 ? (ordered[ordered.length - 1]! - ordered[0]!) & 0xffff : 0;

@@ -217,9 +217,10 @@ export class RecordingDownloadError extends Error {
  * A recording downloaded from the station, as elementary streams.
  *
  * `video` is Annex-B H.264 in decode order, `audio` AAC-LC 16 kHz mono in ADTS framing (absent when the
- * recording carried none that could be decoded). `frames` counts the distinct video frames received,
- * `missingFrames` the ones the camera numbered but that never arrived, and `durationMs` spans the first
- * to the last received frame by the camera's own timestamps; `fps` is derived from those two stamps.
+ * recording carried none that could be decoded). `frames` counts the distinct video sequences emitted.
+ * `missingFrames` counts gaps between received sequences and received sequences that yielded no usable
+ * picture, including at either end. `durationMs` spans the first to the last emitted picture by the
+ * camera's own timestamps; `fps` is derived from those stamps.
  */
 export interface RecordingDownload {
   video: Buffer;
