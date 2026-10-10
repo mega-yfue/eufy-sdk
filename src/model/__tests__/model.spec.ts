@@ -51,6 +51,16 @@ describe("classify (device_type → codec)", () => {
     expect(classify({})).toBe("camera"); // safe read-only default
   });
 
+  it.each([undefined, DeviceType.CAMERA_POE_S4])(
+    "provides the PoE S4 camera surface for device type %s",
+    (deviceType) => {
+      const record = { model: "T8E00", deviceType, params: {} };
+      const codec = classify(record);
+      expect(codec).toBe("camera");
+      expect(detectCapabilities(record, codec)).toContain("camera");
+    },
+  );
+
   it("maps the eufy_life T8L0x light line to light — by prefix, incl. suffixed variants", () => {
     expect(classify({ model: "T8L02" })).toBe("light"); // registry-listed
     expect(classify({ model: "T8L02X" })).toBe("light"); // suffixed variant, no registry row

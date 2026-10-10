@@ -44,9 +44,7 @@ import { PRINTER_CATEGORY_RE } from "../core/types.js";
 /**
  * Stations / hubs — the "station" control codec (arming/guard mode, storage).
  *
- * Note: CAMERA_POE_S4 is *also* grouped as a camera by the third-party catalogue; kept here with its NVR/PoE
- * backbone because it is the station-class endpoint that owns the arming/storage surface
- * (per-channel video still resolves via camera capabilities).
+ * The NVR is a station; its attached PoE cameras have the camera codec.
  */
 const STATION_TYPES: ReadonlySet<number> = new Set([
   DeviceType.STATION,
@@ -55,7 +53,6 @@ const STATION_TYPES: ReadonlySet<number> = new Set([
   DeviceType.MINIBASE_CHIME,
   DeviceType.HOMEBASE_MINI,
   DeviceType.NVR_S4_MAX,
-  DeviceType.CAMERA_POE_S4,
 ]);
 
 /**
@@ -179,8 +176,7 @@ function isKnownSecurityType(deviceType: number): boolean {
  *  - `T74xx` → **lock** (SmartSafe 7400-series).
  *  - `T80xx` / `T8001` / `T8002` / `T8010` / `T8030` / `T8023` / `T8025` → **station**
  *    (HomeBase / HomeBase 2 / 3 / Mini), `T9000` (the app's own model registry files it as family
- *    `STATION_9000`, the one station family outside the T8 band), and `T8N00` (NVR) / `T8E00` (PoE
- *    NVR) → station.
+ *    `STATION_9000`, the one station family outside the T8 band), and `T8N00` (NVR) → station.
  *  - `T89xx` (entry/motion/water/siren sensors, e.g. T8900/T8910/T8920) → **sensor**.
  *  - `T87xx` keypad (`T8960`) → **keypad**.
  *  - any other `T8…` security T-code → **camera** (the default security family).
@@ -207,9 +203,9 @@ export function codecFromModel(model: string | undefined): Codec | undefined {
   if (/^T1/.test(m)) return "vacuum";
 
   // Stations / hubs / NVRs.
-  //  HomeBase family: T8001/T8002/T8010/T8023/T8025/T8030 ; NVR: T8N00 ; PoE NVR: T8E00.
+  //  HomeBase family: T8001/T8002/T8010/T8023/T8025/T8030 ; NVR: T8N00.
   if (/^T8(00[0-9]|010|023|025|030)/.test(m)) return "station";
-  if (/^T8N0/.test(m) || /^T8E0/.test(m)) return "station";
+  if (/^T8N0/.test(m)) return "station";
   if (/^T9000/.test(m)) return "station";
 
   // SmartSafe (T74xx) — lock-family actuation.
