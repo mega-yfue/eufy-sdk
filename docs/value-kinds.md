@@ -25,16 +25,16 @@ different questions and a host almost always wants the first.
 
 ## The vocabulary
 
-| kind                                                           | what a host does with it                                       |
-| -------------------------------------------------------------- | -------------------------------------------------------------- |
-| `boolean`                                                      | show a switch or a state, never a number                       |
-| `percent`, `celsius`, `dbm`, `seconds`, `megabytes`, `degrees` | render with the matching unit, which the property also carries |
-| `scalar`                                                       | a bare number in no unit — show it as-is                       |
-| `bitfield`                                                     | several flags packed in one number, not a magnitude            |
-| `enum`                                                         | look the value up in the option set shipped with it            |
-| `identifier`                                                   | an opaque id — display or pass through, never compute on       |
-| `timestamp`                                                    | an instant in unix seconds — format as a date                  |
-| `text`                                                         | show as text, no further promise                               |
+| kind                                                                                     | what a host does with it                                       |
+| ---------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `boolean`                                                                                | show a switch or a state, never a number                       |
+| `percent`, `celsius`, `dbm`, `seconds`, `minutes`, `millimetres`, `megabytes`, `degrees` | render with the matching unit, which the property also carries |
+| `scalar`                                                                                 | a bare number in no unit — show it as-is                       |
+| `bitfield`                                                                               | several flags packed in one number, not a magnitude            |
+| `enum`                                                                                   | look the value up in the option set shipped with it            |
+| `identifier`                                                                             | an opaque id — display or pass through, never compute on       |
+| `timestamp`                                                                              | an instant in unix seconds — format as a date                  |
+| `text`                                                                                   | show as text, no further promise                               |
 
 Three of these are close enough to confuse, so the distinction each time:
 

@@ -29,6 +29,7 @@ const EXPECTED_ACCESSORS = [
   "display",
   "doorbell",
   "suction",
+  "mower",
   "info",
   "keypad",
   "leak",
