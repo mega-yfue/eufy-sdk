@@ -128,8 +128,7 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       # OIDC trusted publishing needs npm >= 11.5.1, which Node 24.5.0 already bundles. The version is
-      # pinned to the one CI runs: a later 11.x skips the optional peer node-datachannel under
-      # `npm ci`, and the typecheck below then fails.
+      # pinned to the one CI runs, so the release installs from the lock the way CI verified it.
       #
       # The assertion is the point of the step. An npm below the floor fails publishing as an
       # authentication error several steps later, with nothing pointing at the cause; this names it.
