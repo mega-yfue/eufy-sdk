@@ -431,15 +431,17 @@ export const ARMING_MEMBERS = {
   /**
    * Turn the push notification of the device on `channel` on or off in `mode` (cmd
    * {@link ARMING_CMD.SET_ALL_ACTION}): the station's reported table written back with that one flag
-   * changed. Rejects, sending nothing, where the table does not list `channel`. Until the reported table
-   * catches up, a write builds on the last one sent for that mode, so a second write does not revert it.
+   * changed. Rejects, sending nothing, where the table does not list `channel`. A write builds on the last
+   * one sent for that mode until the station reports a table observed 15 s after it, so a second write does
+   * not revert it; a write whose dispatch rejects is not built on.
    */
   setDeviceNotification: method(
     ({ ctx, sink, read }) => {
       const sent = new Map<DeviceNotificationMode, { table: ActionTable; at: number }>();
       return (mode: DeviceNotificationMode, channel: number, on: boolean): Promise<void> => {
         const last = sent.get(mode);
-        const base = last && Date.now() - last.at < ACTION_TABLE_LAG_MS ? last.table : actionTable(read, mode);
+        const observed = read(`${mode}ActionTable`)?.ts ?? 0;
+        const base = last && observed < last.at + ACTION_TABLE_LAG_MS ? last.table : actionTable(read, mode);
         const table = withDeviceNotification(base, channel, on);
         if (!table) {
           return Promise.reject(
@@ -447,7 +449,13 @@ export const ARMING_MEMBERS = {
           );
         }
         sent.set(mode, { table, at: Date.now() });
-        return sink.dispatch(setJsonRaw(ARMING_CMD.SET_ALL_ACTION, table, ctx, 0));
+        return sink.dispatch(setJsonRaw(ARMING_CMD.SET_ALL_ACTION, table, ctx, 0)).catch((err: unknown) => {
+          if (sent.get(mode)?.table === table) {
+            if (last) sent.set(mode, last);
+            else sent.delete(mode);
+          }
+          throw err;
+        });
       };
     },
     "Turn the push notification of the device on a channel on or off in a guard mode (home/away).",
