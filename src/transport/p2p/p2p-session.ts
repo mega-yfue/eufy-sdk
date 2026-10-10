@@ -256,7 +256,7 @@ const CMD_DATABASE = 1306;
  * Inner query cmds carried in a {@link CMD_DATABASE} payload. `FULL_TABLE` reads one table whole;
  * `COMBINATION_WITH_AI` is the AI event-history read that bundles the face roster.
  */
-const DB_QUERY = { FULL_TABLE: 10000, COMBINATION_WITH_AI: 10011 } as const;
+const DB_QUERY = { FULL_TABLE: 10000, COMBINATION_WITH_AI: 10011, QUERY_LOCAL: 10017 } as const;
 /** AAD for the level-2 (gateway/"signCode 8") AES-256-GCM frames — fixed across all eufy P2P. */
 const GCM_AAD = Buffer.from("eufy security");
 
@@ -350,20 +350,21 @@ let traceSequence = 0;
 const DB_TABLE_TIMEOUT_MS = 15_000;
 
 /**
- * The rows of the first complete table document in an accumulated `CMD_DATABASE` reply.
+ * The rows or refusal code of the first complete table document in an accumulated `CMD_DATABASE` reply.
  *
  * `undefined` while none has closed, which is what makes the document's own structure the completion
  * signal: the frames carry no index, no total and no terminator, and the last one is padded past the
  * closing brace so the accumulation is never valid JSON in its entirety.
  *
- * A closed object without a `data` array is not the table and is skipped rather than answered. The
+ * A non-zero numeric `mIntRet` answers a refusal code; a `data` array answers rows, and `data: "[]"`
+ * answers an empty page. A closed object carrying neither rows nor a refusal is skipped. The
  * case is a tail left by an earlier reply that timed out: it begins mid-row, closes into a valid
  * object carrying no rows, and reporting it would answer an empty table for a full one.
  *
  * Re-decoded UTF-8 first. `dbChunk` carries latin1, which preserves the bytes and mangles every name
  * outside ASCII until the document is read back in the encoding it was written in.
  */
-function firstTableRows(text: string): unknown[] | undefined {
+function firstTableRows(text: string): { rows?: unknown[]; error?: number } | undefined {
   const decoded = Buffer.from(text, "latin1").toString("utf8");
   for (let start = decoded.indexOf("{"); start >= 0; start = decoded.indexOf("{", start + 1)) {
     const end = closingBrace(decoded, start);
@@ -374,8 +375,10 @@ function firstTableRows(text: string): unknown[] | undefined {
     } catch {
       continue;
     }
-    const data = (parsed as { data?: unknown } | null)?.data;
-    if (Array.isArray(data)) return data;
+    const reply = parsed as { data?: unknown; mIntRet?: unknown } | null;
+    if (typeof reply?.mIntRet === "number" && reply.mIntRet !== 0) return { error: reply.mIntRet };
+    if (reply?.data === "[]") return { rows: [] };
+    if (Array.isArray(reply?.data)) return { rows: reply.data };
   }
   return undefined;
 }
@@ -1812,31 +1815,73 @@ export class P2PSession extends EventEmitter {
   }
 
   /**
+   * Read a date-ranged page of `history_record_info` from the station. The reply's `data` array groups
+   * recording rows with companion tables; each group retains its `table_name` and `payload`.
+   * `startTime` is `"0"` for the newest page or the oldest row's `yyyyMMddHHmmss` cursor for older rows.
+   */
+  queryRecordPage(opts: {
+    accountId?: string;
+    startDate: string;
+    endDate: string;
+    startTime?: string;
+    count?: number;
+  }): Promise<unknown[]> {
+    return this.readDatabase("history_record_info", {
+      accountId: opts.accountId,
+      innerCmd: DB_QUERY.QUERY_LOCAL,
+      query: {
+        count: opts.count ?? 20,
+        start_date: opts.startDate,
+        end_date: opts.endDate,
+        start_time: opts.startTime ?? "0",
+        event_type: 0,
+        ai_type: 0,
+        storage_cloud: -1,
+        trigger_type: 0,
+        detection_type: 0,
+        flag: 0,
+      },
+    });
+  }
+
+  /**
    * Query one on-station table and answer its rows, once the reply is whole.
    *
    * The request half of {@link queryDatabase} with its reply assembled: `CMD_DATABASE` arrives as
    * several frames whose decrypted text is a fragment of one document, so the fragments are
    * accumulated here and scanned after each one. Answers that document's `data` rows. Rejects when
    * `signal` aborts, and when `timeoutMs` (default {@link DB_TABLE_TIMEOUT_MS}) elapses with no
-   * complete reply.
+   * complete reply, and when the station answers a non-zero `mIntRet`.
    *
    * One read at a time per session: while one is accumulating, every {@link queryDatabase} on the
    * session throws, so a second reply cannot land in this buffer.
    */
   async readDatabase(
     table: string,
-    opts: { accountId?: string; timeoutMs?: number; signal?: AbortSignal } = {},
+    opts: {
+      accountId?: string;
+      innerCmd?: number;
+      query?: Record<string, unknown>;
+      timeoutMs?: number;
+      signal?: AbortSignal;
+    } = {},
   ): Promise<unknown[]> {
     if (opts.signal?.aborted) throw new Error("readDatabase: aborted");
-    this.queryDatabase(table, { accountId: opts.accountId, query: this.fullTableQuery() });
+    this.queryDatabase(table, {
+      accountId: opts.accountId,
+      innerCmd: opts.innerCmd,
+      query: opts.query ?? this.fullTableQuery(),
+    });
     this.dbReadInFlight = true;
     try {
       return await new Promise<unknown[]>((resolve, reject) => {
         let text = "";
         const onChunk = (chunk: { text: string }): void => {
           text += chunk.text;
-          const rows = firstTableRows(text);
-          if (rows) settle(() => resolve(rows));
+          const result = firstTableRows(text);
+          if (result?.error !== undefined)
+            settle(() => reject(new Error(`readDatabase: ${table} refused: ${result.error}`)));
+          else if (result?.rows) settle(() => resolve(result.rows!));
         };
         const timer = setTimeout(
           () => settle(() => reject(new Error(`readDatabase: ${this.cfg.stationSn} sent no complete ${table}`))),
