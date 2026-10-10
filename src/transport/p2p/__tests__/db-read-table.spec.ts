@@ -143,4 +143,49 @@ describe("P2PSession.readDatabase", () => {
     control.abort();
     await expect(read).rejects.toThrow(/aborted/);
   });
+
+  it("queries a dated recording page with the station's record command", async () => {
+    const s = session();
+    const query = vi.spyOn(s, "queryDatabase");
+    const read = s.queryRecordPage({
+      accountId: "ADMIN-0000",
+      startDate: "20260101",
+      endDate: "20261004",
+      startTime: "20260930100000",
+      count: 700,
+    });
+    expect(query).toHaveBeenCalledWith("history_record_info", {
+      accountId: "ADMIN-0000",
+      innerCmd: 10017,
+      query: {
+        count: 700,
+        start_date: "20260101",
+        end_date: "20261004",
+        start_time: "20260930100000",
+        event_type: 0,
+        ai_type: 0,
+        storage_cloud: -1,
+        trigger_type: 0,
+        detection_type: 0,
+        flag: 0,
+      },
+    });
+    chunk(s, JSON.stringify({ data: [{ table_name: "history_record_info", payload: [{ record_id: 1 }] }] }));
+    expect(await read).toEqual([{ table_name: "history_record_info", payload: [{ record_id: 1 }] }]);
+  });
+
+  it("rejects a station refusal even if the reply includes an empty data array", async () => {
+    const s = session();
+    const read = s.queryRecordPage({ startDate: "20260101", endDate: "20261004" });
+    chunk(s, JSON.stringify({ mIntRet: -104, data: [] }));
+    await expect(read).rejects.toThrow("history_record_info refused: -104");
+  });
+
+  it("answers an empty recording page whose data is the station's string-encoded array", async () => {
+    const s = session();
+    const read = s.queryRecordPage({ startDate: "20260101", endDate: "20260102" });
+    chunk(s, JSON.stringify({ cmd: 10017, mIntRet: 0, data: "[]" }));
+    expect(await read).toEqual([]);
+    expect(s.listenerCount("dbChunk")).toBe(0);
+  });
 });
