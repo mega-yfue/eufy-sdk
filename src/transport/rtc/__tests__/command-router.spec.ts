@@ -121,6 +121,24 @@ const arming = (mode: number) => ({
 });
 
 describe("RtcCommandRouter", () => {
+  it.each([
+    [undefined, undefined],
+    ["call", "all"],
+    ["call", "relay"],
+    ["scall", "relay"],
+  ] as const)("passes signaling=%s and ICE=%s to the station session", async (signalingMode, iceTransportPolicy) => {
+    const { router, sessions } = makeRouter();
+    try {
+      await router.dispatchCommand({ ...ST, signalingMode, iceTransportPolicy }, arming(1));
+      expect(sessions[0]!.opts.signalingMode).toBe(signalingMode);
+      expect(sessions[0]!.opts.peer?.iceTransportPolicy).toBe(iceTransportPolicy);
+      expect(sessions[0]!.sent).toHaveLength(1);
+      expect(sent(sessions[0]!.sent[0]!).body).toMatchObject({ cmd: 1224, payload: { mode_type: 1 } });
+    } finally {
+      router.close();
+    }
+  });
+
   it("refuses command kinds it cannot carry instead of misrouting them", async () => {
     const { router, sessions } = makeRouter();
     await expect(

@@ -7,7 +7,7 @@
  * then audio, idr, video, notify, download). Every one carries PTCS-framed portal packets; which logical
  * channel a reassembled frame belongs to is the PTCS header's channel, not the data channel it rode on.
  *
- * ICE is relay-only. The hub grants a TURN allocation in its `scall 100` reply and completes DTLS only
+ * ICE defaults to relay-only. The T9000 grants a TURN allocation in its `scall 100` reply and completes DTLS only
  * over the relay pair; on a host pair ICE connects and the DTLS handshake never completes. The peer
  * plays the DTLS client (`active`) and opens its channels on the client's even SCTP stream ids, which
  * is what the hub pairs with.
@@ -40,6 +40,8 @@ export type NativePeerFactory = (name: string, config: RtcConfig) => PeerConnect
 
 export interface RtcPeerOptions {
   createPeer?: NativePeerFactory;
+  /** Candidate policy for the station's exchange; the default is relay-only. */
+  iceTransportPolicy?: "relay" | "all";
   logger?: Logger;
 }
 
@@ -114,6 +116,7 @@ export class RtcPeer extends EventEmitter<RtcPeerEvents> {
   private readonly wireTally = new Map<string, number>();
   private commandOpen = false;
   private remoteSet = false;
+  private remoteMid = HUB_SDP_MID;
   private handlingOffer = false;
   private channelsCreated = false;
   private gatheringDone = false;
@@ -134,7 +137,7 @@ export class RtcPeer extends EventEmitter<RtcPeerEvents> {
     const createPeer = this.opts.createPeer ?? (await loadNativePeerFactory());
     const config: RtcConfig = {
       iceServers: turnServers(turn),
-      iceTransportPolicy: "relay",
+      iceTransportPolicy: this.opts.iceTransportPolicy ?? "relay",
       maxMessageSize: ANKER_MAX_MESSAGE_SIZE,
       enableIceTcp: true,
     };
@@ -182,6 +185,8 @@ export class RtcPeer extends EventEmitter<RtcPeerEvents> {
     this.handlingOffer = true;
     try {
       const offer = forceDtlsRole(offerSdp, "passive");
+      const application = offer.split(/(?=^m=)/m).find((section) => section.startsWith("m=application "));
+      this.remoteMid = application?.match(/^a=mid:([^\r\n]+)/m)?.[1] ?? HUB_SDP_MID;
       const answerWait = new Promise<string>((resolve, reject) => {
         const timer = setTimeout(() => {
           this.localAnswer = undefined;
@@ -254,7 +259,7 @@ export class RtcPeer extends EventEmitter<RtcPeerEvents> {
   }
 
   private acceptsCandidate(candidate: string): boolean {
-    return iceCandidateType(candidate) === "relay";
+    return this.opts.iceTransportPolicy === "all" || iceCandidateType(candidate) === "relay";
   }
 
   private createChannels(): void {
@@ -310,7 +315,7 @@ export class RtcPeer extends EventEmitter<RtcPeerEvents> {
 
   private addNow(candidate: string): void {
     try {
-      this.pc?.addRemoteCandidate(candidate, HUB_SDP_MID);
+      this.pc?.addRemoteCandidate(candidate, this.remoteMid);
     } catch (e) {
       this.logger.warn(`[rtc] addRemoteCandidate failed: ${e instanceof Error ? e.message : String(e)}`);
     }

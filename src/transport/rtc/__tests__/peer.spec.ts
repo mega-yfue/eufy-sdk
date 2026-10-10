@@ -116,10 +116,11 @@ const OFFER = scallJsonToSdp({
 const ANSWER =
   "v=0\r\na=setup:passive\r\na=ice-ufrag:x\r\na=ice-pwd:y\r\na=fingerprint:sha-256 aa:bb\r\na=max-message-size:65536\r\n";
 
-function setup() {
+function setup(iceTransportPolicy?: "relay" | "all") {
   let pc!: FakePc;
   let config!: RtcConfig;
   const peer = new RtcPeer({
+    iceTransportPolicy,
     createPeer: (_name, cfg) => {
       config = cfg;
       pc = new FakePc();
@@ -130,6 +131,39 @@ function setup() {
 }
 
 describe("RtcPeer", () => {
+  it("allows direct candidates while retaining the granted TURN servers", async () => {
+    const { peer, pc, config } = setup("all");
+    const candidates: string[] = [];
+    peer.on("iceCandidate", (c) => candidates.push(c));
+    await peer.init(TURN);
+    expect(config().iceTransportPolicy).toBe("all");
+    expect(config().iceServers).toHaveLength(2);
+    pc().fireLocalCandidate(HOST);
+    pc().fireLocalCandidate(RELAY);
+    peer.addRemoteCandidate(HOST);
+    const answer = peer.handleRemoteOffer(OFFER);
+    pc().fireLocalAnswer(ANSWER);
+    await answer;
+    expect(candidates).toEqual([HOST, RELAY]);
+    expect(pc().candidates.some(([c]) => c === HOST)).toBe(true);
+    peer.close();
+  });
+
+  it("uses the native application mid for queued and later ICE candidates", async () => {
+    const { peer, pc } = setup("all");
+    await peer.init(TURN);
+    peer.addRemoteCandidate(HOST);
+    const answering = peer.handleRemoteOffer(OFFER.replace("a=mid:2", "a=mid:data"));
+    pc().fireLocalAnswer(ANSWER);
+    await answering;
+    peer.addRemoteCandidate(RELAY);
+    expect(pc().candidates).toEqual([
+      [HOST, "data"],
+      [RELAY, "data"],
+    ]);
+    peer.close();
+  });
+
   it("builds a relay-only peer on the hub's TURN grant, with the hub's max message size", async () => {
     const { peer, config } = setup();
     await peer.init({ ...TURN, alt_turn_addr: "t2", alt_turn_port: 3479 });

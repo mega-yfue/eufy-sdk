@@ -26,7 +26,7 @@ import { decodeMapFrame } from "./map-channels.js";
 import { VacuumMapStore } from "../model/index.js";
 import { type P2PSession, type P2PFrame } from "../transport/p2p/p2p-session.js";
 import { P2PCommandRouter } from "../transport/p2p/command-router.js";
-import { RtcCommandRouter } from "../transport/rtc/command-router.js";
+import { RtcCommandRouter, type RtcRoute } from "../transport/rtc/command-router.js";
 import { jpegGeometry } from "../transport/p2p/media.js";
 import type { PowerTier } from "../transport/p2p/session-manager.js";
 import { MqttCommandRouter } from "../transport/mqtt/command-router.js";
@@ -76,7 +76,7 @@ import {
   type DeviceInspection,
   type RawParams,
 } from "../model/index.js";
-import { isHomeBase, isStation9000 } from "../model/device-family.js";
+import { isHomeBase, isNvrT8N00, isStation9000 } from "../model/device-family.js";
 import { cameraPowerTier } from "../model/capabilities/battery.js";
 import { DeviceRegistry, type DeviceRecord, type ParamChange } from "./device-registry.js";
 import type {
@@ -1132,9 +1132,10 @@ export class EufyMega extends EventEmitter {
    * The `eufy_life` DP writes (smart lights) are secure-MQTT-only. `aiot-dp` routes to either the
    * Anker AIoT MQTT stack or the legacy Tuya REST router depending on the device's category
    * (`eufy_home_tuya` → Tuya, everything else → MQTT). The capability layer emits a single `aiot-dp`
-   * kind and stays transport-agnostic; only the facade sees both sides and decides here. A T9000
+   * kind and stays transport-agnostic; only the facade sees both sides and decides here. A T9000 or T8N00
    * station and the devices attached to it go over RTC, with an attached device's command refused
-   * unless its channel resolves back to it on the station. Everything else is P2P.
+   * unless its channel resolves back to it on the station. T8N00 uses full SDP and admits direct and
+   * relay candidates; T9000 retains compact SDP and relay-only candidates. Everything else is P2P.
    */
   private routeCommand(sn: string, cmd: Command): Promise<void> {
     if (cmd.kind === "ff09-actuate" || cmd.kind === "ff09-autolock" || cmd.kind === "ff09-setting-toggle") {
@@ -1157,13 +1158,19 @@ export class EufyMega extends EventEmitter {
     const station = devices.find((d) => d.sn === stationSn);
     const stationRaw = (station?.raw ?? {}) as { device_type?: unknown; member?: { admin_user_id?: unknown } };
     const deviceType = typeof stationRaw.device_type === "number" ? stationRaw.device_type : undefined;
-    if (target && station && isStation9000({ deviceType, model: station.model })) {
+    const family = { deviceType, model: station?.model };
+    const native = isNvrT8N00(family);
+    if (target && station && (isStation9000(family) || native)) {
       const attached = stationSn !== sn;
       if (attached && this.registry.serialForFrame(stationSn, cmd.channel) !== sn)
         return Promise.reject(new Error("RTC command requires an unambiguous attached-device channel"));
       const member = stationRaw.member?.admin_user_id;
       const adminUserId = typeof member === "string" && member ? member : undefined;
-      return this.rtc.dispatchCommand({ stationSn, adminUserId, attached }, cmd);
+      const base: RtcRoute = { stationSn, adminUserId, attached };
+      return this.rtc.dispatchCommand(
+        native ? { ...base, signalingMode: "call", iceTransportPolicy: "all" } : base,
+        cmd,
+      );
     }
     return this.p2p.dispatchCommand(sn, cmd);
   }

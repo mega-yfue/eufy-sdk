@@ -1,6 +1,5 @@
 /**
- * RTC command router: drives a **HomeBase S1 Pro (T9000)** over the portal's WebRTC data channel instead
- * of P2P.
+ * RTC command router: drives a station over the portal's WebRTC data channel instead of P2P.
  *
  * The T9000 answers no P2P lookup, but it accepts the portal's control channel: sign → WS join → scall →
  * SDP answer → ICE over the relay the hub grants → DTLS → SCTP data channels, with commands riding
@@ -48,6 +47,10 @@ export interface RtcIdentity {
 
 /** Where a command goes: the station's session, and whether it addresses the station or a device on it. */
 export interface RtcRoute {
+  /** The station's signaling exchange; defaults to compact SDP. */
+  signalingMode?: "call" | "scall";
+  /** Candidate policy used by the station's exchange; defaults to relay-only. */
+  iceTransportPolicy?: "relay" | "all";
   stationSn: string;
   /**
    * The station's `member.admin_user_id`, the account the session and the payload name; the logged-in
@@ -86,14 +89,14 @@ export class RtcCommandRouter {
 
   async dispatchCommand(route: RtcRoute, cmd: Command): Promise<void> {
     if (cmd.kind !== "set-payload" && cmd.kind !== "set-json") {
-      throw new Error(`rtc: ${cmd.kind} is not routable over the T9000 control channel (only set-payload or set-json)`);
+      throw new Error(`rtc: ${cmd.kind} is not routable over the RTC control channel (only set-payload or set-json)`);
     }
     const identity = this.deps.identity();
     if (!identity) throw new Error(`rtc: not logged in, cannot drive ${route.stationSn}`);
     const { stationSn } = route;
     const adminUserId = route.adminUserId || identity.userId;
     const channel = route.attached ? cmd.channel : PORTAL_STATION_CHANNEL;
-    const st = await this.stationSession(stationSn, adminUserId, identity);
+    const st = await this.stationSession(route, adminUserId, identity);
     const outerCmd = cmd.kind === "set-json" ? PORTAL_CMD_CONTROL_PAYLOAD : PORTAL_CMD_SET_PAYLOAD;
     const innerCmd = cmd.kind === "set-json" ? cmd.param : cmd.cmd;
     const payload =
@@ -173,7 +176,8 @@ export class RtcCommandRouter {
     });
   }
 
-  private async stationSession(sn: string, adminUserId: string, identity: RtcIdentity): Promise<StationSession> {
+  private async stationSession(route: RtcRoute, adminUserId: string, identity: RtcIdentity): Promise<StationSession> {
+    const sn = route.stationSn;
     const existing = this.sessions.get(sn);
     if (existing) {
       await existing.ready;
@@ -191,7 +195,8 @@ export class RtcCommandRouter {
       shard: this.deps.shard(),
       country: this.deps.country ?? "US",
       logger: this.deps.logger,
-      peer: { logger: this.deps.logger },
+      signalingMode: route.signalingMode,
+      peer: { logger: this.deps.logger, iceTransportPolicy: route.iceTransportPolicy },
     });
     const ready = this.bringUp(sn, session);
     const st: StationSession = { session, seg: new SegmentCounter(), ready, queue: Promise.resolve() };

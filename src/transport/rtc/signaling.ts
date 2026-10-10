@@ -81,6 +81,8 @@ export interface SignalingSocketInit {
 export type SignalingSocketFactory = (url: string, init: SignalingSocketInit) => SignalingSocket;
 
 export interface RtcSignalingOptions {
+  /** Full SDP (`call`) or compact SDP (`scall`, the default). */
+  signalingMode?: "call" | "scall";
   /** The mega session's auth token. */
   authToken: string;
   /** The `gtoken` header value the mega session's authed HTTP calls carry. */
@@ -275,16 +277,16 @@ export class RtcSignalingClient extends EventEmitter<RtcSignalingEvents> {
   }
 
   sendCall(): void {
-    this.sendSession("scall");
+    this.sendSession(this.opts.signalingMode ?? "scall");
   }
 
   sendAck(): void {
     this.sendSession("ack");
   }
 
-  /** The SDP answer, as scall JSON text, in an `info`. */
-  sendInfoSdp(scallJson: string): void {
-    this.sendSession("info", { sdp: scallJson });
+  /** The SDP answer, encoded for the negotiated call format, in an `info`. */
+  sendInfoSdp(sdp: string): void {
+    this.sendSession("info", { sdp });
   }
 
   /** Trickle a candidate on the session's channel, like its SDP answer. An empty candidate ends them. */

@@ -125,6 +125,8 @@ export const isFloodLight = (ctx: FamilyContext): boolean => has(FLOODLIGHT_TYPE
 export const isHomeBase = (ctx: FamilyContext): boolean => has(HOMEBASE_TYPES, ctx.deviceType);
 /** HomeBase S1 Pro (`STATION_9000`), the station the app drives over its WebRTC control channel. */
 export const isStation9000 = (ctx: FamilyContext): boolean => ctx.deviceType === DeviceType.STATION_9000;
+/** T8N00 NVR, identified by its reported model. */
+export const isNvrT8N00 = (ctx: FamilyContext): boolean => ctx.model === "T8N00";
 /** Wired doorbell (DeviceType.DOORBELL). */
 export const isWiredDoorbell = (ctx: FamilyContext): boolean => ctx.deviceType === DeviceType.DOORBELL;
 

@@ -157,6 +157,16 @@ describe("region rules", () => {
 });
 
 describe("socket handshake", () => {
+  it("uses call signaling with channel zero and the account proof", async () => {
+    const { c, sockets } = client({ signalingMode: "call" });
+    const s = await opened(c, sockets);
+    c.sendCall();
+    const inner = JSON.parse(JSON.parse(s.sent[1]!).data);
+    expect(inner).toMatchObject({ dataType: "call", channelId: 0 });
+    expect(JSON.parse(inner.data).account).toBe(sessionAccount(0, "admin-1", 1_790_000_000, "TOKEN"));
+    c.close();
+  });
+
   it("authenticates through the subprotocol and sends action 1 on open", async () => {
     const { c, sockets } = client();
     const connecting = c.connect();

@@ -116,7 +116,7 @@ export class RtcSession extends EventEmitter<RtcSessionEvents> {
   }
 
   /**
-   * Start the sequence; resolves once `scall` is sent. `connected` fires when the channel opens. A session
+   * Start the sequence; resolves once the call is sent. `connected` fires when the channel opens. A session
    * closed by the time the sign fetch or the auth completes rejects instead of opening the socket or
    * placing the call.
    */
@@ -126,7 +126,7 @@ export class RtcSession extends EventEmitter<RtcSessionEvents> {
     await this.signaling.connect();
     await this.waitForAuth();
     if (this.closed) throw new Error("RTC session closed before the call was placed");
-    this.logger.debug(`[rtc] ${this.opts.stationSn} authenticated — scall`);
+    this.logger.debug(`[rtc] ${this.opts.stationSn} authenticated — ${this.opts.signalingMode ?? "scall"}`);
     this.signaling.sendCall();
   }
 
@@ -258,7 +258,7 @@ export class RtcSession extends EventEmitter<RtcSessionEvents> {
       offer = sdpText;
     }
     const answer = await this.peer.handleRemoteOffer(offer);
-    this.signaling.sendInfoSdp(JSON.stringify(sdpToScallJson(answer)));
+    this.signaling.sendInfoSdp(this.opts.signalingMode === "call" ? answer : JSON.stringify(sdpToScallJson(answer)));
     this.logger.debug(`[rtc] ${this.opts.stationSn} answered the hub's offer`);
   }
 }
