@@ -282,6 +282,19 @@ describe("LiveStream access-unit reassembly", () => {
     expect(frames[0]).toMatchObject({ keyframe: true, width: 1920, height: 1080 });
   });
 
+  it("preserves the header timestamp across split units and 32-bit wrap", () => {
+    const { session, frames } = mk();
+    const first = 0xfffffffe;
+    const second = 0xffffffff;
+    session.push(videoChunk(filled, { timestamp: first, sequence: 3 }));
+    session.push(videoChunk(tail, { timestamp: first, sequence: 3 }));
+    session.push(videoChunk(small, { timestamp: second, sequence: 4 }));
+    session.push(videoChunk(small, { timestamp: 0, sequence: 5 }));
+
+    expect(frames.map((frame) => frame.sourceTimestampMs)).toEqual([first, second, 0]);
+    expect(frames[0].data.equals(Buffer.concat([filled, tail]))).toBe(true);
+  });
+
   it("emits nothing while the unit's latest frame is still full", () => {
     const { session, frames } = mk();
 

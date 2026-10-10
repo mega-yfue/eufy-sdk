@@ -62,7 +62,7 @@ export interface VideoFrameHeader {
   width: number;
   /** Frame height (s16 LE @ 0x0c). */
   height: number;
-  /** Timestamp word (u32 LE @ 0x0e). */
+  /** Timestamp word (u32 LE @ 0x0e), used to match frames of one access unit. */
   timestamp: number;
 }
 
@@ -172,6 +172,8 @@ export class VideoFrameDecoder {
 
 /** One whole access unit recovered from the frame (or frames) the station sent it in. */
 export interface AssembledAccessUnit {
+  /** Low 32-bit header timestamp from the first frame of this access unit. */
+  sourceTimestampMs: number;
   /** True when the unit's own header flagged it a keyframe — a point a consumer may begin decoding at. */
   keyframe: boolean;
   /** Frame width the unit's header declared. */
@@ -295,5 +297,11 @@ function beginsAccessUnit(body: Buffer): boolean {
 
 /** The delivered shape of a unit: its header's flags and geometry, and the payload as assembled. */
 function unitOf(header: VideoFrameHeader, data: Buffer): AssembledAccessUnit {
-  return { keyframe: header.keyframe, width: header.width, height: header.height, data };
+  return {
+    sourceTimestampMs: header.timestamp,
+    keyframe: header.keyframe,
+    width: header.width,
+    height: header.height,
+    data,
+  };
 }
