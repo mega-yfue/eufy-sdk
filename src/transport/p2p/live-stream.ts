@@ -341,6 +341,7 @@ export class LiveStream extends EventEmitter {
           if (unit.keyframe) this.lastCodec = sniffAnnexbCodec(unit.data) ?? this.lastCodec;
           this.settleKeepalive();
           this.emit("video", {
+            sourceTimestampMs: unit.sourceTimestampMs,
             keyframe: unit.keyframe,
             width: unit.width,
             height: unit.height,
