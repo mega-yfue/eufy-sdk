@@ -62,7 +62,7 @@ export interface VideoFrameHeader {
   width: number;
   /** Frame height (s16 LE @ 0x0c). */
   height: number;
-  /** Timestamp word (u32 LE @ 0x0e), used to match frames of one access unit. */
+  /** Timestamp word (u32 LE @ 0x0e). */
   timestamp: number;
 }
 
