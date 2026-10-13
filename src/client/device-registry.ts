@@ -63,6 +63,8 @@ export interface ParamChange {
  * devices that merely re-reported. All four come from a single device-list fetch.
  */
 export interface PollDiff {
+  /** Whether all house/device-list queries completed, rather than returning a tolerated partial result. */
+  complete: boolean;
   params: ParamChange[];
   added: EufyDevice[];
   removed: EufyDevice[];
@@ -407,7 +409,7 @@ export class DeviceRegistry {
       devices: new Map(devices.map((d) => [d.sn, { device: d, lastSeenMs: d.lastSeenMs, params: { ...d.params } }])),
       complete: !this.lastRefreshPartial,
     };
-    return { params, added, removed, reported };
+    return { params, added, removed, reported, complete: !this.lastRefreshPartial };
   }
 
   /** Devices driven over eufy secure-MQTT — named positively (not "everything that isn't P2P"), so a

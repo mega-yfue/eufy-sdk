@@ -338,6 +338,12 @@ export type EufyMegaEventMap = {
    */
   deviceState: [state: DeviceState];
   /**
+   * A cloud-param poll pass settled, even when unchanged, partial or failed.
+   * No event is emitted while a pass remains pending or periodic polling is disabled.
+   * This reports poll-loop progress, not device reachability or media freshness.
+   */
+  pollComplete: [completion: { status: "ok" | "partial" | "error" }];
+  /**
    * A verified vendor-wire availability observation. Duplicate states are coalesced; silence,
    * `lastSeenMs`, operation failure and transport lifecycle never emit or clear this event.
    */
