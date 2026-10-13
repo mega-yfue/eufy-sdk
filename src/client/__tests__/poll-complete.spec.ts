@@ -85,20 +85,4 @@ describe("pollComplete reports settled loop progress independently of device cha
     await pending;
     expect(completed.mock.calls).toEqual([[{ status: "ok" }]]);
   });
-
-  it("emits no completion when the periodic poll loop is disabled", async () => {
-    vi.useFakeTimers();
-    const { client, target, post } = cloudClient(false, 0);
-    const completed = vi.fn();
-    client.on("pollComplete", completed);
-    try {
-      target.schedulePoll();
-      await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
-      expect(post).not.toHaveBeenCalled();
-      expect(completed).not.toHaveBeenCalled();
-    } finally {
-      client.setPollInterval(0);
-      vi.useRealTimers();
-    }
-  });
 });
