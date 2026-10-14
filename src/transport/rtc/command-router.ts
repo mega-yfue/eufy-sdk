@@ -31,6 +31,7 @@ import { captureSnapshotFromShared } from "../p2p/media.js";
 import { openReadableFromConsumer } from "../p2p/readable-egress.js";
 import { SharedLiveSource, attachUnlessAborted } from "../p2p/shared-live-source.js";
 import { RtcLiveStream } from "./live.js";
+import { RtcCallLiveStream } from "./call-live.js";
 import { RtcSession, type RtcSessionOptions } from "./session.js";
 import {
   buildPortalPacket,
@@ -131,6 +132,7 @@ class StationStreamBusyError extends Error {
 export class RtcCommandRouter {
   private readonly sessions = new Map<string, StationSession>();
   private readonly lives = new Map<string, StationLive>();
+  private readonly callSources = new Map<string, SharedLiveSource>();
 
   constructor(private readonly deps: RtcCommandRouterDeps) {}
 
@@ -185,7 +187,53 @@ export class RtcCommandRouter {
    * Tear down every station session (logout / shutdown). Each live source is disposed before its session
    * closes, so its consumers end cleanly and its stop still rides the session.
    */
+  /**
+   * Live view of a standalone WebRTC doorbell (C30/C31) over a portal `call`: one shared source per
+   * doorbell, each warm-up placing a fresh call. Media only; the doorbell takes no portal commands here.
+   */
+  callMediaProviderFor(route: { sn: string; adminUserId?: string }): MediaProvider {
+    const sourceFor = (): SharedLiveSource => {
+      let source = this.callSources.get(route.sn);
+      if (!source) {
+        source = new SharedLiveSource({
+          makeStream: () => {
+            const identity = this.deps.identity();
+            if (!identity) throw new Error(`rtc: not logged in, cannot call ${route.sn}`);
+            return new RtcCallLiveStream({
+              authToken: identity.authToken,
+              gtoken: identity.gtoken,
+              userId: identity.userId,
+              sn: route.sn,
+              adminUserId: route.adminUserId,
+              shard: this.deps.shard(),
+              country: this.deps.country ?? "US",
+              logger: this.deps.logger,
+            });
+          },
+          warmTimeoutMs: 45_000,
+          warmRetryMs: 60_000,
+          lingerMs: 15_000,
+        });
+        this.callSources.set(route.sn, source);
+      }
+      return source;
+    };
+    return {
+      live: async (opts) => attachUnlessAborted(sourceFor(), opts?.signal),
+      openReadable: async (opts) => openReadableFromConsumer(attachUnlessAborted(sourceFor(), opts?.signal), opts),
+      snapshotLive: (opts) =>
+        captureSnapshotFromShared(sourceFor(), { ...opts, logger: this.deps.logger, ffmpegPath: this.deps.ffmpegPath }),
+      record: async () => {
+        throw new Error(`record is not available for ${route.sn} over a portal call`);
+      },
+    };
+  }
+
   close(): void {
+    for (const [sn, src] of this.callSources) {
+      this.callSources.delete(sn);
+      src.dispose();
+    }
     for (const [sn, live] of this.lives) {
       this.lives.delete(sn);
       live.source.dispose();

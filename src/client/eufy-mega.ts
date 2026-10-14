@@ -1214,6 +1214,14 @@ export class EufyMega extends EventEmitter {
    * the station; `undefined` otherwise, including a camera behind a T8N00, whose route carries commands only.
    */
   private rtcMediaFor(sn: string): MediaProvider | undefined {
+    const doorbell = this.registry.list().find((d) => d.sn === sn);
+    if (doorbell && /^T822[34]/.test(String(doorbell.model ?? sn))) {
+      const member = (doorbell.raw as { member?: { admin_user_id?: unknown } } | undefined)?.member?.admin_user_id;
+      return this.rtc.callMediaProviderFor({
+        sn,
+        adminUserId: typeof member === "string" && member ? member : undefined,
+      });
+    }
     const route = this.rtcRouteFor(sn);
     if (!route?.attached || route.signalingMode === "call") return undefined;
     const raw = (this.registry.list().find((d) => d.sn === sn)?.raw ?? {}) as { device_channel?: unknown };
