@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EufyMega } from "../eufy-mega.js";
 import { Device } from "../../model/device.js";
-import type { ParamChange } from "../device-registry.js";
+import { DeviceRegistry, type PollDiff, type ParamChange } from "../device-registry.js";
 
 /**
  * The cloud-param poll loop — the producer behind the capabilities' `source:"poll"` event mappings.
@@ -708,5 +708,115 @@ describe("poll baseline isolation", () => {
 
     expect(diff.params).toEqual([]);
     expect(diff.reported).toEqual([]);
+  });
+});
+
+const emptyComplete: PollDiff = { params: [], added: [], removed: [], reported: [], complete: true };
+
+describe("pollComplete reports settled loop progress independently of device changes", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+  it("reports a throwing completion listener and keeps the scheduled loop running", async () => {
+    const client = makeClient({ pollMs: 1000 });
+    const poll = vi.spyOn((client as any).registry, "pollChanges").mockResolvedValue(emptyComplete);
+    const boom = new Error("completion listener failed");
+    const errors = vi.fn();
+    client.on("error", errors);
+    client.on("pollComplete", () => {
+      throw boom;
+    });
+    try {
+      (client as any).schedulePoll();
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(poll).toHaveBeenCalledTimes(2);
+      expect(errors.mock.calls).toEqual([[boom], [boom]]);
+    } finally {
+      await client.disconnect();
+    }
+  });
+
+  it("emits ok once per complete unchanged poll without inventing deviceState transitions", async () => {
+    const client = makeClient();
+    const target = client as unknown as { pollOnce(): Promise<void> };
+    vi.spyOn((client as any).registry, "pollChanges").mockResolvedValue(emptyComplete);
+    const completed = vi.fn();
+    const state = vi.fn();
+    client.on("pollComplete", completed);
+    client.on("deviceState", state);
+    await target.pollOnce();
+    await target.pollOnce();
+    expect(completed.mock.calls).toEqual([[{ status: "ok" }], [{ status: "ok" }]]);
+    expect(state).not.toHaveBeenCalled();
+  });
+
+  it("emits partial for a tolerated failed query rather than mislabeling the resolved pass ok", async () => {
+    const client = new EufyMega({ email: "test@example.com", password: "synthetic" });
+    const post = vi.fn(async (_service: string, path: string) => {
+      if (path.endsWith("get_house_list")) {
+        throw new Error("synthetic partial house-query failure");
+      }
+      return {
+        devices: [
+          {
+            device_sn: "SENSOR",
+            device_model: "T8410",
+            category: "eufy_security",
+            device_type: 30,
+            params: [{ param_type: 1101, param_value: "88", update_time: 9000 }],
+          },
+        ],
+      };
+    });
+    const errors = vi.fn();
+    client.on("error", errors);
+    const registry = new DeviceRegistry({ mega: { post } as never, onError: errors });
+    const target = client as unknown as { registry: DeviceRegistry; pollOnce(): Promise<void> };
+    target.registry = registry;
+    const completed = vi.fn();
+    client.on("pollComplete", completed);
+    await target.pollOnce();
+    expect(errors).toHaveBeenCalledOnce();
+    expect(completed.mock.calls).toEqual([[{ status: "partial" }]]);
+  });
+
+  it("reports an exception and emits error once, then permits a later complete pass", async () => {
+    const client = makeClient();
+    const target = client as unknown as { pollOnce(): Promise<void> };
+    const registry = (client as any).registry;
+    const errors = vi.fn();
+    client.on("error", errors);
+    const boom = new Error("synthetic poll failure");
+    vi.spyOn(registry, "pollChanges").mockRejectedValueOnce(boom).mockResolvedValueOnce(emptyComplete);
+    const completed = vi.fn();
+    client.on("pollComplete", completed);
+    await target.pollOnce();
+    expect(errors).toHaveBeenCalledWith(boom);
+    expect(completed.mock.calls).toEqual([[{ status: "error" }]]);
+    await target.pollOnce();
+    expect(completed.mock.calls).toEqual([[{ status: "error" }], [{ status: "ok" }]]);
+  });
+
+  it("does not announce progress while a poll promise is hung, and announces once when it settles", async () => {
+    const client = makeClient();
+    const target = client as unknown as { pollOnce(): Promise<void> };
+    const registry = (client as any).registry;
+    let resolve!: (diff: PollDiff) => void;
+    vi.spyOn(registry, "pollChanges").mockImplementation(
+      () =>
+        new Promise<PollDiff>((done) => {
+          resolve = done;
+        }),
+    );
+    const completed = vi.fn();
+    client.on("pollComplete", completed);
+    const pending = target.pollOnce();
+    await Promise.resolve();
+    expect(completed).not.toHaveBeenCalled();
+    resolve(emptyComplete);
+    await pending;
+    expect(completed.mock.calls).toEqual([[{ status: "ok" }]]);
   });
 });

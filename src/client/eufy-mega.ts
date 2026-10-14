@@ -1538,7 +1538,11 @@ export class EufyMega extends EventEmitter {
     } catch (e) {
       this.reportError(e);
     } finally {
-      this.emit("pollComplete", { status });
+      try {
+        this.emit("pollComplete", { status });
+      } catch (e) {
+        this.reportError(e);
+      }
     }
   }
 
