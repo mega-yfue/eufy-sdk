@@ -9,17 +9,11 @@
 import { EventEmitter } from "node:events";
 import type { LiveStreamHandle, LiveVideoFrame } from "../../core/contracts.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
-import { codedGeometry, extractParamSets, hasIdr } from "../p2p/annexb.js";
+import { hasIdr } from "../p2p/annexb.js";
 import type { RtcPeerOptions } from "./peer.js";
 import type { RtcSession } from "./session.js";
 
 const START_CODE = Buffer.from([0, 0, 0, 1]);
-
-export interface RtcCallLiveOptions {
-  /** A session on a {@link RtcPeerOptions.mediaTrack} peer, not yet connected. */
-  session: RtcSession;
-  logger?: Logger;
-}
 
 /**
  * H.264 RTP depacketizer (RFC 6184 single NAL / STAP-A / FU-A). Feed whole RTP packets; it calls `onUnit`
@@ -93,19 +87,21 @@ export class H264Depacketizer {
 export class RtcCallLiveStream extends EventEmitter implements LiveStreamHandle {
   private readonly logger: Logger;
   private running = false;
-  private width = 0;
-  private height = 0;
   private readonly depacketizer = new H264Depacketizer((unit, ts) => this.onUnit(unit, ts));
 
-  constructor(private readonly opts: RtcCallLiveOptions) {
+  /** `session` is a session on a {@link RtcPeerOptions.mediaTrack} peer, not yet connected. */
+  constructor(
+    private readonly session: RtcSession,
+    logger?: Logger,
+  ) {
     super();
-    this.logger = opts.logger ?? noopLogger;
+    this.logger = logger ?? noopLogger;
   }
 
   start(): this {
     if (this.running) return this;
     this.running = true;
-    const { session } = this.opts;
+    const { session } = this;
     session.on("rtp", (packet) => this.depacketizer.push(packet));
     session.on("close", () => this.fail(new Error("rtc call: session closed")));
     session.on("error", (e) => this.fail(e));
@@ -120,18 +116,12 @@ export class RtcCallLiveStream extends EventEmitter implements LiveStreamHandle 
   }
 
   private onUnit(unit: Buffer, timestamp: number): void {
-    const sets = extractParamSets(unit);
-    const geometry = sets && codedGeometry(sets);
-    if (geometry) {
-      this.width = geometry.width;
-      this.height = geometry.height;
-    }
     const frame: LiveVideoFrame = {
       codec: "h264",
       data: unit,
       keyframe: hasIdr(unit, "h264"),
-      width: this.width,
-      height: this.height,
+      width: 0,
+      height: 0,
       sourceTimestamp: timestamp,
     };
     this.emit("video", frame);
@@ -146,6 +136,6 @@ export class RtcCallLiveStream extends EventEmitter implements LiveStreamHandle 
 
   private teardown(): void {
     this.running = false;
-    this.opts.session.close();
+    this.session.close();
   }
 }

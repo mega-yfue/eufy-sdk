@@ -32,7 +32,6 @@ import { openReadableFromConsumer } from "../p2p/readable-egress.js";
 import { SharedLiveSource, attachUnlessAborted } from "../p2p/shared-live-source.js";
 import { RtcLiveStream } from "./live.js";
 import { RtcCallLiveStream } from "./call-live.js";
-import type { RtcPeerOptions } from "./peer.js";
 import { RtcSession, type RtcSessionOptions } from "./session.js";
 import {
   buildPortalPacket,
@@ -73,7 +72,7 @@ export interface RtcRoute {
   iceTransportPolicy?: "relay" | "all";
   /**
    * The station streams video as RTP on its offer's video track and serves no data channel, so it takes
-   * no portal command; see {@link RtcPeerOptions.mediaTrack}.
+   * no portal command; see `RtcPeerOptions.mediaTrack`.
    */
   mediaTrack?: boolean;
   stationSn: string;
@@ -197,46 +196,35 @@ export class RtcCommandRouter {
    */
   trackMediaProviderFor(route: RtcRoute): MediaProvider {
     const sn = route.stationSn;
-    const sourceFor = (): SharedLiveSource => {
+    const sourceFor = (hints: SharedSourceHints = {}): SharedLiveSource => {
       let source = this.callSources.get(sn);
       if (!source) {
         source = new SharedLiveSource({
           makeStream: () => {
             const identity = this.deps.identity();
             if (!identity) throw new Error(`rtc: not logged in, cannot call ${sn}`);
-            const peer: RtcPeerOptions = {
-              logger: this.deps.logger,
-              iceTransportPolicy: route.iceTransportPolicy,
-              mediaTrack: true,
-            };
-            const session = (this.deps.createSession ?? ((o: RtcSessionOptions) => new RtcSession(o)))({
-              authToken: identity.authToken,
-              gtoken: identity.gtoken,
-              stationSn: sn,
-              adminUserId: route.adminUserId || identity.userId,
-              shard: this.deps.shard(),
-              country: this.deps.country ?? "US",
-              logger: this.deps.logger,
-              signalingMode: route.signalingMode,
-              peer,
-            });
-            return new RtcCallLiveStream({ session, logger: this.deps.logger });
+            const session = this.newSession(route, route.adminUserId || identity.userId, identity);
+            return new RtcCallLiveStream(session, this.deps.logger);
           },
           label: sn,
           logger: this.deps.logger,
+          powered: hints.powered,
+          preBufferSeconds: hints.preBufferSeconds,
           warmTimeoutMs: 45_000,
-          warmRetryMs: 60_000,
-          lingerMs: 15_000,
         });
         this.callSources.set(sn, source);
       }
       return source;
     };
     return {
-      live: async (opts) => attachUnlessAborted(sourceFor(), opts?.signal),
-      openReadable: async (opts) => openReadableFromConsumer(attachUnlessAborted(sourceFor(), opts?.signal), opts),
+      live: async (opts) => attachUnlessAborted(sourceFor(opts), opts?.signal),
+      openReadable: async (opts) => openReadableFromConsumer(attachUnlessAborted(sourceFor(opts), opts?.signal), opts),
       snapshotLive: (opts) =>
-        captureSnapshotFromShared(sourceFor(), { ...opts, logger: this.deps.logger, ffmpegPath: this.deps.ffmpegPath }),
+        captureSnapshotFromShared(sourceFor(opts), {
+          ...opts,
+          logger: this.deps.logger,
+          ffmpegPath: this.deps.ffmpegPath,
+        }),
       record: async () => {
         throw new Error(`record is not available for ${sn} over a portal call`);
       },
@@ -406,6 +394,20 @@ export class RtcCommandRouter {
     });
   }
 
+  private newSession(route: RtcRoute, adminUserId: string, identity: RtcIdentity): RtcSession {
+    return (this.deps.createSession ?? ((o: RtcSessionOptions) => new RtcSession(o)))({
+      authToken: identity.authToken,
+      gtoken: identity.gtoken,
+      stationSn: route.stationSn,
+      adminUserId,
+      shard: this.deps.shard(),
+      country: this.deps.country ?? "US",
+      logger: this.deps.logger,
+      signalingMode: route.signalingMode,
+      peer: { logger: this.deps.logger, iceTransportPolicy: route.iceTransportPolicy, mediaTrack: route.mediaTrack },
+    });
+  }
+
   private async stationSession(route: RtcRoute, adminUserId: string, identity: RtcIdentity): Promise<StationSession> {
     const sn = route.stationSn;
     const existing = this.sessions.get(sn);
@@ -417,17 +419,7 @@ export class RtcCommandRouter {
       }
       this.drop(sn, existing);
     }
-    const session = (this.deps.createSession ?? ((o: RtcSessionOptions) => new RtcSession(o)))({
-      authToken: identity.authToken,
-      gtoken: identity.gtoken,
-      stationSn: sn,
-      adminUserId,
-      shard: this.deps.shard(),
-      country: this.deps.country ?? "US",
-      logger: this.deps.logger,
-      signalingMode: route.signalingMode,
-      peer: { logger: this.deps.logger, iceTransportPolicy: route.iceTransportPolicy },
-    });
+    const session = this.newSession(route, adminUserId, identity);
     const ready = this.bringUp(sn, session);
     const st: StationSession = { session, seg: new SegmentCounter(), ready, queue: Promise.resolve(), leases: 0 };
     session.on("error", (e) => this.deps.onError?.(e));

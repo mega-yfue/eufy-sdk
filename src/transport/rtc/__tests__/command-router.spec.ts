@@ -622,4 +622,12 @@ describe("RtcCommandRouter on a media-track route", () => {
     router.close();
     expect(sessions[0]!.closed).toBe(true);
   });
+
+  it("builds the station's live source from the first caller's hints", async () => {
+    const { router } = makeRouter();
+    await router.trackMediaProviderFor(DOORBELL).live({ powered: "battery", preBufferSeconds: 10 });
+    const sources = (router as unknown as { callSources: Map<string, { opts: Record<string, unknown> }> }).callSources;
+    expect(sources.get("T8000P0000000002")!.opts).toMatchObject({ powered: "battery", preBufferSeconds: 10 });
+    router.close();
+  });
 });

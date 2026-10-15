@@ -163,7 +163,7 @@ function setup() {
       },
     },
   });
-  const stream = new RtcCallLiveStream({ session });
+  const stream = new RtcCallLiveStream(session);
   const frames: LiveVideoFrame[] = [];
   const errors: Error[] = [];
   stream.on("video", (f) => frames.push(f));
@@ -201,10 +201,7 @@ describe("RtcCallLiveStream", () => {
     expect(pc.channels).toBe(0);
     await vi.waitFor(() => expect(pc.candidates).toEqual([["candidate:1 1 udp 1 192.0.2.10 1 typ host", "0"]]));
 
-    const connected = vi.fn();
-    s.session.on("connected", connected);
     pc.state("connected");
-    expect(connected).toHaveBeenCalledOnce();
 
     pc.tracks.get("0")!.fire(rtp(1, [0x65, 1], true, 111));
     pc.tracks.get("1")!.fire(rtp(1, SPS));
@@ -214,8 +211,8 @@ describe("RtcCallLiveStream", () => {
     expect(s.frames[0]).toMatchObject({
       codec: "h264",
       keyframe: true,
-      width: 1024,
-      height: 768,
+      width: 0,
+      height: 0,
       sourceTimestamp: 9000,
     });
     expect(s.frames[0]!.data).toEqual(

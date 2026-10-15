@@ -110,9 +110,8 @@ export function midOf(sdp: string, kind: "audio" | "video" | "application"): str
 
 /**
  * Reject an offer's `m=application` (data channel) section: port 0 and out of the BUNDLE group. The
- * T8223 offers one but never completes the SCTP association, and libdatachannel fails the whole peer
- * when SCTP does not come up, cutting the video ~30 s into every call; without it the peer connects on
- * DTLS-SRTP alone.
+ * remote never completes the SCTP association, so a peer waiting on it fails; without it the peer
+ * connects on DTLS-SRTP alone.
  */
 export function rejectDataSection(sdp: string): string {
   const appMid = midOf(sdp, "application");
