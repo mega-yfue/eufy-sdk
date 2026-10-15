@@ -592,3 +592,34 @@ describe("RtcCommandRouter live view", () => {
     expect(media.p2pControlQuery).toBeUndefined();
   });
 });
+
+describe("RtcCommandRouter on a media-track route", () => {
+  const DOORBELL: RtcRoute = {
+    stationSn: "T8000P0000000002",
+    adminUserId: "adminid",
+    attached: false,
+    signalingMode: "call",
+    iceTransportPolicy: "all",
+    mediaTrack: true,
+  };
+
+  it("refuses a command without opening a session", async () => {
+    const { router, sessions } = makeRouter();
+    await expect(router.dispatchCommand(DOORBELL, arming(1))).rejects.toThrow("serves media only");
+    expect(sessions).toHaveLength(0);
+  });
+
+  it("places a call on a media-track session of its own for a live view, and hangs it up on close", async () => {
+    const { router, sessions } = makeRouter();
+    await router.trackMediaProviderFor(DOORBELL).live();
+    await vi.waitFor(() => expect(sessions).toHaveLength(1));
+    expect(sessions[0]!.opts).toMatchObject({
+      stationSn: "T8000P0000000002",
+      adminUserId: "adminid",
+      signalingMode: "call",
+      peer: { iceTransportPolicy: "all", mediaTrack: true },
+    });
+    router.close();
+    expect(sessions[0]!.closed).toBe(true);
+  });
+});

@@ -76,7 +76,7 @@ import {
   type DeviceInspection,
   type RawParams,
 } from "../model/index.js";
-import { isHomeBase, isNvrT8N00, isStation9000 } from "../model/device-family.js";
+import { isDoorbellT8223, isHomeBase, isNvrT8N00, isStation9000 } from "../model/device-family.js";
 import { cameraPowerTier } from "../model/capabilities/battery.js";
 import { DeviceRegistry, type DeviceRecord, type ParamChange } from "./device-registry.js";
 import type {
@@ -1100,7 +1100,7 @@ export class EufyMega extends EventEmitter {
   /**
    * The station a device's commands go through: the device itself, or the HomeBase the registry links it
    * to. Answers the target record, the station record and serial, the station's `device_type`, and the
-   * `t9000` / `t8n00` family flags.
+   * `t9000` / `t8n00` / `t8223` family flags.
    */
   private stationOf(sn: string) {
     const devices = this.registry.list();
@@ -1110,7 +1110,16 @@ export class EufyMega extends EventEmitter {
     const raw = (station?.raw ?? {}) as { device_type?: unknown; member?: { admin_user_id?: unknown } };
     const deviceType = typeof raw.device_type === "number" ? raw.device_type : undefined;
     const family = { deviceType, model: station?.model };
-    return { target, station, stationSn, raw, deviceType, t9000: isStation9000(family), t8n00: isNvrT8N00(family) };
+    return {
+      target,
+      station,
+      stationSn,
+      raw,
+      deviceType,
+      t9000: isStation9000(family),
+      t8n00: isNvrT8N00(family),
+      t8223: isDoorbellT8223(family),
+    };
   }
 
   /** The vendor DeviceType of the station a device hangs off; `undefined` for a station itself. */
@@ -1169,7 +1178,8 @@ export class EufyMega extends EventEmitter {
    * kind and stays transport-agnostic; only the facade sees both sides and decides here. A T9000 or T8N00
    * station and the devices attached to it go over RTC, with an attached device's command refused
    * unless its channel resolves back to it on the station. T8N00 uses full SDP and admits direct and
-   * relay candidates; T9000 retains compact SDP and relay-only candidates. Everything else is P2P.
+   * relay candidates; T9000 retains compact SDP and relay-only candidates. A T8223 doorbell's route serves
+   * media only, and the RTC router refuses a command on it. Everything else is P2P.
    */
   private routeCommand(sn: string, cmd: Command): Promise<void> {
     if (cmd.kind === "ff09-actuate" || cmd.kind === "ff09-autolock" || cmd.kind === "ff09-setting-toggle") {
@@ -1196,33 +1206,30 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * The RTC route for a T9000 or T8N00 station or a device attached to one, decided by the station's model
-   * classification; `undefined` for any other device. A T8N00 route carries its native `call` signalling. The admin id is the station's
-   * `member.admin_user_id`, else the logged-in user.
+   * The RTC route for a T9000 or T8N00 station or a device attached to one, or a T8223 doorbell that is its
+   * own station, decided by the station's model classification; `undefined` for any other device. A T8N00
+   * route carries its native `call` signalling; a T8223 route does too, and streams its video on a media
+   * track. The admin id is the station's `member.admin_user_id`, else the logged-in user.
    */
   private rtcRouteFor(sn: string): RtcRoute | undefined {
-    const { target, station, stationSn, raw, t9000, t8n00: native } = this.stationOf(sn);
-    if (!target || !station || !(t9000 || native)) return undefined;
+    const { target, station, stationSn, raw, t9000, t8n00: native, t8223 } = this.stationOf(sn);
+    const doorbell = t8223 && stationSn === sn;
+    if (!target || !station || !(t9000 || native || doorbell)) return undefined;
     const member = raw.member?.admin_user_id;
     const adminUserId = typeof member === "string" && member ? member : undefined;
     const base: RtcRoute = { stationSn, adminUserId, attached: stationSn !== sn };
+    if (doorbell) return { ...base, signalingMode: "call", iceTransportPolicy: "all", mediaTrack: true };
     return native ? { ...base, signalingMode: "call", iceTransportPolicy: "all" } : base;
   }
 
   /**
-   * The RTC media provider for a camera attached to a T9000 whose `device_channel` resolves back to it on
-   * the station; `undefined` otherwise, including a camera behind a T8N00, whose route carries commands only.
+   * The RTC media provider for a station on a media-track route, or a camera attached to a T9000 whose
+   * `device_channel` resolves back to it on the station; `undefined` otherwise, including a camera behind
+   * a T8N00, whose route carries commands only.
    */
   private rtcMediaFor(sn: string): MediaProvider | undefined {
-    const doorbell = this.registry.list().find((d) => d.sn === sn);
-    if (doorbell && /^T822[34]/.test(String(doorbell.model ?? sn))) {
-      const member = (doorbell.raw as { member?: { admin_user_id?: unknown } } | undefined)?.member?.admin_user_id;
-      return this.rtc.callMediaProviderFor({
-        sn,
-        adminUserId: typeof member === "string" && member ? member : undefined,
-      });
-    }
     const route = this.rtcRouteFor(sn);
+    if (route?.mediaTrack) return this.rtc.trackMediaProviderFor(route);
     if (!route?.attached || route.signalingMode === "call") return undefined;
     const raw = (this.registry.list().find((d) => d.sn === sn)?.raw ?? {}) as { device_channel?: unknown };
     const channel = typeof raw.device_channel === "number" ? raw.device_channel : undefined;
