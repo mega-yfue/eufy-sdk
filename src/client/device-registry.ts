@@ -409,7 +409,7 @@ export class DeviceRegistry {
       devices: new Map(devices.map((d) => [d.sn, { device: d, lastSeenMs: d.lastSeenMs, params: { ...d.params } }])),
       complete: !this.lastRefreshPartial,
     };
-    return { params, added, removed, reported, complete: !this.lastRefreshPartial };
+    return { params, added, removed, reported, complete: this.pollSnapshot.complete };
   }
 
   /** Devices driven over eufy secure-MQTT — named positively (not "everything that isn't P2P"), so a
