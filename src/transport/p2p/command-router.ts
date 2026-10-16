@@ -402,6 +402,16 @@ export class P2PCommandRouter {
     return dev ? stationOf(dev) : sn;
   }
 
+  /** Drop this camera's cached media source; return false when no source is cached. */
+  async resetCameraStream(sn: string): Promise<boolean> {
+    const address = stationChannels(this.deps.listDevices()).get(sn);
+    if (!address || !("channel" in address)) return false;
+    const key = `${this.stationKeyOf(sn)}:${address.channel}`;
+    if (!this.liveSources.has(key)) return false;
+    this.dropLiveSource(key);
+    return true;
+  }
+
   /** Reset only a standalone device's session; an attached device must not close its shared HomeBase. */
   async resetStandaloneSession(sn: string): Promise<void> {
     const device = this.recordFor(sn);
