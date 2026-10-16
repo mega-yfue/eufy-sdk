@@ -70,7 +70,8 @@ permanent-outdoor-light line: on/off/brightness/custom colour/effect — see the
 [Smart lights guide](/smart-lights)),
 `ptz` (rotate + left/right/up/down, zoom, and a `preset()` sub-API — see the [PTZ guide](/ptz)), plus
 `arming`, `lock` (lock/unlock/setAutoLock on both the P2P video lock and the MQTT garage door, plus
-setRainMode on the video lock only — optional accessor, `?.()`), and `siren` (volume, alarm duration, and test/stop triggers — see below).
+setRainMode on the video lock only — optional accessor, `?.()`), `siren` (volume, alarm duration, and test/stop triggers — see below),
+and `smartDrop` (`openLid()` on a standalone SmartDrop T8790).
 
 > **Unverified writes are absent, they don't guess.** A write method present on a `dev.<cap>()` object
 > means its wire is verified — so you know at compile time what's settable. Where a write isn't yet

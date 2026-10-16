@@ -345,6 +345,10 @@ export type EufyMegaEventMap = {
   // P2P lifecycle + raw frame.
   p2pConnect: [stationSn: string];
   p2pClose: [stationSn: string];
+  /**
+   * A station's AES-256-GCM level-2 key was negotiated, under the cipher it selected. Fires only for that
+   * key: a station whose RSA cipher yields only the AES-128-ECB set-payload key does not fire it.
+   */
   p2pLevel2Ready: [info: { stationSn: string; cipherId: number }];
   p2p: [frame: P2PFrame];
   // Push lifecycle + raw normalized push.

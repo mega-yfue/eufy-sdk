@@ -9,7 +9,16 @@
  * Every UDP packet is `[msgType:2][payloadLen:2 BE][payload]`. Every P2P data
  * frame inside a DATA packet starts with the ASCII magic "XZYH".
  */
-import { createCipheriv, createDecipheriv, createECDH, createHmac, timingSafeEqual } from "node:crypto";
+import {
+  constants,
+  createCipheriv,
+  createDecipheriv,
+  createECDH,
+  createHmac,
+  createPrivateKey,
+  privateDecrypt,
+  timingSafeEqual,
+} from "node:crypto";
 
 export interface Address {
   host: string;
@@ -239,6 +248,41 @@ export function deriveLevel2KeyFromGatewayInfo(gwPayload: Buffer, eccPrivateKeyH
   if (!plain) return undefined;
   const key = plain.subarray(0, 32);
   return key.length === 32 ? Buffer.from(key) : undefined;
+}
+
+/**
+ * Derive the P2P **level-2** AES-128-ECB session key from a *decrypted* `CMD_GATEWAYINFO` (1100)
+ * payload and the RSA private key of a cipher whose `get_ciphers` answer carries no ECC key.
+ *
+ * Layout of the decrypted payload: `cipher_id(2 LE) ‖ 0000 ‖ RSA ciphertext ‖ …`, the ciphertext as
+ * long as the key's modulus. It is the 16-byte session key under PKCS#1 v1.5 encryption padding
+ * (`00 02 ‖ ≥8 non-zero bytes ‖ 00 ‖ key`); the padding is checked here over the raw RSA result, so the
+ * outcome does not depend on the OpenSSL build's PKCS#1 decryption policy.
+ *
+ * `rsaPrivateKey` is the `get_ciphers` `private_key`: base64 PKCS#8 DER, 1024-bit on the T8790's cipher 10.
+ * Armour lines (`-----…-----`) and whitespace are removed before decoding, as eufy-security-client does with
+ * the same field.
+ *
+ * Returns the 16-byte key, or `undefined` when the key does not parse, the payload is short, or the
+ * padding or key length is wrong (fails closed, never throws).
+ */
+export function deriveLevel2KeyFromRsaGatewayInfo(gwPayload: Buffer, rsaPrivateKey: string): Buffer | undefined {
+  try {
+    const der = Buffer.from(rsaPrivateKey.replace(/-----[^-]*-----/g, "").replace(/\s+/g, ""), "base64");
+    const key = createPrivateKey({ key: der, format: "der", type: "pkcs8" });
+    const modulusBits = key.asymmetricKeyDetails?.modulusLength;
+    if (!modulusBits) return undefined;
+    const ct = gwPayload.subarray(4, 4 + Math.ceil(modulusBits / 8));
+    if (ct.length !== Math.ceil(modulusBits / 8)) return undefined;
+    const block = privateDecrypt({ key, padding: constants.RSA_NO_PADDING }, ct);
+    if (block[0] !== 0x00 || block[1] !== 0x02) return undefined;
+    const separator = block.indexOf(0x00, 2);
+    if (separator < 10) return undefined;
+    const sessionKey = block.subarray(separator + 1);
+    return sessionKey.length === 16 ? Buffer.from(sessionKey) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Local-lookup payload: two zero bytes. */

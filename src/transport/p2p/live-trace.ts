@@ -74,8 +74,14 @@ export type LiveTrace =
    * to serve the channel it was asked for, or being re-issued — and only these phases separate them.
    */
   | { phase: "level2-wait"; waitMs: number }
-  /** The station's level-2 key was negotiated, under the cipher it selected. */
+  /** The station's AES-256-GCM level-2 key was negotiated, under the cipher it selected. */
   | { phase: "level2-ready"; cipherId: number }
+  /**
+   * The station's cipher negotiated only the AES-128-ECB level-2 key of an RSA cipher, under the cipher it
+   * selected. That key seals a level-2 set-payload and nothing else, so this is not `level2-ready`: a wait for
+   * a key every level-2 sender can use ends `level2-unavailable` with `set-payload-only`.
+   */
+  | { phase: "level2-set-payload-only"; cipherId: number }
   /**
    * The station's key is not coming, why, and the cipher where a station named one.
    *
@@ -84,13 +90,21 @@ export type LiveTrace =
    * the rest are answered without waiting, because the negotiation is one-shot per connection and a
    * concluded one is final. `no-cipher-key` and `derivation-failed` are about this account's cipher
    * material, `not-negotiating` and `session-closed` about the station or its connection — and only a
-   * reason reached under a negotiation has a cipher to name.
+   * reason reached under a negotiation has a cipher to name. `set-payload-only` is a negotiation that held
+   * only the AES-128-ECB key, which serves a level-2 set-payload but not the sender that waited; its cipher
+   * is on the `level2-set-payload-only` trace that concluded the negotiation.
    *
    * A `grace-elapsed` start proceeds at level 1 where it has such a form, and not at all where it does not.
    */
   | {
       phase: "level2-unavailable";
-      reason: "no-cipher-key" | "derivation-failed" | "not-negotiating" | "session-closed" | "grace-elapsed";
+      reason:
+        | "no-cipher-key"
+        | "derivation-failed"
+        | "not-negotiating"
+        | "session-closed"
+        | "grace-elapsed"
+        | "set-payload-only";
       cipherId?: number;
       waitedMs?: number;
     }
@@ -98,7 +112,8 @@ export type LiveTrace =
    * A station's cipher was answered with material for a DIFFERENT cipher, which was used in its place.
    *
    * The one lookup outcome no other phase accounts for: material for the cipher the station named is followed
-   * by `level2-ready` or by `level2-unavailable` with `derivation-failed`, an answer holding none by
+   * by `level2-ready`, `level2-set-payload-only` or `level2-unavailable` with `derivation-failed`, an answer
+   * holding none by
    * `no-cipher-key`, and a lookup that threw is reported as an error. Substituted material derives to
    * nothing and otherwise reads as a station fault. `cipherId` is the cipher the station asked for,
    * `answeredCipherId` the one whose material was used.

@@ -71,6 +71,8 @@ export type Capability =
   | "vacuum_dock"
   | "suction"
   | "locate"
+  // SmartDrop parcel box: open the lid.
+  | "smart_drop"
   // eufy_life smart lighting (own secure-MQTT DP namespace) — the T8L0x line's on/off/brightness/
   // effect control. Distinct from the camera-floodlight `light` capability above.
   | "smart_light"

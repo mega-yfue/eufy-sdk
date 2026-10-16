@@ -44,6 +44,7 @@ describe("live-trace vocabulary at the package entry point", () => {
       "session-unreachable": true,
       "level2-wait": true,
       "level2-ready": true,
+      "level2-set-payload-only": true,
       "level2-unavailable": true,
       "level2-negotiating": true,
       "station-resolved": true,

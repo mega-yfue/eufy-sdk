@@ -49,7 +49,7 @@ fi
 #    Matched per hyphen-separated SEGMENT against exact capability ids, so a wire feature whose own name
 #    merely contains one (`ff09-autolock` — the auto-lock settings frame, not the `lock` capability) is
 #    not a false positive.
-caps='camera|light|smart_light|lock|siren|vacuum|battery|doorbell|motion|contact|leak|smoke|keypad|arming|storage|audio|video|snapshot|ptz|locate'
+caps='camera|light|smart_light|lock|siren|vacuum|battery|doorbell|motion|contact|leak|smoke|keypad|arming|storage|audio|video|snapshot|ptz|locate|smart_drop'
 bad_kinds=$(grep -oE '\| \{ kind: "[a-z0-9_-]+"' src/core/contracts.ts 2>/dev/null |
   grep -oE '"[a-z0-9_-]+"' | tr -d '"' |
   while IFS= read -r kind; do

@@ -12,11 +12,13 @@ function gatewayInfo(cipherId: number): Buffer {
   return payload;
 }
 
-function session(resolveCipherKey?: (cipherId: number) => Promise<string | undefined>): P2PSession {
+function session(resolveEccKey?: (cipherId: number) => Promise<string | undefined>): P2PSession {
   const built = new P2PSession({
     stationSn: STATION_SN,
     p2pDid: P2P_DID,
-    ...(resolveCipherKey ? { resolveCipherKey } : {}),
+    ...(resolveEccKey
+      ? { resolveCipherKeys: async (cipherId: number) => ({ ecc: await resolveEccKey(cipherId) }) }
+      : {}),
   });
   connectedAgo(built, 0);
   return built;
@@ -90,7 +92,7 @@ describe("level-2 key wait", () => {
       const target = new P2PSession({
         stationSn: STATION_SN,
         p2pDid: P2P_DID,
-        resolveCipherKey: async () => undefined,
+        resolveCipherKeys: async () => undefined,
         logger: { debug, info: vi.fn(), warn: vi.fn(), error: vi.fn() },
       });
       connectedAgo(target, 0);
@@ -135,7 +137,7 @@ describe("level-2 key wait", () => {
       const target = new P2PSession({
         stationSn: STATION_SN,
         p2pDid: P2P_DID,
-        resolveCipherKey: async () => undefined,
+        resolveCipherKeys: async () => undefined,
         logger: { debug, info: vi.fn(), warn: vi.fn(), error: vi.fn() },
       });
       connectedAgo(target, 0);
@@ -187,7 +189,7 @@ describe("level-2 key wait", () => {
 
   /** A session that never connected has not had its chance yet, so the whole grace is still ahead of it. */
   it("gives an unconnected session its full grace", async () => {
-    const target = new P2PSession({ stationSn: STATION_SN, p2pDid: P2P_DID, resolveCipherKey: async () => undefined });
+    const target = new P2PSession({ stationSn: STATION_SN, p2pDid: P2P_DID, resolveCipherKeys: async () => undefined });
     const started = Date.now();
     await expect(target.awaitLevel2Key(40, "session")).resolves.toBe(false);
     expect(Date.now() - started).toBeGreaterThanOrEqual(35);
@@ -314,7 +316,7 @@ describe("level-2 key re-prompt", () => {
   });
 
   it("does not re-prompt a session that never negotiates one at all", () => {
-    const target = session(); // no resolveCipherKey → nothing can negotiate
+    const target = session(); // no resolveCipherKeys → nothing can negotiate
     const sent: number[] = [];
     (target as unknown as { sendCommand(c: number): void }).sendCommand = (c) => sent.push(c);
 

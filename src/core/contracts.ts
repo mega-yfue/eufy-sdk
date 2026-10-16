@@ -403,6 +403,11 @@ export type Command =
       channel: number;
       mValue3?: number;
       form?: ScalarForm;
+      /**
+       * `"set-payload"`: a level-2 key that seals only this envelope (an RSA cipher's AES-128-ECB key)
+       * may seal it. Absent, the send waits for the key every level-2 sender uses.
+       */
+      level2Sender?: "set-payload";
     }
   | { kind: "p2p-privacy-burst"; enabled: boolean; channel: number }
   | { kind: "p2p-station-scalar"; cmd: number; value: number; channel: number }

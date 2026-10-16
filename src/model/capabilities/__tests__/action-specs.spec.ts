@@ -52,6 +52,7 @@ const DESCRIBED_MODULES = [
   "ptz",
   "rtsp",
   "siren",
+  "smart_drop",
   "smart_light",
   "suction",
   "vacuum_clean",

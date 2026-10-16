@@ -1,29 +1,31 @@
 import { describe, it, expect, vi } from "vitest";
 import type { EufyDevice } from "../../../core/types.js";
 import type { P2PRouterDeps } from "../command-router.js";
+import type { P2PSessionConfig } from "../p2p-session.js";
 import { traceCollector } from "./session-fixtures.js";
 
 /**
- * `P2PCommandRouter.ensureStation`'s `resolveCipherKey` closure (the level-2 key negotiator handed to
+ * `P2PCommandRouter.ensureStation`'s `resolveCipherKeys` closure (the level-2 key negotiator handed to
  * `P2PSession`) — verifies a failed `get_ciphers()` call does NOT get cached, so a later invocation
  * (a later signCode-2/8 frame on the same long-lived session) retries instead of permanently returning
  * the poisoned `undefined`. Mirrors `detect_local_ip.spec.ts`'s "does NOT poison the cache" pattern for
  * a different cache with the same failure-mode bug.
  *
  * `P2PSession` is mocked to a bare `EventEmitter` (no real socket/connect) purely to capture the
- * `resolveCipherKey` callback passed to its constructor — the callback under test is the router's own
- * code, not anything session-internal.
+ * config passed to its constructor — the callback under test is the router's own code, not anything
+ * session-internal.
  */
-let capturedResolveCipherKey: ((cipherId: number) => Promise<string | undefined>) | undefined;
+let capturedConfig: P2PSessionConfig | undefined;
+const resolveCipherKeys = (cipherId: number) => capturedConfig!.resolveCipherKeys!(cipherId);
 
 vi.mock("../p2p-session.js", async (importOriginal) => {
   const { EventEmitter } = await import("node:events");
   class FakeP2PSession extends EventEmitter {
     isConnected = true;
     hasLevel2Key = false;
-    constructor(opts: { resolveCipherKey: (cipherId: number) => Promise<string | undefined> }) {
+    constructor(opts: P2PSessionConfig) {
       super();
-      capturedResolveCipherKey = opts.resolveCipherKey;
+      capturedConfig = opts;
     }
     connect = vi.fn(async () => {});
   }
@@ -31,6 +33,7 @@ vi.mock("../p2p-session.js", async (importOriginal) => {
 });
 
 const { P2PCommandRouter } = await import("../command-router.js");
+const { P2PSession } = await vi.importActual<typeof import("../p2p-session.js")>("../p2p-session.js");
 
 const DEVICE: EufyDevice = {
   sn: "T8531K0000000000",
@@ -43,7 +46,11 @@ const DEVICE: EufyDevice = {
   raw: { member: { admin_user_id: "0".repeat(40) } },
 };
 
-function makeDeps(getCiphers: ReturnType<typeof vi.fn>, logger?: P2PRouterDeps["logger"]): P2PRouterDeps {
+function makeDeps(
+  getCiphers: ReturnType<typeof vi.fn>,
+  logger?: P2PRouterDeps["logger"],
+  onError: P2PRouterDeps["onError"] = () => {},
+): P2PRouterDeps {
   return {
     ...(logger ? { logger } : {}),
     mega: {
@@ -55,13 +62,13 @@ function makeDeps(getCiphers: ReturnType<typeof vi.fn>, logger?: P2PRouterDeps["
     ensureDevices: async () => {},
     onConnect: () => {},
     onClose: () => {},
-    onError: () => {},
+    onError,
     onLevel2Ready: () => {},
     onFrame: () => {},
   };
 }
 
-describe("P2PCommandRouter.ensureStation — resolveCipherKey cache", () => {
+describe("P2PCommandRouter.ensureStation — resolveCipherKeys cache", () => {
   it("does NOT cache a failed get_ciphers() call — the next resolve retries and can succeed", async () => {
     const getCiphers = vi
       .fn()
@@ -70,13 +77,13 @@ describe("P2PCommandRouter.ensureStation — resolveCipherKey cache", () => {
     const router = new P2PCommandRouter(makeDeps(getCiphers));
 
     await router.ensureStation(DEVICE.sn);
-    expect(capturedResolveCipherKey).toBeDefined();
+    expect(capturedConfig?.resolveCipherKeys).toBeDefined();
 
-    const first = await capturedResolveCipherKey!(97);
+    const first = await resolveCipherKeys(97);
     expect(first).toBeUndefined(); // transient failure
 
-    const second = await capturedResolveCipherKey!(97);
-    expect(second).toBe("deadbeef"); // retried, not short-circuited on a poisoned cache entry
+    const second = await resolveCipherKeys(97);
+    expect(second?.ecc).toBe("deadbeef"); // retried, not short-circuited on a poisoned cache entry
 
     expect(getCiphers).toHaveBeenCalledTimes(2);
   });
@@ -86,8 +93,8 @@ describe("P2PCommandRouter.ensureStation — resolveCipherKey cache", () => {
     const router = new P2PCommandRouter(makeDeps(getCiphers));
 
     await router.ensureStation(DEVICE.sn);
-    expect(await capturedResolveCipherKey!(97)).toBe("cafebabe");
-    expect(await capturedResolveCipherKey!(97)).toBe("cafebabe");
+    expect((await resolveCipherKeys(97))?.ecc).toBe("cafebabe");
+    expect((await resolveCipherKeys(97))?.ecc).toBe("cafebabe");
     expect(getCiphers).toHaveBeenCalledTimes(1); // second resolve served from cache
   });
 
@@ -101,9 +108,35 @@ describe("P2PCommandRouter.ensureStation — resolveCipherKey cache", () => {
     const router = new P2PCommandRouter(makeDeps(getCiphers, logger));
 
     await router.ensureStation(DEVICE.sn);
-    expect(await capturedResolveCipherKey!(97)).toBe("cafebabe");
+    expect((await resolveCipherKeys(97))?.ecc).toBe("cafebabe");
 
     expect(traces).toMatchObject([{ phase: "cipher-fallback", cipherId: 97, answeredCipherId: 12 }]);
+  });
+
+  /**
+   * A negotiation asks the cloud once for both keys of a cipher: a `get_ciphers` call that throws is one
+   * failed lookup, reported once, and a cipher answered with an empty ECC key carries its RSA private key in
+   * that same lookup.
+   */
+  it("resolves both keys of a cipher in one lookup, and fetches and reports a failed one once", async () => {
+    const getCiphers = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("fetch failed"))
+      .mockResolvedValueOnce([{ cipher_id: 10, ecc_private_key: "", private_key: "cnNhLWtleQ==" }]);
+    const onError = vi.fn();
+    const router = new P2PCommandRouter(makeDeps(getCiphers, undefined, onError));
+    await router.ensureStation(DEVICE.sn);
+    const session = new P2PSession(capturedConfig!);
+    const gatewayInfo = Buffer.alloc(64);
+    gatewayInfo.writeUInt16LE(10, 0);
+
+    (session as unknown as { negotiateLevel2Key(payload: Buffer): void }).negotiateLevel2Key(gatewayInfo);
+
+    expect(await session.awaitLevel2Key(1_000)).toBe(false);
+    expect(getCiphers).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(await resolveCipherKeys(10)).toEqual({ ecc: "", rsa: "cnNhLWtleQ==" });
+    expect(getCiphers).toHaveBeenCalledTimes(2);
   });
 
   /** Material for the cipher that was asked for is the ordinary answer and states nothing. */
@@ -113,7 +146,7 @@ describe("P2PCommandRouter.ensureStation — resolveCipherKey cache", () => {
     const router = new P2PCommandRouter(makeDeps(getCiphers, logger));
 
     await router.ensureStation(DEVICE.sn);
-    expect(await capturedResolveCipherKey!(97)).toBe("cafebabe");
+    expect((await resolveCipherKeys(97))?.ecc).toBe("cafebabe");
 
     expect(traces).toEqual([]);
   });
