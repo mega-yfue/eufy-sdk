@@ -3,7 +3,9 @@ import {
   ANKER_MAX_MESSAGE_SIZE,
   HUB_SDP_MID,
   iceCandidateType,
+  midOf,
   pinMaxMessageSize,
+  rejectDataSection,
   scallJsonToSdp,
   sdpToScallJson,
   toWireCandidate,
@@ -85,5 +87,40 @@ describe("toWireCandidate", () => {
       "candidate:1 1 udp 2122317823 192.0.2.10 47336 typ host",
     );
     expect(toWireCandidate("")).toBe("");
+  });
+});
+
+describe("media offer helpers", () => {
+  const offer = [
+    "v=0",
+    "a=group:BUNDLE 0 1 2",
+    "m=audio 9 UDP/TLS/RTP/SAVPF 111",
+    "a=mid:0",
+    "m=video 9 UDP/TLS/RTP/SAVPF 99",
+    "a=mid:1",
+    "m=application 9 UDP/DTLS/SCTP webrtc-datachannel",
+    "a=mid:2",
+    "a=sctp-port:5000",
+    "",
+  ].join("\r\n");
+
+  it("finds the mid of each kind of m-section", () => {
+    expect(midOf(offer, "audio")).toBe("0");
+    expect(midOf(offer, "video")).toBe("1");
+    expect(midOf(offer, "application")).toBe("2");
+    expect(midOf("v=0\r\n", "video")).toBeUndefined();
+  });
+
+  it("rejects the data channel and drops it from BUNDLE, leaving the media untouched", () => {
+    const out = rejectDataSection(offer).split("\r\n");
+    expect(out).toContain("a=group:BUNDLE 0 1");
+    expect(out).toContain("m=application 0 UDP/DTLS/SCTP webrtc-datachannel");
+    expect(out).toContain("m=video 9 UDP/TLS/RTP/SAVPF 99");
+    expect(out).toContain("m=audio 9 UDP/TLS/RTP/SAVPF 111");
+  });
+
+  it("leaves an offer without a data channel as it is", () => {
+    const media = "v=0\r\na=group:BUNDLE 0\r\nm=video 9 UDP/TLS/RTP/SAVPF 99\r\na=mid:0\r\n";
+    expect(rejectDataSection(media)).toBe(media);
   });
 });

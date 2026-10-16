@@ -31,6 +31,7 @@ import { captureSnapshotFromShared } from "../p2p/media.js";
 import { openReadableFromConsumer } from "../p2p/readable-egress.js";
 import { SharedLiveSource, attachUnlessAborted } from "../p2p/shared-live-source.js";
 import { RtcLiveStream } from "./live.js";
+import { RtcCallLiveStream } from "./call-live.js";
 import { RtcSession, type RtcSessionOptions } from "./session.js";
 import {
   buildPortalPacket,
@@ -69,6 +70,11 @@ export interface RtcRoute {
   signalingMode?: "call" | "scall";
   /** Candidate policy used by the station's exchange; defaults to relay-only. */
   iceTransportPolicy?: "relay" | "all";
+  /**
+   * The station streams video as RTP on its offer's video track and serves no data channel, so it takes
+   * no portal command; see `RtcPeerOptions.mediaTrack`.
+   */
+  mediaTrack?: boolean;
   stationSn: string;
   /**
    * The station's `member.admin_user_id`, the account the session and the payload name; the logged-in
@@ -131,6 +137,7 @@ class StationStreamBusyError extends Error {
 export class RtcCommandRouter {
   private readonly sessions = new Map<string, StationSession>();
   private readonly lives = new Map<string, StationLive>();
+  private readonly callSources = new Map<string, SharedLiveSource>();
 
   constructor(private readonly deps: RtcCommandRouterDeps) {}
 
@@ -138,6 +145,7 @@ export class RtcCommandRouter {
     if (cmd.kind !== "set-payload" && cmd.kind !== "set-json") {
       throw new Error(`rtc: ${cmd.kind} is not routable over the RTC control channel (only set-payload or set-json)`);
     }
+    if (route.mediaTrack) throw new Error(`rtc: ${route.stationSn} serves media only and takes no portal command`);
     const identity = this.deps.identity();
     if (!identity) throw new Error(`rtc: not logged in, cannot drive ${route.stationSn}`);
     const { stationSn } = route;
@@ -182,10 +190,56 @@ export class RtcCommandRouter {
   }
 
   /**
+   * Live view of a station on a {@link RtcRoute.mediaTrack} route: a live feed, a readable feed and a live
+   * still, from one shared source per station whose every warm-up places a fresh `call` on its own
+   * session. Recording has no wire here and is refused.
+   */
+  trackMediaProviderFor(route: RtcRoute): MediaProvider {
+    const sn = route.stationSn;
+    const sourceFor = (hints: SharedSourceHints = {}): SharedLiveSource => {
+      let source = this.callSources.get(sn);
+      if (!source) {
+        source = new SharedLiveSource({
+          makeStream: () => {
+            const identity = this.deps.identity();
+            if (!identity) throw new Error(`rtc: not logged in, cannot call ${sn}`);
+            const session = this.newSession(route, route.adminUserId || identity.userId, identity);
+            return new RtcCallLiveStream(session, this.deps.logger);
+          },
+          label: sn,
+          logger: this.deps.logger,
+          powered: hints.powered,
+          preBufferSeconds: hints.preBufferSeconds,
+          warmTimeoutMs: 45_000,
+        });
+        this.callSources.set(sn, source);
+      }
+      return source;
+    };
+    return {
+      live: async (opts) => attachUnlessAborted(sourceFor(opts), opts?.signal),
+      openReadable: async (opts) => openReadableFromConsumer(attachUnlessAborted(sourceFor(opts), opts?.signal), opts),
+      snapshotLive: (opts) =>
+        captureSnapshotFromShared(sourceFor(opts), {
+          ...opts,
+          logger: this.deps.logger,
+          ffmpegPath: this.deps.ffmpegPath,
+        }),
+      record: async () => {
+        throw new Error(`record is not available for ${sn} over a portal call`);
+      },
+    };
+  }
+
+  /**
    * Tear down every station session (logout / shutdown). Each live source is disposed before its session
    * closes, so its consumers end cleanly and its stop still rides the session.
    */
   close(): void {
+    for (const [sn, src] of this.callSources) {
+      this.callSources.delete(sn);
+      src.dispose();
+    }
     for (const [sn, live] of this.lives) {
       this.lives.delete(sn);
       live.source.dispose();
@@ -340,6 +394,20 @@ export class RtcCommandRouter {
     });
   }
 
+  private newSession(route: RtcRoute, adminUserId: string, identity: RtcIdentity): RtcSession {
+    return (this.deps.createSession ?? ((o: RtcSessionOptions) => new RtcSession(o)))({
+      authToken: identity.authToken,
+      gtoken: identity.gtoken,
+      stationSn: route.stationSn,
+      adminUserId,
+      shard: this.deps.shard(),
+      country: this.deps.country ?? "US",
+      logger: this.deps.logger,
+      signalingMode: route.signalingMode,
+      peer: { logger: this.deps.logger, iceTransportPolicy: route.iceTransportPolicy, mediaTrack: route.mediaTrack },
+    });
+  }
+
   private async stationSession(route: RtcRoute, adminUserId: string, identity: RtcIdentity): Promise<StationSession> {
     const sn = route.stationSn;
     const existing = this.sessions.get(sn);
@@ -351,17 +419,7 @@ export class RtcCommandRouter {
       }
       this.drop(sn, existing);
     }
-    const session = (this.deps.createSession ?? ((o: RtcSessionOptions) => new RtcSession(o)))({
-      authToken: identity.authToken,
-      gtoken: identity.gtoken,
-      stationSn: sn,
-      adminUserId,
-      shard: this.deps.shard(),
-      country: this.deps.country ?? "US",
-      logger: this.deps.logger,
-      signalingMode: route.signalingMode,
-      peer: { logger: this.deps.logger, iceTransportPolicy: route.iceTransportPolicy },
-    });
+    const session = this.newSession(route, adminUserId, identity);
     const ready = this.bringUp(sn, session);
     const st: StationSession = { session, seg: new SegmentCounter(), ready, queue: Promise.resolve(), leases: 0 };
     session.on("error", (e) => this.deps.onError?.(e));

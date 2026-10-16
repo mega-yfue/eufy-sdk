@@ -196,3 +196,58 @@ describe("command context of a device behind a station", () => {
     expect((await contextOf(hb3.internals, CAMERA, "T8425")).stationDeviceType).toBe(DeviceType.HB3);
   });
 });
+
+describe("standalone T8223 doorbell", () => {
+  const DOORBELL = "T8000P0000000002";
+  const ROUTE = {
+    stationSn: DOORBELL,
+    adminUserId: "synthetic-admin",
+    attached: false,
+    signalingMode: "call",
+    iceTransportPolicy: "all",
+    mediaTrack: true,
+  };
+
+  function doorbell(model = "T8223", stationSn = DOORBELL) {
+    const f = fixture();
+    f.devices.splice(0, f.devices.length, {
+      sn: DOORBELL,
+      model,
+      stationSn,
+      raw: { parent_sn: stationSn, member: { admin_user_id: "synthetic-admin" } },
+    } as EufyDevice);
+    if (stationSn !== DOORBELL) f.devices.push({ sn: stationSn, model, raw: {} } as EufyDevice);
+    const rtc = f.internals.rtc as unknown as { trackMediaProviderFor(route: unknown): unknown };
+    const track = vi.spyOn(rtc, "trackMediaProviderFor").mockReturnValue({ live: vi.fn() });
+    const p2pMedia = vi.spyOn(
+      f.internals.p2p as unknown as { mediaProviderFor(sn: string): unknown },
+      "mediaProviderFor",
+    );
+    const mediaProviderFor = (sn: string) =>
+      (f.internals as unknown as { mediaProviderFor(sn: string): unknown }).mediaProviderFor(sn);
+    return { ...f, track, p2pMedia, mediaProviderFor };
+  }
+
+  it("gets its media over its own call route, not P2P", () => {
+    const { track, p2pMedia, mediaProviderFor } = doorbell();
+    expect(mediaProviderFor(DOORBELL)).toBeDefined();
+    expect(track).toHaveBeenCalledExactlyOnceWith(ROUTE);
+    expect(p2pMedia).not.toHaveBeenCalled();
+  });
+
+  it("sends a command to the RTC router on the same route, not P2P", async () => {
+    const { internals, rtc, p2p } = doorbell();
+    await internals.routeCommand(DOORBELL, command);
+    expect(rtc).toHaveBeenCalledExactlyOnceWith(ROUTE, command);
+    expect(p2p).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a T8224, not run on this route", "T8224", DOORBELL],
+    ["a T8223 whose record names another T8223 as its station", "T8223", HUB],
+  ])("leaves %s on P2P", (_, model, stationSn) => {
+    const { internals, track } = doorbell(model, stationSn);
+    expect(internals.rtcMediaFor(DOORBELL)).toBeUndefined();
+    expect(track).not.toHaveBeenCalled();
+  });
+});

@@ -101,3 +101,23 @@ export function forceDtlsRole(sdp: string, role: "active" | "passive"): string {
 export function toWireCandidate(candidate: string): string {
   return candidate.trim().replace(/^a=/, "");
 }
+
+/** The `a=mid` of the first m-section of `kind` in an SDP; `undefined` when it has none. */
+export function midOf(sdp: string, kind: "audio" | "video" | "application"): string | undefined {
+  const section = sdp.split(/(?=^m=)/m).find((s) => s.startsWith(`m=${kind} `));
+  return section?.match(/^a=mid:([^\r\n]+)/m)?.[1]?.trim();
+}
+
+/**
+ * Reject an offer's `m=application` (data channel) section: port 0 and out of the BUNDLE group. The
+ * remote never completes the SCTP association, so a peer waiting on it fails; without it the peer
+ * connects on DTLS-SRTP alone.
+ */
+export function rejectDataSection(sdp: string): string {
+  const appMid = midOf(sdp, "application");
+  const out = sdp.replace(/^m=application \d+/m, "m=application 0");
+  if (appMid === undefined) return out;
+  return out.replace(/^(a=group:BUNDLE)([^\r\n]*)/m, (_, head: string, mids: string) =>
+    [head, ...mids.split(" ").filter((t) => t && t !== appMid)].join(" "),
+  );
+}
