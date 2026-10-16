@@ -16,6 +16,11 @@ export const PORTAL_HEADER_LENGTH = 16;
 export const PORTAL_CMD_SET_PAYLOAD = 1350;
 /** The channel a station-wide command is addressed to. */
 export const PORTAL_STATION_CHANNEL = 255;
+/** The portal's 36-byte unframed link-99 keepalive for an active live view. */
+export const PORTAL_LIVE_KEEPALIVE = Buffer.from(
+  "0009000010000000000000006300000000000000585a5948730400000000000000000002",
+  "hex",
+);
 
 /** Portal link types — which logical channel a frame belongs to (`worker_sctp_send`). */
 export const PortalLinkType = {

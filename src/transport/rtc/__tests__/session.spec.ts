@@ -43,11 +43,12 @@ const HUB_SDP = {
   candidate: ["1 1 udp 1 192.0.2.10 1 typ host"],
 };
 
-function setup(signalingMode?: "call" | "scall") {
+function setup(signalingMode?: "call" | "scall", keepPeerOnSignalingLoss = false) {
   const sig = new FakeSignaling();
   const peer = new FakePeer();
   const session = new RtcSession({
     signalingMode,
+    keepPeerOnSignalingLoss,
     authToken: "T",
     gtoken: "G",
     stationSn: "T9000P0000000001",
@@ -73,6 +74,31 @@ async function authenticated(s: ReturnType<typeof setup>) {
 const flush = () => new Promise((r) => setImmediate(r));
 
 describe("RtcSession", () => {
+  it("retains an established media peer after signaling loss, but still closes on peer failure", () => {
+    const s = setup("call", true);
+    const closed = vi.fn();
+    s.session.on("close", closed);
+    s.peer.emit("commandChannelOpen");
+    s.sig.emit("error", new Error("socket lost"));
+    s.sig.emit("close");
+    expect(s.errors).toEqual([]);
+    expect(closed).not.toHaveBeenCalled();
+    expect(s.session.isConnected).toBe(true);
+    s.peer.emit("connectionState", "failed");
+    expect(closed).toHaveBeenCalledOnce();
+    s.session.close();
+  });
+
+  it("does not mask signaling loss before a media peer has connected", () => {
+    const s = setup("call", true);
+    const closed = vi.fn();
+    s.session.on("close", closed);
+    s.sig.emit("error", new Error("socket lost"));
+    s.sig.emit("close");
+    expect(s.errors).toHaveLength(1);
+    expect(closed).toHaveBeenCalledOnce();
+    s.session.close();
+  });
   it.each(["native", "compact"])("preserves the full answer in call mode after a %s offer", async (format) => {
     const s = await authenticated(setup("call"));
     const native =

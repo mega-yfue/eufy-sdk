@@ -536,6 +536,8 @@ export type VideoCodec = "h264" | "h265" | "av1";
  * headers promise decodes to no picture at all.
  */
 export interface LiveVideoFrame {
+  /** Source-reported 64-bit media clock in milliseconds when present on the RTC wire. */
+  timestampMs?: number;
   /** Source-reported unsigned 32-bit timestamp; unit and clock origin are unspecified. */
   sourceTimestamp?: number;
   /** True on an IDR — a unit a consumer may begin decoding at, never a continuation of an earlier one. */
@@ -617,6 +619,8 @@ export type LiveAudioFrame =
   | {
       /** Codec declared in the frame header. */
       codec: "aac-lc" | "g711a";
+      /** Source-reported RTC media clock in milliseconds, when present. */
+      timestampMs?: number;
       /** One ADTS frame for `aac-lc`, raw A-law samples for `g711a`. */
       data: Buffer;
       config?: undefined;
@@ -624,6 +628,8 @@ export type LiveAudioFrame =
   | {
       /** Codec declared in the frame header. */
       codec: "aac-eld";
+      /** Source-reported RTC media clock in milliseconds, when present. */
+      timestampMs?: number;
       /** One raw AAC-ELD access unit. */
       data: Buffer;
       /** AudioSpecificConfig (ISO/IEC 14496-3) that decodes `data`. */
@@ -785,6 +791,8 @@ export interface AbortableCall {
 }
 
 export interface SharedSourceHints {
+  /** NVR sensor selection: S4 fixed 0 or movable 1; E40 supports only 0. Absent selects the primary sensor. */
+  sensor?: 0 | 1;
   /**
    * Power source, a runtime device fact (`"battery"` incl. solar, or `"wired"`) — never a device-family
    * trait. `"wired"` streams unbounded; `"battery"` bounds a continuous stream to a budget, after which

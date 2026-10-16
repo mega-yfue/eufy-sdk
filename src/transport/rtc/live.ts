@@ -28,6 +28,7 @@ import {
   PORTAL_CMD_SET_PAYLOAD,
   PORTAL_HEADER_LENGTH,
   PORTAL_STATION_CHANNEL,
+  PORTAL_LIVE_KEEPALIVE,
   type SegmentCounter,
 } from "./portal-packet.js";
 
@@ -43,8 +44,6 @@ const LIVE_MEDIA_CHANNEL = 101;
 const LIVE_STREAM_ID = 1;
 /** How often the raw keepalive goes out. */
 const KEEPALIVE_MS = 29_000;
-/** The portal's 36-byte data-channel keepalive: a 20-byte prefix and a bare `XZYH 1139`. */
-const KEEPALIVE = Buffer.from("0009000010000000000000006300000000000000585a5948730400000000000000000002", "hex");
 
 /** The media header ahead of the video in a `1300` body. */
 const MEDIA_HEADER_LENGTH = 22;
@@ -141,7 +140,7 @@ export class RtcLiveStream extends EventEmitter implements LiveStreamHandle {
       return this;
     }
     this.keepalive = setInterval(() => {
-      if (!session.sendRaw(KEEPALIVE)) this.opts.logger?.warn?.(`[rtc] ${this.tag} keepalive not sent`);
+      if (!session.sendRaw(PORTAL_LIVE_KEEPALIVE)) this.opts.logger?.warn?.(`[rtc] ${this.tag} keepalive not sent`);
     }, KEEPALIVE_MS);
     this.keepalive.unref?.();
     this.opts.logger?.debug?.(`[rtc] ${this.tag} live start sent`);

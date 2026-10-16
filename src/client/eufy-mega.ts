@@ -77,6 +77,7 @@ import {
   type RawParams,
 } from "../model/index.js";
 import { isHomeBase, isNvrT8N00, isStation9000 } from "../model/device-family.js";
+import { NvrMediaRouter } from "../transport/rtc/nvr-media.js";
 import { cameraPowerTier } from "../model/capabilities/battery.js";
 import { DeviceRegistry, type DeviceRecord, type ParamChange } from "./device-registry.js";
 import type {
@@ -307,6 +308,7 @@ export class EufyMega extends EventEmitter {
   private readonly p2p: P2PCommandRouter;
   /** Transport-side owner of the T9000 station sessions (sibling of {@link p2p}). */
   private readonly rtc: RtcCommandRouter;
+  private readonly nvrMedia: NvrMediaRouter;
   /** Transport-side owner of the secure-MQTT ff09 lock/garage command path (sibling of {@link p2p}). */
   private readonly mqtt: MqttCommandRouter;
   /** Transport-side owner of the legacy Tuya REST command path for non-AIoT vacuums (G-series). */
@@ -383,6 +385,13 @@ export class EufyMega extends EventEmitter {
       logger: opts.logger,
       ffmpegPath: opts.ffmpegPath,
       onError: (e) => this.reportError(e),
+    });
+    this.nvrMedia = new NvrMediaRouter({
+      identity: () => this.mega.rtcIdentity(),
+      shard: () => this.mega.rtcShard,
+      country: opts.countryCode,
+      logger: opts.logger,
+      ffmpegPath: opts.ffmpegPath,
     });
     this.mqtt = new MqttCommandRouter({
       mega: this.mega,
@@ -1210,15 +1219,26 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * The RTC media provider for a camera attached to a T9000 whose `device_channel` resolves back to it on
-   * the station; `undefined` otherwise, including a camera behind a T8N00, whose route carries commands only.
+   * RTC media for a camera whose channel resolves back to it: T9000 shares its control session;
+   * the T8N00's T8E00 and T8P00 cameras own independent media sessions and sensor selection.
    */
   private rtcMediaFor(sn: string): MediaProvider | undefined {
     const route = this.rtcRouteFor(sn);
-    if (!route?.attached || route.signalingMode === "call") return undefined;
+    if (!route?.attached) return undefined;
     const raw = (this.registry.list().find((d) => d.sn === sn)?.raw ?? {}) as { device_channel?: unknown };
     const channel = typeof raw.device_channel === "number" ? raw.device_channel : undefined;
     if (channel === undefined || this.registry.serialForFrame(route.stationSn, channel) !== sn) return undefined;
+    if (route.signalingMode === "call") {
+      const model = this.registry.require(sn).model;
+      if (model !== "T8E00" && model !== "T8P00") return undefined;
+      return this.nvrMedia.mediaProviderFor({
+        ...route,
+        cameraSn: sn,
+        channel,
+        defaultSensor: model === "T8E00" ? 1 : 0,
+        sensors: model === "T8E00" ? [0, 1] : [0],
+      });
+    }
     return this.rtc.mediaProviderFor({ ...route, cameraSn: sn, channel });
   }
 
@@ -2431,6 +2451,7 @@ export class EufyMega extends EventEmitter {
     this.lastStateAnnounced.clear();
     await this.closeMqttTransports();
     this.rtc.close();
+    this.nvrMedia.close();
     await this.p2p.closeAll();
     this.pushClient?.close();
     this.pushClient = undefined;

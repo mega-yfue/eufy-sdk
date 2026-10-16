@@ -28,6 +28,8 @@ import { scallJsonToSdp, sdpToScallJson, toWireCandidate } from "./scall-sdp.js"
 import { RtcSignalingClient, type RtcInnerMessage, type RtcSignalingOptions } from "./signaling.js";
 
 export interface RtcSessionOptions extends RtcSignalingOptions {
+  /** An established media peer may outlive its signaling socket; its media owner enforces a stall deadline. */
+  keepPeerOnSignalingLoss?: boolean;
   peer?: RtcPeerOptions;
   createSignaling?: (opts: RtcSignalingOptions) => RtcSignalingClient;
   createPeer?: (opts: RtcPeerOptions) => RtcPeer;
@@ -85,10 +87,14 @@ export class RtcSession extends EventEmitter<RtcSessionEvents> {
         });
     });
     this.signaling.on("close", () => {
+      if (this.opts.keepPeerOnSignalingLoss && this.connected && !this.closed) return;
       this.connected = false;
       this.announceClose();
     });
-    this.signaling.on("error", (e) => this.emit("error", e));
+    this.signaling.on("error", (e) => {
+      if (this.opts.keepPeerOnSignalingLoss && this.connected && !this.closed) return;
+      this.emit("error", e);
+    });
 
     this.peer.on("iceCandidate", (c) => this.trickle(toWireCandidate(c)));
     this.peer.on("iceGatheringComplete", () => this.trickle(""));

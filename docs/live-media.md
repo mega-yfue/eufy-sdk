@@ -56,6 +56,32 @@ Worth knowing:
 - `record()` opens its own pull instead of joining the shared source, so it costs a second stream on a
   camera that is already streaming. `recordFragments()` is a shared consumer like everything else.
 
+## T8N00 PoE cameras
+
+The T8E00 PoE S4 and T8P00 PoE E40 attached to a T8N00 use dedicated RTC media sessions.
+They use `call` signaling and ICE `all`: direct candidates are allowed alongside TURN candidates,
+but a direct connection is not guaranteed and cloud signaling is still required.
+
+On the S4, `sensor: 0` selects the fixed lens and `sensor: 1` selects the movable lens (the default).
+The E40 has only sensor 0, selected by default; requesting sensor 1 rejects before connecting.
+Consumers of the same camera and sensor share one pull. Different sensors or cameras have independent
+pulls, so stopping one does not stop the others or close the station's command session. A live still
+joins that sensor's pull and can open one when it is idle.
+
+```ts
+const fixed = await cam?.live?.({ sensor: 0 });
+const movable = await cam?.live?.({ sensor: 1 });
+fixed?.stop();
+movable?.stop();
+```
+
+Video frames retain their source codec and dimensions, and `timestampMs` carries the RTC media clock
+without truncating it to 32 bits. `live()` also emits AAC-LC or G.711 A-law audio with that clock;
+`openReadable()` remains video-only. Browser transcoding and playback pacing belong to the host.
+AAC-ELD, talkback, `record()` and `recordFragments()` are not implemented for this NVR media path.
+An established media peer may survive a lost signaling socket, but stops on peer failure or after
+15 seconds without video. Starts are bounded to 25 seconds and use command 1003 directly.
+
 ## 1. Event stream (low-level)
 
 The direct escape hatch — raw frames as they arrive.
