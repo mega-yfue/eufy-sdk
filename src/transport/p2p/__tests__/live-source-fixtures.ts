@@ -274,12 +274,14 @@ const AUDIO_HEADER_LEN = 0x10;
 export function p2pVideoFrame(opts: {
   nal: Buffer;
   keyframe?: boolean;
+  /** The raw flag byte at 0x04, overriding `keyframe`. */
+  flags?: number;
   width?: number;
   height?: number;
   channel?: number;
 }): Partial<P2PFrame> {
   const header = Buffer.alloc(VIDEO_HEADER_LEN);
-  header.writeUInt8(opts.keyframe ? 0x01 : 0x00, 0x04);
+  header.writeUInt8(opts.flags ?? (opts.keyframe ? 0x01 : 0x00), 0x04);
   header.writeInt16LE(opts.width ?? 960, 0x0a);
   header.writeInt16LE(opts.height ?? 540, 0x0c);
   const body = Buffer.concat([START_CODE, opts.nal]);

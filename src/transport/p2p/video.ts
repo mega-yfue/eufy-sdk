@@ -295,11 +295,22 @@ function beginsAccessUnit(body: Buffer): boolean {
   return body[2] === 1 || (body[2] === 0 && body[3] === 1);
 }
 
-/** The delivered shape of a unit: its header's flags and geometry, and the payload as assembled. */
+/**
+ * Flag bit 6 at 0x04: set on a T8200's keyframes, whose media key is RSA-wrapped rather than carried in an
+ * ECIES envelope, so bit 0 stays clear on them. Measured on a standalone T8200: every unit opening with
+ * VPS/SPS/PPS/IDR carried `0x40`, every delta `0x02`, and none set bit 0.
+ */
+const KEYFRAME_FLAG_RSA_WRAPPED = 0x40;
+
+/**
+ * The delivered shape of a unit: its header's flags and geometry, and the payload as assembled. The unit is a
+ * keyframe when its header sets bit 0 or {@link KEYFRAME_FLAG_RSA_WRAPPED}; {@link VideoFrameHeader.keyframe}
+ * keeps meaning bit 0 alone, the ECIES envelope {@link VideoFrameDecoder} unwraps.
+ */
 function unitOf(header: VideoFrameHeader, data: Buffer): AssembledAccessUnit {
   return {
     sourceTimestamp: header.timestamp,
-    keyframe: header.keyframe,
+    keyframe: header.keyframe || (header.flags & KEYFRAME_FLAG_RSA_WRAPPED) !== 0,
     width: header.width,
     height: header.height,
     data,

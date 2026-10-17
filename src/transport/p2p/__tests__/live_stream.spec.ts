@@ -105,6 +105,24 @@ describe("LiveStream", () => {
     ]);
   });
 
+  /** A T8200 flags its keyframes `0x40` and its deltas `0x02`, and never sets bit 0. */
+  it("takes a unit flagged 0x40 as a keyframe, and one flagged 0x02 as a delta", () => {
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const { session, live } = mk({ logger });
+    const frames: any[] = [];
+    live.on("video", (f) => frames.push(f));
+    live.start();
+
+    session.push(p2pVideoFrame({ flags: 0x40, nal: Buffer.from([0x40, 0x01, 0x0c]) }));
+    session.push(p2pVideoFrame({ flags: 0x02, nal: Buffer.from([0x02, 0x01]) }));
+
+    expect(frames.map((f) => f.keyframe)).toEqual([true, false]);
+    expect(frames.map((f) => f.codec)).toEqual(["h265", "h265"]);
+    expect(
+      logger.debug.mock.calls.filter(([message]) => message === "[live] start trace").map(([, detail]) => detail),
+    ).toContainEqual({ phase: "first-keyframe" });
+  });
+
   it("sniffs codec on a keyframe and carries it onto following delta frames", () => {
     const { session, live } = mk();
     const frames: any[] = [];
