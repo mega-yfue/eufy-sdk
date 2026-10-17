@@ -686,18 +686,22 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * Read every Tuya clean-line device's DPs from the Tuya cloud and deliver them as realtime state. A
-   * failed read is reported, not fatal, and leaves that device's state as it was.
+   * Read every Tuya clean-line device's DPs from the Tuya cloud and deliver them as realtime state,
+   * concurrently. A failed read is reported, not fatal, and leaves that device's state as it was.
    */
-  private readTuyaDevices(): void {
-    for (const d of this.getMqttDevices().filter(isTuyaVacuum)) {
-      this.tuya
-        .fetchDps(d.sn)
-        .then((dps) => {
-          if (dps) this.tuyaDpRouter.deliver(d.sn, dps);
-        })
-        .catch((e) => this.reportError(e));
-    }
+  private async readTuyaDevices(): Promise<void> {
+    await Promise.all(
+      this.getMqttDevices()
+        .filter(isTuyaVacuum)
+        .map((d) =>
+          this.tuya
+            .fetchDps(d.sn)
+            .then((dps) => {
+              if (dps) this.tuyaDpRouter.deliver(d.sn, dps);
+            })
+            .catch((e) => this.reportError(e)),
+        ),
+    );
   }
 
   /**
@@ -1465,7 +1469,7 @@ export class EufyMega extends EventEmitter {
     try {
       if (!this.registry.list().length) await this.getDevices();
       if (epoch !== this.realtimeEpoch) return this.settleRealtimeGeneration(generation, "superseded");
-      this.readTuyaDevices();
+      void this.readTuyaDevices();
       const scopes = this.mqttScopesInUse();
       readiness.mqtt = createPlaneReadiness(scopes.length);
       let push: PushClient | undefined;
@@ -1612,6 +1616,11 @@ export class EufyMega extends EventEmitter {
    * an unchanged VALUE, which is no state change to report but is fresh proof the device is alive. A
    * device absent from the previous pass is skipped — first sight is discovery, not a transition;
    * {@link deviceState} answers an initial reading.
+   *
+   * Then re-reads every Tuya clean-line robot from the Tuya cloud ({@link readTuyaDevices}): its state
+   * is not in the cloud record this pass diffs and no live channel carries it, so the poll is where it
+   * stays fresh. That read runs after the `try`, not inside it, so a cloud error on the list diff does
+   * not skip it; it reports its own failures and never rejects.
    */
   private async pollOnce(): Promise<void> {
     try {
@@ -1627,6 +1636,7 @@ export class EufyMega extends EventEmitter {
     } catch (e) {
       this.reportError(e);
     }
+    await this.readTuyaDevices();
   }
 
   /**

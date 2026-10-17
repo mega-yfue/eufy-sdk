@@ -455,6 +455,29 @@ describe("cloud-param poll loop", () => {
 
     expect(poll).toHaveBeenCalledTimes(1);
   });
+
+  /**
+   * A Tuya robot's state lives on the Tuya cloud and the SDK holds no live channel to it, so each poll
+   * pass re-reads its DPs and delivers them — the stopgap that keeps its state fresh without a broker.
+   */
+  it("re-reads a Tuya robot's DPs on each poll pass", async () => {
+    const eufy = makeClient();
+    const robot = { sn: "T2266P0000000000", category: "eufy_home_tuya", realtime: "smqtt" };
+    vi.mocked(eufy.getMqttDevices).mockReturnValue([robot as any]);
+    vi.spyOn((eufy as any).registry, "pollChanges").mockResolvedValue({
+      params: [],
+      added: [],
+      removed: [],
+      reported: [],
+    });
+    const fetchDps = vi.spyOn((eufy as any).tuya, "fetchDps").mockResolvedValue({ 8: 41 });
+    const deliver = vi.spyOn((eufy as any).tuyaDpRouter, "deliver").mockImplementation(() => {});
+
+    await (eufy as any).pollOnce();
+
+    expect(fetchDps).toHaveBeenCalledWith("T2266P0000000000");
+    expect(deliver).toHaveBeenCalledWith("T2266P0000000000", { 8: 41 });
+  });
 });
 
 describe("setPollInterval (runtime poll-interval change)", () => {
