@@ -90,11 +90,19 @@ function isEvidencedStationAlarm(ctx: CommandContext): boolean {
 }
 
 /**
- * The camera models the portal's `1350` alarm form is evidenced on behind a HomeBase S1 Pro: a portal
- * capture plus a run on a real T9000 in which that camera alone sounded and stopped. Another model there
- * has no evidence for the form, so it gets no alarm members.
+ * The camera models the portal's `1350` alarm form is evidenced on behind a HomeBase S1 Pro: a run on a
+ * real T9000 in which that camera alone sounded and stopped. Another model there has no evidence for the
+ * form, so it gets no alarm members.
  */
-const S1_PRO_ALARM_MODELS: ReadonlySet<string> = new Set(["T8134"]);
+const S1_PRO_ALARM_MODELS: ReadonlySet<string> = new Set([
+  "T8134",
+  "T814X",
+  "T8214",
+  "T8790",
+  "T8122",
+  "T8113-Z",
+  "T8400",
+]);
 
 /**
  * Whether an attached camera reports the EAS slot verified with its own manual alarm output and, behind a
