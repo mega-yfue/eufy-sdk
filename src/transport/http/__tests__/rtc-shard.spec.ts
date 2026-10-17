@@ -53,3 +53,53 @@ describe("rtcShard", () => {
     expect(restored.rtcShard).toBe("ie-pr");
   });
 });
+
+/**
+ * The portal shard: `estimate_domain` asked as the portal's WEB identity, the identity the RTC sign is sent
+ * with. A GB account is answered `mega-eu-pr` as PHONE and `mega-ie-pr` as WEB, and only the ie sign host
+ * accepts its sign. Synthetic hosts; no network.
+ */
+describe("portalShard", () => {
+  function portal(answer: () => Promise<unknown>) {
+    const mega = new MegaHttpClient({
+      email: "synthetic@example.invalid",
+      password: "synthetic",
+      countryCode: "GB",
+      region: "eu-pr",
+      store: new MemorySessionStore(),
+    });
+    const httpPost = vi.fn(answer);
+    (mega as unknown as { httpPost: typeof httpPost }).httpPost = httpPost;
+    return { mega, httpPost };
+  }
+
+  it("asks estimate_domain as the WEB identity and takes the shard its domain names", async () => {
+    const { mega, httpPost } = portal(async () => ({
+      data: { code: 0, data: { domain: "mega-ie-pr.example.invalid" } },
+    }));
+
+    expect(await mega.portalShard()).toBe("ie-pr");
+    const [url, body, headers] = httpPost.mock.calls[0] as unknown as [string, unknown, Record<string, string>];
+    expect(url).toBe("https://mega-eu-pr.eufy.com/passport/estimate_domain");
+    expect(body).toEqual({ ab: "gb", mode: 1 });
+    expect(headers).toEqual({ "content-type": "application/json", "Model-Type": "WEB", "App-Name": "eufy_mega" });
+  });
+
+  it("asks once and reuses the answer", async () => {
+    const { mega, httpPost } = portal(async () => ({
+      data: { code: 0, data: { domain: "mega-ie-pr.example.invalid" } },
+    }));
+    await mega.portalShard();
+    expect(await mega.portalShard()).toBe("ie-pr");
+    expect(httpPost).toHaveBeenCalledOnce();
+  });
+
+  it("answers rtcShard when the estimate fails, and asks again next time", async () => {
+    const { mega, httpPost } = portal(async () => {
+      throw new Error("synthetic network failure");
+    });
+    expect(await mega.portalShard()).toBe(mega.rtcShard);
+    await mega.portalShard();
+    expect(httpPost).toHaveBeenCalledTimes(2);
+  });
+});

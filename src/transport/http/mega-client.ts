@@ -314,6 +314,15 @@ export interface SignedRetry {
 }
 
 /**
+ * The shard a mega domain names: its regional prefix (`…-ie-…` / `…-ie.` → `ie-pr`), or `undefined` when it
+ * names none.
+ */
+function shardOfDomain(domain: string): string | undefined {
+  const m = /-([a-z]{2})(?:[.-]|$)/i.exec(domain);
+  return m ? `${m[1].toLowerCase()}-pr` : undefined;
+}
+
+/**
  * The cloud HTTP client. Internal transport, reachable as an escape hatch via `EufyMega.api`.
  * @internal
  */
@@ -322,6 +331,8 @@ export class MegaHttpClient {
   private region: RegionShard;
   /** The host `estimate_domain` answered, persisted with the session. */
   private estimatedDomain = "";
+  /** The shard {@link portalShard} resolved, once it has. */
+  private portalShardCache?: string;
   private bootstrapDomain?: string;
   private sessionKey?: SessionEntry;
   /** Per-host ECDH session keys for non-mega gateways (e.g. eufylife) keyed by host. */
@@ -446,13 +457,42 @@ export class MegaHttpClient {
   }
 
   /**
-   * The shard the RTC signalling signs on: the regional prefix of the estimated domain
-   * (`…-ie-…`/`…-ie.` → `ie-pr`), else {@link regionShard}. The eu/us classification cannot name shards
-   * like `ie-pr`, whose accounts need the IE sign host and cluster.
+   * The shard the estimated domain names (`…-ie-…`/`…-ie.` → `ie-pr`), else {@link regionShard}. The eu/us
+   * classification cannot name shards like `ie-pr`. It is what {@link portalShard} answers when the portal's
+   * own estimate is unavailable.
    */
   get rtcShard(): string {
-    const m = /-([a-z]{2})(?:[.-]|$)/i.exec(this.estimatedDomain);
-    return m ? `${m[1].toLowerCase()}-pr` : this.region;
+    return shardOfDomain(this.estimatedDomain) ?? this.region;
+  }
+
+  /**
+   * The shard the RTC signalling signs on, as `estimate_domain` answers the portal's WEB identity
+   * (`Model-Type: WEB`, `App-Name: eufy_mega`), the identity the sign itself is sent with. The two identities
+   * can name different shards for one account: a GB account is answered `mega-eu-pr` as PHONE and `mega-ie-pr`
+   * as WEB, and its sign is refused (401 "token not exist") on the eu sign host and accepted on the ie one.
+   *
+   * Asked once per client and cached. A call that fails or names no shard answers {@link rtcShard} and is
+   * asked again next time.
+   */
+  async portalShard(): Promise<string> {
+    if (this.portalShardCache) return this.portalShardCache;
+    try {
+      const res = await this.httpPost(
+        `https://mega-${this.region}.eufy.com/passport/estimate_domain`,
+        { ab: this.cfg.countryCode.toLowerCase(), mode: 1 },
+        { "content-type": "application/json", "Model-Type": "WEB", "App-Name": "eufy_mega" },
+      );
+      const domain = (res.data as ApiEnvelope<Record<string, unknown>>)?.data?.domain;
+      const shard = typeof domain === "string" ? shardOfDomain(domain) : undefined;
+      if (shard) {
+        this.portalShardCache = shard;
+        this.logger.debug("[mega] portal shard:", shard);
+        return shard;
+      }
+    } catch (e) {
+      this.logger.debug("[mega] portal estimate_domain failed:", e instanceof Error ? e.message : String(e));
+    }
+    return this.rtcShard;
   }
 
   /**

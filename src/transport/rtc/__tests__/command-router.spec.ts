@@ -158,6 +158,13 @@ describe("RtcCommandRouter", () => {
     expect(sessions).toHaveLength(0);
   });
 
+  it("opens the station session on a shard the provider resolves asynchronously", async () => {
+    const { router, sessions } = makeRouter({ shard: async () => "ie-pr" });
+    await router.dispatchCommand(ST, arming(1));
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]!.opts.shard).toBe("ie-pr");
+  });
+
   it("sends the app's 1350 envelope on the station channel and resolves on the ACK", async () => {
     const { router, sessions } = makeRouter();
     await router.dispatchCommand(ST, arming(1));

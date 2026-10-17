@@ -91,7 +91,7 @@ export interface RtcCommandRouterDeps {
   /** The logged-in session's credentials; `undefined` while logged out. */
   identity: () => RtcIdentity | undefined;
   /** The mega shard the account signs on (`"ie-pr"`, `"eu-pr"`, `"us-pr"`); picks the smart host. */
-  shard: () => string;
+  shard: () => string | Promise<string>;
   /** ISO country sent on the sign request (default `US`). */
   country?: string;
   logger?: Logger;
@@ -358,6 +358,7 @@ export class RtcCommandRouter {
 
   private async stationSession(route: RtcRoute, adminUserId: string, identity: RtcIdentity): Promise<StationSession> {
     const sn = route.stationSn;
+    const shard = await this.deps.shard();
     const existing = this.sessions.get(sn);
     if (existing) {
       await existing.ready;
@@ -372,7 +373,7 @@ export class RtcCommandRouter {
       gtoken: identity.gtoken,
       stationSn: sn,
       adminUserId,
-      shard: this.deps.shard(),
+      shard,
       country: this.deps.country ?? "US",
       logger: this.deps.logger,
       signalingMode: route.signalingMode,
