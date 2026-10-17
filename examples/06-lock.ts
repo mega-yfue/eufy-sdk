@@ -38,18 +38,22 @@ async function main(): Promise<void> {
   switch (action) {
     case "lock":
       console.log("locking …");
+      if (!lock.lock) throw new Error(`${sn} has no verified lock action`);
       await lock.lock();
       break;
     case "unlock":
       console.log("unlocking …");
+      if (!lock.unlock) throw new Error(`${sn} has no verified unlock action`);
       await lock.unlock();
       break;
     case "autolock-on":
       console.log("enabling auto-lock (60s delay) …");
+      if (!lock.setAutoLock) throw new Error(`${sn} has no setAutoLock`);
       await lock.setAutoLock(true, 60);
       break;
     case "autolock-off":
       console.log("disabling auto-lock …");
+      if (!lock.setAutoLock) throw new Error(`${sn} has no setAutoLock`);
       await lock.setAutoLock(false);
       break;
     case "rain-on":

@@ -1325,7 +1325,11 @@ export class P2PCommandRouter {
    * device channel, then resolves with the reply frame's `payload` — the `NOTIFY_PAYLOAD` (1351)
    * whose JSON `cmd` echoes `subCmd` — decoded off the session `data` event. Needs the level-2 key.
    */
-  async p2pQuery(sn: string, subCmd: number, opts: { timeoutMs?: number } = {}): Promise<Record<string, unknown>> {
+  async p2pQuery(
+    sn: string,
+    subCmd: number,
+    opts: { timeoutMs?: number; payload?: Record<string, unknown> } = {},
+  ): Promise<Record<string, unknown>> {
     const { session, channel, accountId } = await this.resolveSession(sn, { waitLevel2: true });
     const timeoutMs = opts.timeoutMs ?? 15000;
     return await new Promise<Record<string, unknown>>((resolve, reject) => {
@@ -1335,7 +1339,14 @@ export class P2PCommandRouter {
       }, timeoutMs);
       const onData = (f: P2PFrame): void => {
         const j = f.json as { cmd?: number; payload?: unknown } | undefined;
-        if (j?.cmd === subCmd && j.payload && typeof j.payload === "object") {
+        if (
+          f.channel === channel &&
+          f.commandId === CommandType.CMD_NOTIFY_PAYLOAD &&
+          j?.cmd === subCmd &&
+          j.payload &&
+          typeof j.payload === "object" &&
+          !Array.isArray(j.payload)
+        ) {
           cleanup();
           resolve(j.payload as Record<string, unknown>);
         }
@@ -1349,7 +1360,10 @@ export class P2PCommandRouter {
       // sendSetPayload can throw synchronously (e.g. "not connected"); clean up the listener + timer
       // so they don't dangle until the timeout, then propagate the failure.
       try {
-        session.sendSetPayload(subCmd, {}, { accountId, channel });
+        if (opts.payload) {
+          if (!session.sendControlLevel2(subCmd, channel, accountId, opts.payload, 0))
+            throw new Error("p2p query send failed");
+        } else session.sendSetPayload(subCmd, {}, { accountId, channel });
       } catch (e) {
         cleanup();
         reject(e instanceof Error ? e : new Error(String(e)));

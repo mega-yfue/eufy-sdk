@@ -938,7 +938,13 @@ export class EufyMega extends EventEmitter {
     this.emit("p2p", f);
     const caps = this.registry.capabilitiesForFrame(stationSn, f.channel);
     const deviceSn = this.registry.serialForFrame(stationSn, f.channel);
-    const signal = { source: "p2p-frame" as const, ...f };
+    const signal = {
+      source: "p2p-frame" as const,
+      ...f,
+      deviceType: deviceSn
+        ? (this.registry.require(deviceSn).raw as { device_type?: number } | undefined)?.device_type
+        : undefined,
+    };
     if (f.params) this.applyRealtimeState(deviceSn, f.params);
     this.applyRealtimeReport(deviceSn, decodeCapabilityState(signal, caps));
     for (const ev of decodeCapabilityEvent(signal, caps))
@@ -2243,6 +2249,8 @@ export class EufyMega extends EventEmitter {
     const rawChannel = raw.device_channel;
     const channel = typeof rawChannel === "number" ? rawChannel : 0;
     const member = (raw.member ?? {}) as Record<string, any>;
+    const parent = this.registry.list().find((d) => d.sn === rec.parentSn);
+    const parentRaw = parent?.raw as Record<string, any> | undefined;
     const resolved = resolveDevice(rec);
     const dpCatalog =
       (resolved.codec === "vacuum" || resolved.codec === "mower") && rec.model
@@ -2250,6 +2258,7 @@ export class EufyMega extends EventEmitter {
         : undefined;
     return {
       channel,
+      timezone: recordString(parentRaw ?? {}, "time_zone"),
       codec: resolved.codec,
       deviceType: rec.deviceType,
       model: rec.model,

@@ -932,7 +932,10 @@ export interface MediaProvider {
    * sub-command id and the reply shape (e.g. the doorbell's 6237 quick-response list).
    * @internal
    */
-  p2pQuery?(subCmd: number, opts?: { timeoutMs?: number }): Promise<Record<string, unknown>>;
+  p2pQuery?(
+    subCmd: number,
+    opts?: { timeoutMs?: number; payload?: Record<string, unknown> },
+  ): Promise<Record<string, unknown>>;
   /**
    * Generic control-payload request/reply query: send a `CONTROL_PAYLOAD` (1700) `{commandType,data}`
    * and resolve with the correlated notify (`1351`) frame's `payload`. Distinct from {@link p2pQuery}'s

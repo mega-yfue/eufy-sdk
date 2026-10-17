@@ -158,3 +158,6 @@ export const isAiotVacuum = (ctx: FamilyContext): boolean => ctx.category !== "e
  * vacuums receive the same write actions as AIoT ones, routed by the facade's `routeCommand`.
  */
 export const isTuyaVacuum = (ctx: FamilyContext): boolean => ctx.category === "eufy_home_tuya";
+
+/** Video Smart Lock S330, identified by its distinct cloud device type. */
+export const isVideoSmartLock = (ctx: FamilyContext): boolean => ctx.deviceType === DeviceType.LOCK_8530;

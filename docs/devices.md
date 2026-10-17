@@ -56,8 +56,8 @@ const fresh = await dev.camera?.()?.snapshotLive?.(); // → { jpeg, width, heig
 await dev.ptz?.()?.rotate(PtzDirection.left, 1.0); // PTZ step — see the PTZ guide
 await dev.light?.()?.setBrightness(50); // spotlight 1–100
 await dev.arming?.()?.setMode(ArmingMode.home); // guard mode
-await dev.lock?.()?.lock();
-await dev.lock?.()?.setAutoLock(true, 60); // enable, 60s delay
+await dev.lock?.()?.lock?.();
+await dev.lock?.()?.setAutoLock?.(true, 60); // enable, 60s delay
 await dev.lock?.()?.setRainMode?.(true); // P2P video lock only — optional accessor
 ```
 
@@ -245,3 +245,31 @@ Two things to rely on:
 Because it rides the poll interval, a pairing shows up within that window rather than instantly.
 
 Next: [Events](/events) · [Live media](/live-media).
+
+## Video Smart Lock S330 (T8530)
+
+T8530 (cloud device type 55) uses native video-lock control and status rather than the compact settings
+protocol used by T8531 and T85D0. Lock and unlock are available only when attached to HomeBase 3
+(T8030), using the existing payload transport and its replay behavior. Their completion means the SDK
+sent the request; it does not confirm acceptance or physical movement.
+Existing lock families retain their current control paths.
+
+Use `refreshStatus()` for an explicit live read. It answers `true` for locked, `false` for unlocked,
+and `undefined` for an unrecognised or missing state. Settled reports also update the last-known
+`locked` property, battery, and realtime property events. Unrecognised reports do not overwrite the
+last-known lock state. A status error rejects, and a timeout does not fabricate a state.
+
+```ts
+const lock = dev.lock?.();
+const locked = await lock?.refreshStatus?.();
+console.log(locked);
+```
+
+The status method is absent without a query provider and the parent station's reported vendor
+timezone (`time_zone`). The SDK does not guess a timezone from the host. Auto-lock settings
+and Rain Mode are absent on this family; PIN management, schedules, calibration, and other settings
+are unverified.
+
+The raw command-result acknowledgement has no inner command or request id, so it is not used to
+confirm this command or mutate state. Live status is matched to its station session, device channel,
+and native status command.

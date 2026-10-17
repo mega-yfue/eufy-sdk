@@ -68,6 +68,8 @@ export type ProductLine = "security" | "life" | "clean" | "print" | "display" | 
  * `p2p-frame` shape of {@link InboundSignal}.
  */
 export interface CapabilityFrame {
+  /** Cloud device type resolved from the reporting station/channel. */
+  deviceType?: number;
   stationSn: string;
   commandId: number;
   channel: number;
@@ -268,6 +270,8 @@ export interface AvailabilityContext {
 }
 
 export interface CommandContext extends AvailabilityContext {
+  /** Vendor-formatted timezone reported by the station; never inferred from the host. */
+  timezone?: string;
   /** Device channel (0 for standalone, `device_channel` on a HomeBase). */
   channel: number;
   /** eufy DeviceType, when known. */
