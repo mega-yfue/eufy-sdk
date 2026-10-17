@@ -28,6 +28,8 @@ export interface PersistedSession {
   authToken: string;
   geoKey?: string;
   region: RegionShard;
+  /** The `countryCode` the session was logged in with; a different configured one logs in again. */
+  countryCode?: string;
   /** The host `estimate_domain` answered; it names shards the region classification cannot (`ie`). */
   estimatedDomain?: string;
   openudid: string;

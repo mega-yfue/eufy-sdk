@@ -401,7 +401,8 @@ export class MegaHttpClient {
 
   /**
    * Install the session the store holds, if it holds a usable one: the token + its bound ECDH key, skipping
-   * estimate/key-exchange/login/2FA entirely. Answers the token adopted, or `undefined`.
+   * estimate/key-exchange/login/2FA entirely. Answers the token adopted, or `undefined`. A session logged in
+   * with a country other than the configured one is not usable: its shard is the other country's.
    *
    * Read at construction, and again when a rejection is being recovered from — a store SHARED with another
    * client may already hold the session that client obtained, which is cheaper to adopt than to compete with.
@@ -414,6 +415,12 @@ export class MegaHttpClient {
   private hydrateFromStore(): string | undefined {
     const saved = this.store.load();
     if (!isSessionValid(saved) || !saved) return undefined;
+    if (saved.countryCode !== undefined && saved.countryCode.toUpperCase() !== this.cfg.countryCode.toUpperCase()) {
+      this.logger.info(
+        `[mega] stored session was logged in with country ${saved.countryCode}, configured ${this.cfg.countryCode} — logging in again`,
+      );
+      return undefined;
+    }
     this.region = saved.region;
     this.estimatedDomain = saved.estimatedDomain ?? "";
     this.auth_ = {
@@ -1379,6 +1386,7 @@ export class MegaHttpClient {
       authToken: this.auth_.authToken,
       geoKey: this.auth_.geoKey,
       region: this.region,
+      countryCode: this.cfg.countryCode,
       estimatedDomain: this.estimatedDomain,
       openudid: this.openudid,
       phoneModel: this.phoneModel,
