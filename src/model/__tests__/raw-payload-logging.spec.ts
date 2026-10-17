@@ -19,6 +19,7 @@ const RESOLVED: ResolvedDevice = {
   capabilities: ["vacuum_clean"],
   properties: [
     { name: "sideBrushHours", paramType: 168, type: "number", writable: false, raw: true },
+    { name: "childLock", paramType: 176, type: "bool", writable: false, raw: true },
     { name: "battery", paramType: 163, type: "number", writable: false },
   ],
   name: "vac",
@@ -64,6 +65,30 @@ describe("storing a Raw-DP payload", () => {
     dev.applyParams({ 168: 42 });
 
     expect(dev.getProperty("sideBrushHours")?.value).toBe(42);
+  });
+});
+
+describe("storing a Raw-DP payload whose getter answers a boolean", () => {
+  // DP 176 and DP 157 are protobuf messages owned by members that answer `bool` (childLock,
+  // doNotDisturb). Coercing the payload as a boolean stored `false` and left every read off it blank.
+
+  it("keeps the payload intact", () => {
+    const dev = new Device("T8000P0000000000", RESOLVED);
+    const payload = "BgoCCAEaAA==";
+
+    dev.applyParams({ 176: payload });
+
+    expect(dev.getProperty("childLock")?.value).toBe(payload);
+  });
+
+  it("still coerces a boolean wire form a plain scalar alias sends", () => {
+    const dev = new Device("T8000P0000000000", RESOLVED);
+
+    dev.applyParams({ 176: "1" });
+    expect(dev.getProperty("childLock")?.value).toBe(true);
+
+    dev.applyParams({ 176: "false" });
+    expect(dev.getProperty("childLock")?.value).toBe(false);
   });
 });
 
