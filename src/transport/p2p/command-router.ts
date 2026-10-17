@@ -1260,19 +1260,19 @@ export class P2PCommandRouter {
   }
 
   /**
-   * Replace the session under a warming source whose media start nothing acknowledged, and warm again on it.
+   * Replace the session under a warming source it is not serving, and warm again on it.
    *
    * Only a STANDALONE device's session is replaced, for the reason {@link onLiveStartFailed} gives: an attached
    * camera shares its HomeBase session with every other camera on it, and closing that to recover one would
-   * drop the rest. Such a source keeps the re-issue it always had.
+   * drop the rest. Such a source keeps the re-issue it always had, which the answer (false) tells it.
    *
    * The source is left warming throughout, holding the deadline it started, so this either produces a stream
    * within that window or fails exactly as it would have. A replacement that cannot be opened leaves the
    * source to its deadline rather than failing it early — the window is the caller's contract.
    */
-  private replaceUnreachableSession(sn: string, key: string, held: HeldSession): void {
+  private replaceUnreachableSession(sn: string, key: string, held: HeldSession): boolean {
     const station = this.stationKeyOf(sn);
-    if (station !== sn) return;
+    if (station !== sn) return false;
     void (async () => {
       try {
         await this.manager.close(station);
@@ -1285,6 +1285,7 @@ export class P2PCommandRouter {
         this.reportError(error instanceof Error ? error : new Error(String(error)));
       }
     })();
+    return true;
   }
 
   /**

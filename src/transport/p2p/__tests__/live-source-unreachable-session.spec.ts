@@ -23,7 +23,7 @@ const keyframe = () => videoFrame(unit(H264.sps, H264.pps, H264.idr), { keyframe
  */
 function source(over: Record<string, unknown> = {}) {
   const { makeStream, streams } = streamFactory();
-  const onSessionUnreachable = vi.fn();
+  const onSessionUnreachable = vi.fn(() => true);
   const src = new SharedLiveSource({
     makeStream,
     warmRetryMs: 10_000,
@@ -102,5 +102,41 @@ describe("a media start the device never acknowledged", () => {
 
     expect(streams).toHaveLength(1);
     expect(streams[0]!.nudged).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * A reused own session can acknowledge every start and serve nothing: measured, a warm-up and eight forced
+ * re-issues each acknowledged within 51 ms, no media datagram for the whole 20 s window, while the next attempt
+ * on a fresh session delivered a keyframe 0.4 s after its start. A forced start answered by nothing for a whole
+ * interval is therefore the session, and the warm-up asks for a fresh one inside its deadline.
+ */
+describe("forced starts the device acknowledges and serves nothing for", () => {
+  it("asks for a replacement session after a forced start served nothing, and stops forcing onto it", async () => {
+    const { src, streams, onSessionUnreachable } = source({ warmRetryMs: 20 });
+    src.attach().on("error", () => undefined);
+
+    await settle(70);
+    const sent = streams[0]!.nudged;
+    await settle(60);
+
+    expect(onSessionUnreachable).toHaveBeenCalledTimes(1);
+    expect(sent).toBe(2);
+    expect(streams[0]!.nudged).toBe(2);
+  });
+
+  it("keeps forcing starts where the owner cannot replace the session", async () => {
+    const cannot = vi.fn(() => false);
+    const { src, streams } = source({
+      warmRetryMs: 20,
+      onSessionUnreachable: cannot,
+    });
+    src.attach().on("error", () => undefined);
+
+    await settle(130);
+
+    expect(streams).toHaveLength(1);
+    expect(streams[0]!.nudged).toBeGreaterThan(3);
+    expect(cannot).toHaveBeenCalledTimes(1);
   });
 });

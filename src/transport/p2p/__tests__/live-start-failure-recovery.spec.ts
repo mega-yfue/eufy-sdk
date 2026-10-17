@@ -109,7 +109,7 @@ describe("recovering a camera whose live start failed", () => {
     await vi.waitFor(async () => expect(await router.sharedLiveSourceFor(STANDALONE)).not.toBe(first));
   });
 
-  it("recycles and re-serves after a real warm-up timeout, not just a poked callback", async () => {
+  it("replaces a session once inside the warm-up window, recycles it once at the deadline, then re-serves", async () => {
     vi.useFakeTimers();
     try {
       const { router, closed } = routerFor(STANDALONE);
@@ -120,7 +120,7 @@ describe("recovering a camera whose live start failed", () => {
       await vi.advanceTimersByTimeAsync(20000); // the source's own warm-up deadline
 
       expect(source.state).toBe("stopped");
-      expect(closed).toEqual([STANDALONE]);
+      expect(closed).toEqual([STANDALONE, STANDALONE]);
       await vi.runAllTimersAsync();
       expect(await router.sharedLiveSourceFor(STANDALONE)).not.toBe(source);
     } finally {
