@@ -190,6 +190,7 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
       client.on("reconnect", () => this.logger.warn("[smqtt] reconnecting"));
       client.on("close", () => this.emit("disconnect", "close"));
       client.on("error", (err) => {
+        this.logger.warn(`[smqtt] socket error (${c.app_name ?? "default"}): ${err.message}`);
         this.emit("error", err);
         if (!settled) {
           settled = true;
