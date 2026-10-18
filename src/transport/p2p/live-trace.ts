@@ -159,13 +159,14 @@ export type LiveTrace =
    *
    * A station that switches to a sibling leaves the stream it was serving with no frames, no error and no
    * stop, so this silence is the only statement that it happened. `reasserted` re-issued the media start,
-   * which is the repair; `declined` left the channel alone because nothing is attached to this pull and
-   * taking the station back would take it from a camera someone is watching.
+   * attempting recovery; `declined` left the channel alone because nothing is attached to this pull
+   * and taking the station back would take it from a camera someone is watching. `retired` stopped
+   * the stream after re-asserts failed to restore video within the recovery deadline.
    *
    * Media still arriving means this never fires, so a picture that stopped advancing while this is silent
    * stopped for a reason upstream of the station's attention.
    */
-  | { phase: "channel-silent"; silentMs: number; outcome: "reasserted" | "declined" };
+  | { phase: "channel-silent"; silentMs: number; outcome: "reasserted" | "declined" | "retired" };
 
 /**
  * Record one startup observation at debug level.

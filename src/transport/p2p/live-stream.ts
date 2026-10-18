@@ -81,6 +81,9 @@ const MAX_TRACED_DECODE_FAILURES = 3;
  */
 export const DEFAULT_KEEPALIVE_MS = 3000;
 
+/** Total video silence tolerated by a previously delivering attached channel before retirement. */
+const CHANNEL_SILENCE_MS = 35_000;
+
 export interface LiveStreamOptions {
   /**
    * Camera channel to START (the device's `device_channel`) — sent in CMD_START_REALTIME_MEDIA to
@@ -235,7 +238,11 @@ export class LiveStream extends EventEmitter {
    * the re-assert exists for, and the only one — re-arming while media flows is the contention this settle was
    * introduced to remove.
    *
-   * Replaced on every own-channel frame, so the window is measured from the last one.
+   * Replaced on every own-channel video unit, so the window is measured from the last one. Once
+   * re-asserting begins, the remaining portion of a 35-second total silence window bounds recovery.
+   * A longer configured stall window is honored before retirement. The shared source ends its
+   * consumers and releases the pull; a new acquisition cannot reuse the silent source.
+   * Audio and a responsive session do not extend the video recovery deadline.
    *
    * Gated on {@link LiveStreamOptions.reassertWanted}: silence with nobody attached is not a condition to
    * act on, because the re-assert would take the station from a camera someone is watching.
@@ -260,6 +267,13 @@ export class LiveStream extends EventEmitter {
       this.logger.debug(`[live ch${this.channel}] no own media for ${stallMs}ms — re-asserting this camera's channel`);
       this.sendStart();
       this.kaTimer = setInterval(() => this.sendStart(), keepAliveMs);
+      const recoveryMs = Math.max(0, CHANNEL_SILENCE_MS - stallMs);
+      this.stallTimer = setTimeout(() => {
+        this.stallTimer = undefined;
+        this.trace({ phase: "channel-silent", silentMs: stallMs + recoveryMs, outcome: "retired" });
+        this.stop();
+      }, recoveryMs);
+      this.stallTimer.unref?.();
     }, stallMs);
     this.stallTimer.unref?.();
   }

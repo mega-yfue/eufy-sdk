@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { P2PCommandRouter } from "../command-router.js";
 import type { P2PSession } from "../p2p-session.js";
 import { connectedSession } from "./session-fixtures.js";
+import { p2pVideoFrame } from "./live-source-fixtures.js";
 
 const STATION = "T8000P0000000000";
 const CAMERA = "T8000P0000000001";
@@ -76,5 +77,34 @@ describe("a cached pull when its P2P path is replaced", () => {
     expect(replacement.startLiveMedia).toHaveBeenCalledOnce();
     newConsumer.detach();
     newSource.dispose();
+  });
+});
+
+describe("a cached pull after bounded channel recovery", () => {
+  it("replaces a retired source on acquisition while keeping the answering station session", async () => {
+    vi.useFakeTimers();
+    const { router, first } = setup();
+    try {
+      const oldSource = await router.sharedLiveSourceFor(CAMERA);
+      const consumer = oldSource.attach();
+      const stopped = vi.fn();
+      consumer.on("stop", stopped);
+      first.emit(
+        "data",
+        p2pVideoFrame({ nal: Buffer.from([0x65, 0x11]), keyframe: true, width: 1920, height: 1080, channel: 1 }),
+      );
+      expect(oldSource.state).toBe("live");
+      await vi.advanceTimersByTimeAsync(35_000);
+      expect(stopped).toHaveBeenCalledOnce();
+      const newSource = await router.sharedLiveSourceFor(CAMERA);
+      expect(newSource).not.toBe(oldSource);
+      newSource.attach();
+      expect(newSource.state).toBe("warming");
+      expect(first.close).not.toHaveBeenCalled();
+      expect(first.startLiveMedia.mock.calls.length).toBeGreaterThan(2);
+    } finally {
+      await router.closeAll();
+      vi.useRealTimers();
+    }
   });
 });

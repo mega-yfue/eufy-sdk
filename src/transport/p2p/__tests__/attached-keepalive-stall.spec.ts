@@ -1,5 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LiveStream } from "../live-stream.js";
+import { SharedLiveSource } from "../shared-live-source.js";
 import type { P2PSession } from "../p2p-session.js";
 import { FakeP2PSession, p2pVideoFrame } from "./live-source-fixtures.js";
 
@@ -137,6 +138,88 @@ describe("an attached stream nothing is attached to", () => {
     await settle(140);
 
     expect(session.starts.length).toBeGreaterThan(settled);
+    stream.stop();
+  });
+});
+
+describe("bounded recovery after an attached channel delivered video", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("ends an attached consumer when re-asserts never restore video, without ending a delivering sibling", () => {
+    const { session, stream, traces } = attached(50);
+    const onStopped = vi.fn();
+    const source = new SharedLiveSource({ makeStream: () => stream, onStopped });
+    const consumer = source.attach();
+    const ended = vi.fn();
+    consumer.on("stop", ended);
+    session.push(ownFrame(2));
+    const sibling = new LiveStream(session as unknown as P2PSession, {
+      channel: 3,
+      homeBaseAttached: true,
+      keepAliveMs: 20,
+      stallMs: 200,
+    }).start();
+    const siblingVideo = vi.fn();
+    sibling.on("video", siblingVideo);
+    session.push(ownFrame(3));
+    const traffic = setInterval(() => {
+      session.push(ownFrame(3));
+      session.push({ commandId: 1301, channel: 2, data: Buffer.alloc(24) });
+    }, 100);
+    vi.advanceTimersByTime(34_999);
+    expect(source.state).toBe("live");
+    expect(ended).not.toHaveBeenCalled();
+    expect(session.starts.filter((channel) => channel === 2).length).toBeGreaterThan(2);
+    vi.advanceTimersByTime(1);
+    expect(source.state).toBe("stopped");
+    expect(ended).toHaveBeenCalledOnce();
+    expect(onStopped).toHaveBeenCalledOnce();
+    expect(session.stops).toEqual([2]);
+    expect(traces()).toContainEqual(
+      expect.objectContaining({ phase: "channel-silent", silentMs: 35000, outcome: "retired" }),
+    );
+    const delivered = siblingVideo.mock.calls.length;
+    session.push(ownFrame(3));
+    expect(siblingVideo).toHaveBeenCalledTimes(delivered + 1);
+    clearInterval(traffic);
+    const starts = session.starts.length;
+    sibling.stop();
+    vi.advanceTimersByTime(60_000);
+    expect(session.starts).toHaveLength(starts);
+  });
+
+  it("cancels retirement when video returns and gives a later silence its own recovery window", () => {
+    const { session, stream } = attached(50);
+    const stopped = vi.fn();
+    stream.on("stop", stopped);
+    session.push(ownFrame(2));
+    vi.advanceTimersByTime(30_000);
+    session.push(ownFrame(2));
+    vi.advanceTimersByTime(34_999);
+    expect(stopped).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(stopped).toHaveBeenCalledOnce();
+  });
+
+  it("leaves cold-start deadlines to the shared source until video has actually arrived", () => {
+    const { session, stream } = attached(50);
+    const stopped = vi.fn();
+    stream.on("stop", stopped);
+    vi.advanceTimersByTime(60_000);
+    expect(stopped).not.toHaveBeenCalled();
+    expect(session.starts.length).toBeGreaterThan(2);
+    stream.stop();
+  });
+
+  it("does not start a retirement deadline while the owner declines re-assertion", () => {
+    const { session, stream } = attached(50, () => false);
+    const stopped = vi.fn();
+    stream.on("stop", stopped);
+    session.push(ownFrame(2));
+    vi.advanceTimersByTime(60_000);
+    expect(stopped).not.toHaveBeenCalled();
+    expect(session.starts).toHaveLength(1);
     stream.stop();
   });
 });
