@@ -509,6 +509,28 @@ describe("RtcCommandRouter live view", () => {
     }
   });
 
+  it("bounds a battery camera's view to the budget timings the first caller passed", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    const { router, sessions } = makeRouter();
+    try {
+      const viewer = await router.mediaProviderFor(ORTO).live({
+        powered: "battery",
+        batteryBudgetMs: 5_000,
+        budgetGraceMs: 2_000,
+      });
+      const notice = vi.fn();
+      viewer.on("budget", notice);
+      sessions[0]!.emit("mediaData", idr());
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(notice).toHaveBeenCalledOnce();
+      expect(notice.mock.calls[0]![0]).toMatchObject({ graceMs: 2_000 });
+      viewer.stop();
+    } finally {
+      router.close();
+      vi.useRealTimers();
+    }
+  });
+
   it("frees the station for another camera when the only caller gave up during the bring-up", async () => {
     const { router } = makeRouter();
     try {
@@ -878,6 +900,18 @@ describe("RtcCommandRouter on a media-track route", () => {
     await router.trackMediaProviderFor(DOORBELL).live({ powered: "battery", preBufferSeconds: 10 });
     const sources = (router as unknown as { callSources: Map<string, { opts: Record<string, unknown> }> }).callSources;
     expect(sources.get("T8000P0000000002")!.opts).toMatchObject({ powered: "battery", preBufferSeconds: 10 });
+    router.close();
+  });
+
+  it("builds the station's live source with the budget timings the first caller passed", async () => {
+    const { router } = makeRouter();
+    await router.trackMediaProviderFor(DOORBELL).live({
+      powered: "battery",
+      batteryBudgetMs: 120_000,
+      budgetGraceMs: 5_000,
+    });
+    const sources = (router as unknown as { callSources: Map<string, { opts: Record<string, unknown> }> }).callSources;
+    expect(sources.get("T8000P0000000002")!.opts).toMatchObject({ batteryBudgetMs: 120_000, budgetGraceMs: 5_000 });
     router.close();
   });
 });

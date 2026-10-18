@@ -29,7 +29,7 @@ import type { Logger } from "../../core/logger.js";
 import { abortable } from "../abortable.js";
 import { captureSnapshotFromShared } from "../p2p/media.js";
 import { openReadableFromConsumer } from "../p2p/readable-egress.js";
-import { SharedLiveSource, attachUnlessAborted } from "../p2p/shared-live-source.js";
+import { SharedLiveSource, attachUnlessAborted, type SharedLiveSourceOptions } from "../p2p/shared-live-source.js";
 import { RtcLiveStream } from "./live.js";
 import { PORTAL_KEEPALIVE, PORTAL_KEEPALIVE_MS } from "./portal-keepalive.js";
 import { RtcCallLiveStream } from "./call-live.js";
@@ -106,6 +106,12 @@ export interface RtcCommandRouterDeps {
   ffmpegPath?: string;
   createSession?: (opts: RtcSessionOptions) => RtcSession;
 }
+
+/**
+ * The battery budget timings a caller may pass beside its {@link SharedSourceHints}, as on a P2P live
+ * source; a first caller's timings configure the new source.
+ */
+type BudgetTimings = Pick<SharedLiveSourceOptions, "batteryBudgetMs" | "budgetGraceMs">;
 
 /** A station's live pull: the camera it serves and its shared source. */
 interface StationLive {
@@ -226,6 +232,8 @@ export class RtcCommandRouter {
           logger: this.deps.logger,
           powered: hints.powered,
           preBufferSeconds: hints.preBufferSeconds,
+          batteryBudgetMs: (hints as BudgetTimings).batteryBudgetMs,
+          budgetGraceMs: (hints as BudgetTimings).budgetGraceMs,
           warmTimeoutMs: 45_000,
         });
         this.callSources.set(sn, source);
@@ -335,6 +343,8 @@ export class RtcCommandRouter {
       logger: this.deps.logger,
       powered: hints.powered,
       preBufferSeconds: hints.preBufferSeconds,
+      batteryBudgetMs: (hints as BudgetTimings).batteryBudgetMs,
+      budgetGraceMs: (hints as BudgetTimings).budgetGraceMs,
       onActive: () => {
         if (leased) return;
         leased = true;
