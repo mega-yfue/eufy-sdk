@@ -134,6 +134,70 @@ describe("catch-all event tag", () => {
     vi.useRealTimers();
   });
 
+  /**
+   * A signal whose re-read never shows the param move is dropped, and the drop is logged: without the
+   * warning, a signal that arrived against a lagging cloud is indistinguishable from one that never came.
+   */
+  it("warns when a refresh-driven event is dropped because its param never moved", async () => {
+    vi.useFakeTimers();
+    const warn = vi.fn();
+    const eufy = new EufyMega({
+      email: "t@example.com",
+      password: "x",
+      logger: { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() },
+    });
+    const device = { getProperty: () => ({ value: 1 }), applyParams: vi.fn() };
+    (eufy as any).liveDevices.set("T8000P0000000000", new WeakRef(device));
+    vi.spyOn((eufy as any).registry, "require").mockReturnValue({ params: { 1224: "1" } });
+    vi.spyOn((eufy as any).registry, "getDevices").mockResolvedValue([]);
+    const seen: unknown[] = [];
+    eufy.on("armingModeChanged", (e) => seen.push(e));
+
+    (eufy as any).emitSemantic(
+      "armingModeChanged",
+      { deviceSn: "T8000P0000000000" },
+      { refresh: { param: 1224, property: "armingMode", timeoutMs: 2_000 } },
+    );
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect(seen).toEqual([]);
+    expect(warn).toHaveBeenCalledExactlyOnceWith(
+      "[eufy] T8000P0000000000: armingModeChanged arrived but armingMode (param 1224) did not change within " +
+        "2000ms of re-reading, so the event is not announced",
+    );
+    vi.useRealTimers();
+  });
+
+  it("does not warn when the refresh-driven event's param moves", async () => {
+    const warn = vi.fn();
+    const eufy = new EufyMega({
+      email: "t@example.com",
+      password: "x",
+      logger: { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() },
+    });
+    let mode = 1;
+    const device = {
+      getProperty: () => ({ value: mode }),
+      applyParams: (params: Record<number, string>) => {
+        mode = Number(params[1224]);
+      },
+    };
+    (eufy as any).liveDevices.set("T8000P0000000000", new WeakRef(device));
+    vi.spyOn((eufy as any).registry, "require").mockReturnValue({ params: { 1224: "63" } });
+    vi.spyOn((eufy as any).registry, "getDevices").mockResolvedValue([]);
+    const seen: number[] = [];
+    eufy.on("armingModeChanged", () => seen.push(mode));
+
+    (eufy as any).emitSemantic(
+      "armingModeChanged",
+      { deviceSn: "T8000P0000000000" },
+      { refresh: { param: 1224, property: "armingMode", timeoutMs: 20_000 } },
+    );
+
+    await vi.waitFor(() => expect(seen).toEqual([63]));
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   it("serializes consecutive valueless transitions so each event observes its own state", async () => {
     vi.useFakeTimers();
     const eufy = client();

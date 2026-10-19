@@ -715,6 +715,11 @@ export class EufyMega extends EventEmitter {
    * announced. The state is noted either way: the poll re-announces an unchanged value on purpose,
    * and must still update what is known, or the next realtime signal carrying that same value would
    * read as a change and be announced a second time.
+   *
+   * An event that asks for a `refresh` is announced only once the re-read shows its param moved. When
+   * the re-read window closes with the param unchanged and the realtime generation still current, the
+   * event is dropped with a warning naming the device, the event, the property, its param and the
+   * window — the one trace that separates "the signal never arrived" from "the cloud never moved".
    */
   private emitSemantic(
     event: string,
@@ -732,9 +737,18 @@ export class EufyMega extends EventEmitter {
       if (commandOwner?.epoch === this.realtimeEpoch && commandOwner.count > 0) return;
       const device = this.liveDevices.get(deviceSn)?.deref();
       if (device) {
+        const epoch = this.realtimeEpoch;
         const emission = this.enqueueStateTransition(key, () => this.refreshEventState(deviceSn, refresh))
           .then(async (refreshed) => {
-            if (!refreshed) return;
+            if (!refreshed) {
+              if (epoch === this.realtimeEpoch) {
+                this.opts.logger?.warn?.(
+                  `[eufy] ${deviceSn}: ${event} arrived but ${refresh.property} (param ${refresh.param}) did not ` +
+                    `change within ${refresh.timeoutMs}ms of re-reading, so the event is not announced`,
+                );
+              }
+              return;
+            }
             this.emitSemantic(event, payload, { edge: opts.edge });
           })
           .catch((error) => this.reportError(error));
