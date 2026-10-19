@@ -38,12 +38,15 @@
  * `scanEntropy` answers the same question by Huffman-walking the scan and discarding every coefficient
  * it decodes: no IDCT, no component planes, no output image, one `Int32Array` of MCU count. The
  * three-hypothesis search allocates a few hundred kilobytes and runs in single-digit milliseconds, and
- * `jpeg-js` is left with the one job that needs it — decoding the ONE frame the search settles on. That
- * decode is a measurement, not a rewrite: what comes back is the camera's own scan under a corrected
- * header (see `contrastScale`), never a re-encode.
+ * `jpeg-js` is left with the one job that needs it — one probe decode of the frame the search settles
+ * on. That decode is a measurement, not a rewrite: what comes back is the camera's own scan under a
+ * corrected header (see `contrastScale`), never a re-encode.
  *
- * Measured on the committed fixtures: **+0.4 MB of resident memory and 6 ms per thumbnail**, plus about
- * 13 MB and 38 ms once per process for JIT warm-up.
+ * The probe is the module's whole memory cost, and `jpeg-js` charges about 35 bytes of resident memory
+ * per pixel it decodes, so the probe reads at most {@link PROBE_PIXELS} — the whole of a VGA-sized
+ * thumbnail, the top rows of a larger frame. Measured after JIT warm-up: about 10 MB of resident
+ * memory per thumbnail at 632×472, 1280×720 and 1920×1080 alike, where a 1920×1080 frame probed whole
+ * holds about 60 MB and still exceeds {@link PROBE_MEMORY_MB}.
  *
  * Depends on `jpeg-js` (v0.4.x, BSD-3-Clause, pure-JS, **zero transitive dependencies**) for that one
  * probe decode.
@@ -169,12 +172,21 @@ interface Decoded {
 }
 
 /**
+ * The most pixels the one probe decode reads: 640×480.
+ *
+ * `jpeg-js` costs about 35 bytes of resident memory per decoded pixel — one `Int32Array(64)` per block
+ * per component plus the output planes — and glibc keeps those arenas after the decode returns. So the
+ * probe's cost is set by how many pixels it decodes, and this budget fixes it at about 10 MB whatever
+ * the frame size. A frame up to VGA, which includes the 632×472 production thumbnail, is probed whole;
+ * a larger one is probed on its top rows (see {@link probeHeight}).
+ */
+const PROBE_PIXELS = 640 * 480;
+
+/**
  * What the one probe decode may allocate before `jpeg-js` refuses it.
  *
- * The ceiling on this module's whole memory cost, and it is set for the host, not for the picture: a
- * caller under a hard cap would be killed by its watchdog long before an unbounded decoder ran out of
- * anything. 24 MB covers a 1080p frame — far above any push thumbnail — and turns a geometry that
- * wants more into a `null` rather than a dead app.
+ * A backstop above {@link PROBE_PIXELS}'s cost, not the budget itself: `jpeg-js` checks it as it
+ * allocates, so by the time it refuses a decode most of that memory is already resident.
  */
 const PROBE_MEMORY_MB = 24;
 
@@ -185,6 +197,21 @@ function decodeSpliced(header: Buffer, tail: Buffer): Decoded | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * The height of the band the probe decodes: the whole frame when it fits {@link PROBE_PIXELS}, else as
+ * many whole MCU rows from the top as fit, and never less than one.
+ *
+ * A baseline scan with no restart markers can only be entered at its start, so a band is necessarily
+ * its top rows. A header whose SOF states that shorter height makes `jpeg-js` decode those rows and
+ * stop, and the contrast those rows span stands for the frame's — the substitute tables are wrong by
+ * the same scale on every block, so any band measures it as long as the band spans the picture's range.
+ */
+function probeHeight(width: number, height: number, subsampling: number): number {
+  if (width * height <= PROBE_PIXELS) return height;
+  const mcuHeight = MCU[subsampling]![1];
+  return Math.max(1, Math.floor(PROBE_PIXELS / width / mcuHeight)) * mcuHeight;
 }
 
 /**
@@ -401,11 +428,11 @@ export function isV2Image(data: Buffer): boolean {
  * Decode a v2 blob to a plain JPEG buffer by reconstructing its header, or null if it isn't v2, the
  * plaintext scan can't be located, or no frame shape explains it.
  *
- * Three steps and no pixel rewrite: the frame shape is read out of the entropy scan,
- * one probe decode both proves the spliced JPEG decodes and measures how far the substitute quant
- * tables fall short of the camera's, and the answer is the same tail under a header carrying the
- * corrected tables. See the module doc for the keyless-splice rationale and for why neither the search
- * nor the correction decodes candidate frames or re-encodes the picture.
+ * Three steps and no pixel rewrite: the frame shape is read out of the entropy scan, one probe decode
+ * of at most {@link PROBE_PIXELS} both proves the spliced JPEG decodes and measures how far the
+ * substitute quant tables fall short of the camera's, and the answer is the same tail under a header
+ * carrying the corrected tables. See the module doc for the keyless-splice rationale and for why
+ * neither the search nor the correction decodes candidate frames or re-encodes the picture.
  */
 export function decodeImageV2(data: Buffer): Buffer | null {
   if (!isV2Image(data)) return null;
@@ -416,11 +443,16 @@ export function decodeImageV2(data: Buffer): Buffer | null {
   if (!geometry) return null;
 
   const { width, height, subsampling } = geometry;
-  const reference = buildHeader(width, height, subsampling, REFERENCE_QUALITY);
-  const probe = decodeSpliced(reference, tail);
+  const band = probeHeight(width, height, subsampling);
+  const probe = decodeSpliced(buildHeader(width, band, subsampling, REFERENCE_QUALITY), tail);
   if (!probe) return null;
 
   const stretch = contrastScale(probe);
-  const header = stretch > 1.01 ? buildHeader(width, height, subsampling, qualityForStretch(stretch)) : reference;
+  const header = buildHeader(
+    width,
+    height,
+    subsampling,
+    stretch > 1.01 ? qualityForStretch(stretch) : REFERENCE_QUALITY,
+  );
   return Buffer.concat([header, tail]);
 }
