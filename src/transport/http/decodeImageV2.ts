@@ -429,7 +429,7 @@ export function isV2Image(data: Buffer): boolean {
  * plaintext scan can't be located, or no frame shape explains it.
  *
  * Three steps and no pixel rewrite: the frame shape is read out of the entropy scan, one probe decode
- * of at most {@link PROBE_PIXELS} both proves the spliced JPEG decodes and measures how far the
+ * of at most 640×480 pixels both proves the spliced JPEG decodes and measures how far the
  * substitute quant tables fall short of the camera's, and the answer is the same tail under a header
  * carrying the corrected tables. See the module doc for the keyless-splice rationale and for why
  * neither the search nor the correction decodes candidate frames or re-encodes the picture.
