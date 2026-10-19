@@ -718,8 +718,10 @@ export class EufyMega extends EventEmitter {
    *
    * An event that asks for a `refresh` is announced only once the re-read shows its param moved. When
    * the re-read window closes with the param unchanged and the realtime generation still current, the
-   * event is dropped with a warning naming the device, the event, the property, its param and the
-   * window — the one trace that separates "the signal never arrived" from "the cloud never moved".
+   * event is dropped with an info line naming the device, the event, the property, its param and the
+   * window — the one trace that separates "the signal never arrived" from "the cloud never moved". It is
+   * info, not a warning: a push that trails a write which already converged lands here too, with
+   * nothing left to move.
    */
   private emitSemantic(
     event: string,
@@ -742,7 +744,7 @@ export class EufyMega extends EventEmitter {
           .then(async (refreshed) => {
             if (!refreshed) {
               if (epoch === this.realtimeEpoch) {
-                this.opts.logger?.warn?.(
+                this.opts.logger?.info?.(
                   `[eufy] ${deviceSn}: ${event} arrived but ${refresh.property} (param ${refresh.param}) did not ` +
                     `change within ${refresh.timeoutMs}ms of re-reading, so the event is not announced`,
                 );

@@ -136,15 +136,15 @@ describe("catch-all event tag", () => {
 
   /**
    * A signal whose re-read never shows the param move is dropped, and the drop is logged: without the
-   * warning, a signal that arrived against a lagging cloud is indistinguishable from one that never came.
+   * line, a signal that arrived against a lagging cloud is indistinguishable from one that never came.
    */
-  it("warns when a refresh-driven event is dropped because its param never moved", async () => {
+  it("logs when a refresh-driven event is dropped because its param never moved", async () => {
     vi.useFakeTimers();
-    const warn = vi.fn();
+    const info = vi.fn();
     const eufy = new EufyMega({
       email: "t@example.com",
       password: "x",
-      logger: { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() },
+      logger: { debug: vi.fn(), info, warn: vi.fn(), error: vi.fn() },
     });
     const device = { getProperty: () => ({ value: 1 }), applyParams: vi.fn() };
     (eufy as any).liveDevices.set("T8000P0000000000", new WeakRef(device));
@@ -161,19 +161,19 @@ describe("catch-all event tag", () => {
     await vi.advanceTimersByTimeAsync(3_000);
 
     expect(seen).toEqual([]);
-    expect(warn).toHaveBeenCalledExactlyOnceWith(
+    expect(info).toHaveBeenCalledExactlyOnceWith(
       "[eufy] T8000P0000000000: armingModeChanged arrived but armingMode (param 1224) did not change within " +
         "2000ms of re-reading, so the event is not announced",
     );
     vi.useRealTimers();
   });
 
-  it("does not warn when the refresh-driven event's param moves", async () => {
-    const warn = vi.fn();
+  it("logs nothing when the refresh-driven event's param moves", async () => {
+    const info = vi.fn();
     const eufy = new EufyMega({
       email: "t@example.com",
       password: "x",
-      logger: { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() },
+      logger: { debug: vi.fn(), info, warn: vi.fn(), error: vi.fn() },
     });
     let mode = 1;
     const device = {
@@ -195,7 +195,7 @@ describe("catch-all event tag", () => {
     );
 
     await vi.waitFor(() => expect(seen).toEqual([63]));
-    expect(warn).not.toHaveBeenCalled();
+    expect(info).not.toHaveBeenCalled();
   });
 
   it("serializes consecutive valueless transitions so each event observes its own state", async () => {
