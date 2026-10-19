@@ -8,6 +8,7 @@ import {
   type ArmingActions,
 } from "../arming.js";
 import { buildActions, buildCommand } from "../index.js";
+import { DeviceType } from "../../device-types.js";
 import { bind } from "./bind.js";
 import type { CommandContext } from "../types.js";
 import type { MemberDeps } from "../members.js";
@@ -211,6 +212,39 @@ describe("arming capability module", () => {
         value: 0,
         channel: 0,
       });
+    });
+  });
+
+  /**
+   * A HomeBase S1 Pro has no confirmed guard-mode write: the station acknowledging a frame does not show
+   * its mode changed. Its own context and a device attached behind it both refuse, sending nothing, while
+   * the read stays bound.
+   */
+  describe("setMode on a HomeBase S1 Pro (unverified write)", () => {
+    const s1Pro: CommandContext = { ...ctx, model: "T9000", deviceType: DeviceType.STATION_9000 };
+    const behindS1Pro: CommandContext = { ...ctx, stationDeviceType: DeviceType.STATION_9000 };
+
+    it.each([
+      ["the station itself", s1Pro],
+      ["a device behind it", behindS1Pro],
+    ])("%s: setMode rejects and sends nothing", async (_label, c) => {
+      const { acts, sent } = bind<ArmingActions>("arming", c);
+      await expect(acts.setMode(ArmingMode.away)).rejects.toThrow(/unverified on a HomeBase S1 Pro/);
+      expect(() => buildCommand("armingMode", "away", c)).toThrow(/unverified on a HomeBase S1 Pro/);
+      expect(sent).toEqual([]);
+    });
+
+    it("keeps the reported mode readable", () => {
+      const reported: CommandContext = { ...s1Pro, paramIds: new Set([1224]) };
+      const { acts } = bind<ArmingActions>("arming", reported, {
+        read: (name) => (name === "armingMode" ? { value: 63 } : undefined),
+      });
+      expect(acts.mode).toBe(63);
+    });
+
+    it("leaves a HomeBase 3 on the 1350 envelope", () => {
+      const hb3: CommandContext = { ...ctx, model: "T8030", deviceType: DeviceType.HB3 };
+      expect(buildCommand("armingMode", "away", hb3)).toMatchObject({ kind: "set-payload", cmd: 1224 });
     });
   });
 

@@ -1,4 +1,5 @@
 import { enumLabels } from "../../core/util.js";
+import { isStation9000 } from "../device-family.js";
 import { describeDevice, setJsonRaw, setPayload, setStationScalar } from "./access.js";
 import { accepts, method, propertiesOf, type Members, type Surface } from "./members.js";
 import type { CapabilityModule, CapabilityStateReader, CommandContext, InboundSignal } from "./types.js";
@@ -158,6 +159,16 @@ const STANDALONE_ACTION_MODELS: ReadonlySet<string> = new Set(["T8170", "T8171"]
  */
 const DIRECT_ARMING_MODELS: ReadonlySet<string> = new Set(["T8410C"]);
 
+/**
+ * Whether the guard-mode write is unconfirmed for this device: a HomeBase S1 Pro (`STATION_9000`), or a
+ * device behind one. No vendor-app frame of a guard-mode write to that station is captured, and no write
+ * of either frame form is confirmed to change its mode; the station acknowledges a frame on receipt, which
+ * does not show the mode changed. The read is unaffected.
+ */
+function isUnconfirmedArmingStation(ctx: CommandContext): boolean {
+  return isStation9000(ctx) || isStation9000({ deviceType: ctx.stationDeviceType });
+}
+
 /** The modes confirmed on the direct frame; any other throws. */
 const DIRECT_ARMING_MODES: ReadonlySet<ArmingMode> = new Set<ArmingMode>(["away", "home", "disarmed"]);
 
@@ -247,9 +258,10 @@ function armingModeOf(v: boolean | number | string): ArmingMode | undefined {
 }
 
 /**
- * Build the {@link ARMING_CMD.SET_ARMING} write intent, or throw if the context has no account
- * identity. `user_name` — the real app's own capture showed a MASKED value (`"max***"`, presumably
- * the app's own privacy-display truncation of the account's email local-part), not the unmasked
+ * Build the {@link ARMING_CMD.SET_ARMING} write intent, or throw if the device is one whose guard-mode
+ * write is unconfirmed (see `isUnconfirmedArmingStation`) or the context has no account identity.
+ * `user_name` — the real app's own capture showed a MASKED value (`"max***"`, presumably the app's own
+ * privacy-display truncation of the account's email local-part), not the unmasked
  * acting name `ctx.accountName` carries. Untested whether the device validates this field strictly;
  * sending the acting name as it stands is the more correct choice regardless — it's almost certainly
  * just attribution (e.g. "who armed the system" in event history), not a value the device checks
@@ -262,6 +274,9 @@ function armingModeOf(v: boolean | number | string): ArmingMode | undefined {
  * level-2 made the one control a standalone camera most needs the one it could not be sent.
  */
 function armingCommand(mode: ArmingMode, ctx: CommandContext): Command {
+  if (isUnconfirmedArmingStation(ctx)) {
+    throw new Error(`arming: the guard-mode write is unverified on a HomeBase S1 Pro [${describeDevice(ctx)}]`);
+  }
   if (!ctx.accountName) {
     throw new Error(`arming: missing account identity (user_name) [${describeDevice(ctx)}]`);
   }
@@ -434,7 +449,8 @@ export const ARMING_MEMBERS = {
       "9 modes the app defines — away/home/schedule/custom1/custom2/custom3/off/geo/disarmed. Three are " +
       "byte-captured writes and six are live-confirmed (each sent and observed to report its own " +
       "MODE_SWITCH); see ARMING_MODE_WIRE in arming.ts for the per-value evidence. On a T8410C only " +
-      "away, home and disarmed are writable.",
+      "away, home and disarmed are writable. On a HomeBase S1 Pro (T9000) the mode is read only: the " +
+      "write is unverified there and throws.",
     observation: {
       event: "armingModeChanged",
       reflects: (value) => ({ param: ARMING_CMD.SET_ARMING, expected: ARMING_MODE_WIRE[armingModeOf(value)!] }),
