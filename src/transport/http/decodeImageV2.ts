@@ -172,13 +172,8 @@ interface Decoded {
 }
 
 /**
- * The most pixels the one probe decode reads: 640×480.
- *
- * `jpeg-js` costs about 35 bytes of resident memory per decoded pixel — one `Int32Array(64)` per block
- * per component plus the output planes — and glibc keeps those arenas after the decode returns. So the
- * probe's cost is set by how many pixels it decodes, and this budget fixes it at about 10 MB whatever
- * the frame size. A frame up to VGA, which includes the 632×472 production thumbnail, is probed whole;
- * a larger one is probed on its top rows (see {@link probeHeight}).
+ * The most pixels the one probe decode reads: 640×480. A larger frame is probed on its top rows (see
+ * {@link probeHeight}).
  */
 const PROBE_PIXELS = 640 * 480;
 
