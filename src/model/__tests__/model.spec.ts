@@ -304,6 +304,15 @@ describe("doorbell — confirmed against real T8214", () => {
     expect(r.name).toBe("Video Doorbell Dual");
   });
 
+  it("types the battery T8220 as a doorbell", () => {
+    // Without its registry row a T8220 kept its raw T-code and classified as a plain camera, so the
+    // host built no doorbell event, Ringing sensor or ring trigger for it.
+    const r = resolveDevice({ model: "T8220" });
+    expect(r.capabilities).toContain("doorbell");
+    expect(r.capabilities).toContain("battery");
+    expect(r.name).toBe("Battery Doorbell Slim");
+  });
+
   it("marks each manifest property with whether the device has reported it", () => {
     const r = resolveDevice({ model: "T8113", deviceType: 1, params: { 1101: "80" } });
     const spec = (name: string) => r.properties.find((p) => p.name === name);
