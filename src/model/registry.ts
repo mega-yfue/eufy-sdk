@@ -87,6 +87,12 @@ export const MODEL_REGISTRY: Readonly<Record<string, RegistryEntry>> = {
   // Hardwired wall-light camera; mains power asserted in MAINS_CAMERA_MODELS.
   T84A1: { codec: "camera", name: "Wall Light Cam S100" },
 
+  // Locks. The `/^T85/` model hint already maps to the `lock` codec, but the cloud `device_type` wins
+  // over the model hint in tier 2 (see classify), and a smart lock that reports a camera-family
+  // device_type would classify as a camera. A row pins the codec so the lock is never a camera
+  // regardless of the reported device_type.
+  T851F: { codec: "lock" },
+
   // Sensors — the concrete sensor kind is curated (DeviceType 2 alone is ambiguous).
   T8900: { codec: "sensor", caps: ["contact"], name: "Entry Sensor" },
   T8910: { codec: "sensor", caps: ["battery"], name: "Motion Sensor" },
