@@ -97,7 +97,7 @@ export interface RtcCommandRouterDeps {
   /** The logged-in session's credentials; `undefined` while logged out. */
   identity: () => RtcIdentity | undefined;
   /** The mega shard the account signs on (`"ie-pr"`, `"eu-pr"`, `"us-pr"`); picks the smart host. */
-  shard: () => string;
+  shard: () => string | Promise<string>;
   /** ISO country sent on the sign request (default `US`). */
   country?: string;
   logger?: Logger;
@@ -154,6 +154,8 @@ export class RtcCommandRouter {
   private readonly lives = new Map<string, StationLive>();
   private readonly warm = new Map<string, WarmHold>();
   private readonly callSources = new Map<string, SharedLiveSource>();
+  /** The latest shard each `call` source resolved, read by its `makeStream` (see {@link trackMediaProviderFor}). */
+  private readonly callShards = new Map<string, string>();
 
   constructor(private readonly deps: RtcCommandRouterDeps) {}
 
@@ -209,6 +211,10 @@ export class RtcCommandRouter {
    * Live view of a station on a {@link RtcRoute.mediaTrack} route: a live feed, a readable feed and a live
    * still, from one shared source per station whose every warm-up places a fresh `call` on its own
    * session. Recording has no wire here and is refused.
+   *
+   * `SharedLiveSource` calls `makeStream` synchronously, so the shard cannot be awaited inside it. Each
+   * async entry point resolves the shard and records it in {@link callShards} before touching the source;
+   * `makeStream` reads the latest recorded value.
    */
   trackMediaProviderFor(route: RtcRoute): MediaProvider {
     const sn = route.stationSn;
@@ -219,7 +225,9 @@ export class RtcCommandRouter {
           makeStream: () => {
             const identity = this.deps.identity();
             if (!identity) throw new Error(`rtc: not logged in, cannot call ${sn}`);
-            const session = this.newSession(route, route.adminUserId || identity.userId, identity);
+            const shard = this.callShards.get(sn);
+            if (shard === undefined) throw new Error(`rtc: no shard resolved for ${sn}`);
+            const session = this.newSession(route, route.adminUserId || identity.userId, identity, shard);
             return new RtcCallLiveStream(session, this.deps.logger);
           },
           label: sn,
@@ -232,15 +240,26 @@ export class RtcCommandRouter {
       }
       return source;
     };
+    const resolveShard = async (): Promise<void> => {
+      this.callShards.set(sn, await this.deps.shard());
+    };
     return {
-      live: async (opts) => attachUnlessAborted(sourceFor(opts), opts?.signal),
-      openReadable: async (opts) => openReadableFromConsumer(attachUnlessAborted(sourceFor(opts), opts?.signal), opts),
-      snapshotLive: (opts) =>
-        captureSnapshotFromShared(sourceFor(opts), {
+      live: async (opts) => {
+        await resolveShard();
+        return attachUnlessAborted(sourceFor(opts), opts?.signal);
+      },
+      openReadable: async (opts) => {
+        await resolveShard();
+        return openReadableFromConsumer(attachUnlessAborted(sourceFor(opts), opts?.signal), opts);
+      },
+      snapshotLive: async (opts) => {
+        await resolveShard();
+        return captureSnapshotFromShared(sourceFor(opts), {
           ...opts,
           logger: this.deps.logger,
           ffmpegPath: this.deps.ffmpegPath,
-        }),
+        });
+      },
       record: async () => {
         throw new Error(`record is not available for ${sn} over a portal call`);
       },
@@ -254,6 +273,7 @@ export class RtcCommandRouter {
   close(): void {
     for (const [sn, src] of this.callSources) {
       this.callSources.delete(sn);
+      this.callShards.delete(sn);
       src.dispose();
     }
     for (const [sn, live] of this.lives) {
@@ -410,13 +430,13 @@ export class RtcCommandRouter {
     });
   }
 
-  private newSession(route: RtcRoute, adminUserId: string, identity: RtcIdentity): RtcSession {
+  private newSession(route: RtcRoute, adminUserId: string, identity: RtcIdentity, shard: string): RtcSession {
     return (this.deps.createSession ?? ((o: RtcSessionOptions) => new RtcSession(o)))({
       authToken: identity.authToken,
       gtoken: identity.gtoken,
       stationSn: route.stationSn,
       adminUserId,
-      shard: this.deps.shard(),
+      shard,
       country: this.deps.country ?? "US",
       logger: this.deps.logger,
       signalingMode: route.signalingMode,
@@ -424,18 +444,35 @@ export class RtcCommandRouter {
     });
   }
 
+  /** A connected session for `sn` to reuse, or undefined (dropping a dead one). */
+  private async reusable(sn: string): Promise<StationSession | undefined> {
+    const st = this.sessions.get(sn);
+    if (!st) return undefined;
+    await st.ready;
+    if (st.session.isConnected) {
+      this.touch(sn, st);
+      return st;
+    }
+    this.drop(sn, st);
+    return undefined;
+  }
+
+  /**
+   * Get or open the station's session. A connected session is reused before the shard is awaited, so a
+   * command on an already-connected station never waits on the unauthenticated `estimate_domain` round
+   * trip — only the create path awaits it. After the await the map is re-checked, with no `await` between
+   * the lookup and `this.sessions.set`, so concurrent creators still share one session.
+   */
   private async stationSession(route: RtcRoute, adminUserId: string, identity: RtcIdentity): Promise<StationSession> {
     const sn = route.stationSn;
-    const existing = this.sessions.get(sn);
-    if (existing) {
-      await existing.ready;
-      if (existing.session.isConnected) {
-        this.touch(sn, existing);
-        return existing;
-      }
-      this.drop(sn, existing);
+    const reused = await this.reusable(sn);
+    if (reused) return reused;
+    const shard = await this.deps.shard();
+    if (this.sessions.has(sn)) {
+      const again = await this.reusable(sn);
+      if (again) return again;
     }
-    const session = this.newSession(route, adminUserId, identity);
+    const session = this.newSession(route, adminUserId, identity, shard);
     const ready = this.bringUp(sn, session);
     const st: StationSession = { session, seg: new SegmentCounter(), ready, queue: Promise.resolve(), leases: 0 };
     session.on("error", (e) => this.deps.onError?.(e));

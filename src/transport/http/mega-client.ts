@@ -302,6 +302,15 @@ function tokenRejected(code: number | undefined, msg: string | undefined): boole
 }
 
 /**
+ * The shard a mega domain names: its regional prefix (`…-ie-…` / `…-ie.` → `ie-pr`), or `undefined` when it
+ * names none.
+ */
+function shardOfDomain(domain: string): string | undefined {
+  const m = /-([a-z]{2})(?:[.-]|$)/i.exec(domain);
+  return m ? `${m[1].toLowerCase()}-pr` : undefined;
+}
+
+/**
  * {@link MegaHttpClient.postSigned}'s bookkeeping for the two recoveries it performs on itself, so each is
  * attempted once per call rather than once per rejection.
  * @internal
@@ -322,6 +331,9 @@ export class MegaHttpClient {
   private region: RegionShard;
   /** The host `estimate_domain` answered, persisted with the session. */
   private estimatedDomain = "";
+  /** The shard {@link portalShard} resolved for RTC signing, once it has, and its in-flight request. */
+  private portalShardCache?: string;
+  private portalShardInFlight?: Promise<string>;
   private bootstrapDomain?: string;
   private sessionKey?: SessionEntry;
   /** Per-host ECDH session keys for non-mega gateways (e.g. eufylife) keyed by host. */
@@ -453,13 +465,40 @@ export class MegaHttpClient {
   }
 
   /**
-   * The shard the RTC signalling signs on: the regional prefix of the estimated domain
-   * (`…-ie-…`/`…-ie.` → `ie-pr`), else {@link regionShard}. The eu/us classification cannot name shards
-   * like `ie-pr`, whose accounts need the IE sign host and cluster.
+   * The shard the estimated domain names (`…-ie-…`/`…-ie.` → `ie-pr`), else {@link regionShard}. The
+   * eu/us classification cannot name shards like `ie-pr`.
    */
   get rtcShard(): string {
-    const m = /-([a-z]{2})(?:[.-]|$)/i.exec(this.estimatedDomain);
-    return m ? `${m[1].toLowerCase()}-pr` : this.region;
+    return shardOfDomain(this.estimatedDomain) ?? this.region;
+  }
+
+  /**
+   * The shard the RTC signalling signs on, from `estimate_domain` asked with the portal's WEB identity
+   * (`Model-Type: WEB`, `App-Name: eufy_mega`) — the identity the sign itself is sent with, which can name
+   * a different shard than the PHONE identity does for one account. Cached, with the in-flight request
+   * shared by concurrent first callers; a call that fails or names no shard answers {@link rtcShard} and is
+   * asked again next time.
+   */
+  async portalShard(): Promise<string> {
+    if (this.portalShardCache) return this.portalShardCache;
+    return (this.portalShardInFlight ??= this.fetchPortalShard());
+  }
+
+  private async fetchPortalShard(): Promise<string> {
+    try {
+      const res = await this.estimateDomainRequest({ "Model-Type": "WEB", "App-Name": "eufy_mega" });
+      const domain = (res.data as ApiEnvelope<Record<string, unknown>>)?.data?.domain;
+      const shard = typeof domain === "string" ? shardOfDomain(domain) : undefined;
+      if (shard) {
+        this.portalShardCache = shard;
+        this.logger.debug("[mega] portal shard:", shard);
+        return shard;
+      }
+    } catch (e) {
+      this.logger.debug("[mega] portal estimate_domain failed:", e instanceof Error ? e.message : String(e));
+    }
+    this.portalShardInFlight = undefined;
+    return this.rtcShard;
   }
 
   /**
@@ -564,17 +603,18 @@ export class MegaHttpClient {
     return { status: res.status, data: parseMaybeJson(await res.text()) };
   }
 
+  /** POST `estimate_domain` with the given identity headers. */
+  private estimateDomainRequest(headers: Record<string, string>) {
+    return this.httpPost(
+      `https://mega-${this.region}.eufy.com/passport/estimate_domain`,
+      { ab: this.cfg.countryCode.toLowerCase(), mode: 1 },
+      { ...headers, "content-type": "application/json" },
+    );
+  }
+
   /** Step 1: discover the account's region shard (and the bootstrap host). */
   async estimateDomain(): Promise<void> {
-    const url = `https://mega-${this.region}.eufy.com/passport/estimate_domain`;
-    const res = await this.httpPost(
-      url,
-      { ab: this.cfg.countryCode.toLowerCase(), mode: 1 },
-      {
-        ...this.baseHeaders(),
-        "content-type": "application/json",
-      },
-    );
+    const res = await this.estimateDomainRequest(this.baseHeaders());
     this.logger.debug("[mega] estimate_domain raw:", JSON.stringify(res.data).slice(0, 400));
     const env = res.data as ApiEnvelope<Record<string, unknown>>;
     const d = env?.data ?? {};
