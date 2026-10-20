@@ -46,8 +46,12 @@ describe("EufyMega.loadVacuumMap", () => {
     const announced: unknown[] = [];
     eufy.on("map", (info) => announced.push(info));
 
-    const map = await eufy.loadVacuumMap(SN);
+    const { map, channels } = await eufy.loadVacuumMap(SN);
 
+    expect(channels.find((c) => c.channelId === BIZ_CHANNEL.DYNAMIC_DATA)).toEqual({
+      channelId: BIZ_CHANNEL.DYNAMIC_DATA,
+      outcome: "applied",
+    });
     expect(map?.pose).toEqual({ x: -320, y: 145, theta: -157 });
     expect(announced).toEqual([{ deviceSn: SN, map }]);
     expect(calls.filter((c) => c.channelId === BIZ_CHANNEL.DYNAMIC_DATA)).toEqual([
@@ -57,20 +61,30 @@ describe("EufyMega.loadVacuumMap", () => {
     expect(calls[0]?.channelId).toBe(BIZ_CHANNEL.MAP_DATA);
   });
 
-  it("skips a refused channel and content that is not hex, and reads the rest", async () => {
+  it("reports a refused channel, content that is not hex or does not decode, and reads the rest", async () => {
     const { eufy } = client(async ({ channelId }) => {
       if (channelId === BIZ_CHANNEL.MAP_DATA) throw new Error("20004 not the owner");
       if (channelId === BIZ_CHANNEL.ROOM_OUTLINE) return { content: "not hex" };
+      if (channelId === BIZ_CHANNEL.ROOM_PARAMS) return { content: "00ff" };
       return channelId === BIZ_CHANNEL.DYNAMIC_DATA ? { content: POSE_HEX } : {};
     });
 
-    expect((await eufy.loadVacuumMap(SN))?.pose).toEqual({ x: -320, y: 145, theta: -157 });
+    const { map, channels } = await eufy.loadVacuumMap(SN);
+
+    expect(map?.pose).toEqual({ x: -320, y: 145, theta: -157 });
+    expect(channels).toEqual([
+      { channelId: BIZ_CHANNEL.MAP_DATA, outcome: "refused", detail: "20004 not the owner" },
+      { channelId: BIZ_CHANNEL.ROOM_OUTLINE, outcome: "notHex", detail: "7 chars" },
+      { channelId: BIZ_CHANNEL.ROOM_PARAMS, outcome: "undecoded" },
+      { channelId: BIZ_CHANNEL.RESTRICTED_ZONE, outcome: "empty" },
+      { channelId: BIZ_CHANNEL.DYNAMIC_DATA, outcome: "applied" },
+    ]);
   });
 
-  it("answers undefined when nothing is stored", async () => {
+  it("answers no map when nothing is stored", async () => {
     const { eufy } = client(async () => ({}));
 
-    expect(await eufy.loadVacuumMap(SN)).toBeUndefined();
+    expect((await eufy.loadVacuumMap(SN)).map).toBeUndefined();
   });
 
   it("lets a rejected session through", async () => {

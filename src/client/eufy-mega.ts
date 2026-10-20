@@ -24,7 +24,7 @@ import { BIZ_CHANNEL, parseBizMapFrame } from "../transport/mqtt/biz-stream.js";
 import type { BizMapFrame } from "../transport/mqtt/biz-stream.js";
 import { hexToRawDp } from "../core/raw-dp-hex.js";
 import { DECODED_MAP_CHANNELS, decodeMapFrame } from "./map-channels.js";
-import { VacuumMapStore, type VacuumMapSnapshot } from "../model/index.js";
+import { VacuumMapStore } from "../model/index.js";
 import { type P2PSession, type P2PFrame } from "../transport/p2p/p2p-session.js";
 import { P2PCommandRouter } from "../transport/p2p/command-router.js";
 import { RtcCommandRouter, type RtcRoute } from "../transport/rtc/command-router.js";
@@ -89,6 +89,8 @@ import type {
   RealtimeReadiness,
   StationFace,
   StationFacesOptions,
+  StoredMapChannelResult,
+  StoredMapLoad,
   WaitForRealtimeOptions,
 } from "./types.js";
 
@@ -102,6 +104,8 @@ export type {
   RealtimeReadiness,
   StationFace,
   StationFacesOptions,
+  StoredMapChannelResult,
+  StoredMapLoad,
   WaitForRealtimeOptions,
 } from "./types.js";
 
@@ -586,14 +590,15 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * Feed one map-stream frame to the device's map, and announce it if anything changed.
+   * Feed one map-stream frame to the device's map, and announce it if anything changed. Answers what
+   * became of the frame: not decoded, applied, or decoded but older than or equal to what is held.
    *
    * Silent about a frame it cannot use. Most of them are: channels nothing reads yet, and fragments of
    * a split message. Neither is a fault, and logging either would log on every frame of every clean.
    */
-  private applyMapFrame(deviceSn: string, frame: BizMapFrame): void {
+  private applyMapFrame(deviceSn: string, frame: BizMapFrame): "undecoded" | "applied" | "unchanged" {
     const piece = decodeMapFrame(frame, rawDpCodec);
-    if (!piece) return;
+    if (!piece) return "undecoded";
 
     let store = this.mapStores.get(deviceSn);
     if (!store) {
@@ -602,7 +607,9 @@ export class EufyMega extends EventEmitter {
     }
     // The device repeats its map while it cleans. Announcing an unchanged one on every repeat would
     // wake every listener for nothing, so the store's own answer decides.
-    if (store.apply(piece)) this.emit("map", { deviceSn, map: store.snapshot });
+    if (!store.apply(piece)) return "unchanged";
+    this.emit("map", { deviceSn, map: store.snapshot });
+    return "applied";
   }
 
   private applyRealtimeReport(sn: string | undefined, states: readonly { params: Record<number, string> }[]): void {
@@ -1361,7 +1368,7 @@ export class EufyMega extends EventEmitter {
 
   /**
    * Load a robot's map as the cloud last stored it, into the same per-device map a live map stream
-   * fills, and answer what that map holds — `undefined` when nothing was stored or readable.
+   * fills, and answer that map with what became of each channel asked for.
    *
    * A robot uploads each map-stream channel to the `clean` service, and the vendor app reads it back
    * on opening a map rather than waiting for the robot to publish: `get_device_map_list` once per
@@ -1373,10 +1380,11 @@ export class EufyMega extends EventEmitter {
    *
    * A stored piece goes through {@link VacuumMapStore.apply} like a live one, so an older revision
    * than the one held is dropped and a change is announced on `map`. The service answers only the
-   * robot's owner; a channel it refuses, or whose content does not decode, is logged at debug and
-   * skipped. A rejected session rejects.
+   * robot's owner; a channel it refuses is reported with the service's message and the rest are still
+   * asked for. A rejected session rejects.
    */
-  async loadVacuumMap(deviceSn: string): Promise<VacuumMapSnapshot | undefined> {
+  async loadVacuumMap(deviceSn: string): Promise<StoredMapLoad> {
+    const channels: StoredMapChannelResult[] = [];
     for (const name of DECODED_MAP_CHANNELS) {
       const channelId = BIZ_CHANNEL[name];
       let stored: StoredMapChannel | undefined;
@@ -1384,19 +1392,22 @@ export class EufyMega extends EventEmitter {
         stored = await this.readStoredMapChannel(deviceSn, channelId);
       } catch (err) {
         if (err instanceof SessionExpiredError) throw err;
-        this.opts.logger?.debug?.(`[map] stored channel ${channelId} unavailable: ${(err as Error).message}`);
+        channels.push({ channelId, outcome: "refused", detail: (err as Error).message });
         continue;
       }
-      const payload = stored && hexToRawDp(stored.content);
-      if (!stored || !payload) {
-        this.opts.logger?.debug?.(
-          `[map] stored channel ${channelId}: ${stored ? `${stored.content.length} chars, not hex` : "nothing stored"}`,
-        );
+      if (!stored) {
+        channels.push({ channelId, outcome: "empty" });
         continue;
       }
-      this.applyMapFrame(deviceSn, { ...stored.frame, channelId, offset: 0, payload });
+      const payload = hexToRawDp(stored.content);
+      if (!payload) {
+        channels.push({ channelId, outcome: "notHex", detail: `${stored.content.length} chars` });
+        continue;
+      }
+      const outcome = this.applyMapFrame(deviceSn, { ...stored.frame, channelId, offset: 0, payload });
+      channels.push({ channelId, outcome });
     }
-    return this.mapStores.get(deviceSn)?.snapshot;
+    return { map: this.mapStores.get(deviceSn)?.snapshot, channels };
   }
 
   /**

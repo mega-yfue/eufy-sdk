@@ -247,6 +247,24 @@ export interface StationFace {
   [column: string]: unknown;
 }
 
+/**
+ * What became of one channel {@link EufyMega.loadVacuumMap} asked for: `refused` by the service
+ * (`detail` is its message), `empty` with no content stored, `notHex` content (`detail` is its
+ * length), `undecoded` by the channel's reader, `unchanged` against a revision already held, or
+ * `applied` to the device's map.
+ */
+export interface StoredMapChannelResult {
+  readonly channelId: number;
+  readonly outcome: "refused" | "empty" | "notHex" | "undecoded" | "unchanged" | "applied";
+  readonly detail?: string;
+}
+
+/** The device's map after {@link EufyMega.loadVacuumMap} — `undefined` while it holds none — and each channel's result. */
+export interface StoredMapLoad {
+  readonly map: VacuumMapSnapshot | undefined;
+  readonly channels: readonly StoredMapChannelResult[];
+}
+
 /** How long to wait for a station's database reply, and how to give up early. */
 export interface StationFacesOptions {
   /** Default 15s. A full table is a handful of frames; a station that will not answer says nothing. */
