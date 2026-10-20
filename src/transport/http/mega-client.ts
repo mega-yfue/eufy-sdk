@@ -887,37 +887,45 @@ export class MegaHttpClient {
   }
 
   /**
-   * Fetch one page of a device's stored **map data** from the mega `clean` service.
+   * Fetch one page of a device's stored **map data** for one map-stream channel from the mega `clean`
+   * service.
    *
-   * Paginated by both `page` and a byte `last_offset`, because one map is larger than one response: the
-   * answer carries `offset`, `last_offset`, `len`, `total` and `is_next_page`.
-   *
-   * Returns the raw response, `content` included. **The content is not decoded anywhere in this SDK and
-   * deliberately so** — the decoder is the vendor's clean-native library, which is absent from the base
-   * APK, and the extracted `.so` set contains no clean-native module. Handing over bytes a caller can
-   * take elsewhere is the honest surface; a decode here would be invention.
+   * `num` is the page size and `page` is 1-based; the answer carries the stream frame's own fields
+   * (`channel_id`, `clear_type`, `data_type`, `offset`, `len`), the page's share of `content`, and
+   * `is_next_page`. Sent with `category: eufy_home`, as every clean-line call is. Answered for the
+   * device's owner only. Returns the raw response; nothing here reads `content`.
    */
   getDeviceMapList<T = unknown>(deviceSn: string, channelId = 0, num = 1, page = 1, lastOffset = 0): Promise<T> {
-    return this.post<T>("clean", "/app/clean/get_device_map_list", {
-      device_sn: deviceSn,
-      channel_id: channelId,
-      num,
-      page,
-      last_offset: lastOffset,
-    });
+    return this.post<T>(
+      "clean",
+      "/app/clean/get_device_map_list",
+      {
+        device_sn: deviceSn,
+        channel_id: channelId,
+        num,
+        page,
+        last_offset: lastOffset,
+      },
+      { category: "eufy_home" },
+    );
   }
 
   /**
    * Fetch the stored map content for several channels of one device in a single call.
    *
-   * The batch counterpart of {@link getDeviceMapList}, answering `content` keyed by channel id. Same
-   * standing on the bytes: returned as they arrive, never decoded here.
+   * The batch counterpart of {@link getDeviceMapList}, answering `content` keyed by channel id, and
+   * sent with the same `category: eufy_home`. Returns the raw response.
    */
   getManyDeviceMapContent<T = unknown>(deviceSn: string, channelIds: readonly number[]): Promise<T> {
-    return this.post<T>("clean", "/app/clean/get_many_device_map_content", {
-      device_sn: deviceSn,
-      channel_ids: [...channelIds],
-    });
+    return this.post<T>(
+      "clean",
+      "/app/clean/get_many_device_map_content",
+      {
+        device_sn: deviceSn,
+        channel_ids: [...channelIds],
+      },
+      { category: "eufy_home" },
+    );
   }
 
   /**

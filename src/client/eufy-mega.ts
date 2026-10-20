@@ -20,10 +20,11 @@ import { mqttAppName, mqttScopeFor, type MqttScope } from "../transport/mqtt/top
 import { buildAppShapedClientId, mqttUuidFrom } from "../transport/mqtt/app-client-id.js";
 import { parseStateInfoSignal } from "../transport/mqtt/availability.js";
 import { parseDpMessage, parseAiotDpReport } from "../transport/mqtt/dp-codec.js";
-import { parseBizMapFrame } from "../transport/mqtt/biz-stream.js";
+import { BIZ_CHANNEL, parseBizMapFrame } from "../transport/mqtt/biz-stream.js";
 import type { BizMapFrame } from "../transport/mqtt/biz-stream.js";
-import { decodeMapFrame } from "./map-channels.js";
-import { VacuumMapStore } from "../model/index.js";
+import { hexToRawDp } from "../core/raw-dp-hex.js";
+import { DECODED_MAP_CHANNELS, decodeMapFrame } from "./map-channels.js";
+import { VacuumMapStore, type VacuumMapSnapshot } from "../model/index.js";
 import { type P2PSession, type P2PFrame } from "../transport/p2p/p2p-session.js";
 import { P2PCommandRouter } from "../transport/p2p/command-router.js";
 import { RtcCommandRouter, type RtcRoute } from "../transport/rtc/command-router.js";
@@ -172,6 +173,27 @@ const SESSION_RECYCLE_WAIT_MS = 5_000;
  */
 const PUSH_RETRY_MIN_MS = 30_000;
 const PUSH_RETRY_MAX_MS = 600_000;
+
+/** How many entries one `get_device_map_list` page asks for — the vendor app's own `num`. */
+const STORED_MAP_PAGE_SIZE = 1000;
+
+/** The most pages {@link EufyMega.loadVacuumMap} reads for one channel. */
+const STORED_MAP_MAX_PAGES = 64;
+
+/** One `get_device_map_list` answer: the stream frame's fields, plus the page's share of `content`. */
+interface StoredMapPage {
+  clear_type?: number;
+  data_type?: number;
+  len?: number;
+  content?: string;
+  is_next_page?: boolean;
+}
+
+/** One stored map channel, its pages joined. */
+interface StoredMapChannel {
+  content: string;
+  frame: Pick<BizMapFrame, "clearType" | "dataType" | "len">;
+}
 
 interface RealtimeGeneration {
   readonly epoch: number;
@@ -1335,6 +1357,62 @@ export class EufyMega extends EventEmitter {
       this.opts.logger?.debug?.(`[clean] record list failed: ${(err as Error).message}`);
       return EMPTY_CLEAN_RECORD_PAGE;
     }
+  }
+
+  /**
+   * Load a robot's map as the cloud last stored it, into the same per-device map a live map stream
+   * fills, and answer what that map holds — `undefined` when nothing was stored or readable.
+   *
+   * A robot uploads each map-stream channel to the `clean` service, and the vendor app reads it back
+   * on opening a map rather than waiting for the robot to publish: `get_device_map_list` once per
+   * channel, `num: 1000` from page 1, the page's `content` appended to the last until
+   * `is_next_page` is false (`AiotMapManager.getChannalMapData`). The answer carries a stream frame's
+   * own fields, and the assembled `content` is read as the frame's hex `data`. Only the channels
+   * {@link decodeMapFrame} reads are asked for, the map plane first so the pieces after it are stamped
+   * against its map id.
+   *
+   * A stored piece goes through {@link VacuumMapStore.apply} like a live one, so an older revision
+   * than the one held is dropped and a change is announced on `map`. The service answers only the
+   * robot's owner; a channel it refuses, or whose content does not decode, is logged at debug and
+   * skipped. A rejected session rejects.
+   */
+  async loadVacuumMap(deviceSn: string): Promise<VacuumMapSnapshot | undefined> {
+    for (const name of DECODED_MAP_CHANNELS) {
+      const channelId = BIZ_CHANNEL[name];
+      let stored: StoredMapChannel | undefined;
+      try {
+        stored = await this.readStoredMapChannel(deviceSn, channelId);
+      } catch (err) {
+        if (err instanceof SessionExpiredError) throw err;
+        this.opts.logger?.debug?.(`[map] stored channel ${channelId} unavailable: ${(err as Error).message}`);
+        continue;
+      }
+      const payload = stored && hexToRawDp(stored.content);
+      if (!stored || !payload) {
+        this.opts.logger?.debug?.(
+          `[map] stored channel ${channelId}: ${stored ? `${stored.content.length} chars, not hex` : "nothing stored"}`,
+        );
+        continue;
+      }
+      this.applyMapFrame(deviceSn, { ...stored.frame, channelId, offset: 0, payload });
+    }
+    return this.mapStores.get(deviceSn)?.snapshot;
+  }
+
+  /**
+   * Every page of one stored map channel, its `content` joined in page order, or `undefined` when the
+   * service holds no content for it. Stops after {@link STORED_MAP_MAX_PAGES} pages.
+   */
+  private async readStoredMapChannel(deviceSn: string, channelId: number): Promise<StoredMapChannel | undefined> {
+    let content = "";
+    let frame: StoredMapChannel["frame"] = { clearType: 0, dataType: 0, len: 0 };
+    for (let page = 1; page <= STORED_MAP_MAX_PAGES; page++) {
+      const res = await this.mega.getDeviceMapList<StoredMapPage>(deviceSn, channelId, STORED_MAP_PAGE_SIZE, page);
+      if (typeof res?.content === "string") content += res.content;
+      if (page === 1) frame = { clearType: res?.clear_type ?? 0, dataType: res?.data_type ?? 0, len: res?.len ?? 0 };
+      if (!res?.is_next_page) break;
+    }
+    return content ? { content, frame } : undefined;
   }
 
   /**
