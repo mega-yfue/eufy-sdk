@@ -1,6 +1,6 @@
 import { CusPushEvent } from "../push-events.js";
 import { asBool } from "../../core/util.js";
-import { setStationScalar, setPayload, setScalar } from "./access.js";
+import { setStationScalar, setPayload, setScalar, hasCapability } from "./access.js";
 import type { AvailabilityContext, CapabilityModule, CommandContext } from "./types.js";
 import { accepts, propertiesOf, type Members, type Surface } from "./members.js";
 import type { Command } from "../../core/contracts.js";
@@ -260,6 +260,9 @@ export const BATTERY_MEMBERS = cellGated({
    * The headline percentage, and this capability's detection evidence: reporting 1101 is what proves a
    * device is battery-powered, which is also the fact `MediaProvider` reads to decide a stream needs a
    * power budget. Published flat as `battery` — `level` alone is claimed by `suction` too.
+   *
+   * Withheld on a device that resolved `lock`, whose own `battery` member reads the same param 1101 and
+   * owns the `battery` property there, so the two do not both claim it.
    */
   level: {
     param: BATTERY_PARAM.BATTERY,
@@ -268,6 +271,7 @@ export const BATTERY_MEMBERS = cellGated({
     unit: "%",
     kind: "percent",
     provenance: "verified",
+    available: (ctx: AvailabilityContext) => !hasCapability(ctx, "lock"),
     description: "Battery level 0-100 (verified: param 1101).",
   },
   /**
