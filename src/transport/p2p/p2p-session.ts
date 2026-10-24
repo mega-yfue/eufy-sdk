@@ -15,6 +15,8 @@
  */
 import { EventEmitter } from "node:events";
 import dgram from "node:dgram";
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import {
   constants,
   createCipheriv,
@@ -39,6 +41,8 @@ import {
   buildLocalLookupPayload,
   buildLookupWithKeyPayload,
   buildLookupWithKeyPayload2,
+  buildRelayPacketPayload,
+  buildRelayRequestPayload,
   buildRawCommandPayload,
   buildStringCommandPayload,
   buildIntStringCommandPayload,
@@ -54,7 +58,11 @@ import {
   hasHeader,
   p2pCommandEncryptionKey,
   parseDataFrameHeader,
+  p2pDidToBuffer,
   parseLookupAddr,
+  parseRelayList,
+  parseRelayPortAck,
+  parseRelayTo,
   readNullTerminatedString,
 } from "./codec.js";
 import { commandName, CommandType } from "./commands.js";
@@ -72,6 +80,18 @@ const HEARTBEAT_MS = 5_000;
 const PATH_SILENCE_MS = HEARTBEAT_MS * 3;
 const LOOKUP_RETRY_MS = 1_000;
 /**
+ * Lookup rounds a connect counts, from the lookup server's acknowledgement of its P2P request, before it
+ * also asks for a relayed path.
+ *
+ * The vendor client's own threshold for the mode its app connects remote stations in: its round counter
+ * starts at 1 on the first one-second round after a P2P_REQ_ACK with result 0, steps once a round, and the
+ * relay handshake begins once it exceeds this. A connect whose request is never acknowledged, as for a
+ * device that is offline, never asks for a relay.
+ */
+const RELAY_AFTER_ACKED_ROUNDS = 24;
+/** RLY_PKT copies sent per RLY_TO, as the vendor client sends them. */
+const RELAY_PACKET_COPIES = 4;
+/**
  * The receive buffer a session's socket asks the OS for.
  *
  * A station sends a keyframe as one burst: measured on a HomeBase 3, up to 161 video datagrams of 1074 bytes
@@ -87,8 +107,13 @@ const RECEIVE_BUFFER_BYTES = 4 * 1024 * 1024;
  * a connection that reaches this closes itself, so nothing addressed to that station can succeed afterwards.
  * Published because it bounds every wait on a session connecting — a second number for the same deadline
  * elsewhere would outlive the connection it waits on and charge the difference to every failure.
+ *
+ * The relay handshake starts once the lookup server has acknowledged the P2P request for 24 lookup rounds, so
+ * about 25 s in. The vendor app's own remote connect has a 30 s budget, which leaves the handshake 3–6 s.
+ * Forty-five seconds keeps the vendor's threshold and gives the handshake about 20 s to complete. A station that
+ * never acknowledges the request, as an offline one does, takes this long to fail.
  */
-export const CONNECT_TIMEOUT_MS = 15_000;
+export const CONNECT_TIMEOUT_MS = 45_000;
 /**
  * The channel a command addresses the station itself on, rather than one of its cameras, and the value a
  * session's channel-taking methods resolve an omitted channel to.
@@ -212,6 +237,29 @@ const SEQUENCE_LOOKBACK = 0x8000;
  * so the depth is what caps that second cost, at a bounded run of datagrams instead of half the space.
  */
 const STALE_RETRANSMIT_DEPTH = 1024;
+
+/**
+ * The lookup servers with each hostname resolved to one IPv4 address, once.
+ *
+ * Every lookup round sends to every lookup server from the session's socket and each punch probe, and the relay
+ * handshake adds its own sends to them. A datagram sent to a hostname costs a `dns.lookup` on libuv's
+ * threadpool, the pool HTTP requests resolve on too, so a connect that runs its full budget would spend
+ * hundreds of them per station. An address already given as an IP passes through; a hostname that does not resolve is kept
+ * as given, so its sends resolve per datagram as before.
+ */
+async function resolveLookupServers(addresses: Address[]): Promise<Address[]> {
+  return Promise.all(
+    addresses.map(async (addr) => {
+      if (isIP(addr.host)) return addr;
+      try {
+        const { address } = await lookup(addr.host, { family: 4 });
+        return { host: address, port: addr.port };
+      } catch {
+        return addr;
+      }
+    }),
+  );
+}
 
 /** Additional UDP source ports registered alongside the session's own during cloud lookup. */
 const PUNCH_PROBE_SOCKETS = 7;
@@ -459,6 +507,17 @@ export class P2PSession extends EventEmitter {
   private probeSockets: dgram.Socket[] = [];
   /** Cloud lookup inputs resolved once for a connection. */
   private cloudLookup?: { key: string; addresses: Address[] };
+  /**
+   * Lookup rounds since the lookup server acknowledged this connect's P2P request, or `undefined` while it
+   * has not; see {@link RELAY_AFTER_ACKED_ROUNDS}.
+   */
+  private ackedRounds?: number;
+  /**
+   * The relay handshake of a connect that has fallen back to one, by the step it waits on: the relay list
+   * (`list`, answering ListReq_DSK), a relay's hello acknowledgement (`hello`), that relay's port (`port`),
+   * then the relay-ready the device's registration produces (`request`, re-sending RLY_REQ meanwhile).
+   */
+  private relay?: { step: "list" | "hello" | "port" | "request"; relays: Address[]; via?: Address; mark?: number };
   /** Local outbound IPv4 reported inside LOOKUP_WITH_KEY requests. */
   private selfHost?: string;
   /**
@@ -829,6 +888,7 @@ export class P2PSession extends EventEmitter {
     this.connecting = true;
     this.closed = false;
     this.connectionGeneration += 1;
+    this.ackedRounds = undefined;
     this.resetInboundSequencing();
     if (!this.level2KeyServes("set-payload")) {
       this.level2Pending = this.cfg.resolveCipherKey !== undefined;
@@ -860,7 +920,11 @@ export class P2PSession extends EventEmitter {
     });
 
     const { dskKey, cloudAddresses } = this.cfg;
-    this.cloudLookup = dskKey && cloudAddresses?.length ? { key: dskKey, addresses: cloudAddresses } : undefined;
+    this.cloudLookup =
+      dskKey && cloudAddresses?.length
+        ? { key: dskKey, addresses: await resolveLookupServers(cloudAddresses) }
+        : undefined;
+    if (this.closed) return;
     if (this.cloudLookup) await this.startPunchProbes();
     if (this.closed) return;
     this.trace({
@@ -873,7 +937,7 @@ export class P2PSession extends EventEmitter {
     this.lookupTimer = setInterval(() => this.sendLookups(), LOOKUP_RETRY_MS);
     this.connectTimer = setTimeout(() => {
       if (!this.connected) {
-        this.emit("error", new Error(`P2P connect timeout for ${this.cfg.stationSn}`));
+        this.emit("error", new Error(`P2P connect timeout for ${this.cfg.stationSn} (${this.relayProgress()})`));
         void this.close();
       }
     }, CONNECT_TIMEOUT_MS);
@@ -953,7 +1017,7 @@ export class P2PSession extends EventEmitter {
       );
     // Cloud: needs a DSK key. Prefer the classic variant (LOOKUP_WITH_KEY, 0xf126 — what the real app
     // sends, and the only one observed to get a genuine direct-device candidate back) once the
-    // background self-IP probe has resolved; every real capture of a relay-pool-only response (f182)
+    // background self-IP probe has resolved; every real capture of a relay endpoint (RLY_TO, f182)
     // was ALSO reproducible via LOOKUP_WITH_KEY, so KEY2 (0xf16a) adds no observed candidate KEY
     // doesn't already surface — it's sent only as a same-tick fallback for the brief window before
     // `selfHost` is known (usually just the first tick or two after connect()).
@@ -964,6 +1028,77 @@ export class P2PSession extends EventEmitter {
         `[p2p] ${this.cfg.stationSn} sendLookups: cloud -> ${lookup.addresses.map((a) => `${a.host}:${a.port}`).join(", ")} self=${this.selfHost ?? "unknown"}`,
       );
     }
+    this.countAckedRound();
+    this.sendRelay();
+  }
+
+  /** Step {@link ackedRounds} for one lookup round, and start the relay handshake once it passes its threshold. */
+  private countAckedRound(): void {
+    if (this.ackedRounds === undefined || this.relay || !this.cloudLookup) return;
+    this.ackedRounds += 1;
+    if (this.ackedRounds > RELAY_AFTER_ACKED_ROUNDS) this.relay = { step: "list", relays: [] };
+  }
+
+  /**
+   * How far this connect got towards a relay: the handshake step it was waiting on (`list` meaning no lookup
+   * server named a relay), `not started` where it had not fallen back yet, or `no cloud lookup` where it could
+   * not.
+   */
+  private relayProgress(): string {
+    return `relay: ${this.relay?.step ?? (this.cloudLookup ? "not started" : "no cloud lookup")}`;
+  }
+
+  /**
+   * Send the relay handshake's message for the step it waits on, from the session's own socket.
+   *
+   * The order is the vendor client's: ListReq_DSK to the cloud lookup servers, RLY_HELLO to every relay they
+   * list, RLY_PORT to the first of those relays that acknowledges, then RLY_REQ to the lookup servers naming
+   * that relay's port and mark. The lookup server has the device register with the relay, and the relay
+   * answers RLY_RDY.
+   */
+  private sendRelay(): void {
+    const relay = this.relay;
+    const lookup = this.cloudLookup;
+    if (!relay || !lookup || this.connected) return;
+    if (relay.step === "list") {
+      const payload = buildLookupWithKeyPayload2(this.cfg.p2pDid, lookup.key);
+      for (const addr of lookup.addresses) this.send(addr, RequestMessageType.LOOKUP_WITH_KEY2, payload);
+    } else if (relay.step === "hello") {
+      for (const addr of relay.relays) this.send(addr, RequestMessageType.RLY_HELLO);
+    } else if (relay.step === "port" && relay.via) {
+      this.send(relay.via, RequestMessageType.RLY_PORT);
+    } else if (relay.step === "request" && relay.via && relay.mark !== undefined) {
+      const payload = buildRelayRequestPayload(this.cfg.p2pDid, relay.via, relay.mark);
+      for (const addr of lookup.addresses) this.send(addr, RequestMessageType.RLY_REQ, payload);
+    }
+  }
+
+  /** Advance the relay handshake on one of its answers, arriving on the session's own socket. */
+  private onRelayMessage(msg: Buffer, rinfo: dgram.RemoteInfo): void {
+    const relay = this.relay;
+    if (!relay || this.connected) return;
+    if (hasHeader(msg, ResponseMessageType.LIST_REQ_ACK)) {
+      if (relay.step !== "list" && relay.step !== "hello") return;
+      for (const listed of parseRelayList(msg))
+        if (!relay.relays.some((known) => known.host === listed.host && known.port === listed.port))
+          relay.relays.push(listed);
+      if (relay.relays.length) relay.step = "hello";
+    } else if (hasHeader(msg, ResponseMessageType.RLY_HELLO_ACK)) {
+      const listed = relay.relays.some((known) => known.host === rinfo.address && known.port === rinfo.port);
+      if (relay.step !== "hello" || !listed) return;
+      relay.via = { host: rinfo.address, port: rinfo.port };
+      relay.step = "port";
+    } else if (hasHeader(msg, ResponseMessageType.RLY_PORT_ACK)) {
+      const ack = parseRelayPortAck(msg);
+      if (relay.step !== "port" || !relay.via || !ack) return;
+      relay.via = { host: relay.via.host, port: ack.port };
+      relay.mark = ack.mark;
+      relay.step = "request";
+    } else {
+      return;
+    }
+    this.logger.debug(`[p2p] ${this.cfg.stationSn} relay -> ${relay.step}`);
+    this.sendRelay();
   }
 
   /** Register a bound socket's own port with each configured cloud lookup address. */
@@ -979,15 +1114,17 @@ export class P2PSession extends EventEmitter {
    * Route one inbound UDP datagram by its message type, tracing every non-DATA one and any type this session
    * does not model.
    *
-   * An unmodelled type is not by itself evidence about a session that is failing. `0xf169` — a relay-pool
-   * listing answering a cloud lookup, which a connected session has no use for — reaches the UNHANDLED branch
-   * on the sessions of cameras that stream and cameras that do not alike. `0xf121` has been observed
-   * straddling a level-2 wait on a camera whose failure to deliver video had a separate cause, and did not
-   * recur across later probes of it. Correlate an unmodelled type against a WORKING session before reading it
-   * as a cause.
+   * An unmodelled type is not by itself evidence about a session that is failing. Correlate one against a
+   * WORKING session before reading it as a cause.
+   *
+   * P2P_REQ_ACK is the lookup server acknowledging this connect's P2P request; the first one carrying result 0
+   * starts the round count {@link RELAY_AFTER_ACKED_ROUNDS} measures.
    *
    * CAM_ADDR is recognised and dropped: it names the address the device is already answering from, and the
-   * CAM_ID that follows it is what completes the connect.
+   * CAM_ID that follows it is what completes the connect. RLY_TO is a relay endpoint, never the device: it is
+   * answered with {@link RELAY_PACKET_COPIES} RLY_PKTs carrying its handle, and the RLY_RDY naming this
+   * session's device completes the connect with the relay as the peer. The other relay answers advance the
+   * handshake {@link sendRelay} drives, and are dropped outside it.
    */
   private onMessage(msg: Buffer, rinfo: dgram.RemoteInfo, socket = this.socket): void {
     if (!socket) return;
@@ -1006,13 +1143,35 @@ export class P2PSession extends EventEmitter {
       // LOCAL_LOOKUP_RESP shares 0xf141 with CAM_ID; treat a pre-connect response
       // from the lookup as "device here, hole-punch it".
       if (!this.connected) this.beginCheckCam({ host: rinfo.address, port: rinfo.port }, socket);
-    } else if (hasHeader(msg, ResponseMessageType.LOOKUP_ADDR) || hasHeader(msg, ResponseMessageType.LOOKUP_ADDR2)) {
+    } else if (hasHeader(msg, ResponseMessageType.LOOKUP_ADDR)) {
       if (!this.connected) {
         const addr = parseLookupAddr(msg);
         this.logger.debug(`[p2p] ${this.cfg.stationSn} LOOKUP_ADDR -> ${addr.host}:${addr.port}`);
         if (addr.host !== "0.0.0.0") this.beginCheckCam(addr, socket);
       }
-    } else if (hasHeader(msg, ResponseMessageType.CAM_ID) || hasHeader(msg, ResponseMessageType.TURN_SERVER_CAM_ID)) {
+    } else if (hasHeader(msg, ResponseMessageType.RLY_TO)) {
+      const to = parseRelayTo(msg);
+      if (!this.connected && to && to.address.host !== "0.0.0.0") {
+        this.logger.debug(`[p2p] ${this.cfg.stationSn} RLY_TO -> ${to.address.host}:${to.address.port}`);
+        const payload = buildRelayPacketPayload(to.handle, this.cfg.p2pDid);
+        for (let i = 0; i < RELAY_PACKET_COPIES; i++)
+          this.send(to.address, RequestMessageType.RLY_PKT, payload, socket);
+      }
+    } else if (hasHeader(msg, ResponseMessageType.RLY_RDY)) {
+      if (msg.subarray(4, 24).equals(p2pDidToBuffer(this.cfg.p2pDid))) {
+        this.logger.debug(`[p2p] ${this.cfg.stationSn} RLY_RDY from relay ${rinfo.address}:${rinfo.port}`);
+        this.onConnected({ host: rinfo.address, port: rinfo.port }, socket);
+      }
+    } else if (hasHeader(msg, ResponseMessageType.P2P_REQ_ACK)) {
+      if (!this.connected && this.ackedRounds === undefined && msg.length > 4 && msg[4] === 0) this.ackedRounds = 0;
+    } else if (
+      hasHeader(msg, ResponseMessageType.LIST_REQ_ACK) ||
+      hasHeader(msg, ResponseMessageType.RLY_HELLO_ACK) ||
+      hasHeader(msg, ResponseMessageType.RLY_PORT_ACK) ||
+      hasHeader(msg, ResponseMessageType.RLY_REQ_ACK)
+    ) {
+      if (socket === this.socket) this.onRelayMessage(msg, rinfo);
+    } else if (hasHeader(msg, ResponseMessageType.CAM_ID)) {
       this.onConnected({ host: rinfo.address, port: rinfo.port }, socket);
     } else if (hasHeader(msg, ResponseMessageType.END)) {
       if (fromConnectedPeer) void this.close().catch((error) => this.emit("error", error));
@@ -1099,6 +1258,7 @@ export class P2PSession extends EventEmitter {
     this.connectAddress = addr;
     if (this.lookupTimer) clearInterval(this.lookupTimer);
     if (this.connectTimer) clearTimeout(this.connectTimer);
+    this.relay = undefined;
     this.logger.debug(`[p2p] ${this.cfg.stationSn} connected ${addr.host}:${addr.port}`);
 
     // Nudge the station to start reporting, then heartbeat.
@@ -2424,6 +2584,7 @@ export class P2PSession extends EventEmitter {
     if (this.lookupTimer) clearInterval(this.lookupTimer);
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.connectTimer) clearTimeout(this.connectTimer);
+    this.relay = undefined;
     if (this.audioRetransmitTimer) clearInterval(this.audioRetransmitTimer);
     this.audioRetransmitTimer = undefined;
     this.unackedAudio.clear();

@@ -481,12 +481,40 @@ export class P2PCommandRouter {
    */
   private async openMediaSession(parentSn: string, channel: number, signal?: AbortSignal): Promise<P2PSession> {
     const session = await this.openSession(P2PCommandRouter.mediaSessionKey(parentSn, channel), parentSn);
+    await this.awaitConnected(session, parentSn, signal);
     let ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal);
     if (!ready && session.repromptLevel2Key()) {
       ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal);
     }
     if (!ready) throw new StationKeyUnavailableError(parentSn);
     return session;
+  }
+
+  /**
+   * Wait for `session` to connect, for up to the session's own connect deadline, and throw
+   * {@link StationUnreachableError} when it does not.
+   *
+   * `connect()` resolves once the lookups are under way, not once a path answers, so a session handed back by
+   * {@link openSession} may still be connecting: a relay connect lands about 25 s in. A level-2 grace counted
+   * before this would be spent on the connect rather than on the key.
+   */
+  private async awaitConnected(session: P2PSession, parentSn: string, signal?: AbortSignal): Promise<void> {
+    const t0 = Date.now();
+    let waitedMs = 0;
+    if (!session.isConnected) {
+      this.traceOnStation(session, { phase: "session-connect-wait", waitMs: P2P_STATION_WAITS.connect });
+      while (!session.isConnected && Date.now() - t0 < P2P_STATION_WAITS.connect) {
+        signal?.throwIfAborted();
+        await sleep(200);
+      }
+      waitedMs = Date.now() - t0;
+      this.traceOnStation(
+        session,
+        session.isConnected ? { phase: "session-connected", waitedMs } : { phase: "session-unreachable", waitedMs },
+      );
+    }
+    signal?.throwIfAborted();
+    if (!session.isConnected) throw new StationUnreachableError(parentSn, waitedMs);
   }
 
   /** Open (or reuse) the session filed under `key`, dialling `parentSn`'s endpoint. */
@@ -1669,22 +1697,7 @@ export class P2PCommandRouter {
       ...(stationModel ? { stationModel } : {}),
     });
 
-    const t0 = Date.now();
-    let waitedMs = 0;
-    if (!session.isConnected) {
-      this.traceOnStation(session, { phase: "session-connect-wait", waitMs: P2P_STATION_WAITS.connect });
-      while (!session.isConnected && Date.now() - t0 < P2P_STATION_WAITS.connect) {
-        opts.signal?.throwIfAborted();
-        await sleep(200);
-      }
-      waitedMs = Date.now() - t0;
-      this.traceOnStation(
-        session,
-        session.isConnected ? { phase: "session-connected", waitedMs } : { phase: "session-unreachable", waitedMs },
-      );
-    }
-    opts.signal?.throwIfAborted();
-    if (!session.isConnected) throw new StationUnreachableError(parentSn, waitedMs);
+    await this.awaitConnected(session, parentSn, opts.signal);
     if (opts.waitLevel2) {
       if (opts.waitLevel2 === "settle") {
         await abortable(session.awaitLevel2Key(LEVEL2_SETTLE_MS, "session"), opts.signal);

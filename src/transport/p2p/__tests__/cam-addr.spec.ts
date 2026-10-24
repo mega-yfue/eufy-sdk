@@ -8,8 +8,8 @@ describe("P2P CAM_ADDR", () => {
     const internals = session as unknown as { socket: unknown; onMessage(msg: Buffer, rinfo: object): void };
     internals.socket = { send: vi.fn() };
     internals.onMessage(Buffer.from([0xf1, 0x43, 0x00, 0x00]), { address: "<cam-lan-ip>", port: 32100 });
-    internals.onMessage(Buffer.from([0xf1, 0x69, 0x00, 0x00]), { address: "<cam-lan-ip>", port: 32100 });
+    internals.onMessage(Buffer.from([0xf1, 0x99, 0x00, 0x00]), { address: "<cam-lan-ip>", port: 32100 });
     const unhandled = logger.debug.mock.calls.map(([m]) => String(m)).filter((m) => m.includes("UNHANDLED"));
-    expect(unhandled).toEqual([expect.stringContaining("f1690000")]);
+    expect(unhandled).toEqual([expect.stringContaining("f1990000")]);
   });
 });

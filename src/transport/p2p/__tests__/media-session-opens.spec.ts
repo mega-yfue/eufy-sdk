@@ -20,23 +20,34 @@ const built: FakeSession[] = [];
 /** Set before an open to make the NEXT session connect without ever getting a level-2 key. */
 let nextSessionHasNoKey = false;
 
+/**
+ * Set before an open to make the NEXT session's path answer this many ms after `connect()` resolves, or never
+ * for `Infinity`. `connect()` itself resolves at once, as the real one does once its lookups are sent.
+ */
+let nextSessionConnectsAfterMs = 0;
+
 class FakeSession extends EventEmitter {
   isConnected = false;
   traceId = `trace-${built.length}`;
   opts: Record<string, unknown>;
   hasKey: boolean;
+  connectsAfterMs: number;
   constructor(opts: Record<string, unknown>) {
     super();
     this.opts = opts;
     this.hasKey = !nextSessionHasNoKey;
+    this.connectsAfterMs = nextSessionConnectsAfterMs;
     nextSessionHasNoKey = false;
+    nextSessionConnectsAfterMs = 0;
     built.push(this);
   }
   async connect() {
-    this.isConnected = true;
+    if (this.connectsAfterMs === 0) this.isConnected = true;
+    else if (Number.isFinite(this.connectsAfterMs)) setTimeout(() => (this.isConnected = true), this.connectsAfterMs);
   }
+  /** A key wait begun before the path answers is the one that runs out: the key rides the connected path. */
   async awaitLevel2Key() {
-    return this.hasKey;
+    return this.hasKey && this.isConnected;
   }
   repromptLevel2Key() {
     return false;
@@ -52,6 +63,7 @@ vi.mock("../p2p-session.js", async (importOriginal) => ({
 }));
 
 const { P2PCommandRouter } = await import("../command-router.js");
+const { CONNECT_TIMEOUT_MS } = await import("../p2p-session.js");
 type Router = InstanceType<typeof P2PCommandRouter>;
 
 const STATION_SN = "T8010P0000000000";
@@ -66,6 +78,7 @@ function router() {
   built.length = 0;
   events.length = 0;
   nextSessionHasNoKey = false;
+  nextSessionConnectsAfterMs = 0;
   const record = (sn: string, channel: number, parent?: string) => ({
     sn,
     stationSn: parent ?? sn,
@@ -164,6 +177,45 @@ describe("a second live camera on a claimed station session", () => {
 
     nextSessionHasNoKey = true;
     await expect(openLive(r, CAM_B)).rejects.toMatchObject({ name: "StationKeyUnavailableError" });
+  });
+
+  /**
+   * A relay connect lands about 25 s after `connect()` resolves, so a key wait begun at the open would run
+   * out on the connect rather than on the key. The media session is handed over once it connects and holds
+   * its key.
+   */
+  it("waits for a media session's path to connect before it waits for the key", async () => {
+    vi.useFakeTimers();
+    try {
+      const r = router();
+      (await openLive(r, CAM_A)).attach();
+
+      nextSessionConnectsAfterMs = 25_200;
+      const opened = openLive(r, CAM_B);
+      await vi.advanceTimersByTimeAsync(25_400);
+
+      await expect(opened).resolves.toBeDefined();
+      expect(built[1].isConnected).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports a media session that never connects as an unreachable station, not a missing key", async () => {
+    vi.useFakeTimers();
+    try {
+      const r = router();
+      (await openLive(r, CAM_A)).attach();
+
+      nextSessionConnectsAfterMs = Infinity;
+      const opened = openLive(r, CAM_B);
+      const outcome = expect(opened).rejects.toMatchObject({ name: "StationUnreachableError", stationSn: STATION_SN });
+      await vi.advanceTimersByTimeAsync(CONNECT_TIMEOUT_MS + 400);
+
+      await outcome;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   /**
