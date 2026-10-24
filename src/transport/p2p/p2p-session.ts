@@ -1836,7 +1836,7 @@ export class P2PSession extends EventEmitter {
     });
     const body = Buffer.concat([
       buildCommandHeader(this.seqNumber, CMD_SET_PAYLOAD),
-      buildStringCommandPayload(value, channel, this.level1Key, 1),
+      this.databasePayload(value, channel),
     ]);
     this.seqNumber = (this.seqNumber + 1) & 0xffff;
     this.logger.debug(`[p2p] ${this.cfg.stationSn} requestImage ${filePath}`);
@@ -1879,11 +1879,22 @@ export class P2PSession extends EventEmitter {
     });
     const body = Buffer.concat([
       buildCommandHeader(this.seqNumber, CMD_SET_PAYLOAD),
-      buildStringCommandPayload(value, channel, this.level1Key, 1),
+      this.databasePayload(value, channel),
     ]);
     this.seqNumber = (this.seqNumber + 1) & 0xffff;
     this.logger.debug(`[p2p] ${this.cfg.stationSn} queryDatabase ${table} ch=${channel}`);
     this.send(this.connectAddress, RequestMessageType.DATA, body);
+  }
+
+  /**
+   * The `CMD_SET_PAYLOAD` payload of a database read or stored-image request: the JSON level-1 encrypted, or
+   * in the clear with header bytes from {@link nextClearCommandBytes} on a session that {@link sendsInTheClear}
+   * and holds no level-2 key.
+   */
+  private databasePayload(value: string, channel: number): Buffer {
+    return !this.level2Key && this.sendsInTheClear()
+      ? buildRawCommandPayload(Buffer.from(value, "utf-8"), channel, 0, this.nextClearCommandBytes(), 0)
+      : buildStringCommandPayload(value, channel, this.level1Key, 1);
   }
 
   /**
@@ -2336,6 +2347,8 @@ export class P2PSession extends EventEmitter {
           /* ignore */
         }
       }
+    } else if (header.commandId === CMD_DATABASE && this.sendsInTheClear()) {
+      this.emit("dbChunk", { stationSn: this.cfg.stationSn, text: payload.toString("latin1") });
     }
     const frame: P2PFrame = {
       ...header,
