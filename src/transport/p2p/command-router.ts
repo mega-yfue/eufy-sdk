@@ -107,6 +107,8 @@ const LEVEL2_GRACE_MS = 25_000;
  * so a station that offers no key does not charge this to every later command.
  */
 const LEVEL2_SETTLE_MS = 8_000;
+/** Standalone stations whose level-1 session is not reset. */
+const KEEP_LEVEL1_SESSION_MODELS: ReadonlySet<string> = new Set(["T8423"]);
 
 /**
  * What a caller's own deadline on a station call has to clear, in milliseconds.
@@ -421,12 +423,19 @@ export class P2PCommandRouter {
     return dev ? stationOf(dev) : sn;
   }
 
-  /** Reset only a standalone device's session; an attached device must not close its shared HomeBase. */
+  /**
+   * Reset only a standalone device's session; an attached device must not close its shared HomeBase.
+   *
+   * A {@link KEEP_LEVEL1_SESSION_MODELS} station whose open session holds no level-2 key is left open.
+   */
   async resetStandaloneSession(sn: string): Promise<void> {
     const device = this.recordFor(sn);
     if (!device) return;
     const station = stationOf(device);
-    if (station === sn) await this.manager.resetWhenUnused(station);
+    if (station !== sn) return;
+    const open = this.manager.get(station);
+    if (open && !open.hasLevel2Key && KEEP_LEVEL1_SESSION_MODELS.has(device.model ?? "")) return;
+    await this.manager.resetWhenUnused(station);
   }
 
   /**

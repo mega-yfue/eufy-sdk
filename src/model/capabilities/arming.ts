@@ -421,6 +421,7 @@ export const ARMING_MEMBERS = {
    * MODE_SWITCH carries no value. Live qualification on a standalone camera showed that authoritative
    * readback requires a bounded cloud-list refresh, and that its P2P session must be reset after
    * convergence before a following mode write; an attached device must never reset its shared HomeBase.
+   * A standalone T8423's level-1 session is kept open instead.
    */
   mode: {
     param: ARMING_CMD.SET_ARMING,
