@@ -102,6 +102,13 @@ describe("shared live source construction", () => {
     expect(opts.budgetGraceMs).toBe(5000);
   });
 
+  it("passes the warm-up retry interval the first caller chose", async () => {
+    const router = routerWithSession({ warn: vi.fn() });
+    const source = await router.sharedLiveSourceFor("T8000P0000000000", { warmRetryMs: 5000 });
+    const opts = (source as unknown as { opts: { warmRetryMs?: number } }).opts;
+    expect(opts.warmRetryMs).toBe(5000);
+  });
+
   /**
    * A stopped source's pull is dead, so re-using it protects nothing — while keeping it meant the first
    * caller's options outlived the session they were chosen for, still dictating the budget for a pull
@@ -258,6 +265,16 @@ describe("shared live source options", () => {
     const msg = logger.warn.mock.calls[0][0] as string;
     expect(msg).toMatch(/keepAliveMs/);
     expect(msg).toMatch(/powered/);
+  });
+
+  it("reports a warm-up retry interval a later caller could not apply", async () => {
+    const logger = { warn: vi.fn() };
+    const router = routerWithSession(logger);
+
+    await router.sharedLiveSourceFor("T8000P0000000000", {});
+    await router.sharedLiveSourceFor("T8000P0000000000", { warmRetryMs: 5000 });
+
+    expect(logger.warn.mock.calls[0][0] as string).toMatch(/warmRetryMs/);
   });
 
   /** `eccPrivateKey` is a Buffer, so identity comparison warns on every call for keys that match. */
