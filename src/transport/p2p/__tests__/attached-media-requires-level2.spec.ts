@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { P2PSession } from "../p2p-session.js";
+import { P2PSession, STATION_CHANNEL } from "../p2p-session.js";
 import { LIVE_TRACE_MESSAGE } from "../live-trace.js";
 import { parseDataFrameHeader } from "../codec.js";
 
@@ -82,6 +82,42 @@ describe("an attached media start with no level-2 key", () => {
 
     expect(sent).toHaveLength(1);
     expect(traces(debug).map((t) => (t as { phase: string }).phase)).not.toContain("media-command-unsent");
+  });
+
+  it("assigns channel-zero START request slots independently of the selected camera", () => {
+    const { session, sent, decodedFrame } = attachedSession(true);
+    const accountId = "0".repeat(40);
+    session.startLiveMedia(2, accountId, true);
+    session.startLiveMedia(0, accountId, true);
+    session.stopLiveMedia(0, accountId, true);
+    session.startLiveMedia(STATION_CHANNEL, accountId, true);
+    session.startLiveMedia(0, accountId, true);
+    expect(sent).toHaveLength(5);
+    expect(decodedFrame(0).header.type).toBe(11);
+    expect(decodedFrame(1).header.type).toBe(12);
+    expect(decodedFrame(4).header.type).toBe(15);
+    for (const [index, channel] of [
+      [0, 2],
+      [1, 0],
+      [3, STATION_CHANNEL],
+      [4, 0],
+    ] as const) {
+      const { header, value } = decodedFrame(index);
+      expect(header).toMatchObject({ commandId: 1350, channel, signCode: 8 });
+      expect((sent[index]![2] as Buffer).subarray(14, 16)).toEqual(Buffer.from([8, 0]));
+      expect(value).toMatchObject({
+        account_id: accountId,
+        cmd: 1003,
+        mChannel: channel,
+        mValue3: 1003,
+        payload: { ClientOS: "Android", accountId, camera_type: 0, entrytype: 0, streamtype: 2 },
+      });
+      expect(value.payload.key).toHaveLength(256);
+    }
+    const stop = decodedFrame(2);
+    expect(stop.header).toMatchObject({ commandId: 1350, channel: 0, signCode: 8, type: 0 });
+    expect(stop.value).toEqual({ account_id: accountId, cmd: 1004, mChannel: 0, mValue3: 1004, payload: {} });
+    expect(decodedFrame(3).header.type).toBe(0);
   });
 
   it("requests the app's attached live stream type", () => {
