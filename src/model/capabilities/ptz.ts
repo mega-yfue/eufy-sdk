@@ -154,9 +154,10 @@ export const PtzDirection = {
 } as const;
 export type PtzDirection = (typeof PtzDirection)[keyof typeof PtzDirection];
 
-/** Pan-tilt rotate direction → `rotate_type` (the on-wire code). Not re-exported by the barrel —
- * stays internal to the capability. Confirmed on hardware (T8425): 1=left, 2=right, 3=up, 4=down. */
-export const PTZ_ROTATE = { left: 1, right: 2, up: 3, down: 4 } as const;
+/** Pan-tilt rotate motion → `rotate_type` (the on-wire code). Not re-exported by the barrel —
+ * stays internal to the capability. Confirmed on hardware (T8425): 1=left, 2=right, 3=up, 4=down.
+ * `sweep` (0) is a full 360° pan, the camera's room scan: UNCONFIRMED on hardware. */
+export const PTZ_ROTATE = { sweep: 0, left: 1, right: 2, up: 3, down: 4 } as const;
 
 /** Reported params that prove a second (telephoto) lens — the digital zoom (a dual-camera command)
  * exists only on these. `6204` = the dual-lens `calibration_data`, `6205` = the dual-cam video-type
@@ -196,7 +197,7 @@ const FIXED_LENS_MODELS: ReadonlySet<string> = new Set(["T8134"]);
  * resolver picks the encryption level by topology (standalone → L1, HomeBase → L2). A PT cam can be
  * either, so the level is NOT fixed here.
  */
-export function rotateCommand(direction: PtzDirection, ctx: CommandContext, zoom = 1.0): Command {
+export function rotateCommand(direction: keyof typeof PTZ_ROTATE, ctx: CommandContext, zoom = 1.0): Command {
   return setJson(PTZ_CMD.PTZ_ROTATE, { cmd_type: 1, rotate_type: PTZ_ROTATE[direction], zoom }, ctx);
 }
 
@@ -411,6 +412,17 @@ export const PTZ_MEMBERS = {
       (): Promise<void> =>
         sink.dispatch(rotateCommand("down", ctx)),
     "Rotate down.",
+  ),
+
+  /**
+   * Pan a full 360° and return, the camera's room scan: the rotate frame with `rotate_type` 0.
+   * UNCONFIRMED on hardware — the value is not yet read out of the current app or a live capture.
+   */
+  rotate360: method(
+    ({ ctx, sink }) =>
+      (): Promise<void> =>
+        sink.dispatch(rotateCommand("sweep", ctx)),
+    "Pan a full 360° (room scan).",
   ),
 
   /**

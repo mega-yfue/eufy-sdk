@@ -115,6 +115,15 @@ describe("ptz capability module", () => {
       const down = rotateCommand(PtzDirection.down, ctx(0)) as Extract<Command, { kind: "set-json" }>;
       expect(down.data).toMatchObject({ rotate_type: 4, zoom: 1.0 });
     });
+
+    it("maps the 360° sweep to rotate_type 0 on the same rotate frame", () => {
+      expect(rotateCommand("sweep", ctx(3))).toEqual({
+        kind: "set-json",
+        param: PTZ_CMD.PTZ_ROTATE,
+        data: { cmd_type: 1, rotate_type: 0, zoom: 1.0 },
+        channel: 3,
+      });
+    });
   });
 
   describe("zoomCommand", () => {
@@ -263,6 +272,14 @@ describe("ptz capability module", () => {
         cmd: PTZ_CMD.PTZ_SET_DEFAULT_POSITION,
         payload: { index: 4, settingstate: 0 },
       });
+    });
+
+    it("rotate360 dispatches the rotate frame with rotate_type 0", async () => {
+      const { acts, sent } = bind<PtzActions>("ptz", zoomCtx(3));
+      await acts.rotate360();
+      expect(sent).toEqual([
+        { kind: "set-json", param: PTZ_CMD.PTZ_ROTATE, data: { cmd_type: 1, rotate_type: 0, zoom: 1.0 }, channel: 3 },
+      ]);
     });
 
     it("zoom action is present only on a dual-lens (zoom-evidence) device", () => {

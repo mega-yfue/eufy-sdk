@@ -19,6 +19,7 @@ import { PtzDirection } from "@mega-yfue/eufy-sdk";
 await ptz.rotate(PtzDirection.left, 1.0); // step in a direction (optional zoom factor)
 await ptz.left(); // shorthands: left / right / up / down
 await ptz.up();
+await ptz.rotate360(); // full 360° pan (room scan)
 
 await ptz.zoom?.(2); // digital zoom to a factor (no movement)
 await ptz.zoom?.(1); // back to the full wide view
