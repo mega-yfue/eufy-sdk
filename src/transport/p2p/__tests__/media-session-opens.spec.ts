@@ -2,8 +2,7 @@ import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 
 /**
- * A camera that finds the station's own session claimed opens a SECOND connection, and that connection
- * carries media alone.
+ * A live camera opens a connection of its own beside the station's, and that connection carries media alone.
  *
  * The sibling spec seeds both sessions into the manager, so `acquire` answers from its registry and the
  * factory never runs — which leaves the claim in this feature's title resting on bookkeeping. Here
@@ -113,12 +112,12 @@ describe("a second live camera on a claimed station session", () => {
   it("really opens another connection, rather than only recording that it would", async () => {
     const r = router();
     (await openLive(r, CAM_A)).attach();
-    expect(built).toHaveLength(1);
+    expect(built).toHaveLength(2);
 
     (await openLive(r, CAM_B)).attach();
 
-    expect(built).toHaveLength(2);
-    expect(built[1]).not.toBe(built[0]);
+    expect(built).toHaveLength(3);
+    expect(built[2]).not.toBe(built[1]);
     expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(`${STATION_SN}#live:2`);
   });
 
@@ -235,7 +234,7 @@ describe("a second live camera on a claimed station session", () => {
     (await openLive(r, CAM_A)).attach();
 
     expect(sources(r).has(`${STATION_SN}:2`)).toBe(true);
-    expect(built).toHaveLength(2);
+    expect(built).toHaveLength(3);
   });
 
   /**
@@ -269,10 +268,10 @@ describe("a second live camera on a claimed station session", () => {
 
     const keys = [...sessionKeys(r).values()];
     expect(new Set(keys).size).toBe(2);
-    expect(keys).toContain(STATION_SN);
-    expect(built).toHaveLength(2);
+    expect(keys).not.toContain(STATION_SN);
+    expect(built).toHaveLength(3);
   });
-  it("keeps independent media delivering when the station-control connection closes", async () => {
+  it("keeps every camera's media delivering when the station-control connection closes", async () => {
     const r = router();
     const a = await openLive(r, CAM_A);
     a.attach();
@@ -284,11 +283,12 @@ describe("a second live camera on a claimed station session", () => {
     const disposedB = vi.spyOn(b, "dispose");
     try {
       await built[0].close();
-      expect(disposedA).toHaveBeenCalledOnce();
+      expect(disposedA).not.toHaveBeenCalled();
       expect(disposedB).not.toHaveBeenCalled();
-      expect(sources(r).has(`${STATION_SN}:0`)).toBe(false);
+      expect(sources(r).get(`${STATION_SN}:0`)).toBe(a);
       expect(sources(r).get(`${STATION_SN}:2`)).toBe(b);
       expect(built[1].isConnected).toBe(true);
+      expect(built[2].isConnected).toBe(true);
       const frame = {
         data: Buffer.from("000000016588", "hex"),
         keyframe: true,

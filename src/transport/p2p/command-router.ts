@@ -77,7 +77,7 @@ import {
   type SessionManagerOpts,
 } from "./session-manager.js";
 import { openReadableFromConsumer } from "./readable-egress.js";
-import { Talkback } from "./talkback.js";
+import { Talkback, type TalkbackSink } from "./talkback.js";
 import { FragmentRecording } from "./fragment-recording.js";
 import { traceLiveStart, type LiveTrace } from "./live-trace.js";
 import { stationChannels, stationOf } from "./station-channels.js";
@@ -926,6 +926,9 @@ export class P2PCommandRouter {
    * stream costs nothing extra and a talkback on an otherwise idle camera opens the session it needs
    * instead of playing into silence.
    *
+   * The audio is sent down the connection that pull is on, which for an attached camera is a connection of
+   * its own (see {@link sharedLiveSourceFor}), so one camera's video and talkback never ride two connections.
+   *
    * **On a model in {@link ELD_TALKBACK_MODELS}, the speaker plays the codec the camera sends.** So the first
    * audio frame of the media session this talkback holds decides its codec ({@link speakerCodec}), within
    * {@link TALKBACK_CODEC_WAIT_MS} of the session's first frame, and the claim is re-checked after that wait as
@@ -978,7 +981,15 @@ export class P2PCommandRouter {
       );
     }
     let consumer: Consumer | undefined;
-    const talk = new Talkback(session, {
+    const pull = (): P2PSession => this.manager.get(this.liveSessionKeys.get(key) ?? parentSn) ?? session;
+    const sink: TalkbackSink = {
+      startTalkback: (ch, attached) => pull().startTalkback(ch, attached),
+      stopTalkback: (ch, attached) => pull().stopTalkback(ch, attached),
+      sendAudioFrame: (ch, frame) => pull().sendAudioFrame(ch, frame),
+      on: (event, listener) => pull().on(event, listener),
+      off: (event, listener) => pull().off(event, listener),
+    };
+    const talk = new Talkback(sink, {
       channel,
       homeBaseAttached,
       encoder: opts.encoder,
@@ -990,7 +1001,7 @@ export class P2PCommandRouter {
     });
     this.talkbacks.set(key, talk);
     try {
-      const source = await this.sharedLiveSourceFor(sn, opts);
+      const source = await this.sharedLiveSourceFor(sn, opts, true);
       if (this.talkbacks.get(key) !== talk) {
         throw new Error(`talkback: ${sn} was closed while its media session was warming`);
       }
@@ -1047,12 +1058,19 @@ export class P2PCommandRouter {
    * {@link releaseLingeringSiblings}. A pull with consumers is never touched. The release runs before the
    * reuse branch, so a reuse frees the station as a cold start does.
    *
-   * `mayOpenOwnSession` decides whether a camera that finds the station's own session claimed may open a
-   * connection of its own for it. Only the continuous-pull egresses pass it. A still must not: it wants one
-   * frame, and a socket plus a level-2 negotiation per thumbnail is a cost a tile refresh cannot justify —
-   * so a still asked for while a sibling is being watched contends as it always did, and the caller's
-   * retained image answers it. A live view still outranks a tile; what changed is that two live views no
-   * longer have to outrank each other.
+   * `mayOpenOwnSession` puts an attached camera's pull on a connection of its own, never on the station's.
+   * Only the continuous-pull egresses pass it. A still must not: it wants one frame, and a socket plus a
+   * level-2 negotiation per thumbnail is a cost a tile refresh cannot justify — so a still contends for the
+   * station's own session as it always did, and the caller's retained image answers it.
+   *
+   * A live pull never takes the station's own session, even when it is free, because a station does not
+   * let go of a camera it served there. Measured on a HomeBase: after a camera's pull moved off the
+   * station's session, the station went on sending that camera's channel down it, through a stop in the
+   * library's form and again in the app's exact form, and answered the next camera's starts there with
+   * none of its media — that camera stayed dark for 1.5 hours until it was moved to a connection of its
+   * own, where it delivered in 2.1 s. Closing a pull's own connection is what ends its stream, so a
+   * connection per camera is the only arrangement that cannot inherit a previous camera. It is also the
+   * app's: a first-party display was captured opening one session per camera.
    *
    * The session goes into a {@link HeldSession} cell, so it can be replaced under a source that stays in
    * place.
@@ -1077,9 +1095,7 @@ export class P2PCommandRouter {
     if (!source) {
       const logger = this.deps.logger ?? noopLogger;
       const sessionKey =
-        mayOpenOwnSession && homeBaseAttached && this.stationSessionInUse(parentSn, key)
-          ? P2PCommandRouter.mediaSessionKey(parentSn, channel)
-          : parentSn;
+        mayOpenOwnSession && homeBaseAttached ? P2PCommandRouter.mediaSessionKey(parentSn, channel) : parentSn;
       this.liveSessionKeys.set(key, sessionKey);
       let held: HeldSession;
       try {
@@ -1165,39 +1181,6 @@ export class P2PCommandRouter {
       );
       this.dropLiveSource(key);
     }
-  }
-
-  /**
-   * Whether another camera has already claimed this station's OWN session, ignoring `key`.
-   *
-   * The question a newcomer has to answer is not whether the station is busy — it can serve one camera
-   * per connection — but whether the connection it would otherwise share is taken. A camera on a media
-   * session of its own does not hold this one, so a station whose first camera has since stopped hands
-   * its own session to the next arrival rather than opening a socket beside an idle one.
-   *
-   * A claim counts while its source is still `idle`, source or no source. That is a start that has been
-   * handed to its caller but not yet attached to, and it is the only state in which two cameras asked for
-   * at the same moment can see each other: consumers attach after this method has already run for both.
-   *
-   * The cost is that a pull genuinely abandoned before its first attach goes on holding the station's own
-   * session, and the next camera pays for a connection of its own rather than reclaiming it. That is one
-   * socket against destroying a start someone is waiting on, which is not a close trade.
-   *
-   * A stopped source is skipped even when consumers are still attached to it. A failed start fails its
-   * consumers without detaching them, so a caller still holding a dead handle leaves the count non-zero,
-   * and counting that as a viewer would put every later camera on a connection of its own until the
-   * client restarted. Only a source that can still deliver holds a place.
-   */
-  private stationSessionInUse(parentSn: string, key: string): boolean {
-    for (const [siblingKey, sessionKey] of this.liveSessionKeys) {
-      if (siblingKey === key || sessionKey !== parentSn) continue;
-      const sibling = this.liveSources.get(siblingKey);
-      if (!sibling) return true;
-      if (sibling.state === "stopped") continue;
-      if (sibling.state !== "idle" && sibling.consumerCount === 0) continue;
-      return true;
-    }
-    return false;
   }
 
   /**
