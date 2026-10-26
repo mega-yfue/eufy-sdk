@@ -183,6 +183,7 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
   <figcaption>Video Doorbell S4 <span class="model">T8215</span></figcaption>
 </figure>
 <figure>
+  <img src="/devices/security/security-T8220.webp" alt="Battery Doorbell Slim T8220" loading="lazy" />
   <figcaption>Battery Doorbell Slim <span class="model">T8220</span></figcaption>
 </figure>
 <figure>
@@ -193,6 +194,7 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
   <figcaption>Battery Doorbell <span class="model">T8222</span></figcaption>
 </figure>
 <figure>
+  <img src="/devices/security/security-T8223.webp" alt="Doorbell C31 T8223" loading="lazy" />
   <figcaption>Doorbell C31 <span class="model">T8223</span></figcaption>
 </figure>
 <figure>
