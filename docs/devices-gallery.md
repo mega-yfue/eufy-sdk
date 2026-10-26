@@ -226,6 +226,7 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
   <figcaption>Floodlight Cam E340 <span class="model">T8425</span></figcaption>
 </figure>
 <figure>
+  <img src="/devices/security/security-T8426.webp" alt="Floodlight Cam E30 T8426" loading="lazy" />
   <figcaption>Floodlight Cam E30 <span class="model">T8426</span></figcaption>
 </figure>
 
