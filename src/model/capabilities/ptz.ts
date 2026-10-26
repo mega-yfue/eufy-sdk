@@ -422,7 +422,6 @@ export const PTZ_MEMBERS = {
       (): Promise<void> =>
         sink.dispatch(rotateCommand("sweep", ctx)),
     "Pan a full 360° (room scan).",
-    (ctx) => ctx.model === "T8410",
   ),
 
   /**

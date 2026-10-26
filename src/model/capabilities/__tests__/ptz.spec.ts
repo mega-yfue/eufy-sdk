@@ -275,17 +275,11 @@ describe("ptz capability module", () => {
     });
 
     it("rotate360 dispatches the rotate frame with rotate_type 0", async () => {
-      const { acts, sent } = bind<PtzActions>("ptz", { ...ctx(3), model: "T8410" });
-      await acts.rotate360!();
+      const { acts, sent } = bind<PtzActions>("ptz", ctx(3));
+      await acts.rotate360();
       expect(sent).toEqual([
         { kind: "set-json", param: PTZ_CMD.PTZ_ROTATE, data: { cmd_type: 1, rotate_type: 0, zoom: 1.0 }, channel: 3 },
       ]);
-    });
-
-    it("rotate360 is present only on the T8410", () => {
-      expect(typeof bind<PtzActions>("ptz", { ...ctx(3), model: "T8410" }).acts.rotate360).toBe("function");
-      expect(bind<PtzActions>("ptz", { ...ctx(3), model: "T8425" }).acts.rotate360).toBeUndefined();
-      expect(bind<PtzActions>("ptz", ctx(3)).acts.rotate360).toBeUndefined();
     });
 
     it("zoom action is present only on a dual-lens (zoom-evidence) device", () => {
