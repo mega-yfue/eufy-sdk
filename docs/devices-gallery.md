@@ -198,6 +198,7 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
   <figcaption>Doorbell C31 <span class="model">T8223</span></figcaption>
 </figure>
 <figure>
+  <img src="/devices/security/security-T8224.webp" alt="Battery Doorbell C30 T8224" loading="lazy" />
   <figcaption>Battery Doorbell C30 <span class="model">T8224</span></figcaption>
 </figure>
 
