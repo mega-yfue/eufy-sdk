@@ -396,14 +396,15 @@ export class LiveStream extends EventEmitter {
   }
 
   /**
-   * The Annex-B payload of a frame that starts an access unit. The session decodes it when it can (it
-   * holds the RSA private key, and handles the plaintext form); the legacy header-strip and the ECIES
-   * {@link VideoFrameDecoder} are the fallbacks for an E2E camera.
+   * Decode authenticated ECIES/GCM media first when an ECC key is configured. A legacy RSA unwrap
+   * can return unauthenticated bytes for an ECC envelope, so a truthy session result must not mask
+   * {@link VideoFrameDecoder}. Retain session decoding and plaintext extraction as fallbacks.
    */
   private annexbOf(payload: Buffer, signCode: number): Buffer | undefined {
+    const decoded = this.decoder?.decodeFrame(payload)?.h264;
+    if (decoded) return decoded;
     const annexb = this.session.decodeVideoFrame?.(payload, signCode) ?? this.plaintextAnnexB(payload);
     if (annexb) return annexb;
-    const decoded = this.decoder?.decodeFrame(payload)?.h264;
     if (!decoded && this.tracedDecodeFailures++ < MAX_TRACED_DECODE_FAILURES) {
       this.trace({ phase: "video-decode-empty", signCode });
     }
