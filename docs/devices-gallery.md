@@ -187,6 +187,7 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
   <figcaption>Battery Doorbell Slim <span class="model">T8220</span></figcaption>
 </figure>
 <figure>
+  <img src="/devices/security/security-T8221.webp" alt="Battery Doorbell 2E T8221" loading="lazy" />
   <figcaption>Battery Doorbell 2E <span class="model">T8221</span></figcaption>
 </figure>
 <figure>
