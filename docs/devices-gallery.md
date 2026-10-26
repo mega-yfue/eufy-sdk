@@ -280,6 +280,7 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
   <figcaption>eufyCam 2C Pro <span class="model">T8141 · T8142 · T8142-Z</span></figcaption>
 </figure>
 <figure>
+  <img src="/devices/security/security-T8144.webp" alt="eufyCam E40 T8144" loading="lazy" />
   <figcaption>eufyCam E40 <span class="model">T8144</span></figcaption>
 </figure>
 <figure>
