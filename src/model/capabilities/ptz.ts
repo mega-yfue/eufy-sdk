@@ -8,7 +8,7 @@ import type { Command } from "../../core/contracts.js";
  * The P2P **feature-command ids** this pan-tilt capability drives. Capability-owned wire vocabulary
  * (transport forwards `cmd.param` opaquely; full id→name catalog in the generated
  * `transport/p2p/commands.ts`). Distinct from the {@link PTZ_ROTATE} direction map below (which is
- * `rotate_type` 1..4, not a command id).
+ * `rotate_type` 0..4, not a command id).
  *
  * Ids + envelopes are taken from the V6 app's own command builders (the `Set*Parser`/`*PositionsParser`
  * classes in the decompiled JS), which is this project's wire ground truth — NOT a third-party
@@ -189,7 +189,7 @@ const FIXED_LENS_MODELS: ReadonlySet<string> = new Set(["T8134"]);
 
 /**
  * Pan-tilt rotate as a transport-neutral {@link Command}. CONFIRMED wire command (captured on
- * T8425 ch3 during live-view): `{"commandType":6030,"data":{"cmd_type":1,"rotate_type":1..4,
+ * T8425 ch3 during live-view): `{"commandType":6030,"data":{"cmd_type":1,"rotate_type":0..4,
  * "zoom":1.0}}` under the generic control wrapper `1700` on the camera channel. `cmd_type:1` =
  * move; `zoom` defaults to 1.0.
  *
@@ -414,15 +414,13 @@ export const PTZ_MEMBERS = {
     "Rotate down.",
   ),
 
-  /**
-   * Pan a full 360°, the camera's room scan: the rotate frame with `rotate_type` 0. ✅ Confirmed live
-   * on a T8410 (indoor pan-tilt): one dispatch pans the camera through a full circle.
-   */
+  /** Pan a full 360° (room scan). */
   rotate360: method(
     ({ ctx, sink }) =>
       (): Promise<void> =>
         sink.dispatch(rotateCommand("sweep", ctx)),
     "Pan a full 360° (room scan).",
+    (ctx) => ctx.model === "T8410",
   ),
 
   /**
