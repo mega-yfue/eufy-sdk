@@ -350,6 +350,7 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
   <figcaption>Wall Light Cam S120 <span class="model">T84A0</span></figcaption>
 </figure>
 <figure>
+  <img src="/devices/security/security-T81A0.webp" alt="Solar Wall Light Cam S120 T81A0" loading="lazy" />
   <figcaption>Solar Wall Light Cam S120 <span class="model">T81A0</span></figcaption>
 </figure>
 <figure>
