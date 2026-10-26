@@ -259,6 +259,8 @@ export interface P2PRouterDeps {
   onClose: (stationSn: string) => void;
   onError: (err: Error) => void;
   onLevel2Ready: (stationSn: string, cipherId: number) => void;
+  /** The station answered on its own session at `atMs` — a PONG or an ACK from the connected peer. */
+  onPeerAnswer?: (stationSn: string, atMs: number) => void;
   /** A raw decoded frame — the client emits the low-level `p2p` event + runs the semantic decode. */
   onFrame: (stationSn: string, frame: P2PFrame) => void;
   /**
@@ -606,6 +608,9 @@ export class P2PCommandRouter {
       this.tearDownStation(stationSn);
     });
     session.on("level2Ready", ({ cipherId }: { cipherId: number }) => this.deps.onLevel2Ready(stationSn, cipherId));
+    session.on("peerAnswer", (atMs: number) => {
+      if (this.manager.get(stationSn) === session) this.deps.onPeerAnswer?.(stationSn, atMs);
+    });
     session.on("data", (f: P2PFrame) => this.deps.onFrame(stationSn, f));
     return session;
   }

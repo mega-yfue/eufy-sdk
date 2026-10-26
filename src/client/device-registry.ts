@@ -117,6 +117,11 @@ function mergeParams(
   }
 }
 
+/** The later of two optional times in ms, or `undefined` when neither is known. */
+function newest(a: number | undefined, b: number | undefined): number | undefined {
+  return a === undefined ? b : b === undefined ? a : Math.max(a, b);
+}
+
 /**
  * The freshest param timestamp as **milliseconds**, or `undefined` when nothing was stamped — the
  * derivation behind {@link EufyDevice.lastSeenMs}. Converts from the wire's seconds exactly once, here.
@@ -227,6 +232,14 @@ export class DeviceRegistry {
   private readonly cloudDps = new Map<string, Record<number, string>>();
   /** Per-serial realtime state, keyed by param id in the device's own namespace (see {@link DeviceRecord.dpParams}). */
   private readonly dpParams = new Map<string, Record<number, string>>();
+  /**
+   * Per-serial time, in ms, the device was last heard on a realtime wire: a state report or a station
+   * answering its P2P session.
+   *
+   * Held apart from the records because {@link getDevices} rebuilds every record from the cloud, whose
+   * timestamps never see these; each rebuilt {@link EufyDevice.lastSeenMs} takes the newer of the two.
+   */
+  private readonly realtimeSeenAt = new Map<string, number>();
   /** Callers blocked in {@link awaitRealtimeState}, released by the device's first report. */
   private readonly stateWaiters = new Map<string, Set<() => void>>();
   /**
@@ -335,7 +348,7 @@ export class DeviceRegistry {
           p2pDid: raw.p2p_did,
           params,
           paramUpdatedAt,
-          lastSeenMs: lastSeenMsOf(paramUpdatedAt),
+          lastSeenMs: newest(lastSeenMsOf(paramUpdatedAt), this.realtimeSeenAt.get(raw.device_sn)),
           raw,
           deviceClass,
           ...c,
@@ -577,6 +590,20 @@ export class DeviceRegistry {
   }
 
   /**
+   * Record that `sn` was heard on a realtime wire at `atMs`, advancing its {@link EufyDevice.lastSeenMs}.
+   *
+   * Only ever moves the time forward, and survives a {@link getDevices} rebuild. Nothing here lowers it: a
+   * device not heard from is a silence, not evidence of absence.
+   */
+  markSeen(sn: string, atMs: number): void {
+    const prev = this.realtimeSeenAt.get(sn);
+    if (prev !== undefined && prev >= atMs) return;
+    this.realtimeSeenAt.set(sn, atMs);
+    const dev = this.devices.find((d) => d.sn === sn);
+    if (dev) dev.lastSeenMs = newest(dev.lastSeenMs, atMs);
+  }
+
+  /**
    * Record state a device reported over its realtime wire, merging into whatever it last reported.
    *
    * Merged rather than replaced because a report can be partial — a status frame that omits a field is
@@ -589,8 +616,7 @@ export class DeviceRegistry {
   applyRealtimeParams(sn: string, params: Record<number, string>): void {
     if (!Object.keys(params).length) return;
     this.dpParams.set(sn, { ...this.dpParams.get(sn), ...params });
-    const dev = this.devices.find((d) => d.sn === sn);
-    if (dev) dev.lastSeenMs = Date.now();
+    this.markSeen(sn, Date.now());
     this.deviceCapsCache.delete(sn);
     const waiters = this.stateWaiters.get(sn);
     if (waiters) {

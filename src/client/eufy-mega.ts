@@ -382,6 +382,7 @@ export class EufyMega extends EventEmitter {
       onClose: (sn) => this.emit("p2pClose", sn),
       onError: (e) => this.reportError(e),
       onLevel2Ready: (sn, cipherId) => this.emit("p2pLevel2Ready", { stationSn: sn, cipherId }),
+      onPeerAnswer: (sn, atMs) => this.registry.markSeen(sn, atMs),
       onFrame: (stationSn, f) => this.onP2PFrame(stationSn, f),
     });
     this.rtc = new RtcCommandRouter({
