@@ -160,6 +160,7 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
   <figcaption>Wired Doorbell <span class="model">T8201</span></figcaption>
 </figure>
 <figure>
+  <img src="/devices/security/security-T8202.webp" alt="Wired Doorbell 2K Pro T8202" loading="lazy" />
   <figcaption>Wired Doorbell 2K Pro <span class="model">T8202</span></figcaption>
 </figure>
 <figure>
