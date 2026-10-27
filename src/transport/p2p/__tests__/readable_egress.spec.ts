@@ -96,6 +96,8 @@ describe("openReadableFromConsumer", () => {
     expect(source.consumerCount).toBe(1);
     r.destroy();
     expect(source.consumerCount).toBe(0);
+    expect(source.state).toBe("lingering");
+    source.dispose();
   });
 
   it("ends (EOF) when the upstream stops", async () => {
@@ -109,6 +111,10 @@ describe("openReadableFromConsumer", () => {
     stream().emit("stop");
     await new Promise((res) => setImmediate(res));
     expect(ended).toBe(true);
+    expect(r.destroyed).toBe(true);
+    expect(source.consumerCount).toBe(0);
+    expect(source.state).toBe("stopped");
+    source.dispose();
   });
 });
 

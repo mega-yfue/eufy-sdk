@@ -130,7 +130,8 @@ function autoSpotlightCommand(on: boolean, ctx: CommandContext, opts: AutoSpotli
  * the shared family classifier. Provisional split, to be confirmed against the decompiled V6 app /
  * a confirmed exchange:
  *  - `"json"`: JSON control-payload (`{commandType:1400,data:{time,type,value}}` under 1700) —
- *    FLOODLIGHT_8425, wall-light cams, indoor pan/tilt (31/35) and CAMERA_4G_S330.
+ *    FLOODLIGHT_8425, wall-light cams (incl. the Wall Light Cam S4, T86C1, deviceType 298, confirmed
+ *    live), indoor pan/tilt (31/35) and CAMERA_4G_S330.
  *  - `"int-string"`: level-1 int+string — indoor/outdoor 1080p/2K siblings, outdoor-PT/solo-E30,
  *    E330 Pro (T8600, deviceType 24, confirmed live), and the Cam2C/Cam2/Cam3 families.
  * NOTE: this is FRAME SHAPE only, not encryption LEVEL. The level (L1 vs L2) is a runtime topology

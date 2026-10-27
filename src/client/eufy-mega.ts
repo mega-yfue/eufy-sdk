@@ -1288,7 +1288,8 @@ export class EufyMega extends EventEmitter {
 
   /**
    * The RTC media provider for a station on a media-track route, or a camera attached to a T9000 whose
-   * `device_channel` resolves back to it on the station; `undefined` otherwise, unless an NVR camera has its own dedicated media call.
+   * `device_channel` resolves back to it on the station; `undefined` otherwise. A camera attached to a T8N00 gets the
+   * NVR's dedicated media call when {@link isNvrMediaCamera} admits it.
    */
   private rtcMediaFor(sn: string): MediaProvider | undefined {
     const route = this.rtcRouteFor(sn);
@@ -1407,6 +1408,8 @@ export class EufyMega extends EventEmitter {
    * first announces it and the others stay silent. Its timing says only when a caller happened to read; the
    * value is the news. It applies what the device volunteered over realtime on top of the cloud half, which
    * the registry keeps apart, so it can neither revert nor announce a revert of a report already landed.
+   * Nothing awaits that refresh, so its failure is reported like the other background paths' — a dead
+   * token as `sessionExpired`, anything else as `error` — and the read keeps its last-known value.
    *
    * The `Device` returned is held WEAKLY: it is what the inbound paths announce against, so a caller that
    * wants property changes for a serial keeps its own reference. Dropping it stops the announcements, not
@@ -1438,8 +1441,12 @@ export class EufyMega extends EventEmitter {
       dev.setFreshnessPolicy({
         staleAfterMs: this.opts.cacheTtlMs ?? 15_000,
         refresh: async () => {
-          const fresh = await this.registry.record(sn);
-          this.applyAndAnnounce(dev, { ...fresh.params, ...fresh.dpParams });
+          try {
+            const fresh = await this.registry.record(sn);
+            this.applyAndAnnounce(dev, { ...fresh.params, ...fresh.dpParams });
+          } catch (e) {
+            this.reportError(e);
+          }
         },
       });
     }

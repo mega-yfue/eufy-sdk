@@ -13,6 +13,7 @@ import {
   STREAMING_QUALITY_TIERS,
   resolveStreamingQuality,
 } from "../camera.js";
+import { DOORBELL_CMD } from "../doorbell.js";
 import type { RecordingQualityName } from "../camera.js";
 import { buildCommand } from "../index.js";
 import { actionSpecOf } from "../access.js";
@@ -420,6 +421,27 @@ describe("camera capability module", () => {
       });
       expect((cmd as { payload: Record<string, unknown> }).payload.transaction).toMatch(/^\d{13}$/);
       expect(buildCommand("streamingQuality", "Max", ctx(2))).toMatchObject({ payload: { quality: 3 } });
+    });
+
+    it("streamingQuality is not offered where the device reports the doorbell's own quality (1705)", () => {
+      const doorbell = (paramIds: number[]) =>
+        ctx(0, {
+          deviceType: DeviceType.BATTERY_DOORBELL_2,
+          model: "T8210",
+          capabilities: new Set(["camera", "doorbell"]),
+          paramIds: new Set(paramIds),
+        });
+      const withOwn = doorbell([1020, DOORBELL_CMD.VIDEO_QUALITY]);
+      const dev = Device.fromRecord("T8000P0000000000", { model: "T8210", params: { 1020: "5", 1705: "5" } });
+      dev.bindActions(withOwn, { dispatch: async () => undefined });
+      const acts = dev.camera!()!;
+      expect("streamingQuality" in acts).toBe(false);
+      expect("setStreamingQuality" in acts).toBe(false);
+      expect(buildCommand("streamingQuality", 0, withOwn)).toBeUndefined();
+      expect(buildCommand("streamingQuality", 0, doorbell([1020]))).toMatchObject({
+        cmd: CAMERA_CMD.STREAMING_QUALITY_SET,
+      });
+      expect(buildCommand("streamingQuality", 0, ctx(0))).toMatchObject({ cmd: CAMERA_CMD.STREAMING_QUALITY_SET });
     });
 
     it("recordingQuality throws on a value that isn't a real tier (no bogus value on the fire-and-forget wire)", () => {

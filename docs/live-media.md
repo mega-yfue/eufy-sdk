@@ -57,15 +57,15 @@ Worth knowing:
 - `record()` opens its own pull instead of joining the shared source, so it costs a second stream on a
   camera that is already streaming. `recordFragments()` is a shared consumer like everything else.
 
-## T8N00 PoE cameras
+## Cameras behind a T8N00
 
-T8E00 and T8P00 cameras attached to a T8N00 support `live()`, `openReadable()` and
-`snapshotLive()`. `live()` delivers H.265 video and AAC-LC or G.711 A-law audio;
+T8E00, T8P00, T8P10, T8162, T8410 and T8214 cameras attached to a T8N00 support `live()`,
+`openReadable()` and `snapshotLive()`. `live()` delivers H.265 video and AAC-LC or G.711 A-law audio;
 `openReadable()` provides video, and `snapshotLive()` captures a fresh still.
 Recording and talkback are not implemented for this route.
 
 `cam.views?.()` reports the optical view identifiers supported by this route: `[0, 1]`
-for the dual-lens T8E00 S4 and `[0]` for the T8P00 E40. On the S4, view `0` is fixed
+for the dual-lens T8E00 S4 and `[0]` for every other camera. On the S4, view `0` is fixed
 and view `1` is movable. Omitting `view` selects `0`.
 
 ```ts
@@ -392,8 +392,10 @@ eufy.on("push", async (ev) => {
 
 The download is confirmed on recordings that had finished. How the station answers for a recording it is
 still writing is not established, so issue the download once the camera's configured clip length has
-elapsed since the push. Downloads queue one at a time per station, and the transfer runs faster than real
-time: a 12.8 s recording took about 6 s.
+elapsed since the push. A recording is named either as the push carries it (`yyyyMMddHHmmss`) or as a row of
+the station's own recording archive names it, with the codec prefixed (`h265_yyyyMMddHHmmss`); both reach the
+same file. Downloads queue one at a time per station, and the transfer runs faster than real time: a 12.8 s
+recording took about 6 s.
 
 The result is elementary streams, not a container: `video` is Annex-B H.264 and `audio` (when present) is
 AAC-LC in ADTS framing. `fps` and `durationMs` come from the camera's own frame stamps, and `missingFrames`

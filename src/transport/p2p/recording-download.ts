@@ -65,13 +65,14 @@ export interface RecordingFrame {
 }
 
 /**
- * The path a HomeBase 2 stores a camera's recording under: the camera's channel, two digits, and the
- * recording name the event push carries. Answers `undefined` for a name that is not the station's
- * fourteen-digit `yyyyMMddHHmmss` form. The name comes from a push, so the test stays anchored and
- * digits-only: no `..`, slash or other character that could reach another path on the station gets through.
+ * The path a HomeBase 2 stores a camera's recording under: the channel as two digits, then the recording's
+ * name as `yyyyMMddHHmmss` or `h265_yyyyMMddHHmmss`. Answers `undefined` for any other name, and for a channel
+ * outside `0`–`99`. Both forms are digits behind one fixed prefix, so the anchored test lets no `..`, slash or
+ * other character that could reach another path on the station through.
  */
 export function homeBase2RecordingPath(channel: number, recording: string): string | undefined {
-  if (!/^\d{14}$/.test(recording) || !Number.isInteger(channel) || channel < 0 || channel > 99) return undefined;
+  if (!/^(?:h265_)?\d{14}$/.test(recording) || !Number.isInteger(channel) || channel < 0 || channel > 99)
+    return undefined;
   return `/media/mmcblk0p1/Camera${String(channel).padStart(2, "0")}/${recording}.dat`;
 }
 
