@@ -157,8 +157,9 @@ export type PtzDirection = (typeof PtzDirection)[keyof typeof PtzDirection];
 /** Pan-tilt rotate motion → `rotate_type` (the on-wire code). Not re-exported by the barrel —
  * stays internal to the capability. Confirmed on hardware (T8425): 1=left, 2=right, 3=up, 4=down.
  * `sweep` (0) is a full 360° pan, the camera's room scan: captured from the app's 360 button on a
- * T8410 as `{"commandType":6030,"data":{"cmd_type":1,"rotate_type":0,"zoom":1.0}}`, and a dispatch of
- * that frame panned the camera through a full circle. */
+ * T8410, a T8170 and a T8E00, identical on all three as
+ * `{"commandType":6030,"data":{"cmd_type":1,"rotate_type":0,"zoom":1.0}}`; a dispatch of that frame
+ * panned the T8410 through a full circle. */
 export const PTZ_ROTATE = { sweep: 0, left: 1, right: 2, up: 3, down: 4 } as const;
 
 /** Reported params that prove a second (telephoto) lens — the digital zoom (a dual-camera command)
