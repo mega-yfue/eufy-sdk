@@ -8,7 +8,7 @@ import type { Command } from "../../core/contracts.js";
  * The P2P **feature-command ids** this pan-tilt capability drives. Capability-owned wire vocabulary
  * (transport forwards `cmd.param` opaquely; full id→name catalog in the generated
  * `transport/p2p/commands.ts`). Distinct from the {@link PTZ_ROTATE} direction map below (which is
- * `rotate_type` 1..4, not a command id).
+ * `rotate_type` 0..4, not a command id).
  *
  * Ids + envelopes are taken from the V6 app's own command builders (the `Set*Parser`/`*PositionsParser`
  * classes in the decompiled JS), which is this project's wire ground truth — NOT a third-party
@@ -154,9 +154,13 @@ export const PtzDirection = {
 } as const;
 export type PtzDirection = (typeof PtzDirection)[keyof typeof PtzDirection];
 
-/** Pan-tilt rotate direction → `rotate_type` (the on-wire code). Not re-exported by the barrel —
- * stays internal to the capability. Confirmed on hardware (T8425): 1=left, 2=right, 3=up, 4=down. */
-export const PTZ_ROTATE = { left: 1, right: 2, up: 3, down: 4 } as const;
+/** Pan-tilt rotate motion → `rotate_type` (the on-wire code). Not re-exported by the barrel —
+ * stays internal to the capability. Confirmed on hardware (T8425): 1=left, 2=right, 3=up, 4=down.
+ * `sweep` (0) is a full 360° pan, the camera's room scan: captured from the app's 360 button on a
+ * T8410, a T8170 and a T8E00, identical on all three as
+ * `{"commandType":6030,"data":{"cmd_type":1,"rotate_type":0,"zoom":1.0}}`; a dispatch of that frame
+ * panned the T8410 through a full circle. */
+export const PTZ_ROTATE = { sweep: 0, left: 1, right: 2, up: 3, down: 4 } as const;
 
 /** Reported params that prove a second (telephoto) lens — the digital zoom (a dual-camera command)
  * exists only on these. `6204` = the dual-lens `calibration_data`, `6205` = the dual-cam video-type
@@ -188,7 +192,7 @@ const FIXED_LENS_MODELS: ReadonlySet<string> = new Set(["T8134"]);
 
 /**
  * Pan-tilt rotate as a transport-neutral {@link Command}. CONFIRMED wire command (captured on
- * T8425 ch3 during live-view): `{"commandType":6030,"data":{"cmd_type":1,"rotate_type":1..4,
+ * T8425 ch3 during live-view): `{"commandType":6030,"data":{"cmd_type":1,"rotate_type":0..4,
  * "zoom":1.0}}` under the generic control wrapper `1700` on the camera channel. `cmd_type:1` =
  * move; `zoom` defaults to 1.0.
  *
@@ -196,7 +200,7 @@ const FIXED_LENS_MODELS: ReadonlySet<string> = new Set(["T8134"]);
  * resolver picks the encryption level by topology (standalone → L1, HomeBase → L2). A PT cam can be
  * either, so the level is NOT fixed here.
  */
-export function rotateCommand(direction: PtzDirection, ctx: CommandContext, zoom = 1.0): Command {
+export function rotateCommand(direction: keyof typeof PTZ_ROTATE, ctx: CommandContext, zoom = 1.0): Command {
   return setJson(PTZ_CMD.PTZ_ROTATE, { cmd_type: 1, rotate_type: PTZ_ROTATE[direction], zoom }, ctx);
 }
 
@@ -411,6 +415,14 @@ export const PTZ_MEMBERS = {
       (): Promise<void> =>
         sink.dispatch(rotateCommand("down", ctx)),
     "Rotate down.",
+  ),
+
+  /** Pan a full 360° (room scan). */
+  rotate360: method(
+    ({ ctx, sink }) =>
+      (): Promise<void> =>
+        sink.dispatch(rotateCommand("sweep", ctx)),
+    "Pan a full 360° (room scan).",
   ),
 
   /**

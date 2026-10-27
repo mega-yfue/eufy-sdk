@@ -775,7 +775,7 @@ export interface DeviceEventMap {
  * with the type. (Only capabilities whose module defines `actions()` appear.)
  */
 export interface DeviceActionMap {
-  /** Pan/tilt/zoom control: `rotate(dir, step)` + `left`/`right`/`up`/`down`, `zoom`, preset() namespace (goto/preview/save/setDefault/delete/list/image). */
+  /** Pan/tilt/zoom control: `rotate(dir, step)` + `left`/`right`/`up`/`down`, `rotate360`, `zoom`, preset() namespace (goto/preview/save/setDefault/delete/list/image). */
   ptz: PtzActions;
   /** Floodlight/spotlight: `on`/`off`/`set`, `setBrightness`/`setColorTemp`/`setEnabled`, `setAutoSpotlight`. */
   light: LightActions;
