@@ -494,7 +494,12 @@ export class P2PSession extends EventEmitter {
   private audioStalled = false;
   private audioRetransmitTimer?: ReturnType<typeof setInterval>;
   private lastPongData?: Buffer;
-  /** When the selected peer last answered outbound P2P traffic on this connection. */
+  /**
+   * When the selected peer last answered outbound P2P traffic on this connection.
+   *
+   * Each answer also emits `peerAnswer` with this time: a PONG or an ACK from the connected address is the
+   * station replying on this connection now, which a heartbeat draws every {@link HEARTBEAT_MS}.
+   */
   private lastPeerAt?: number;
   /** Whether the silence has already been stated, so it is traced once per connection rather than per read. */
   private pathStaleTraced = false;
@@ -1134,6 +1139,7 @@ export class P2PSession extends EventEmitter {
     if (fromConnectedPeer && (hasHeader(msg, ResponseMessageType.PONG) || hasHeader(msg, ResponseMessageType.ACK))) {
       this.lastPeerAt = Date.now();
       this.pathStaleTraced = false;
+      this.emit("peerAnswer", this.lastPeerAt);
     }
     if (!hasHeader(msg, ResponseMessageType.DATA)) {
       this.logger.debug(

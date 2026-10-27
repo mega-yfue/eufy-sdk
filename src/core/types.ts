@@ -83,8 +83,10 @@ export interface EufyDevice {
    */
   paramUpdatedAt?: Record<number, number>;
   /**
-   * The most recent {@link paramUpdatedAt} across all of this device's params, in **milliseconds**
-   * (comparable to `Date.now()` directly). `undefined` when the record carried no timestamp at all.
+   * When the device was last heard from, in **milliseconds** (comparable to `Date.now()` directly): the
+   * most recent {@link paramUpdatedAt} across all of its params, or a later report over a realtime wire,
+   * including a station answering its own P2P session's heartbeat. Never moves backwards. `undefined` when
+   * neither has been seen.
    *
    * This is an observation — "the device last reported at T" — deliberately **not** a reachability
    * verdict. How long a silence means "unreachable" depends on the device (a mains camera heartbeats

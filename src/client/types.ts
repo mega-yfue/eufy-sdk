@@ -207,9 +207,11 @@ export interface EufyMegaOptions extends MegaClientConfig {
  * that choice on every host. The SDK reports when the device last spoke; the caller decides what that
  * means — the same split as the snapshot cache TTL and the live power budget.
  *
- * P2P session state is **not** a liveness signal and is not carried here: sessions are opened only
- * when something needs one and closed when idle, so "no session" is the resting state of a healthy
- * device. Transport visibility lives on `getP2pSessions()` and the `p2pConnect`/`p2pClose` events,
+ * The absence of a P2P session is **not** a liveness signal and is not carried here: sessions are opened
+ * only when something needs one and closed when idle, so "no session" is the resting state of a healthy
+ * device. A station answering an open session is the opposite fact, positive evidence, and does advance
+ * the station's own {@link DeviceState.lastSeenMs} — never that of a device it covers, whose liveness its answer does
+ * not show. Transport visibility lives on `getP2pSessions()` and the `p2pConnect`/`p2pClose` events,
  * station-scoped like the session itself.
  *
  * The cloud record carries no connectivity field either: it has no `status` / `device_online`, and the
@@ -220,8 +222,9 @@ export interface DeviceState {
   /** The parent station whose P2P session covers this device (itself, when standalone). */
   stationSn: string;
   /**
-   * When the device last reported to the cloud, in ms. Bounded by
-   * the cloud's own slow refresh — minutes, not seconds — so it answers "is this device alive at all",
+   * When the device was last heard from, in ms: its last report to the cloud, or a later one over a
+   * realtime wire, a station's heartbeat answer on its open P2P session included. The cloud half is bounded
+   * by the cloud's own slow refresh — minutes, not seconds — so it answers "is this device alive at all",
    * not "what is it doing right now".
    */
   lastSeenMs?: number;
@@ -330,7 +333,7 @@ export type EufyMegaEventMap = {
    */
   map: [info: { deviceSn: string; map: VacuumMapSnapshot }];
   /**
-   * A device reported to the cloud since the last poll — its {@link DeviceState.lastSeenMs} advanced.
+   * A device was heard from since the last poll — its {@link DeviceState.lastSeenMs} advanced.
    * Carries {@link DeviceState}; the host applies its own staleness threshold.
    *
    * Transport/session lifecycle is NOT this event: that's `p2pConnect`/`p2pClose`, station-scoped where

@@ -162,13 +162,18 @@ const s = eufy.deviceState(sn);
 // { sn, stationSn, lastSeenMs? }
 
 eufy.on("deviceState", (s) => {
-  // fires when a device reports to the cloud
+  // fires when a device is heard from: a cloud report, a realtime report, or a station answering P2P
 });
 ```
 
-`lastSeenMs` is when the device last reported to the cloud, in ms, comparable to `Date.now()`. It works
-the same way for every device class — cameras, sensors and MQTT appliances alike — as a portable
-liveness fact.
+`lastSeenMs` is when the device was last heard from, in ms, comparable to `Date.now()`: its last report to
+the cloud, or a later one over a realtime wire. It works the same way for every device class — cameras,
+sensors and MQTT appliances alike — as a portable liveness fact. It never moves backwards.
+
+A station with an open P2P session also counts as heard from each time it answers the session's
+heartbeat, every few seconds. That advances the station's own `lastSeenMs` only, never that of a camera
+or sensor behind it, and it surfaces on the next poll. A station with no open session is not marked
+anything: no session is the normal state of a healthy device.
 
 **There is deliberately no `online: boolean`.** "Unreachable" is a threshold, and the right threshold
 differs per device: a mains camera reports constantly, while a battery contact sensor can be silent for
@@ -181,8 +186,8 @@ so you decide:
 const stale = Date.now() - (s.lastSeenMs ?? 0) > myThresholdFor(deviceKind);
 ```
 
-**`lastSeenMs` moves slowly** — it comes from the cloud's own device heartbeat, minutes rather than
-seconds (see below). It answers "is this device alive at all", not "what is it doing right now".
+**`lastSeenMs` moves slowly** where only the cloud reports it — the cloud's own device heartbeat is
+minutes rather than seconds (see below). It answers "is this device alive at all", not "what is it doing right now".
 
 ### Explicit availability observations
 
