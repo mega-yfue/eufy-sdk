@@ -9,8 +9,9 @@
  *    keyframe = header flag bit0). We strip the 22-byte header.
  *  - **Encrypted keyframes**: either the AES-256-GCM body under a media key wrapped in an ECIES envelope
  *    for an offered P-256 key ({@link VideoFrameDecoder}), or an AES-ECB head under a media key wrapped for
- *    the session's RSA key ({@link P2PSession.decodeVideoFrame}). An attached camera's start offers the
- *    session's P-256 key first, so its stream decodes with that pair unless `eccPrivateKey` names another.
+ *    the session's RSA key ({@link P2PSession.decodeVideoFrame}). An attached camera's start on a station
+ *    with a {@link P2PSession.mediaEccPrivateKey} offers that P-256 key first, so its stream decodes with
+ *    that pair unless `eccPrivateKey` names another.
  *
  * Emits: `video` ({@link LiveVideoFrame} — Annex-B), `audio` ({@link LiveAudioFrame}), `start`, `stop`,
  * `error`.

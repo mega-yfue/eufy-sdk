@@ -1847,13 +1847,15 @@ export class P2PSession extends EventEmitter {
    * Send a CMD_SET_PAYLOAD(1350) wrapping `{account_id, cmd:<subCmd>, mChannel, mValue3:<subCmd>,
    * payload}`, encrypted level-2 (AES-256-GCM, signCode 8) — the app's media-control path. The
    * camera is selected by `mChannel` (= the device's `device_channel`) AND the frame-header channel.
+   * A start (HomeBase-controlled camera path, the V6 app's media-start envelope) also carries an
+   * `accountId` inside its payload and the media key `key` offers (see {@link attachedStartKey}).
    */
   private sendMediaPayloadLevel2(
     subCmd: number,
     channel: number,
     accountId: string,
     payload: Record<string, unknown>,
-    key: "ecc" | "rsa" = "ecc",
+    key?: "ecc" | "rsa",
   ): void {
     if (!this.connectAddress || !this.level2Key) {
       this.trace({
@@ -1863,16 +1865,13 @@ export class P2PSession extends EventEmitter {
       return;
     }
     const isStart = subCmd === CMD_START_REALTIME_MEDIA;
-    // HomeBase-controlled camera path (the V6 app's media-start envelope): mChannel = device_channel,
-    // an extra accountId inside payload, the offered media key (see attachedStartKey), and the
-    // camera is ALSO selected by the FRAME-HEADER channel below.
     const innerPayload = isStart
       ? {
           ClientOS: "Android",
           accountId,
           camera_type: 0,
           entrytype: 0,
-          key: key === "ecc" ? this.mediaEccPoint() : this.rsaModulus(),
+          key: key === "ecc" ? this.mediaEccPair().point : this.rsaModulus(),
           streamtype: 2,
           ...payload,
         }
@@ -1953,9 +1952,10 @@ export class P2PSession extends EventEmitter {
    * other type when the previous start on that channel was followed by no video of its own before being
    * re-issued; and, once video has arrived, the type that produced it. A station that does not answer one
    * type is therefore asked with the other at its next re-issue, and either answer decodes, because a stream
-   * holds both private keys.
+   * holds both private keys. A station without {@link mediaEccPrivateKey} is offered RSA only.
    */
   private attachedStartKey(channel: number): "ecc" | "rsa" {
+    if (!this.mediaEccPrivateKey) return "rsa";
     const last = this.attachedStartKeys.get(channel);
     const kind = !last ? "ecc" : last.answered ? last.kind : last.kind === "ecc" ? "rsa" : "ecc";
     this.attachedStartKeys.set(channel, { kind, answered: false });
@@ -1966,19 +1966,18 @@ export class P2PSession extends EventEmitter {
    * The 32-byte P-256 private scalar paired with the point an attached camera's media start offers as `key`.
    * A camera answering that start wraps each keyframe's AES-256-GCM media key in an ECIES envelope for this
    * key ({@link VideoFrameDecoder}). Generated once per session, like the RSA pair.
+   *
+   * `undefined` unless the station is a HomeBase 3 (`T8030`): the app's P-256 start and the device runs
+   * that answered it were both observed on that station only.
    */
-  get mediaEccPrivateKey(): Buffer {
-    return this.mediaEccPair().privateKey;
+  get mediaEccPrivateKey(): Buffer | undefined {
+    return this.cfg.stationSn.startsWith("T8030") ? this.mediaEccPair().privateKey : undefined;
   }
 
   /**
-   * The offered P-256 public point as 128 hex characters, `x ‖ y` without the uncompressed-point prefix:
-   * the form the current app's attached-camera start carries in `key`.
+   * The session's P-256 pair: the private scalar, and the public point as 128 hex characters, `x ‖ y`
+   * without the uncompressed-point prefix, the form the current app's attached-camera start carries in `key`.
    */
-  private mediaEccPoint(): string {
-    return this.mediaEccPair().point;
-  }
-
   private mediaEccPair(): { privateKey: Buffer; point: string } {
     if (!this.mediaEcc) {
       const ecdh = createECDH("prime256v1");
