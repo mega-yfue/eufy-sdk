@@ -37,10 +37,8 @@ function router(hasLevel2Key = true) {
     onFrame: () => {},
   };
   const built = new P2PCommandRouter(deps);
-  const manager = (built as unknown as { manager: { register(sn: string, v: unknown, station?: string): void } })
-    .manager;
+  const manager = (built as unknown as { manager: { register(sn: string, v: unknown): void } }).manager;
   manager.register(STATION_SN, session);
-  manager.register(`${STATION_SN}#live:0`, session, STATION_SN);
   return { router: built, session };
 }
 

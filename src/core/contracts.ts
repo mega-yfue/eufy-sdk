@@ -885,9 +885,10 @@ export interface MediaProvider {
    *
    * Several cameras behind one station stream at the same time, each over its own connection to it. One
    * connection serves one camera — a station answers the most recent start on a session, so two cameras
-   * sharing one take it from each other in turn — so an attached camera's live view always gets a
-   * connection of its own. Measured on a base carrying two attached cameras, one at 3840x2160: both held
-   * full frame rate at once. Each handle receives only the frames the station tagged for ITS camera.
+   * sharing one take it from each other in turn — so a camera asked for while its station is already
+   * serving another gets a connection of its own. Measured on a base carrying two attached cameras, one
+   * at 3840x2160: both held full frame rate at once. Each handle receives only the frames the station
+   * tagged for ITS camera.
    *
    * @example
    * ```ts
