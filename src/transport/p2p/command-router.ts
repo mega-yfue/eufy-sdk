@@ -133,12 +133,6 @@ const RTSP_URL_READ_TIMEOUT_MS = 12_000;
  */
 const TALKBACK_CODEC_WAIT_MS = 3000;
 
-/**
- * Stations that can keep serving the camera they last served on a session, so every continuous pull of an attached
- * camera gets a connection of its own, even when the station's own session is free.
- */
-const OWN_LIVE_SESSION_MODELS: ReadonlySet<string> = new Set(["T8030"]);
-
 /** Models whose speaker plays `aac-eld` talkback; every other model talks `aac-lc`. */
 const ELD_TALKBACK_MODELS: ReadonlySet<string> = new Set(["T8410C"]);
 
@@ -286,15 +280,8 @@ export class P2PCommandRouter {
    * The session each live source pulls over — the station's own serial, or the source's own media
    * session key.
    *
-   * Written the instant the choice is made and BEFORE the connection is opened, which is what makes it
-   * a reservation rather than a record. Two cameras started together (the four-tile case this feature
-   * exists for) would otherwise both find the station's session free: a consumer attaches only after
-   * `sharedLiveSourceFor` returns, so neither is visible to the other through consumer counts, and both
-   * would take the shared connection and contend on it.
-   *
-   * A station entry is kept as well as a media one, because "is the station's own session already
-   * claimed" is the question being asked, and an entry that is present but not yet in
-   * {@link liveSources} is a claim in flight.
+   * Written the instant the choice is made and BEFORE the connection is opened, so a source whose
+   * connection is still opening is already filed under it.
    */
   private readonly liveSessionKeys = new Map<string, string>();
   /**
@@ -1045,13 +1032,14 @@ export class P2PCommandRouter {
    * {@link releaseLingeringSiblings}. A pull with consumers is never touched. The release runs before the
    * reuse branch, so a reuse frees the station as a cold start does.
    *
-   * `continuous` decides whether a camera that finds the station's own session claimed may open a
-   * connection of its own for it; on an {@link OWN_LIVE_SESSION_MODELS} station it always gets one, and an
-   * unwatched source left on the station's session is rebuilt there. Only the continuous-pull egresses pass it. A still must not: it wants one
-   * frame, and a socket plus a level-2 negotiation per thumbnail is a cost a tile refresh cannot justify —
-   * so a still asked for while a sibling is being watched contends as it always did, and the caller's
-   * retained image answers it. A live view still outranks a tile; what changed is that two live views no
-   * longer have to outrank each other.
+   * `continuous` puts an attached camera's pull on a connection of its own, even when the station's own
+   * session is free: a station can keep serving the camera it last served on a session, so a pull handed
+   * that session can inherit its predecessor's stream. An unwatched source left on the station's session
+   * is rebuilt on the pull's own connection. Only the continuous-pull egresses pass it. A still must not:
+   * it wants one frame, and a socket plus a level-2 negotiation per thumbnail is a cost a tile refresh
+   * cannot justify — so a still asked for while a sibling is being watched contends as it always did, and
+   * the caller's retained image answers it. A live view still outranks a tile; what changed is that two
+   * live views no longer have to outrank each other.
    *
    * The session goes into a {@link HeldSession} cell, so it can be replaced under a source that stays in
    * place.
@@ -1063,8 +1051,7 @@ export class P2PCommandRouter {
       signal: opts.signal,
     });
     const key = `${parentSn}:${channel}`;
-    const ownSession =
-      continuous && homeBaseAttached && OWN_LIVE_SESSION_MODELS.has(this.recordFor(parentSn)?.model ?? "");
+    const ownSession = continuous && homeBaseAttached;
     let source = this.liveSources.get(key);
     if (
       source &&
@@ -1080,10 +1067,7 @@ export class P2PCommandRouter {
     this.releaseLingeringSiblings(parentSn, channel);
     if (!source) {
       const logger = this.deps.logger ?? noopLogger;
-      const sessionKey =
-        ownSession || (continuous && homeBaseAttached && this.stationSessionInUse(parentSn, key))
-          ? P2PCommandRouter.mediaSessionKey(parentSn, channel)
-          : parentSn;
+      const sessionKey = ownSession ? P2PCommandRouter.mediaSessionKey(parentSn, channel) : parentSn;
       this.liveSessionKeys.set(key, sessionKey);
       let held: HeldSession;
       try {
@@ -1169,39 +1153,6 @@ export class P2PCommandRouter {
       );
       this.dropLiveSource(key);
     }
-  }
-
-  /**
-   * Whether another camera has already claimed this station's OWN session, ignoring `key`.
-   *
-   * The question a newcomer has to answer is not whether the station is busy — it can serve one camera
-   * per connection — but whether the connection it would otherwise share is taken. A camera on a media
-   * session of its own does not hold this one, so a station whose first camera has since stopped hands
-   * its own session to the next arrival rather than opening a socket beside an idle one.
-   *
-   * A claim counts while its source is still `idle`, source or no source. That is a start that has been
-   * handed to its caller but not yet attached to, and it is the only state in which two cameras asked for
-   * at the same moment can see each other: consumers attach after this method has already run for both.
-   *
-   * The cost is that a pull genuinely abandoned before its first attach goes on holding the station's own
-   * session, and the next camera pays for a connection of its own rather than reclaiming it. That is one
-   * socket against destroying a start someone is waiting on, which is not a close trade.
-   *
-   * A stopped source is skipped even when consumers are still attached to it. A failed start fails its
-   * consumers without detaching them, so a caller still holding a dead handle leaves the count non-zero,
-   * and counting that as a viewer would put every later camera on a connection of its own until the
-   * client restarted. Only a source that can still deliver holds a place.
-   */
-  private stationSessionInUse(parentSn: string, key: string): boolean {
-    for (const [siblingKey, sessionKey] of this.liveSessionKeys) {
-      if (siblingKey === key || sessionKey !== parentSn) continue;
-      const sibling = this.liveSources.get(siblingKey);
-      if (!sibling) return true;
-      if (sibling.state === "stopped") continue;
-      if (sibling.state !== "idle" && sibling.consumerCount === 0) continue;
-      return true;
-    }
-    return false;
   }
 
   /**

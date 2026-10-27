@@ -37,13 +37,12 @@ A camera behind a HomeBase reads the station's inbound feed, and the station **t
 the camera it belongs to**; the SDK matches on that, so each handle receives only its own camera's video and
 audio.
 
-One session serves one camera at a time — a station answers the most recent media start on it — so a live
-pull that finds the station's own session already carrying one gets **a connection of its own**, and several
-cameras on one HomeBase stream at full rate together. Measured on two attached cameras, one at 3840×2160:
-both held ~15 fps for the length of the run, where the same pair down one session could only take turns.
-
-A HomeBase 3 (T8030) can keep serving the camera it last served on a session, so there every live pull of an
-attached camera gets a connection of its own, even when the station's session is free.
+One session serves one camera at a time — a station answers the most recent media start on it — and a
+station can keep serving the camera it last served on a session after that pull has stopped. So every live
+pull of an attached camera gets **a connection of its own**, even when the station's own session is free, and
+several cameras on one HomeBase stream at full rate together. Measured on two attached cameras, one at
+3840×2160: both held ~15 fps for the length of the run, where the same pair down one session could only take
+turns.
 
 A **still** never opens a connection of its own: it wants one frame, and a socket plus a key negotiation per
 thumbnail is not worth it. So a still asked for while a sibling is being watched still yields, and the
