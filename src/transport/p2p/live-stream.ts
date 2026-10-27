@@ -18,7 +18,7 @@
  */
 import { EventEmitter } from "node:events";
 import { STATION_CHANNEL, type P2PSession, type P2PFrame } from "./p2p-session.js";
-import { AccessUnitAssembler, VideoFrameDecoder } from "./video.js";
+import { AccessUnitAssembler, VideoFrameDecoder, beginsAccessUnit } from "./video.js";
 import { sniffAnnexbCodec } from "./annexb.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { traceLiveStart, type LiveTrace } from "./live-trace.js";
@@ -145,6 +145,8 @@ export class LiveStream extends EventEmitter {
   private tracedFirstVideoUnit = false;
   private tracedFirstKeyframe = false;
   private tracedDecodeFailures = 0;
+  /** How the frame that opened the latest access unit was read; see {@link settleStartKey}. */
+  private unitOpenedBy: "ecc" | "rsa" | "plain" = "plain";
   private tracedFirstForeignFrame = false;
   private stallTimer?: ReturnType<typeof setTimeout>;
   /**
@@ -332,7 +334,10 @@ export class LiveStream extends EventEmitter {
           }
           // Sniff the codec only on a keyframe (it carries the parameter sets); delta frames have no
           // config NAL, so they inherit the last-known codec.
-          if (unit.keyframe) this.lastCodec = sniffAnnexbCodec(unit.data) ?? this.lastCodec;
+          if (unit.keyframe) {
+            this.lastCodec = sniffAnnexbCodec(unit.data) ?? this.lastCodec;
+            this.settleStartKey();
+          }
           this.settleKeepalive();
           this.emit("video", {
             sourceTimestamp: unit.sourceTimestamp,
@@ -407,16 +412,34 @@ export class LiveStream extends EventEmitter {
    * key. The session's RSA path cannot: on Node ≥ 24.5, PKCS#1 v1.5 decryption of a key not wrapped for it
    * returns pseudo-random bytes instead of throwing (implicit rejection), which would decode an ECC
    * keyframe into noise. The session's decode, which also passes plaintext frames, and the header strip
-   * follow.
+   * follow. A payload that opens an access unit records how it was read: by the ECIES path, or otherwise by
+   * its sign code, sealed (`"rsa"`) or in the clear (`"plain"`).
    */
   private annexbOf(payload: Buffer, signCode: number): Buffer | undefined {
     const decoded = this.decoder?.decodeFrame(payload)?.h264;
-    if (decoded) return decoded;
+    if (decoded) {
+      if (beginsAccessUnit(decoded)) this.unitOpenedBy = "ecc";
+      return decoded;
+    }
     const annexb = this.session.decodeVideoFrame?.(payload, signCode) ?? this.plaintextAnnexB(payload);
     if (!annexb && this.tracedDecodeFailures++ < MAX_TRACED_DECODE_FAILURES) {
       this.trace({ phase: "video-decode-empty", signCode });
     }
+    if (annexb && beginsAccessUnit(annexb)) this.unitOpenedBy = signCode > 0 ? "rsa" : "plain";
     return annexb;
+  }
+
+  /**
+   * Tell the session how this keyframe was opened, which answers the attached starts on this channel
+   * ({@link P2PSession.settleAttachedKey}), and re-issue the start when the session asks for one: a plaintext
+   * keyframe answering the session's P-256 offer, from a camera that did not use the point, which the next
+   * start asks with RSA. Only a delivered keyframe answers: a frame no key opens, or a continuation without the
+   * frame that opened its unit, delivers nothing.
+   */
+  private settleStartKey(): void {
+    if (!this.session.settleAttachedKey?.(this.channel, this.unitOpenedBy)) return;
+    this.logger.debug(`[live ch${this.channel}] plaintext keyframe answered the P-256 offer — re-starting with RSA`);
+    this.sendStart();
   }
 
   /**

@@ -108,6 +108,68 @@ describe("authenticated ECC decoder dispatch", () => {
     }
   });
 
+  describe("an attached stream reporting how its keyframes opened", () => {
+    function attached() {
+      const cam = camera();
+      const session = Object.assign(new FakeP2PSession(), { mediaEccPrivateKey: cam.privateKey });
+      const live = new LiveStream(session as unknown as P2PSession, {
+        channel: 0,
+        homeBaseAttached: true,
+        keepAliveMs: 0,
+      });
+      const video = vi.fn();
+      live.on("video", video);
+      live.start();
+      return { cam, session, live, video };
+    }
+
+    it("reports each path that opened a delivered keyframe", () => {
+      const s = attached();
+      const sealed = Buffer.concat([START_CODE, Buffer.from([0x65, 9])]);
+      const rsaOpened = Buffer.concat([START_CODE, Buffer.from([0x65, 6])]);
+      try {
+        s.session.push(encryptedFrame(s.cam.publicKey, randomBytes(32), sealed));
+        s.session.push(p2pVideoFrame({ keyframe: true, nal: Buffer.from([0x65, 8]) }));
+        vi.spyOn(s.session, "decodeVideoFrame").mockReturnValueOnce(rsaOpened);
+        s.session.push(encryptedFrame(camera().publicKey, randomBytes(32), Buffer.from("rsa answer")));
+        expect(s.video).toHaveBeenCalledTimes(3);
+        expect(s.session.settled).toEqual(["ecc", "plain", "rsa"]);
+        expect(s.session.started).toBe(1);
+      } finally {
+        s.live.stop();
+      }
+    });
+
+    it("re-issues the start when the session asks for one", () => {
+      const s = attached();
+      s.session.restartOnSettle = true;
+      try {
+        s.session.push(p2pVideoFrame({ keyframe: true, nal: Buffer.from([0x65, 8]) }));
+        expect(s.video).toHaveBeenCalledOnce();
+        expect(s.session.started).toBe(2);
+      } finally {
+        s.live.stop();
+      }
+    });
+
+    it("reports nothing for a keyframe no key opens, a lone continuation, or a delta", () => {
+      const s = attached();
+      s.session.restartOnSettle = true;
+      const continuation = Buffer.alloc(22 + 8, 0x12);
+      continuation.writeUInt32LE(8, 0);
+      continuation[4] = 1;
+      try {
+        s.session.push(encryptedFrame(camera().publicKey, randomBytes(32), Buffer.from("other key")));
+        s.session.push({ commandId: 1300, channel: 0, signCode: 0, data: continuation });
+        s.session.push(p2pVideoFrame({ keyframe: false, nal: Buffer.from([0x41, 8]) }));
+        expect(s.session.settled).toEqual([]);
+        expect(s.session.started).toBe(1);
+      } finally {
+        s.live.stop();
+      }
+    });
+  });
+
   it.each([true, false])("preserves plaintext fallback with ECC configured=%s", (configured) => {
     const s = stream(configured ? camera().privateKey : undefined);
     s.legacy.mockReturnValue(undefined);

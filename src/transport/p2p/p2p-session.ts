@@ -550,8 +550,8 @@ export class P2PSession extends EventEmitter {
   /** The P-256 pair an attached camera's media start offers; see {@link mediaEccPrivateKey}. */
   private mediaEcc?: { privateKey: Buffer; point: string };
   /**
-   * Per attached channel, the media-key type its latest start offered and whether video of that channel has
-   * arrived since. See {@link attachedStartKey}.
+   * Per attached channel, the media-key type its latest start offered, or that last answered, and whether a
+   * keyframe has answered it. See {@link attachedStartKey} and {@link settleAttachedKey}.
    */
   private readonly attachedStartKeys = new Map<number, { kind: "ecc" | "rsa"; answered: boolean }>();
   /** Guards the one-shot level-2 key negotiation kicked off by the GATEWAYINFO reply. */
@@ -1848,7 +1848,9 @@ export class P2PSession extends EventEmitter {
    * payload}`, encrypted level-2 (AES-256-GCM, signCode 8) — the app's media-control path. The
    * camera is selected by `mChannel` (= the device's `device_channel`) AND the frame-header channel.
    * A start (HomeBase-controlled camera path, the V6 app's media-start envelope) also carries an
-   * `accountId` inside its payload and the media key `key` offers (see {@link attachedStartKey}).
+   * `accountId` inside its payload and the media key `key` offers (see {@link attachedStartKey}). A start
+   * offering the P-256 point labels itself `ClientOS: "IOS"`, as every simple attached start in the app
+   * captures that carry that key form does; the RSA start keeps `"Android"`.
    */
   private sendMediaPayloadLevel2(
     subCmd: number,
@@ -1867,7 +1869,7 @@ export class P2PSession extends EventEmitter {
     const isStart = subCmd === CMD_START_REALTIME_MEDIA;
     const innerPayload = isStart
       ? {
-          ClientOS: "Android",
+          ClientOS: key === "ecc" ? "IOS" : "Android",
           accountId,
           camera_type: 0,
           entrytype: 0,
@@ -1948,18 +1950,37 @@ export class P2PSession extends EventEmitter {
   }
 
   /**
-   * The media-key type the next attached start on `channel` offers: ECC, the current app's form, first; the
-   * other type when the previous start on that channel was followed by no video of its own before being
-   * re-issued; and, once video has arrived, the type that produced it. A station that does not answer one
-   * type is therefore asked with the other at its next re-issue, and either answer decodes, because a stream
-   * holds both private keys. A station without {@link mediaEccPrivateKey} is offered RSA only.
+   * The media-key type the next attached start on `channel` offers: ECC, the current app's form, for the first
+   * start there; RSA for every start after one that no keyframe answered before it was re-issued; and, once a
+   * keyframe has answered, the type that opened it, until {@link settleAttachedKey} records another. Only an
+   * opened keyframe answers: frames no key opens, and deltas, do not. A re-issue is a full restart on an
+   * attached camera, so a camera that cannot read the point is asked with RSA, the start every station answers,
+   * and is not asked with the point again while that goes unanswered. A stream decoding with the session's
+   * pair reads either answer. A station without {@link mediaEccPrivateKey} is offered RSA only.
    */
   private attachedStartKey(channel: number): "ecc" | "rsa" {
     if (!this.mediaEccPrivateKey) return "rsa";
     const last = this.attachedStartKeys.get(channel);
-    const kind = !last ? "ecc" : last.answered ? last.kind : last.kind === "ecc" ? "rsa" : "ecc";
+    if (last?.answered) return last.kind;
+    const kind = last ? "rsa" : "ecc";
     this.attachedStartKeys.set(channel, { kind, answered: false });
     return kind;
+  }
+
+  /**
+   * Record how a keyframe of `channel` was opened, which answers the starts there. A keyframe opened under a
+   * key type is an answer of that type, whichever type the latest start offered: a station can serve the
+   * P-256 start after the RSA re-issue went out. A plaintext keyframe
+   * answering an unanswered P-256 offer is a camera that did not use the point, and the next start there offers
+   * RSA; once a P-256 answer has been opened it changes nothing, and answering RSA, it settles RSA. Answers
+   * whether a new start is needed. A channel no attached start has offered a key on is left as it is.
+   */
+  settleAttachedKey(channel: number, opened: "ecc" | "rsa" | "plain"): boolean {
+    const last = this.attachedStartKeys.get(channel);
+    if (!last) return false;
+    if (opened === "plain" && last.kind === "ecc") return !last.answered;
+    this.attachedStartKeys.set(channel, { kind: opened === "ecc" ? "ecc" : "rsa", answered: true });
+    return false;
   }
 
   /**
@@ -2522,10 +2543,6 @@ export class P2PSession extends EventEmitter {
     // so the generic control decrypt below doesn't corrupt them; LiveStream decodes video via
     // decodeVideoFrame and strips the audio header itself.
     const isMedia = header.commandId === CMD_VIDEO_FRAME || header.commandId === CMD_AUDIO_FRAME;
-    if (header.commandId === CMD_VIDEO_FRAME) {
-      const offered = this.attachedStartKeys.get(header.channel);
-      if (offered) offered.answered = true;
-    }
     // signCode 2/8 → level-2 gateway frame (AES-256-GCM, negotiated key). Try that first
     // when a level-2 key is set; otherwise fall through to the level-1 path.
     if (isMedia) {

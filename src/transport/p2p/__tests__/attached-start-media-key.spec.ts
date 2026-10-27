@@ -8,9 +8,9 @@ import { parseDataFrameHeader } from "../codec.js";
  *
  * The current app's attached start carries a P-256 public point (128 hex characters, `x ‖ y`) as `key`, and
  * the camera then wraps each keyframe's media key in an ECIES envelope for it. An attached start offers the
- * same, and offers the session's RSA modulus instead only when a start on that channel went unanswered until
- * its re-issue, so a station that answers either type is reached by one of two consecutive starts. The P-256
- * offer is limited to the HomeBase 3, the one station it was observed on; any other station is offered RSA.
+ * same first, and the session's RSA modulus for every start after one on that channel that no keyframe
+ * answered before its re-issue. The P-256 offer is limited to the HomeBase 3, the one station it was observed
+ * on; any other station is offered RSA.
  */
 const STATION_SN = "T8030P0000000000";
 const P2P_DID = "XXXXXXX-000000-XXXXX";
@@ -28,15 +28,16 @@ function attachedSession(stationSn = STATION_SN) {
   internals.level2Key = Buffer.alloc(32, 7);
   const sent: unknown[][] = [];
   internals.send = (...args: unknown[]) => sent.push(args);
-  const offered = (): string => {
+  const startPayload = (): { key: string; ClientOS: string } => {
     const data = sent.at(-1)![2] as Buffer;
     const header = parseDataFrameHeader(data.subarray(4));
     const plain = internals.decryptLevel2(data.subarray(20, 20 + header.bytesToRead), header.signCode);
-    return JSON.parse(plain!.toString("utf8")).payload.key;
+    return JSON.parse(plain!.toString("utf8")).payload;
   };
+  const offered = (): string => startPayload().key;
   const video = (channel: number) =>
     internals.handleFrame({ commandId: 1300, channel, signCode: 0, bytesToRead: 22 }, Buffer.alloc(22), 1);
-  return { session: built, offered, video };
+  return { session: built, offered, startPayload, video };
 }
 
 const start = (session: P2PSession, channel = 2) => session.startLiveMedia(channel, "account", true);
@@ -57,7 +58,7 @@ describe("an attached camera's media start", () => {
     expect(other.session.mediaEccPrivateKey).toBeUndefined();
   });
 
-  it("offers the RSA modulus when the previous start went unanswered, then ECC again", () => {
+  it("offers the RSA modulus once a start went unanswered, and keeps offering it", () => {
     const { session, offered } = attachedSession();
     start(session);
     const ecc = offered();
@@ -65,33 +66,108 @@ describe("an attached camera's media start", () => {
     start(session);
     const rsa = offered();
     start(session);
+    start(session);
 
     expect(ecc).toMatch(/^[0-9a-f]{128}$/);
-    expect(rsa).toMatch(/^[0-9a-f]{256}$/);
-    expect(offered()).toBe(ecc);
-  });
-
-  it("keeps the key type that video answered", () => {
-    const { session, offered, video } = attachedSession();
-    start(session);
-    const ecc = offered();
-    start(session);
-    const rsa = offered();
-    expect(rsa).not.toBe(ecc);
-
-    video(2);
-    start(session);
-
     expect(rsa).toMatch(/^[0-9a-f]{256}$/);
     expect(offered()).toBe(rsa);
   });
 
-  it("does not count another channel's video as an answer", () => {
+  it("keeps the key type a keyframe answered, even an earlier start's", () => {
+    const { session, offered } = attachedSession();
+    start(session);
+    const ecc = offered();
+    start(session);
+    const rsa = offered();
+
+    expect(session.settleAttachedKey(2, "rsa")).toBe(false);
+    start(session);
+    expect(offered()).toBe(rsa);
+    expect(session.settleAttachedKey(2, "ecc")).toBe(false);
+    start(session);
+    expect(offered()).toBe(ecc);
+  });
+
+  it("does not count video no key opened as an answer", () => {
     const { session, offered, video } = attachedSession();
     start(session);
     const ecc = offered();
 
-    video(0);
+    video(2);
+    start(session);
+
+    expect(offered()).not.toBe(ecc);
+  });
+
+  it("labels the P-256 start as the app captures do, and the RSA start Android", () => {
+    const { session, startPayload } = attachedSession();
+    start(session);
+    const ecc = startPayload();
+    start(session);
+    const rsa = startPayload();
+
+    expect(ecc.key).toMatch(/^[0-9a-f]{128}$/);
+    expect(ecc.ClientOS).toBe("IOS");
+    expect(rsa.key).toMatch(/^[0-9a-f]{256}$/);
+    expect(rsa.ClientOS).toBe("Android");
+  });
+
+  it("asks with RSA once when a plaintext keyframe answers an unanswered P-256 offer, then keeps RSA", () => {
+    const { session, offered } = attachedSession();
+    start(session);
+    const ecc = offered();
+
+    expect(session.settleAttachedKey(2, "plain")).toBe(true);
+    start(session);
+    const rsa = offered();
+    expect(session.settleAttachedKey(2, "plain")).toBe(false);
+    start(session);
+
+    expect(ecc).toMatch(/^[0-9a-f]{128}$/);
+    expect(rsa).toMatch(/^[0-9a-f]{256}$/);
+    expect(offered()).toBe(rsa);
+  });
+
+  it("keeps an answered P-256 offer through a plaintext keyframe", () => {
+    const { session, offered } = attachedSession();
+    start(session);
+    const ecc = offered();
+
+    session.settleAttachedKey(2, "ecc");
+    expect(session.settleAttachedKey(2, "plain")).toBe(false);
+    start(session);
+
+    expect(offered()).toBe(ecc);
+  });
+
+  it("keeps an answered type through re-issues that no keyframe follows", () => {
+    const { session, offered } = attachedSession();
+    start(session);
+    const ecc = offered();
+    session.settleAttachedKey(2, "ecc");
+
+    start(session);
+    start(session);
+    expect(offered()).toBe(ecc);
+
+    const plain = attachedSession();
+    start(plain.session);
+    expect(plain.session.settleAttachedKey(2, "plain")).toBe(true);
+    start(plain.session);
+    const rsa = plain.offered();
+    expect(plain.session.settleAttachedKey(2, "plain")).toBe(false);
+    start(plain.session);
+    start(plain.session);
+    expect(plain.offered()).toBe(rsa);
+    expect(plain.session.settleAttachedKey(2, "plain")).toBe(false);
+  });
+
+  it("does not count another channel's keyframe as an answer", () => {
+    const { session, offered } = attachedSession();
+    start(session);
+    const ecc = offered();
+
+    expect(session.settleAttachedKey(0, "ecc")).toBe(false);
     start(session);
 
     expect(offered()).not.toBe(ecc);
