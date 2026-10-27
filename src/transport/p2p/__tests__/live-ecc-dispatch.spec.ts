@@ -88,6 +88,26 @@ describe("authenticated ECC decoder dispatch", () => {
     }
   });
 
+  it("decodes an attached camera's stream with the session's offered key when none is supplied", () => {
+    const cam = camera();
+    const session = Object.assign(new FakeP2PSession(), { mediaEccPrivateKey: cam.privateKey });
+    const live = new LiveStream(session as unknown as P2PSession, {
+      channel: 0,
+      homeBaseAttached: true,
+      keepAliveMs: 0,
+    });
+    const video = vi.fn();
+    live.on("video", video);
+    live.start();
+    const plain = Buffer.concat([START_CODE, Buffer.from([0x65, 9])]);
+    try {
+      session.push(encryptedFrame(cam.publicKey, randomBytes(32), plain));
+      expect(video.mock.calls[0][0].data).toEqual(plain);
+    } finally {
+      live.stop();
+    }
+  });
+
   it.each([true, false])("preserves plaintext fallback with ECC configured=%s", (configured) => {
     const s = stream(configured ? camera().privateKey : undefined);
     s.legacy.mockReturnValue(undefined);

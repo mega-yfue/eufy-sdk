@@ -7,9 +7,10 @@
  *  - **Plaintext** (`signCode 0`, e.g. HomeBase-attached cameras): a fixed 22-byte frame header
  *    (`parseVideoFrameHeader`) followed directly by Annex-B NAL units — verified live (960×540,
  *    keyframe = header flag bit0). We strip the 22-byte header.
- *  - **Encrypted** (E2E cameras): the body is AES-256-GCM under a per-stream media key wrapped in a
- *    keyframe ECIES envelope. If an `eccPrivateKey` is supplied we run `VideoFrameDecoder`; otherwise
- *    those frames are skipped (no key → no video).
+ *  - **Encrypted keyframes**: either the AES-256-GCM body under a media key wrapped in an ECIES envelope
+ *    for an offered P-256 key ({@link VideoFrameDecoder}), or an AES-ECB head under a media key wrapped for
+ *    the session's RSA key ({@link P2PSession.decodeVideoFrame}). An attached camera's start offers the
+ *    session's P-256 key first, so its stream decodes with that pair unless `eccPrivateKey` names another.
  *
  * Emits: `video` ({@link LiveVideoFrame} — Annex-B), `audio` ({@link LiveAudioFrame}), `start`, `stop`,
  * `error`.
@@ -80,7 +81,10 @@ export interface LiveStreamOptions {
    * however long the station keeps serving that sibling instead of this one.
    */
   channel?: number;
-  /** Camera ECC private key (32B) for E2E/encrypted cameras; omit for plaintext cameras. */
+  /**
+   * P-256 private key (32B) whose public point the camera wraps each keyframe's media key for. Defaults, on an
+   * attached camera, to the session's {@link P2PSession.mediaEccPrivateKey}, the pair its start offers.
+   */
   eccPrivateKey?: Buffer;
   /** Admin account id — required for the level-2 (`signCode 8`) media-start payload selecting a camera. */
   accountId?: string;
@@ -162,7 +166,8 @@ export class LiveStream extends EventEmitter {
     this.logger = opts.logger ?? noopLogger;
     this.channel = opts.channel ?? STATION_CHANNEL;
     if (opts.homeBaseAttached && opts.channel !== undefined) this.mediaChannel = opts.channel;
-    if (opts.eccPrivateKey) this.decoder = new VideoFrameDecoder(opts.eccPrivateKey);
+    const eccPrivateKey = opts.eccPrivateKey ?? (opts.homeBaseAttached ? session.mediaEccPrivateKey : undefined);
+    if (eccPrivateKey) this.decoder = new VideoFrameDecoder(eccPrivateKey);
   }
 
   /** Emit a live trace under its session's handle and the channel this stream pulls. */
@@ -396,19 +401,21 @@ export class LiveStream extends EventEmitter {
   }
 
   /**
-   * Decode authenticated ECIES/GCM media first when an ECC key is configured. A legacy RSA unwrap
-   * can return unauthenticated bytes for an ECC envelope, so a truthy session result must not mask
-   * {@link VideoFrameDecoder}. Retain session decoding and plaintext extraction as fallbacks.
+   * The Annex-B payload of a frame that starts an access unit. The authenticated ECIES/GCM
+   * {@link VideoFrameDecoder} goes first: its HMAC and GCM checks fail closed on a frame not sealed for its
+   * key. The session's RSA path cannot: on Node ≥ 24.5, PKCS#1 v1.5 decryption of a key not wrapped for it
+   * returns pseudo-random bytes instead of throwing (implicit rejection), which would decode an ECC
+   * keyframe into noise. The session's decode, which also passes plaintext frames, and the header strip
+   * follow.
    */
   private annexbOf(payload: Buffer, signCode: number): Buffer | undefined {
     const decoded = this.decoder?.decodeFrame(payload)?.h264;
     if (decoded) return decoded;
     const annexb = this.session.decodeVideoFrame?.(payload, signCode) ?? this.plaintextAnnexB(payload);
-    if (annexb) return annexb;
-    if (!decoded && this.tracedDecodeFailures++ < MAX_TRACED_DECODE_FAILURES) {
+    if (!annexb && this.tracedDecodeFailures++ < MAX_TRACED_DECODE_FAILURES) {
       this.trace({ phase: "video-decode-empty", signCode });
     }
-    return decoded;
+    return annexb;
   }
 
   /**
