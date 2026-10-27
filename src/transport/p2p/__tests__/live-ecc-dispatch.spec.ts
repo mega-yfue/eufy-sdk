@@ -170,6 +170,71 @@ describe("authenticated ECC decoder dispatch", () => {
     });
   });
 
+  describe("audio on a stream whose keyframes are sealed for a P-256 key", () => {
+    const adts = Buffer.from("fff15080021ffc21004900", "hex");
+
+    function sealedAudio(mediaKey: Buffer, payload: Buffer) {
+      const header = Buffer.alloc(16);
+      header.writeUInt32LE(payload.length, 0);
+      const { tag, nonce, ct } = sealBody(mediaKey, payload);
+      return { commandId: 1301, channel: 0, signCode: 1, data: Buffer.concat([header, tag, nonce, ct]) };
+    }
+
+    function plainAudio(payload: Buffer) {
+      const header = Buffer.alloc(16);
+      header.writeUInt32LE(payload.length, 0);
+      return { commandId: 1301, channel: 0, signCode: 0, data: Buffer.concat([header, payload]) };
+    }
+
+    function listen(eccPrivateKey?: Buffer) {
+      const s = stream(eccPrivateKey);
+      const audio = vi.fn();
+      s.live.on("audio", audio);
+      return { ...s, audio };
+    }
+
+    it("opens sealed audio under the media key of the keyframe before it", () => {
+      const cam = camera(),
+        mediaKey = randomBytes(32),
+        s = listen(cam.privateKey);
+      try {
+        s.session.push(encryptedFrame(cam.publicKey, mediaKey, Buffer.concat([START_CODE, Buffer.from([0x65, 1])])));
+        s.session.push(sealedAudio(mediaKey, adts));
+        expect(s.audio).toHaveBeenCalledOnce();
+        expect(s.audio.mock.calls[0][0]).toEqual({ codec: "aac-lc", data: adts });
+      } finally {
+        s.live.stop();
+      }
+    });
+
+    it("drops sealed audio before any keyframe, or under another key, and passes audio in the clear", () => {
+      const cam = camera(),
+        mediaKey = randomBytes(32),
+        s = listen(cam.privateKey);
+      try {
+        s.session.push(sealedAudio(mediaKey, adts));
+        s.session.push(encryptedFrame(cam.publicKey, mediaKey, Buffer.concat([START_CODE, Buffer.from([0x65, 1])])));
+        s.session.push(sealedAudio(randomBytes(32), adts));
+        s.session.push(plainAudio(adts));
+        expect(s.audio).toHaveBeenCalledOnce();
+        expect(s.audio.mock.calls[0][0]).toEqual({ codec: "aac-lc", data: adts });
+      } finally {
+        s.live.stop();
+      }
+    });
+
+    it("leaves audio untouched on a stream with no ECC key", () => {
+      const s = listen();
+      const frame = sealedAudio(randomBytes(32), adts);
+      try {
+        s.session.push(frame);
+        expect(s.audio.mock.calls[0][0].data).toEqual(frame.data.subarray(16));
+      } finally {
+        s.live.stop();
+      }
+    });
+  });
+
   it.each([true, false])("preserves plaintext fallback with ECC configured=%s", (configured) => {
     const s = stream(configured ? camera().privateKey : undefined);
     s.legacy.mockReturnValue(undefined);

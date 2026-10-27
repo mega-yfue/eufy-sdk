@@ -20,22 +20,16 @@
  *
  * @module p2p/recording-download
  */
-import { createDecipheriv } from "node:crypto";
 import { RecordingDownloadError, type RecordingDownload } from "../../core/contracts.js";
 import { CommandType } from "./commands.js";
 import type { P2PFrame, P2PSession } from "./p2p-session.js";
-import { AccessUnitAssembler, VIDEO_GCM_AAD, VideoFrameDecoder, parseVideoFrameHeader } from "./video.js";
+import { AccessUnitAssembler, VideoFrameDecoder, parseVideoFrameHeader } from "./video.js";
+import { openSealedAudio } from "./audio-frame.js";
 
 /** Data type a station sends a recording's frames on: the binary channel (`0xd1 0x03`), not live video's. */
 export const RECORDING_DATA_TYPE = 3;
 /** Bytes of video frame header; a plaintext frame's H.264 starts here. */
 const VIDEO_HEADER_LEN = 0x16;
-/** Bytes of audio frame header; the 16-byte GCM tag starts here. */
-const AUDIO_HEADER_LEN = 16;
-/** Start of an audio frame's 12-byte GCM nonce. */
-const AUDIO_NONCE_START = 32;
-/** Start of an audio frame's AAC ciphertext. */
-const AUDIO_BODY_START = 44;
 /** Audio codec id for AAC-LC in the audio frame header. */
 const AUDIO_CODEC_AAC_LC = 0;
 /** Channel 0, the one a HomeBase tags `CMD_DOWNLOAD_FINISH` with whatever the camera's channel. */
@@ -188,18 +182,6 @@ export function receiveRecording(
   return { frames, drained };
 }
 
-/** Open one AES-256-GCM audio body; `undefined` when it does not authenticate. */
-function openAudio(key: Buffer, nonce: Buffer, tag: Buffer, body: Buffer): Buffer | undefined {
-  try {
-    const decipher = createDecipheriv("aes-256-gcm", key, nonce);
-    decipher.setAAD(VIDEO_GCM_AAD);
-    decipher.setAuthTag(tag);
-    return Buffer.concat([decipher.update(body), decipher.final()]);
-  } catch {
-    return undefined;
-  }
-}
-
 /**
  * Decode a recording's frames, in arrival order, into elementary streams. Split pictures are assembled
  * before they enter the output; an orphan continuation cannot become its own picture. Keyframes go
@@ -239,15 +221,8 @@ export function decodeRecording(frames: readonly RecordingFrame[], eccPrivateKey
       }
     } else if (commandId === CommandType.CMD_AUDIO_FRAME) {
       const mediaKey = decoder.currentMediaKey;
-      if (!mediaKey || raw.length < AUDIO_BODY_START || raw[5] !== AUDIO_CODEC_AAC_LC) continue;
-      const len = raw.readUInt32LE(0);
-      if (raw.length < AUDIO_BODY_START + len) continue;
-      const aac = openAudio(
-        mediaKey,
-        raw.subarray(AUDIO_NONCE_START, AUDIO_BODY_START),
-        raw.subarray(AUDIO_HEADER_LEN, AUDIO_NONCE_START),
-        raw.subarray(AUDIO_BODY_START, AUDIO_BODY_START + len),
-      );
+      if (!mediaKey || raw.length <= 5 || raw[5] !== AUDIO_CODEC_AAC_LC) continue;
+      const aac = openSealedAudio(raw, mediaKey);
       if (aac?.length) audio.push(aac);
     }
   }

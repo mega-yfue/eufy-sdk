@@ -23,7 +23,14 @@ import { sniffAnnexbCodec } from "./annexb.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { traceLiveStart, type LiveTrace } from "./live-trace.js";
 import type { LiveAudioFrame, LiveVideoFrame, VideoCodec } from "../../core/contracts.js";
-import { AUDIO_CODECS, AUDIO_HEADER_LEN, AUDIO_TYPE_OFFSET, CMD_AUDIO_FRAME } from "./audio-frame.js";
+import {
+  AUDIO_CODECS,
+  AUDIO_HEADER_LEN,
+  AUDIO_TYPE_OFFSET,
+  CMD_AUDIO_FRAME,
+  isSealedAudio,
+  openSealedAudio,
+} from "./audio-frame.js";
 
 const CMD_VIDEO_FRAME = 1300;
 const VIDEO_HEADER_LEN = 0x16; // 22-byte CMD_VIDEO_FRAME header before the Annex-B payload
@@ -349,8 +356,8 @@ export class LiveStream extends EventEmitter {
           });
         }
       } else if (f.commandId === CMD_AUDIO_FRAME) {
-        const audio = f.data.length > AUDIO_HEADER_LEN ? f.data.subarray(AUDIO_HEADER_LEN) : f.data;
-        if (audio.length) {
+        const audio = this.audioPayload(f.data);
+        if (audio?.length) {
           const codecId = f.data.length > AUDIO_TYPE_OFFSET ? f.data.readUInt8(AUDIO_TYPE_OFFSET) : undefined;
           const codec = codecId === undefined ? undefined : AUDIO_CODECS[codecId];
           if (!codec) {
@@ -440,6 +447,20 @@ export class LiveStream extends EventEmitter {
     if (!this.session.settleAttachedKey?.(this.channel, this.unitOpenedBy)) return;
     this.logger.debug(`[live ch${this.channel}] plaintext keyframe answered the P-256 offer — re-starting with RSA`);
     this.sendStart();
+  }
+
+  /**
+   * The payload of an audio frame. On a stream with an ECIES decoder, a sealed frame ({@link isSealedAudio}) is
+   * opened under the media key of the latest keyframe, and answers `undefined` when it does not open or arrives
+   * before any keyframe gave a media key, since its bytes are ciphertext. Every other frame is the bytes after
+   * its header.
+   */
+  private audioPayload(frame: Buffer): Buffer | undefined {
+    if (!this.decoder || !isSealedAudio(frame)) {
+      return frame.length > AUDIO_HEADER_LEN ? frame.subarray(AUDIO_HEADER_LEN) : frame;
+    }
+    const mediaKey = this.decoder.currentMediaKey;
+    return mediaKey ? openSealedAudio(frame, mediaKey) : undefined;
   }
 
   /**
