@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EufyMega } from "../eufy-mega.js";
+import { SessionExpiredError } from "../../transport/http/mega-client.js";
 
 /**
  * The read-through freshness refresh as an INBOUND PATH.
@@ -140,5 +141,32 @@ describe("the read-through freshness refresh announces what it lands", () => {
 
     expect(dev.getProperty("contact")?.value).toBe(true);
     expect(seen).toHaveLength(1); // the poll's announcement, and no revert after it
+  });
+});
+
+describe("a failed read-through refresh", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it("reports a dead session as sessionExpired instead of rejecting a promise nobody holds", async () => {
+    const { eufy } = withFreshnessPolicy();
+    const dev = await eufy.getDevice("T8000P0000000000");
+    const expired = new SessionExpiredError("/app/devicemanage/get_device_param_list failed (401/401): token error");
+    vi.spyOn((eufy as any).registry, "record").mockRejectedValue(expired);
+    const reported: unknown[] = [];
+    eufy.on("sessionExpired", (e) => reported.push(e));
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      makeStale(dev);
+      expect(dev.getProperty("contact")?.value).toBe(false);
+      await settle();
+      await settle();
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+    expect(reported).toEqual([expired]);
+    expect(unhandled).toEqual([]);
+    expect(dev.getProperty("contact")?.value).toBe(false);
   });
 });

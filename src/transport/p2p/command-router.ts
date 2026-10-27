@@ -42,6 +42,7 @@ import { noopLogger, type Logger } from "../../core/logger.js";
 import { assertNever } from "../../core/util.js";
 import { setTimeout as sleep } from "node:timers/promises";
 import { CONNECT_TIMEOUT_MS, P2PSession, type P2PFrame } from "./p2p-session.js";
+import { LEVEL2_SETTLE_MS } from "./level2-settle.js";
 import { buildDirectBinaryBody } from "./write-commands.js";
 import { CommandType } from "./commands.js";
 import {
@@ -98,15 +99,6 @@ const DIRECT_CMD_SENDS = 5;
  */
 const LEVEL2_GRACE_MS = 25_000;
 
-/**
- * The bound a caller waits for the level-2 negotiation to SETTLE, measured from connect.
- *
- * For a caller that picks its seal once from {@link P2PSession.hasLevel2Key} and has no second chance. A media
- * start reads the key on every send and is re-issued by the warm-up, so it needs no wait; a property write
- * framed level-1 to a family that only accepts level-2 is ignored, and nothing re-frames it. Session-scoped,
- * so a station that offers no key does not charge this to every later command.
- */
-const LEVEL2_SETTLE_MS = 8_000;
 /** Standalone stations whose level-1 session is not reset. */
 const KEEP_LEVEL1_SESSION_MODELS: ReadonlySet<string> = new Set(["T8423"]);
 

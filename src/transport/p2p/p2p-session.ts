@@ -68,6 +68,8 @@ import {
 import { commandName, CommandType } from "./commands.js";
 import { traceLiveStart, type LiveTrace } from "./live-trace.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
+import { abortable } from "../abortable.js";
+import { LEVEL2_SETTLE_MS } from "./level2-settle.js";
 
 const LOCAL_LOOKUP_PORT = 32108;
 const HEARTBEAT_MS = 5_000;
@@ -1995,7 +1997,7 @@ export class P2PSession extends EventEmitter {
     });
     const body = Buffer.concat([
       buildCommandHeader(this.seqNumber, CMD_SET_PAYLOAD),
-      buildStringCommandPayload(value, channel, this.level1Key, 1),
+      this.databasePayload(value, channel),
     ]);
     this.seqNumber = (this.seqNumber + 1) & 0xffff;
     this.logger.debug(`[p2p] ${this.cfg.stationSn} requestImage ${filePath}`);
@@ -2038,11 +2040,22 @@ export class P2PSession extends EventEmitter {
     });
     const body = Buffer.concat([
       buildCommandHeader(this.seqNumber, CMD_SET_PAYLOAD),
-      buildStringCommandPayload(value, channel, this.level1Key, 1),
+      this.databasePayload(value, channel),
     ]);
     this.seqNumber = (this.seqNumber + 1) & 0xffff;
     this.logger.debug(`[p2p] ${this.cfg.stationSn} queryDatabase ${table} ch=${channel}`);
     this.send(this.connectAddress, RequestMessageType.DATA, body);
+  }
+
+  /**
+   * The `CMD_SET_PAYLOAD` payload of a database read or stored-image request: the JSON level-1 encrypted, or
+   * in the clear with header bytes from {@link nextClearCommandBytes} on a session that {@link sendsInTheClear}
+   * and holds no level-2 key.
+   */
+  private databasePayload(value: string, channel: number): Buffer {
+    return !this.level2Key && this.sendsInTheClear()
+      ? buildRawCommandPayload(Buffer.from(value, "utf-8"), channel, 0, this.nextClearCommandBytes(), 0)
+      : buildStringCommandPayload(value, channel, this.level1Key, 1);
   }
 
   /**
@@ -2126,6 +2139,9 @@ export class P2PSession extends EventEmitter {
    *
    * One read at a time per session: while one is accumulating, every {@link queryDatabase} on the
    * session throws, so a second reply cannot land in this buffer.
+   *
+   * The query's framing follows the cipher the gateway-info reply names, so on a session still negotiating
+   * its level-2 key the query waits for that to settle, up to {@link LEVEL2_SETTLE_MS} from connect.
    */
   async readDatabase(
     table: string,
@@ -2138,6 +2154,7 @@ export class P2PSession extends EventEmitter {
     } = {},
   ): Promise<unknown[]> {
     if (opts.signal?.aborted) throw new Error("readDatabase: aborted");
+    if (this.level2Pending) await abortable(this.awaitLevel2Key(LEVEL2_SETTLE_MS, "session"), opts.signal);
     this.queryDatabase(table, {
       accountId: opts.accountId,
       innerCmd: opts.innerCmd,
@@ -2495,6 +2512,8 @@ export class P2PSession extends EventEmitter {
           /* ignore */
         }
       }
+    } else if (header.commandId === CMD_DATABASE && this.sendsInTheClear()) {
+      this.emit("dbChunk", { stationSn: this.cfg.stationSn, text: payload.toString("latin1") });
     }
     const frame: P2PFrame = {
       ...header,

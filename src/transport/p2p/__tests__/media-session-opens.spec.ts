@@ -1,5 +1,6 @@
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { describe, expect, it, vi } from "vitest";
+import { p2pVideoFrame } from "./live-source-fixtures.js";
 
 /**
  * A live camera opens a connection of its own beside the station's, and that connection carries media alone.
@@ -107,6 +108,52 @@ const openLive = (r: Router, sn: string) =>
 
 const sessionKeys = (r: Router) => (r as unknown as { liveSessionKeys: Map<string, string> }).liveSessionKeys;
 const sources = (r: Router) => (r as unknown as { liveSources: Map<string, unknown> }).liveSources;
+
+/**
+ * A source that ends its own stream ends each consumer first and tears down second, so a Readable reaches
+ * EOF and destroys itself after the teardown has released the source's session claim. That late detach
+ * must leave the source `stopped`: the router rebuilds only a stopped source, and a revived one would warm
+ * on a connection it no longer holds. Two endings reach that order — the upstream stopping, and a battery
+ * budget expiring unextended, which a Readable never extends.
+ */
+describe("reacquiring after Readable EOF", () => {
+  for (const ending of ["upstream end", "battery budget"] as const)
+    for (const sibling of [false, true])
+      it(`rebuilds the source and restores its session claim (${ending}, ${sibling ? "second" : "first"} camera)`, async () => {
+        const r = router();
+        const manager = (r as unknown as { manager: { get(key: string): FakeSession | undefined } }).manager;
+        const target = sibling ? CAM_B : CAM_A;
+        const channel = sibling ? 2 : 0;
+        const key = `${STATION_SN}:${channel}`;
+        const opts = ending === "battery budget" ? { powered: "battery", batteryBudgetMs: 1, budgetGraceMs: 1 } : {};
+        if (sibling) (await openLive(r, CAM_A)).attach();
+        const reader = await r.mediaProviderFor(target).openReadable!(opts as never);
+        const source = sources(r).get(key) as { state: string; consumerCount: number; stream: EventEmitter };
+        const claim = sessionKeys(r).get(key)!;
+        try {
+          reader.resume();
+          const closed = once(reader, "close");
+          manager.get(claim)!.emit("data", p2pVideoFrame({ nal: Buffer.from([0x65, 0x88]), keyframe: true, channel }));
+          if (ending === "upstream end") source.stream.emit("stop");
+          await closed;
+          expect(source.state).toBe("stopped");
+          expect(source.consumerCount).toBe(0);
+          expect(sessionKeys(r).has(key)).toBe(false);
+          const opened = built.length;
+          const reopened = await r.mediaProviderFor(target).openReadable!();
+          try {
+            expect(sources(r).get(key)).not.toBe(source);
+            expect(sessionKeys(r).get(key)).toBe(claim);
+            expect(built).toHaveLength(opened + (claim === STATION_SN ? 0 : 1));
+          } finally {
+            reopened.destroy();
+          }
+        } finally {
+          reader.destroy();
+          await r.closeAll();
+        }
+      });
+});
 
 describe("a second live camera on a claimed station session", () => {
   it("really opens another connection, rather than only recording that it would", async () => {
