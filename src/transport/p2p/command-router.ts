@@ -479,16 +479,26 @@ export class P2PCommandRouter {
    * so a start issued before the key arrives is dropped as `media-command-unsent`, and the stream then
    * shows nothing until a later keepalive tick happens to find the key. A connected session that cannot
    * carry the start is not a connected session, so this refuses rather than returning one.
+   *
+   * A session it does not hand over (refused, unreachable or aborted) is closed. Nothing else releases it: no
+   * source holds it, a wired station's session never idles out, and the manager hands the same session to every
+   * later open of the camera. A refused one would be refused again, its negotiation being one-shot and its
+   * re-prompt spent. Closing it lets the next open dial a fresh connection, which negotiates again.
    */
   private async openMediaSession(parentSn: string, channel: number, signal?: AbortSignal): Promise<P2PSession> {
     const session = await this.openSession(P2PCommandRouter.mediaSessionKey(parentSn, channel), parentSn);
-    await this.awaitConnected(session, parentSn, signal);
-    let ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal);
-    if (!ready && session.repromptLevel2Key()) {
-      ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal);
+    try {
+      await this.awaitConnected(session, parentSn, signal);
+      let ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal);
+      if (!ready && session.repromptLevel2Key()) {
+        ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal);
+      }
+      if (!ready) throw new StationKeyUnavailableError(parentSn);
+      return session;
+    } catch (error) {
+      void session.close();
+      throw error;
     }
-    if (!ready) throw new StationKeyUnavailableError(parentSn);
-    return session;
   }
 
   /**

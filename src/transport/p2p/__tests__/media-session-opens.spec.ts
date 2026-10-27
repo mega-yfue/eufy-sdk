@@ -227,6 +227,22 @@ describe("a second live camera on a claimed station session", () => {
   });
 
   /**
+   * The refused session's negotiation is spent, and nothing else releases it: a wired station's session never
+   * idles out and no source holds it. Left registered, it is what every later open of the camera is handed.
+   */
+  it("closes a media session it refuses, so the camera's next open dials a fresh connection", async () => {
+    const r = router();
+    (await openLive(r, CAM_A)).attach();
+    nextSessionHasNoKey = true;
+    await expect(openLive(r, CAM_B)).rejects.toMatchObject({ name: "StationKeyUnavailableError" });
+
+    await expect(openLive(r, CAM_B)).resolves.toBeDefined();
+
+    expect(built).toHaveLength(3);
+    expect(built[2]).not.toBe(built[1]);
+  });
+
+  /**
    * A relay connect lands about 25 s after `connect()` resolves, so a key wait begun at the open would run
    * out on the connect rather than on the key. The media session is handed over once it connects and holds
    * its key.
