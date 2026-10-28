@@ -880,7 +880,13 @@ export class P2PSession extends EventEmitter {
     );
   }
 
-  /** Open the socket and start the lookup → hole-punch handshake. */
+  /**
+   * Open the socket and start the lookup → hole-punch handshake.
+   *
+   * A socket closed while binding never invokes its bind callback, so the bind wait also settles on the
+   * socket's `close`, and a connect whose session was closed or reconnected meanwhile returns without
+   * starting the handshake.
+   */
   async connect(): Promise<void> {
     if (this.connecting || this.connected) return;
     this.connecting = true;
@@ -901,7 +907,9 @@ export class P2PSession extends EventEmitter {
     socket.on("message", (msg, rinfo) => this.onMessage(msg, rinfo, socket));
     socket.on("error", (e) => this.emit("error", e));
 
+    const generation = this.connectionGeneration;
     await new Promise<void>((resolve) => {
+      socket.once("close", resolve);
       socket.bind(() => {
         try {
           socket.setBroadcast(true);
@@ -912,6 +920,7 @@ export class P2PSession extends EventEmitter {
         resolve();
       });
     });
+    if (generation !== this.connectionGeneration) return;
 
     void P2PSession.detectLocalIp().then((host) => {
       if (host && !this.closed) this.selfHost = host;
@@ -920,7 +929,6 @@ export class P2PSession extends EventEmitter {
     const { dskKey, cloudAddresses } = this.cfg;
     this.cloudLookup = dskKey && cloudAddresses?.length ? { key: dskKey, addresses: cloudAddresses } : undefined;
     if (this.cloudLookup && cloudAddresses) {
-      const generation = this.connectionGeneration;
       void resolveLookupServers(cloudAddresses).then((addresses) => {
         if (this.cloudLookup && !this.closed && generation === this.connectionGeneration)
           this.cloudLookup.addresses = addresses;
