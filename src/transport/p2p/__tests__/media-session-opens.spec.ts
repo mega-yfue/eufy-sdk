@@ -351,6 +351,34 @@ describe("a second live camera on a claimed station session", () => {
     expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(`${STATION_SN}#live:2`);
   });
 
+  it("lets a request waiting on another's build leave as soon as its own signal aborts", async () => {
+    vi.useFakeTimers();
+    try {
+      const r = router();
+      (await openLive(r, CAM_A)).attach();
+
+      nextSessionConnectsAfterMs = Infinity;
+      const building = openLive(r, CAM_B).catch(() => undefined);
+      const abort = new AbortController();
+      const waiting = (
+        r as unknown as { sharedLiveSourceFor(s: string, o: object, m: boolean): Promise<unknown> }
+      ).sharedLiveSourceFor(CAM_B, { signal: abort.signal }, true);
+      let left: unknown;
+      waiting.catch((error) => (left = error));
+      await vi.advanceTimersByTimeAsync(100);
+
+      abort.abort();
+      await vi.advanceTimersByTimeAsync(100);
+
+      expect(left).toMatchObject({ name: "AbortError" });
+      expect(built).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(CONNECT_TIMEOUT_MS + 400);
+      await building;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps independent media delivering when the station-control connection closes", async () => {
     const r = router();
     const a = await openLive(r, CAM_A);
