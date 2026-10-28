@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { notifyTrace, redactNotifyValue } from "../notify-trace.js";
+import { notifyTrace, pollChangeTraces, redactNotifyValue } from "../notify-trace.js";
 import type { P2PFrame } from "../../transport/p2p/p2p-session.js";
 
 const ACCOUNT = "0000000000000000000000000000000000000000";
@@ -68,5 +68,32 @@ describe("notify trace", () => {
     expect(redactNotifyValue(Array.from({ length: 17 }, () => 0))).toBe("<array:17>");
     expect(redactNotifyValue("-12")).toBe("-12");
     expect(redactNotifyValue("1234567")).toBe("<string:7>");
+  });
+});
+
+describe("poll change trace", () => {
+  const CAM = "T8000P0000000001";
+  const SENSOR = "T8000P0000000002";
+  const change = (deviceSn: string, paramType: number, from: string, to: string) => ({
+    deviceSn,
+    paramType,
+    from,
+    to,
+    params: {},
+  });
+
+  it("groups one pass's changes into one record per device, values redacted", () => {
+    const traces = pollChangeTraces(
+      [change(CAM, 1035, "0", "1"), change(SENSOR, 1550, "0", "1"), change(CAM, 1104, "", "Living room")],
+      (sn) => (sn === CAM ? 104 : undefined),
+    );
+    expect(traces).toEqual([
+      { deviceType: 104, changed: { 1035: ["0", "1"], 1104: ["<string:0>", "<string:11>"] } },
+      { changed: { 1550: ["0", "1"] } },
+    ]);
+  });
+
+  it("records nothing for a pass with no changes", () => {
+    expect(pollChangeTraces([], () => 104)).toEqual([]);
   });
 });
