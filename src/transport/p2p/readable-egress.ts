@@ -14,7 +14,7 @@
  */
 import { Readable } from "node:stream";
 import type { Consumer } from "./shared-live-source.js";
-import type { LiveVideoFrame } from "../../core/contracts.js";
+import type { LiveVideoFrame, StreamBudgetNotice } from "../../core/contracts.js";
 
 export interface ReadableEgressOptions {
   /** Emit {@link LiveVideoFrame} objects instead of raw Annex-B bytes (default false = bytes). */
@@ -28,7 +28,9 @@ export interface ReadableEgressOptions {
 /**
  * Wrap a shared-source {@link Consumer} in a fresh Readable. The consumer is detached when the
  * Readable is destroyed/ended, so callers own the lifetime by owning the stream.
- * Frames arrive through onMedia, preserving their source-arrival metadata.
+ * Frames arrive through onMedia, preserving their source-arrival metadata. The consumer's battery
+ * `budget` notice is re-emitted unchanged as a `budget` event carrying a {@link StreamBudgetNotice};
+ * without an `extend()` within its grace the shared source ends the consumer and the Readable reaches EOF.
  */
 export function openReadableFromConsumer(consumer: Consumer, opts: ReadableEgressOptions = {}): Readable {
   const objectMode = opts.objectMode ?? false;
@@ -56,6 +58,7 @@ export function openReadableFromConsumer(consumer: Consumer, opts: ReadableEgres
     if (!readable.push(value)) consumer.pause();
   });
 
+  consumer.on("budget", (notice: StreamBudgetNotice) => readable.emit("budget", notice));
   consumer.on("stop", () => readable.push(null)); // upstream ended → EOF
   consumer.on("error", (err: Error) => readable.destroy(err));
 
