@@ -64,6 +64,9 @@ const PARAMS_BODY = [
 /** A `RestrictedZone` body: one no-go zone, map_id, releases. */
 const ZONES_BODY = [...quad(2), ...int(4, 6), ...int(5, 1)];
 
+/** A `DynamicData` body: the robot's pose, x and y in cm and theta in rad × 100. */
+const POSE_BODY = sub(1, [...sint(1, -320), ...sint(2, 145), ...sint(3, -157)]);
+
 /** A `MapDescription` body: name, create_time, last_time, map_id, releases. */
 const DESCRIPTION_BODY = [
   ...str(2, "Ground floor"),
@@ -93,6 +96,10 @@ describe("the channel table", () => {
     expect(decodeMapFrame(bizFrame(BIZ_CHANNEL.RESTRICTED_ZONE, frame(ZONES_BODY)), byteCodec)).toMatchObject({
       kind: "zones",
       value: { mapId: 6, releases: 1, noGoZones: [{}] },
+    });
+    expect(decodeMapFrame(bizFrame(BIZ_CHANNEL.DYNAMIC_DATA, frame(POSE_BODY)), byteCodec)).toEqual({
+      kind: "pose",
+      value: { x: -320, y: 145, theta: -157 },
     });
     expect(decodeMapFrame(bizFrame(BIZ_CHANNEL.MAP_DESCRIPTION, frame(DESCRIPTION_BODY)), byteCodec)).toMatchObject({
       kind: "description",
@@ -132,13 +139,14 @@ describe("the channel table", () => {
       ROOM_OUTLINE: 4,
       ROOM_PARAMS: 5,
       RESTRICTED_ZONE: 6,
+      DYNAMIC_DATA: 7,
       MAP_DESCRIPTION: 60,
       MAP_BACKUP: 68,
     });
   });
 
   it("leaves the scene channel and any unlisted channel unread", () => {
-    for (const id of [BIZ_CHANNEL.SCENES, 1, 3, 7, 8, 9, 10, 99]) {
+    for (const id of [BIZ_CHANNEL.SCENES, 1, 3, 8, 9, 10, 11, 62, 63, 65, 99]) {
       expect(decodeMapFrame(bizFrame(id, frame(ZONES_BODY)), byteCodec), `${id}`).toBeUndefined();
     }
   });
@@ -163,5 +171,6 @@ describe("a payload that is not what its channel promised", () => {
     // A reader meeting a message that lacks what its own message requires answers nothing.
     expect(decodeMapFrame(bizFrame(BIZ_CHANNEL.MAP_DATA, frame(ZONES_BODY)), byteCodec)).toBeUndefined();
     expect(decodeMapFrame(bizFrame(BIZ_CHANNEL.ROOM_OUTLINE, frame(PARAMS_BODY)), byteCodec)).toBeUndefined();
+    expect(decodeMapFrame(bizFrame(BIZ_CHANNEL.DYNAMIC_DATA, frame(int(2, 7))), byteCodec)).toBeUndefined();
   });
 });
