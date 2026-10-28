@@ -1,17 +1,20 @@
 /**
- * Bounded, identity-free records of the device notifications a station sends over P2P.
+ * Bounded, identity-free records of device state a station sends over P2P and the cloud poll reports.
  *
- * A record is logged for two kinds of inbound frame: one that volunteers device params, and a
+ * A P2P record is logged for two kinds of inbound frame: one that volunteers device params, and a
  * notification no capability decoded into state or an event. The second is where a state change the
- * SDK has no decoder for yet arrives, so the records are what a decoder for it is written from.
+ * SDK has no decoder for yet arrives, so the records are what a decoder for it is written from. A poll
+ * record lists the params one cloud poll pass saw move on one device.
  *
- * Every field is a device type, a channel, a command or sign code, a size, or a redacted payload. A
+ * Every field is a device type, a channel, a command or sign code, a size, a param id, or a redacted
+ * value. A
  * string is carried only when it is a short run of digits — a param value or a mode — and otherwise
  * as its length, so no serial, P2P identifier, account id, address, name or path reaches a log.
  *
  * @module client/notify-trace
  */
 import type { P2PFrame } from "../transport/p2p/p2p-session.js";
+import type { ParamChange } from "./device-registry.js";
 
 /** The message every notify record is logged under. */
 export const NOTIFY_TRACE_MESSAGE = "[p2p] device notify";
@@ -87,4 +90,37 @@ export function notifyTrace(f: P2PFrame, deviceType: number | undefined, claimed
     trace.params = Object.fromEntries(Object.entries(f.params).map(([id, v]) => [Number(id), redactNotifyValue(v)]));
   }
   return trace;
+}
+
+/** The message every poll record is logged under. */
+export const POLL_CHANGE_TRACE_MESSAGE = "[poll] device params changed";
+
+/** The params one cloud poll pass saw move on one device, redacted. */
+export interface PollChangeTrace {
+  /** The cloud `device_type` of the device, when its record states one. */
+  deviceType?: number;
+  /** `param_type → [previous value, new value]`. */
+  changed: Record<number, [unknown, unknown]>;
+}
+
+/**
+ * One record per device among a poll pass's changes, in the order the devices first appear.
+ *
+ * @param deviceTypeOf the cloud `device_type` for a serial
+ */
+export function pollChangeTraces(
+  changes: readonly ParamChange[],
+  deviceTypeOf: (sn: string) => number | undefined,
+): PollChangeTrace[] {
+  const bySerial = new Map<string, PollChangeTrace>();
+  for (const change of changes) {
+    let trace = bySerial.get(change.deviceSn);
+    if (!trace) {
+      const deviceType = deviceTypeOf(change.deviceSn);
+      trace = { ...(deviceType === undefined ? {} : { deviceType }), changed: {} };
+      bySerial.set(change.deviceSn, trace);
+    }
+    trace.changed[change.paramType] = [redactNotifyValue(change.from), redactNotifyValue(change.to)];
+  }
+  return [...bySerial.values()];
 }
