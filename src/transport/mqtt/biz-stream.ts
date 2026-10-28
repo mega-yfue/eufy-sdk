@@ -14,8 +14,7 @@
  *
  * What this module does NOT do is decode the protobuf inside. It unwraps to a Raw-DP frame — the same
  * `varint(len) ++ message` every DP payload carries, only hex-encoded — and hands it on. Which message
- * the bytes are is the channel's business, and the channel table has a trap in it worth reading
- * ({@link BIZ_CHANNEL}).
+ * the bytes are is the channel's business ({@link BIZ_CHANNEL}).
  *
  * @module transport/mqtt/biz-stream
  */
@@ -37,43 +36,40 @@ export const BIZ_PROTOCOL = {
 } as const;
 
 /**
- * The channels a map frame can arrive on, by id.
+ * The channels a map frame arrives on, by id, as a robot's own frames identify them.
  *
- * **The trap.** Ids 1–10 come from `Metadata.ChanIds` in `stream.proto`, where each *field* names a
- * message and each field's *value* is the id the device chose for it. The names below pair each
- * channel with its field NUMBER, because that is the numbering the vendor ships and the one a live
- * capture shows — but a device announcing a `Metadata` frame is announcing its own numbering, and a
- * firmware that renumbers would make this table wrong without making it look wrong. Anything that
- * *decodes* a channel's bytes must therefore prefer a device-declared mapping when one has been seen;
- * this table is the default to fall back on, not an authority.
+ * Each id is paired with the `stream.proto` message whose field layout its frames carry, which is not
+ * the field-number order of `Metadata.ChanIds`: the cell plane (`Map`) arrives on 2, its room outline
+ * on 4, the room list on 5, the restricted zones on 6, the map's `MapDescription` on 60 and a whole
+ * `MapBackup` on 68. A `Metadata` frame would declare a device's own numbering; none has been seen,
+ * so none is read, and this table is the numbering every frame is read by.
  *
- * Channel 0 is the exception and is not in `ChanIds` at all: the app hard-codes it, routing it to a
- * scene-data event rather than a map one, and asks for the scene list on it by number. That one is
- * fixed.
+ * Only channels whose message is identified are listed. A channel whose frames carry too little to
+ * identify — an empty message, or two bare integers — is absent, and so is the robot's pose until a
+ * frame carrying one is seen.
+ *
+ * Channel 0 is not in `ChanIds` at all: the app hard-codes it, routing it to a scene-data event rather
+ * than a map one, and asks for the scene list on it by number.
  */
 export const BIZ_CHANNEL = {
   /** Scene (room-group) data. Hard-coded in the app, not part of `ChanIds`. */
   SCENES: 0,
-  MAP_INFO: 1,
-  PATH: 2,
-  ROOM_OUTLINE: 3,
-  ROOM_PARAMS: 4,
-  RESTRICTED_ZONE: 5,
-  DYNAMIC_DATA: 6,
-  TEMPORARY_DATA: 7,
-  OBSTACLE_INFO: 8,
-  MAP_DATA: 9,
-  CRUISE_DATA: 10,
+  MAP_DATA: 2,
+  ROOM_OUTLINE: 4,
+  ROOM_PARAMS: 5,
+  RESTRICTED_ZONE: 6,
+  MAP_DESCRIPTION: 60,
+  MAP_BACKUP: 68,
 } as const;
 
-/** A channel's name under the default numbering — see the trap in {@link BIZ_CHANNEL}. */
+/** A channel's name under the {@link BIZ_CHANNEL} numbering. */
 export type BizChannel = keyof typeof BIZ_CHANNEL;
 
 const BY_ID = new Map<number, BizChannel>(Object.entries(BIZ_CHANNEL).map(([name, id]) => [id, name as BizChannel]));
 
 /**
- * Name a channel id under the default numbering, or `undefined` for an id the vendor's table does not
- * list. Not a substitute for a device-declared mapping where one exists.
+ * Name a channel id under the {@link BIZ_CHANNEL} numbering, or `undefined` for an id it does not list.
+ * Not a substitute for a device-declared mapping where one exists.
  */
 export function bizChannelName(id: number): BizChannel | undefined {
   return BY_ID.get(id);
@@ -81,7 +77,7 @@ export function bizChannelName(id: number): BizChannel | undefined {
 
 /** One frame off the map stream, unwrapped as far as its bytes but not decoded. */
 export interface BizMapFrame {
-  /** Which channel the bytes belong to. Compare against {@link BIZ_CHANNEL}, mindful of its trap. */
+  /** Which channel the bytes belong to. Compare against {@link BIZ_CHANNEL}. */
   readonly channelId: number;
   /**
    * The vendor's `clear_type`. Forwarded, not interpreted: the app passes it straight through to its
