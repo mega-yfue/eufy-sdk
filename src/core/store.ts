@@ -7,7 +7,8 @@
  * of it and go straight to data calls — no estimate_domain, no key/exchange, no
  * login, no 2FA — until the token expires (or a call 401s, which clears it).
  */
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { chmodSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { RegionShard } from "../transport/http/mega-client.js";
 
@@ -69,13 +70,30 @@ export class MemorySessionStore<T = PersistedSession> implements SessionStore<T>
   }
 }
 
+/** Errors from creating or renaming the temp file that mean the directory, not the file, refuses the write. */
+const IN_PLACE_CODES = new Set(["EACCES", "EPERM", "EBUSY", "EXDEV", "EROFS"]);
+
+/** The real file behind `path`, following symlinks; `path` itself when it does not exist yet. */
+function realTarget(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return path;
+    throw e;
+  }
+}
+
 /**
  * JSON-file store, e.g. new FileSessionStore("./.eufy-session.json").
  *
- * `save` writes a fresh owner-only (`0o600`) temp file beside the target and renames it over the target,
- * so the file on disk is always a complete record — the old one until the rename, the new one after — and
- * always carries that mode, whatever mode an existing file had. A failed write removes the temp file and
- * throws, leaving the previous record in place.
+ * `save` resolves a symlinked path to its real file, writes a fresh owner-only (`0o600`) temp file under a
+ * random name beside that file and renames it over it, so where the directory allows it the file on disk
+ * is always a complete record — the old one until the rename, the new one after — and the symlink itself
+ * stays in place. When the directory refuses the temp file or the rename (`EACCES`, `EPERM`, `EBUSY`,
+ * `EXDEV`, `EROFS`: a read-only directory around a writable file, a single-file bind mount), `save`
+ * rewrites the file in place instead, which is not atomic, and tightens it to mode `0o600` when the
+ * process may change its mode, leaving the mode as it was otherwise. The atomic path always leaves
+ * `0o600`, whatever mode an existing file had. Any other failure removes the temp file and throws.
  */
 export class FileSessionStore<T = PersistedSession> implements SessionStore<T> {
   constructor(private readonly path: string) {}
@@ -92,14 +110,21 @@ export class FileSessionStore<T = PersistedSession> implements SessionStore<T> {
     } catch {
       /* dir exists */
     }
-    const tmp = `${this.path}.${process.pid}.tmp`;
+    const target = realTarget(this.path);
+    const data = JSON.stringify(s, null, 2);
+    const tmp = `${target}.${randomUUID()}.tmp`;
     try {
-      rmSync(tmp, { force: true });
-      writeFileSync(tmp, JSON.stringify(s, null, 2), { mode: 0o600, flag: "wx" });
-      renameSync(tmp, this.path);
+      writeFileSync(tmp, data, { mode: 0o600, flag: "wx" });
+      renameSync(tmp, target);
     } catch (e) {
       rmSync(tmp, { force: true });
-      throw e;
+      if (!IN_PLACE_CODES.has((e as NodeJS.ErrnoException).code ?? "")) throw e;
+      writeFileSync(target, data, { mode: 0o600 });
+      try {
+        chmodSync(target, 0o600);
+      } catch {
+        /* not the file's owner */
+      }
     }
   }
   clear(): void {
