@@ -16,7 +16,8 @@ A successful `login()` starts the **always-on, battery-safe** channels:
 Neither touches your cameras, so neither drains a battery. **P2P is not opened on login** — it comes up
 on demand (below). Wired stations (HomeBases, mains-powered cameras) are the exception: their P2P
 session is warmed at login and kept persistent, because a wired device doesn't drain and its realtime
-keeps device state fresh.
+keeps device state fresh. A wired station whose warm-up fails, or whose session closes, is reopened: at
+once, then after 5 s, doubling up to five minutes between attempts, until it connects or you disconnect.
 
 ```ts
 const eufy = new EufyMega({ email, password, countryCode });
