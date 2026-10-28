@@ -164,7 +164,9 @@ const DIRECT_ARMING_MODELS: ReadonlySet<string> = new Set(["T8410C"]);
  * session's own level ({@link STATION_CHANNEL}, `form` `"auto"`): the same 132-byte body as
  * {@link DIRECT_ARMING_MODELS}. A standalone T8410's session is level-1, and it leaves the `1350` set-payload
  * envelope unapplied: the write is sent, and param 1224 keeps the old mode through the 20 s readback.
- * Pending live confirmation on a T8410; only the modes in {@link DIRECT_ARMING_MODES} are written.
+ * Disarmed (63) was sent as this frame live on 2026-10-28, on a level-1 session: param 1151 in the camera's
+ * own 1103 report moved from Away (0) to 63, and the readback converged. Only the modes in
+ * {@link DIRECT_ARMING_MODES} are written.
  */
 const BROADCAST_ARMING_MODELS: ReadonlySet<string> = new Set(["T8410"]);
 
