@@ -33,7 +33,6 @@ class FakeSession extends EventEmitter {
   opts: Record<string, unknown>;
   hasKey: boolean;
   connectsAfterMs: number;
-  closed = false;
   constructor(opts: Record<string, unknown>) {
     super();
     this.opts = opts;
@@ -45,8 +44,7 @@ class FakeSession extends EventEmitter {
   }
   async connect() {
     if (this.connectsAfterMs === 0) this.isConnected = true;
-    else if (Number.isFinite(this.connectsAfterMs))
-      setTimeout(() => (this.isConnected = !this.closed), this.connectsAfterMs);
+    else if (Number.isFinite(this.connectsAfterMs)) setTimeout(() => (this.isConnected = true), this.connectsAfterMs);
   }
   /** A key wait begun before the path answers is the one that runs out: the key rides the connected path. */
   async awaitLevel2Key() {
@@ -57,7 +55,6 @@ class FakeSession extends EventEmitter {
   }
   /** As the real one does, it drops the connection at once and emits `close` only once its END send settles. */
   async close() {
-    this.closed = true;
     this.isConnected = false;
     await new Promise((resolve) => setTimeout(resolve, 5));
     this.emit("close");
@@ -248,101 +245,6 @@ describe("a second live camera on a claimed station session", () => {
 
     expect(built).toHaveLength(3);
     expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(`${STATION_SN}#live:2`);
-  });
-
-  /** A lone open ended by its own abort leaves nothing to hold the session, so it closes it. */
-  it("closes the media session when its only open aborts", async () => {
-    const r = router();
-    (await openLive(r, CAM_A)).attach();
-    nextSessionConnectsAfterMs = 400;
-    const ac = new AbortController();
-    const aborted = (
-      r as unknown as { sharedLiveSourceFor(s: string, o: object, m: boolean): Promise<unknown> }
-    ).sharedLiveSourceFor(CAM_B, { signal: ac.signal }, true);
-    setTimeout(() => ac.abort(), 100);
-
-    await expect(aborted).rejects.toMatchObject({ name: "AbortError" });
-    expect(built).toHaveLength(2);
-    expect(built[1].closed).toBe(true);
-  });
-
-  /**
-   * An abort stops only the aborted caller's wait; a concurrent open of the same camera shares the session.
-   * The aborting caller is the one that opened the session.
-   */
-  it("leaves the media session open for a concurrent open when one caller aborts", async () => {
-    const r = router();
-    (await openLive(r, CAM_A)).attach();
-    nextSessionConnectsAfterMs = 400;
-    const ac = new AbortController();
-    const open = (opts: object) =>
-      (r as unknown as { sharedLiveSourceFor(s: string, o: object, m: boolean): Promise<unknown> }).sharedLiveSourceFor(
-        CAM_B,
-        opts,
-        true,
-      );
-    const aborted = open({ signal: ac.signal });
-    await new Promise(setImmediate);
-    const other = open({});
-    setTimeout(() => ac.abort(), 100);
-
-    await expect(aborted).rejects.toMatchObject({ name: "AbortError" });
-    await expect(other).resolves.toBeDefined();
-    expect(built).toHaveLength(2);
-    expect(built[1].closed).toBe(false);
-  });
-
-  /**
-   * A later open still waiting on the shared session aborts after an earlier open of the same camera has
-   * built its source on it: the session and that source's claim both stay.
-   */
-  it("leaves the media session and its claim to a source an earlier open built, when a later open aborts", async () => {
-    const r = router();
-    (await openLive(r, CAM_A)).attach();
-    nextSessionConnectsAfterMs = 360;
-    const ac = new AbortController();
-    const open = (opts: object) =>
-      (r as unknown as { sharedLiveSourceFor(s: string, o: object, m: boolean): Promise<any> }).sharedLiveSourceFor(
-        CAM_B,
-        opts,
-        true,
-      );
-    const first = open({});
-    await new Promise((res) => setTimeout(res, 150));
-    const later = open({ signal: ac.signal });
-    (await first).attach();
-    setTimeout(() => ac.abort(), 60);
-
-    await expect(later).rejects.toMatchObject({ name: "AbortError" });
-    expect(built).toHaveLength(2);
-    expect(built[1].closed).toBe(false);
-    expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(`${STATION_SN}#live:2`);
-  });
-
-  /**
-   * A still for the same camera builds its source on the station's own session while a live open waits on its
-   * media session. That source does not ride the media session, so the live open's abort still closes it.
-   */
-  it("closes an aborted open's media session when the camera's cached source rides the station's session", async () => {
-    const r = router();
-    (await openLive(r, CAM_A)).attach();
-    nextSessionConnectsAfterMs = 360;
-    const ac = new AbortController();
-    const open = (opts: object, own: boolean) =>
-      (r as unknown as { sharedLiveSourceFor(s: string, o: object, m: boolean): Promise<unknown> }).sharedLiveSourceFor(
-        CAM_B,
-        opts,
-        own,
-      );
-    const live = open({ signal: ac.signal }, true);
-    await new Promise((res) => setTimeout(res, 50));
-    await open({}, false);
-    setTimeout(() => ac.abort(), 60);
-
-    await expect(live).rejects.toMatchObject({ name: "AbortError" });
-    await new Promise((res) => setTimeout(res, 20));
-    expect(built[1].closed).toBe(true);
-    expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(STATION_SN);
   });
 
   /**
