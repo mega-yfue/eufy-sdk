@@ -320,6 +320,32 @@ describe("a second live camera on a claimed station session", () => {
   });
 
   /**
+   * A still for the same camera builds its source on the station's own session while a live open waits on its
+   * media session. That source does not ride the media session, so the live open's abort still closes it.
+   */
+  it("closes an aborted open's media session when the camera's cached source rides the station's session", async () => {
+    const r = router();
+    (await openLive(r, CAM_A)).attach();
+    nextSessionConnectsAfterMs = 360;
+    const ac = new AbortController();
+    const open = (opts: object, own: boolean) =>
+      (r as unknown as { sharedLiveSourceFor(s: string, o: object, m: boolean): Promise<unknown> }).sharedLiveSourceFor(
+        CAM_B,
+        opts,
+        own,
+      );
+    const live = open({ signal: ac.signal }, true);
+    await new Promise((res) => setTimeout(res, 50));
+    await open({}, false);
+    setTimeout(() => ac.abort(), 60);
+
+    await expect(live).rejects.toMatchObject({ name: "AbortError" });
+    await new Promise((res) => setTimeout(res, 20));
+    expect(built[1].closed).toBe(true);
+    expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(STATION_SN);
+  });
+
+  /**
    * A relay connect lands about 25 s after `connect()` resolves, so a key wait begun at the open would run
    * out on the connect rather than on the key. The media session is handed over once it connects and holds
    * its key.

@@ -507,7 +507,10 @@ export class P2PCommandRouter {
       if (!ready) throw new StationKeyUnavailableError(parentSn);
       return session;
     } catch (error) {
-      const shared = signal?.aborted && (waiters.get(mediaKey)! > 1 || this.liveSources.has(`${parentSn}:${channel}`));
+      const key = `${parentSn}:${channel}`;
+      const shared =
+        signal?.aborted &&
+        (waiters.get(mediaKey)! > 1 || (this.liveSources.has(key) && this.liveSessionKeys.get(key) === mediaKey));
       if (session && !shared && this.manager.get(mediaKey) === session) {
         void this.manager.close(mediaKey).catch((e) => this.reportError(e instanceof Error ? e : new Error(String(e))));
       }
