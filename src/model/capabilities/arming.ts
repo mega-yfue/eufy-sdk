@@ -154,8 +154,8 @@ const STANDALONE_ACTION_MODELS: ReadonlySet<string> = new Set(["T8170", "T8171"]
  * (`mode_type` 1) and Away (`mode_type` 0) were captured and decrypted 2026-10-17, and where the camera
  * answers the `1350` form with result -103 at both level 1 and level 2. Away (0), Home (1) and Disarmed
  * (63) were each also sent as this frame live on 2026-10-17: the camera answered each on outer 1224 with
- * result 0 and param 1224 reported the requested mode within the readback window. Only those three modes
- * are written on this frame ({@link DIRECT_ARMING_MODES}). No other model is confirmed for this frame.
+ * result 0 and param 1224 reported the requested mode within the readback window. The frame carries the same
+ * `mode_type` integers as the envelope, so every mode in {@link ARMING_MODE_WIRE} is written.
  */
 const DIRECT_ARMING_MODELS: ReadonlySet<string> = new Set(["T8410C"]);
 
@@ -170,9 +170,6 @@ const DIRECT_ARMING_MODELS: ReadonlySet<string> = new Set(["T8410C"]);
  * `mode_type` integers as the envelope, so every mode in {@link ARMING_MODE_WIRE} is written.
  */
 const BROADCAST_ARMING_MODELS: ReadonlySet<string> = new Set(["T8410"]);
-
-/** The modes confirmed on the direct frame; any other throws. */
-const DIRECT_ARMING_MODES: ReadonlySet<ArmingMode> = new Set<ArmingMode>(["away", "home", "disarmed"]);
 
 /** The standalone cameras whose own flags are read live: the two above plus the three that stay read only. */
 const STANDALONE_READ_MODELS: ReadonlySet<string> = new Set([...STANDALONE_ACTION_MODELS, "T8400", "T8442", "T8410"]);
@@ -283,9 +280,6 @@ function armingCommand(mode: ArmingMode, ctx: CommandContext): Command {
     return setStationScalar(ARMING_CMD.SET_ARMING, ARMING_MODE_WIRE[mode], STATION_CHANNEL, "auto");
   }
   if (DIRECT_ARMING_MODELS.has(model)) {
-    if (!DIRECT_ARMING_MODES.has(mode)) {
-      throw new Error(`arming: mode ${mode} is unconfirmed on the direct 1224 frame [${describeDevice(ctx)}]`);
-    }
     return setStationScalar(ARMING_CMD.SET_ARMING, ARMING_MODE_WIRE[mode], ctx.channel);
   }
   return setPayload(
@@ -451,8 +445,7 @@ export const ARMING_MEMBERS = {
       "Guard mode (verified: param 1224 = GUARD_MODE, read/write mechanism confirmed). Reads and SETS all " +
       "9 modes the app defines — away/home/schedule/custom1/custom2/custom3/off/geo/disarmed. Three are " +
       "byte-captured writes and six are live-confirmed (each sent and observed to report its own " +
-      "MODE_SWITCH); see ARMING_MODE_WIRE in arming.ts for the per-value evidence. On a T8410C only " +
-      "away, home and disarmed are writable.",
+      "MODE_SWITCH); see ARMING_MODE_WIRE in arming.ts for the per-value evidence.",
     observation: {
       event: "armingModeChanged",
       reflects: (value) => ({ param: ARMING_CMD.SET_ARMING, expected: ARMING_MODE_WIRE[armingModeOf(value)!] }),

@@ -174,8 +174,8 @@ describe("arming capability module", () => {
 
   /**
    * On a T8410C the guard mode is the direct frame the vendor app sends: outer cmd 1224 itself, `mode_type`
-   * as the scalar. Home and Away were captured from the app on 2026-10-17, and Away, Home and Disarmed were each
-   * confirmed live that day; the fixture identity is synthetic.
+   * as the scalar, the same `mode_type` integers as the envelope for every mode. Home and Away were captured
+   * from the app on 2026-10-17; the fixture identity is synthetic.
    */
   describe("setMode on a T8410C (direct 1224 frame)", () => {
     const t8410c: CommandContext = { ...ctx, model: "T8410C" };
@@ -183,25 +183,17 @@ describe("arming capability module", () => {
     it.each([
       [ArmingMode.away, 0],
       [ArmingMode.home, 1],
+      [ArmingMode.schedule, 2],
+      [ArmingMode.custom1, 3],
+      [ArmingMode.custom2, 4],
+      [ArmingMode.custom3, 5],
+      [ArmingMode.off, 6],
+      [ArmingMode.geo, 47],
       [ArmingMode.disarmed, 63],
     ])("%s on a T8410C → p2p-station-scalar cmd 1224, value %i, channel 0", async (mode, value) => {
       const { acts, sent } = bind<ArmingActions>("arming", t8410c);
       await acts.setMode(mode);
       expect(sent).toEqual([{ kind: "p2p-station-scalar", cmd: 1224, value, channel: 0 }]);
-    });
-
-    it.each([
-      ArmingMode.schedule,
-      ArmingMode.custom1,
-      ArmingMode.custom2,
-      ArmingMode.custom3,
-      ArmingMode.off,
-      ArmingMode.geo,
-    ])("%s on a T8410C throws and sends nothing (unconfirmed on the direct frame)", async (mode) => {
-      const { acts, sent } = bind<ArmingActions>("arming", t8410c);
-      await expect(acts.setMode(mode)).rejects.toThrow(/unconfirmed on the direct 1224 frame/);
-      expect(() => buildCommand("armingMode", mode, t8410c)).toThrow(/unconfirmed on the direct 1224 frame/);
-      expect(sent).toEqual([]);
     });
 
     it("buildCommand gives a T8410C the same direct frame", () => {
