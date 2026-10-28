@@ -5,12 +5,12 @@
  * lives here because this is the only layer that may see both: `model/` is barred from importing
  * `transport/`, which is what stops a decoder from growing an opinion about a topic.
  *
- * **The numbering is a default, not a declaration.** `BIZ_CHANNEL` pairs each channel with its field
- * number in `stream.proto`'s `Metadata.ChanIds`, and a device sending a `Metadata` frame announces its
- * OWN numbering, which may differ. No `Metadata` frame has been observed, and the string `ChanIds`
- * appears nowhere in the decompiled app either — so until a capture settles it this maps by the
- * vendor's shipped default. A device that renumbered would be decoded wrongly and would not look
- * wrong, which is why the risk is written down here rather than left in a commit message.
+ * **The numbering is read off a robot's frames, not declared.** `BIZ_CHANNEL` pairs each channel with
+ * the `stream.proto` message its frames' field layout matches. No `Metadata` frame has been observed,
+ * and the string `ChanIds` appears nowhere in the decompiled app, so no device-declared numbering
+ * overrides it. A device that numbered differently would be decoded wrongly: the plane and outline
+ * readers reject a message without the geometry and cells they require, but the room-list and zone
+ * readers accept any well-formed message, so the channel id is what keeps those right.
  *
  * @module client/map-channels
  */
@@ -18,7 +18,8 @@ import { BIZ_CHANNEL } from "../transport/mqtt/biz-stream.js";
 import type { BizChannel, BizMapFrame } from "../transport/mqtt/biz-stream.js";
 import {
   decodeVacuumMap,
-  decodeVacuumPose,
+  decodeVacuumMapBackup,
+  decodeVacuumMapDescription,
   decodeVacuumRestrictedZones,
   decodeVacuumRoomOutline,
   decodeVacuumRoomParams,
@@ -40,24 +41,18 @@ const reader =
   };
 
 /**
- * The channels this SDK reads, by their default id.
+ * The channels this SDK reads, by their {@link BIZ_CHANNEL} id.
  *
- * **`MAP_INFO` is absent, and that is a decision rather than an omission.** Channel 1 carries a bare
- * `MapInfo` — geometry with no cells — and the vendor retired that message's `map_id` field, so a
- * standalone one names no map. The store could not tell whether it belonged with what it holds or with
- * the next map, and geometry attached to the wrong plane misplaces every lookup. The geometry the store
- * does use arrives inside the `Map` frame it belongs to, where the pairing is not in question.
- *
- * `PATH`, `OBSTACLE_INFO`, `TEMPORARY_DATA`, `CRUISE_DATA` and `SCENES` are absent because nothing
- * reads them yet — the first four have no decoder, and scenes already arrive on DP 180. A frame on any
- * of them is reported as undecoded rather than half-read by a decoder written for a different message.
+ * `SCENES` is absent because scenes already arrive on DP 180. A frame on a channel without a reader is
+ * reported as undecoded rather than half-read by a decoder written for a different message.
  */
 const READER_BY_CHANNEL = {
   MAP_DATA: reader("plane", decodeVacuumMap),
   ROOM_OUTLINE: reader("outline", decodeVacuumRoomOutline),
   ROOM_PARAMS: reader("rooms", decodeVacuumRoomParams),
   RESTRICTED_ZONE: reader("zones", decodeVacuumRestrictedZones),
-  DYNAMIC_DATA: reader("pose", decodeVacuumPose),
+  MAP_DESCRIPTION: reader("description", decodeVacuumMapDescription),
+  MAP_BACKUP: reader("backup", decodeVacuumMapBackup),
 } satisfies Partial<Record<BizChannel, ChannelReader>>;
 
 /**
