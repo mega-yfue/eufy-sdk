@@ -221,7 +221,7 @@ export function decodeRecording(frames: readonly RecordingFrame[], eccPrivateKey
       }
     } else if (commandId === CommandType.CMD_AUDIO_FRAME) {
       const mediaKey = decoder.currentMediaKey;
-      if (!mediaKey || raw.length <= 5 || raw[5] !== AUDIO_CODEC_AAC_LC) continue;
+      if (!mediaKey || raw[5] !== AUDIO_CODEC_AAC_LC) continue;
       const aac = openSealedAudio(raw, mediaKey);
       if (aac?.length) audio.push(aac);
     }
