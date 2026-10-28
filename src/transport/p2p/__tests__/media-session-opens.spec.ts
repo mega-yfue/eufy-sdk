@@ -250,7 +250,26 @@ describe("a second live camera on a claimed station session", () => {
     expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(`${STATION_SN}#live:2`);
   });
 
-  /** An abort stops only the aborted caller's wait; a concurrent open of the same camera shares the session. */
+  /** A lone open ended by its own abort leaves nothing to hold the session, so it closes it. */
+  it("closes the media session when its only open aborts", async () => {
+    const r = router();
+    (await openLive(r, CAM_A)).attach();
+    nextSessionConnectsAfterMs = 400;
+    const ac = new AbortController();
+    const aborted = (
+      r as unknown as { sharedLiveSourceFor(s: string, o: object, m: boolean): Promise<unknown> }
+    ).sharedLiveSourceFor(CAM_B, { signal: ac.signal }, true);
+    setTimeout(() => ac.abort(), 100);
+
+    await expect(aborted).rejects.toMatchObject({ name: "AbortError" });
+    expect(built).toHaveLength(2);
+    expect(built[1].closed).toBe(true);
+  });
+
+  /**
+   * An abort stops only the aborted caller's wait; a concurrent open of the same camera shares the session.
+   * The aborting caller is the one that opened the session.
+   */
   it("leaves the media session open for a concurrent open when one caller aborts", async () => {
     const r = router();
     (await openLive(r, CAM_A)).attach();
@@ -263,6 +282,7 @@ describe("a second live camera on a claimed station session", () => {
         true,
       );
     const aborted = open({ signal: ac.signal });
+    await new Promise(setImmediate);
     const other = open({});
     setTimeout(() => ac.abort(), 100);
 

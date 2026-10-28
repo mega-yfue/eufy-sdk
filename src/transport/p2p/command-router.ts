@@ -291,6 +291,10 @@ export class P2PCommandRouter {
    * {@link liveSources} is a claim in flight.
    */
   private readonly liveSessionKeys = new Map<string, string>();
+
+  /** How many {@link openMediaSession} calls are waiting on each media session key. */
+  private readonly mediaSessionWaiters = new Map<string, number>();
+
   /**
    * The open talkback per `${parentSn}:${channel}`, if any. The device plays one audio stream at a
    * time and the session carries one audio sequence, so this path is exclusive where a live pull is
@@ -484,13 +488,16 @@ export class P2PCommandRouter {
    * once. Nothing else releases it: no source holds it, a wired station's session never idles out, and the
    * manager hands the same session to every later open of the camera, so the next open dials a fresh
    * connection instead. A session another open has since replaced is left to its own close. An open ended by
-   * its own `signal` leaves the session open: the abort stops only this wait, and a concurrent open of the same
-   * camera shares the session.
+   * its own `signal` closes the session too, unless another open of the same camera is still waiting on it:
+   * `acquire` shares one session between concurrent opens, so the abort then stops only this wait.
    */
   private async openMediaSession(parentSn: string, channel: number, signal?: AbortSignal): Promise<P2PSession> {
     const mediaKey = P2PCommandRouter.mediaSessionKey(parentSn, channel);
-    const session = await this.openSession(mediaKey, parentSn);
+    const waiters = this.mediaSessionWaiters;
+    waiters.set(mediaKey, (waiters.get(mediaKey) ?? 0) + 1);
+    let session: P2PSession | undefined;
     try {
+      session = await this.openSession(mediaKey, parentSn);
       await this.awaitConnected(session, parentSn, signal);
       let ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal);
       if (!ready && session.repromptLevel2Key()) {
@@ -499,10 +506,15 @@ export class P2PCommandRouter {
       if (!ready) throw new StationKeyUnavailableError(parentSn);
       return session;
     } catch (error) {
-      if (!signal?.aborted && this.manager.get(mediaKey) === session) {
+      const shared = signal?.aborted && waiters.get(mediaKey)! > 1;
+      if (session && !shared && this.manager.get(mediaKey) === session) {
         void this.manager.close(mediaKey).catch((e) => this.reportError(e instanceof Error ? e : new Error(String(e))));
       }
       throw error;
+    } finally {
+      const left = waiters.get(mediaKey)! - 1;
+      if (left > 0) waiters.set(mediaKey, left);
+      else waiters.delete(mediaKey);
     }
   }
 
