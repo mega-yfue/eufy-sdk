@@ -379,6 +379,36 @@ describe("a second live camera on a claimed station session", () => {
     }
   });
 
+  /**
+   * The station's session closing while a build waits on its own connection drops the sibling that
+   * claimed it, and the build then fails. A request that waited on that build files its source on a
+   * session it resolves after the wait, never on the one that closed.
+   */
+  it("files a waiter's source on a live station session after the build it waited on failed", async () => {
+    vi.useFakeTimers();
+    try {
+      const r = router();
+      (await openLive(r, CAM_A)).attach();
+      const closed = built[0];
+
+      nextSessionConnectsAfterMs = Infinity;
+      const building = openLive(r, CAM_B).catch(() => undefined);
+      const waiting = openLive(r, CAM_B);
+      await vi.advanceTimersByTimeAsync(100);
+      await closed.close();
+      await vi.advanceTimersByTimeAsync(CONNECT_TIMEOUT_MS + 400);
+      await building;
+
+      const source = await waiting;
+      source.attach();
+      expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(STATION_SN);
+      expect((source as unknown as { stream: { session: FakeSession } }).stream.session).not.toBe(closed);
+      await r.closeAll();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps independent media delivering when the station-control connection closes", async () => {
     const r = router();
     const a = await openLive(r, CAM_A);

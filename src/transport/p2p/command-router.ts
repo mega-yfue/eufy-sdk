@@ -298,8 +298,9 @@ export class P2PCommandRouter {
    * A build awaits its media session before it can file the source in {@link liveSources}, so a second
    * request for the same camera in that window finds nothing cached. Building a second source there
    * overwrites the first, and the orphan's teardown then closes the connection the cached one streams
-   * on. A request that finds a build here waits for it, until its own signal aborts, and reuses what it
-   * filed, or builds its own when that build failed.
+   * on. A request that finds a build here waits for it, until its own signal aborts, then resolves its
+   * session again and reuses what the build filed, or builds its own when that build failed. The entry
+   * is removed when the build settles and its promise never rejects, so each wait ends on a later state.
    */
   private readonly liveSourceBuilds = new Map<string, Promise<void>>();
   /**
@@ -1071,8 +1072,11 @@ export class P2PCommandRouter {
       signal: opts.signal,
     });
     const key = `${parentSn}:${channel}`;
-    for (let build = this.liveSourceBuilds.get(key); build; build = this.liveSourceBuilds.get(key))
+    const build = this.liveSourceBuilds.get(key);
+    if (build) {
       await abortable(build, opts.signal);
+      return this.sharedLiveSourceFor(sn, opts, mayOpenOwnSession);
+    }
     let source = this.liveSources.get(key);
     if (source && source.state === "stopped") {
       this.dropLiveSource(key);
