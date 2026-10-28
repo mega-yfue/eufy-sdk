@@ -67,6 +67,25 @@ describe("a media start the device never acknowledged", () => {
     expect(frames).toHaveLength(1);
   });
 
+  it("re-issues on one ticker however many times it warms again, and leaves none running once disposed", async () => {
+    vi.useFakeTimers();
+    try {
+      const { src, streams } = source({ warmRetryMs: 20 });
+      src.attach().on("error", () => undefined);
+      streams[0]!.emit("unacknowledged");
+      src.rewarm();
+      src.rewarm();
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(streams.at(-1)!.nudged).toBe(5);
+
+      src.dispose();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("asks once, however many starts are abandoned before the replacement arrives", async () => {
     const { src, streams, onSessionUnreachable } = source();
     src.attach().on("error", () => undefined);
