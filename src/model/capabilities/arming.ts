@@ -164,11 +164,21 @@ const DIRECT_ARMING_MODELS: ReadonlySet<string> = new Set(["T8410C"]);
  * session's own level ({@link STATION_CHANNEL}, `form` `"auto"`): the same 132-byte body as
  * {@link DIRECT_ARMING_MODELS}. A standalone T8410's session is level-1, and it leaves the `1350` set-payload
  * envelope unapplied: the write is sent, and param 1224 keeps the old mode through the 20 s readback.
- * Disarmed (63) was sent as this frame live on 2026-10-28, on a level-1 session: param 1151 in the camera's
- * own 1103 report moved from Away (0) to 63, and the readback converged. Only the modes in
- * {@link DIRECT_ARMING_MODES} are written.
+ * Away (0), Home (1), Schedule (2), Geofencing (47) and Disarmed (63) were each sent as this frame live on
+ * 2026-10-28, on a level-1 session, and each was confirmed applied; for Disarmed, param 1151 in the
+ * camera's own 1103 report moved from 0 to 63 and the readback converged. Only the modes in
+ * {@link BROADCAST_ARMING_MODES} are written.
  */
 const BROADCAST_ARMING_MODELS: ReadonlySet<string> = new Set(["T8410"]);
+
+/** The modes confirmed on the broadcast-channel frame; any other throws. */
+const BROADCAST_ARMING_MODES: ReadonlySet<ArmingMode> = new Set<ArmingMode>([
+  "away",
+  "home",
+  "schedule",
+  "geo",
+  "disarmed",
+]);
 
 /** The modes confirmed on the direct frame; any other throws. */
 const DIRECT_ARMING_MODES: ReadonlySet<ArmingMode> = new Set<ArmingMode>(["away", "home", "disarmed"]);
@@ -280,7 +290,7 @@ function armingCommand(mode: ArmingMode, ctx: CommandContext): Command {
   const model = ctx.model ?? "";
   const broadcast = BROADCAST_ARMING_MODELS.has(model);
   if (broadcast || DIRECT_ARMING_MODELS.has(model)) {
-    if (!DIRECT_ARMING_MODES.has(mode)) {
+    if (!(broadcast ? BROADCAST_ARMING_MODES : DIRECT_ARMING_MODES).has(mode)) {
       throw new Error(`arming: mode ${mode} is unconfirmed on the direct 1224 frame [${describeDevice(ctx)}]`);
     }
     return broadcast
@@ -450,8 +460,8 @@ export const ARMING_MEMBERS = {
       "Guard mode (verified: param 1224 = GUARD_MODE, read/write mechanism confirmed). Reads and SETS all " +
       "9 modes the app defines — away/home/schedule/custom1/custom2/custom3/off/geo/disarmed. Three are " +
       "byte-captured writes and six are live-confirmed (each sent and observed to report its own " +
-      "MODE_SWITCH); see ARMING_MODE_WIRE in arming.ts for the per-value evidence. On a T8410C and a " +
-      "T8410 only away, home and disarmed are writable.",
+      "MODE_SWITCH); see ARMING_MODE_WIRE in arming.ts for the per-value evidence. On a T8410C only " +
+      "away, home and disarmed are writable; on a T8410 also schedule and geo.",
     observation: {
       event: "armingModeChanged",
       reflects: (value) => ({ param: ARMING_CMD.SET_ARMING, expected: ARMING_MODE_WIRE[armingModeOf(value)!] }),

@@ -212,33 +212,36 @@ describe("arming capability module", () => {
         channel: 0,
       });
     });
+  });
 
-    /**
-     * On a T8410 the guard mode is the same direct 1224 body on the station broadcast channel 255, sealed at
-     * the session's level. The fixture identity is synthetic.
-     */
-    describe("setMode on a T8410 (direct 1224 frame, channel 255)", () => {
-      const t8410: CommandContext = { ...ctx, model: "T8410" };
+  /**
+   * On a T8410 the guard mode is the same direct 1224 body on the station broadcast channel 255, sealed at
+   * the session's level. Away, Home, Schedule, Geofencing and Disarmed were confirmed live on 2026-10-28;
+   * the fixture identity is synthetic.
+   */
+  describe("setMode on a T8410 (direct 1224 frame, channel 255)", () => {
+    const t8410: CommandContext = { ...ctx, model: "T8410" };
 
-      it.each([
-        [ArmingMode.away, 0],
-        [ArmingMode.home, 1],
-        [ArmingMode.disarmed, 63],
-      ])("%s on a T8410 → p2p-station-scalar cmd 1224, value %i, channel 255, auto seal", async (mode, value) => {
-        const { acts, sent } = bind<ArmingActions>("arming", t8410);
-        await acts.setMode(mode);
-        expect(sent).toEqual([{ kind: "p2p-station-scalar", cmd: 1224, value, channel: 255, form: "auto" }]);
-      });
-
-      it.each([ArmingMode.schedule, ArmingMode.custom1, ArmingMode.off, ArmingMode.geo])(
-        "%s on a T8410 throws and sends nothing",
-        async (mode) => {
-          const { acts, sent } = bind<ArmingActions>("arming", t8410);
-          await expect(acts.setMode(mode)).rejects.toThrow(/unconfirmed on the direct 1224 frame/);
-          expect(sent).toEqual([]);
-        },
-      );
+    it.each([
+      [ArmingMode.away, 0],
+      [ArmingMode.home, 1],
+      [ArmingMode.schedule, 2],
+      [ArmingMode.geo, 47],
+      [ArmingMode.disarmed, 63],
+    ])("%s on a T8410 → p2p-station-scalar cmd 1224, value %i, channel 255, auto seal", async (mode, value) => {
+      const { acts, sent } = bind<ArmingActions>("arming", t8410);
+      await acts.setMode(mode);
+      expect(sent).toEqual([{ kind: "p2p-station-scalar", cmd: 1224, value, channel: 255, form: "auto" }]);
     });
+
+    it.each([ArmingMode.custom1, ArmingMode.custom2, ArmingMode.custom3, ArmingMode.off])(
+      "%s on a T8410 throws and sends nothing",
+      async (mode) => {
+        const { acts, sent } = bind<ArmingActions>("arming", t8410);
+        await expect(acts.setMode(mode)).rejects.toThrow(/unconfirmed on the direct 1224 frame/);
+        expect(sent).toEqual([]);
+      },
+    );
   });
 
   it("ARMING_CMD names the wire ids (no bare literals)", () => {
