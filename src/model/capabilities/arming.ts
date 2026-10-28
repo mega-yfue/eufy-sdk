@@ -164,7 +164,10 @@ const DIRECT_ARMING_MODELS: ReadonlySet<string> = new Set(["T8410C"]);
  * session's own level ({@link STATION_CHANNEL}, `form` `"auto"`): the same 132-byte body as
  * {@link DIRECT_ARMING_MODELS}. A standalone T8410's session is level-1, and it leaves the `1350` set-payload
  * envelope unapplied: the write is sent, and param 1224 keeps the old mode through the 20 s readback.
- * Pending live confirmation on a T8410; only the modes in {@link DIRECT_ARMING_MODES} are written.
+ * Away (0), Home (1), Schedule (2), Geofencing (47) and Disarmed (63) were each sent as this frame live on
+ * 2026-10-28, on a level-1 session, and each was confirmed applied; for Disarmed, param 1151 in the
+ * camera's own 1103 report moved from 0 to 63 and the readback converged. The frame carries the same
+ * `mode_type` integers as the envelope, so every mode in {@link ARMING_MODE_WIRE} is written.
  */
 const BROADCAST_ARMING_MODELS: ReadonlySet<string> = new Set(["T8410"]);
 
@@ -276,8 +279,10 @@ function armingCommand(mode: ArmingMode, ctx: CommandContext): Command {
     throw new Error(`arming: missing account identity (user_name) [${describeDevice(ctx)}]`);
   }
   const model = ctx.model ?? "";
-  const broadcast = BROADCAST_ARMING_MODELS.has(model);
-  if (broadcast || DIRECT_ARMING_MODELS.has(model)) {
+  if (BROADCAST_ARMING_MODELS.has(model)) {
+    return setStationScalar(ARMING_CMD.SET_ARMING, ARMING_MODE_WIRE[mode], STATION_CHANNEL, "auto");
+  }
+  if (DIRECT_ARMING_MODELS.has(model)) {
     if (!DIRECT_ARMING_MODES.has(mode)) {
       throw new Error(`arming: mode ${mode} is unconfirmed on the direct 1224 frame [${describeDevice(ctx)}]`);
     }
