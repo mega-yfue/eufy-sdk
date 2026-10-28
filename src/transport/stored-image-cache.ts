@@ -50,7 +50,11 @@ export class StoredImageCache {
   private readonly activeDevices = new Set<string>();
   private activeDownloads = 0;
   private generation = 0;
-  /** Bumped by {@link clearLifecycleErrors}; a lifecycle failure from a download started under an older count is ignored. */
+  /**
+   * Bumped by {@link clearLifecycleErrors}. A lifecycle failure from a download started under an older
+   * count is not recorded; the candidate is queued again, unless a newer one is already queued, so the
+   * current session fetches it.
+   */
   private lifecycle = 0;
 
   constructor(
@@ -154,6 +158,8 @@ export class StoredImageCache {
         if (lifecycle === this.lifecycle) {
           state.lifecycleError = error;
           state.reason = undefined;
+        } else {
+          state.queued ??= candidate;
         }
       } else if (image === undefined && this.retryLater(state, candidate, error)) {
         state.lifecycleError = undefined;

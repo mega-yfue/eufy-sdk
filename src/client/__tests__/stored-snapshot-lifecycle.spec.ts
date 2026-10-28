@@ -283,13 +283,30 @@ describe("stored snapshot client lifecycle", () => {
     const image = jpeg("before-expiry");
     const action = await retainImage(client, image);
     const download = Promise.withResolvers<Buffer>();
-    client.download.mockReturnValue(download.promise);
+    client.download.mockReturnValueOnce(download.promise).mockReturnValueOnce(new Promise<Buffer>(() => {}));
     await client.internals.observeStoredImage({ ...exactCandidate(), url: `${IMAGE_URL}?next` });
 
     await client.eufy.login();
     download.reject(new SessionExpiredError("session expired"));
     await new Promise(setImmediate);
 
+    await expect(action()).resolves.toBe(image);
+  });
+
+  it("fetches again a download that began before a same-account login and failed with a session error", async () => {
+    const client = makeClient();
+    await client.eufy.login();
+    const action = await storedSnapshotAction(client.eufy);
+    const image = jpeg("after-login");
+    const download = Promise.withResolvers<Buffer>();
+    client.download.mockReturnValueOnce(download.promise).mockResolvedValueOnce(image);
+    await client.internals.observeStoredImage(exactCandidate());
+
+    await client.eufy.login();
+    download.reject(new SessionExpiredError("session expired"));
+    await new Promise(setImmediate);
+
+    expect(client.download).toHaveBeenCalledTimes(2);
     await expect(action()).resolves.toBe(image);
   });
 });
