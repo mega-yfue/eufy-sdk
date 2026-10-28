@@ -884,8 +884,9 @@ export class P2PSession extends EventEmitter {
    * Open the socket and start the lookup → hole-punch handshake.
    *
    * A socket closed while binding never invokes its bind callback, so the bind wait also settles on the
-   * socket's `close`, and a connect whose session was closed or reconnected meanwhile returns without
-   * starting the handshake.
+   * socket's `close`. After each await (the socket bind and the punch-probe binds), a connect whose
+   * session was closed or reconnected meanwhile returns without starting the handshake, so it never
+   * sends a lookup or arms a timer that belongs to the newer connection.
    */
   async connect(): Promise<void> {
     if (this.connecting || this.connected) return;
@@ -935,7 +936,7 @@ export class P2PSession extends EventEmitter {
       });
     }
     if (this.cloudLookup) await this.startPunchProbes();
-    if (this.closed) return;
+    if (generation !== this.connectionGeneration) return;
     this.trace({
       phase: "lookup-channels",
       local: !this.cfg.noBroadcast || this.cfg.localAddress !== undefined,
