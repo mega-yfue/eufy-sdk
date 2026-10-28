@@ -91,3 +91,46 @@ describe("standalone session recycle", () => {
     await vi.waitFor(() => expect(unacknowledged).toHaveBeenCalledWith(failure));
   });
 });
+
+/**
+ * A station ends its own session when it reboots or updates firmware. The router reports that close
+ * through its `onClose` dependency, which is driven directly here.
+ */
+describe("wired station closed by the station", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.useFakeTimers();
+    return () => vi.useRealTimers();
+  });
+
+  const stationClosed = (eufy: EufyMega) => (eufy as any).p2p.deps.onClose(SOLO_WIRED_SN);
+
+  it("reopens it with a backoff, and a close during the loop does not start a second one", async () => {
+    const { eufy, open } = makeClient();
+    eufy.on("error", () => {});
+    open.mockRejectedValueOnce(new Error("connect timeout")).mockResolvedValue(undefined);
+
+    stationClosed(eufy);
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(open).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(open).toHaveBeenCalledTimes(1);
+
+    stationClosed(eufy);
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(open).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(open).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(3_600_000);
+    expect(open).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops reopening once the client disconnects", async () => {
+    const { eufy, open } = makeClient();
+    stationClosed(eufy);
+    await eufy.disconnect();
+    await vi.advanceTimersByTimeAsync(3_600_000);
+    expect(open).not.toHaveBeenCalled();
+  });
+});

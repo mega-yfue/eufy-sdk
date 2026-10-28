@@ -176,7 +176,7 @@ const SESSION_RECYCLE_WAIT_MS = 5_000;
 /**
  * Backoff bounds for bringing push up again after its startup attempt failed: the first retry waits the
  * minimum, each following one doubles, capped at the maximum — the same ten-minute ceiling the MCS
- * socket's own reconnect backs off to.
+ * socket's own reconnect backs off to. The same bounds pace reopening a wired station's closed session.
  */
 const PUSH_RETRY_MIN_MS = 30_000;
 const PUSH_RETRY_MAX_MS = 600_000;
@@ -339,6 +339,8 @@ export class EufyMega extends EventEmitter {
   private readonly pollTimer = new Timer();
   /** Armed while a failed push bring-up waits to be retried; cancelled by {@link disconnect}. */
   private readonly pushRetryTimer = new Timer();
+  /** Per wired station, the reopen loop {@link retryWiredStation} runs after its session closed; cleared by {@link disconnect}. */
+  private readonly wiredReopenTimers = new Map<string, Timer>();
 
   constructor(opts: EufyMegaOptions) {
     super();
@@ -379,7 +381,10 @@ export class EufyMega extends EventEmitter {
         await this.registry.getDevices();
       },
       onConnect: (sn) => this.emit("p2pConnect", sn),
-      onClose: (sn) => this.emit("p2pClose", sn),
+      onClose: (sn) => {
+        this.emit("p2pClose", sn);
+        if (!this.wiredReopenTimers.has(sn)) this.retryWiredStation(sn);
+      },
       onError: (e) => this.reportError(e),
       onLevel2Ready: (sn, cipherId) => this.emit("p2pLevel2Ready", { stationSn: sn, cipherId }),
       onFrame: (stationSn, f) => this.onP2PFrame(stationSn, f),
@@ -866,7 +871,7 @@ export class EufyMega extends EventEmitter {
   private recycleStandaloneSession(sn: string): Promise<void> {
     const releaseWrite = new Promise<void>((resolve) => void setTimeout(resolve, SESSION_RECYCLE_WAIT_MS).unref?.());
     return Promise.race([
-      this.p2p.resetStandaloneSession(sn).finally(() => this.reopenWiredStation(sn)),
+      this.p2p.resetStandaloneSession(sn).finally(() => void this.reopenWiredStation(sn)?.catch(() => {})),
       releaseWrite.then(() =>
         this.opts.logger?.debug(
           `[session ${sn}] recycle still waiting on an attached viewer — releasing the write that asked for it`,
@@ -875,14 +880,49 @@ export class EufyMega extends EventEmitter {
     ]);
   }
 
-  /** Reopen a wired station that {@link recycleStandaloneSession} closed, while the generation that warmed it is current. */
-  private reopenWiredStation(sn: string): void {
+  /**
+   * Reopen a wired station's persistent session while the generation that warmed it is current.
+   *
+   * Answers the open, or `undefined` when no generation is current or `sn` is not a wired station of the
+   * roster. A failed open is reported and rejects; one ended by the generation's abort resolves silently.
+   */
+  private reopenWiredStation(sn: string): Promise<void> | undefined {
     const generation = this.realtimeGeneration;
     if (generation?.epoch !== this.realtimeEpoch) return;
     if (this.p2p.stationKeyOf(sn) !== sn || !this.registry.p2pDevices().some((d) => d.sn === sn)) return;
     if (this.stationPower(sn) !== "wired") return;
-    void this.p2p.ensureStation(sn, generation.abort.signal).catch((error) => {
-      if (!generation.abort.signal.aborted) this.reportError(error);
+    return this.p2p.ensureStation(sn, generation.abort.signal).catch((error) => {
+      if (generation.abort.signal.aborted) return;
+      this.reportError(error);
+      throw error;
+    });
+  }
+
+  /**
+   * Reopen a station whose session closed, through {@link reopenWiredStation}, backing off from
+   * {@link PUSH_RETRY_MIN_MS} doubling to {@link PUSH_RETRY_MAX_MS} until an attempt connects, the
+   * station no longer qualifies, or the generation is aborted.
+   *
+   * A station ends the session itself when it reboots or updates its firmware, and stays unreachable
+   * for a while after. The first attempt therefore waits the minimum as well. One loop runs per station,
+   * and a close while it runs (its own failed attempt's included) does not start a second. A close made
+   * by {@link recycleStandaloneSession} reaches here too. That recycle reopens the station itself once
+   * the close settles, so this loop's first attempt joins that session, open or opening, rather than dialling
+   * a second.
+   */
+  private retryWiredStation(sn: string, delayMs = PUSH_RETRY_MIN_MS): void {
+    const timer = this.wiredReopenTimers.get(sn) ?? new Timer();
+    this.wiredReopenTimers.set(sn, timer);
+    const end = () => {
+      if (this.wiredReopenTimers.get(sn) === timer) this.wiredReopenTimers.delete(sn);
+    };
+    timer.arm(delayMs, () => {
+      const open = this.reopenWiredStation(sn);
+      if (!open) return end();
+      open.then(end, () => {
+        if (this.wiredReopenTimers.get(sn) === timer)
+          this.retryWiredStation(sn, Math.min(delayMs * 2, PUSH_RETRY_MAX_MS));
+      });
     });
   }
 
@@ -2525,6 +2565,8 @@ export class EufyMega extends EventEmitter {
   private async teardownRealtime(): Promise<void> {
     this.pollTimer.cancel();
     this.pushRetryTimer.cancel();
+    for (const timer of this.wiredReopenTimers.values()) timer.cancel();
+    this.wiredReopenTimers.clear();
     this.lastStateAnnounced.clear();
     await this.closeMqttTransports();
     this.rtc.close();
