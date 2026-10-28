@@ -126,11 +126,13 @@ describe("wired station closed by the station", () => {
     expect(open).toHaveBeenCalledTimes(2);
   });
 
-  it("stops reopening once the client disconnects", async () => {
+  it("cancels the pending reopen when the client disconnects, so a new login does not inherit it", async () => {
     const { eufy, open } = makeClient();
     stationClosed(eufy);
     await eufy.disconnect();
+    (eufy as any).ensureRealtimeGeneration();
     await vi.advanceTimersByTimeAsync(3_600_000);
     expect(open).not.toHaveBeenCalled();
+    expect((eufy as any).wiredReopenTimers.size).toBe(0);
   });
 });
