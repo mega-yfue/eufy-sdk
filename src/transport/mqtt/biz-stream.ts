@@ -40,13 +40,12 @@ export const BIZ_PROTOCOL = {
  *
  * Each id is paired with the `stream.proto` message whose field layout its frames carry, which is not
  * the field-number order of `Metadata.ChanIds`: the cell plane (`Map`) arrives on 2, its room outline
- * on 4, the room list on 5, the restricted zones on 6, the map's `MapDescription` on 60 and a whole
- * `MapBackup` on 68. A `Metadata` frame would declare a device's own numbering; none has been seen,
+ * on 4, the room list on 5, the restricted zones on 6, the robot's pose (`DynamicData`) on 7, the map's
+ * `MapDescription` on 60 and a whole `MapBackup` on 68. A `Metadata` frame would declare a device's own numbering; none has been seen,
  * so none is read, and this table is the numbering every frame is read by.
  *
  * Only channels whose message is identified are listed. A channel whose frames carry too little to
- * identify — an empty message, or two bare integers — is absent, and so is the robot's pose until a
- * frame carrying one is seen.
+ * identify, or that carries a message nothing here reads, is absent.
  *
  * Channel 0 is not in `ChanIds` at all: the app hard-codes it, routing it to a scene-data event rather
  * than a map one, and asks for the scene list on it by number.
@@ -58,6 +57,7 @@ export const BIZ_CHANNEL = {
   ROOM_OUTLINE: 4,
   ROOM_PARAMS: 5,
   RESTRICTED_ZONE: 6,
+  DYNAMIC_DATA: 7,
   MAP_DESCRIPTION: 60,
   MAP_BACKUP: 68,
 } as const;

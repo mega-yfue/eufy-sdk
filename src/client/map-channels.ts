@@ -20,6 +20,7 @@ import {
   decodeVacuumMap,
   decodeVacuumMapBackup,
   decodeVacuumMapDescription,
+  decodeVacuumPose,
   decodeVacuumRestrictedZones,
   decodeVacuumRoomOutline,
   decodeVacuumRoomParams,
@@ -51,6 +52,7 @@ const READER_BY_CHANNEL = {
   ROOM_OUTLINE: reader("outline", decodeVacuumRoomOutline),
   ROOM_PARAMS: reader("rooms", decodeVacuumRoomParams),
   RESTRICTED_ZONE: reader("zones", decodeVacuumRestrictedZones),
+  DYNAMIC_DATA: reader("pose", decodeVacuumPose),
   MAP_DESCRIPTION: reader("description", decodeVacuumMapDescription),
   MAP_BACKUP: reader("backup", decodeVacuumMapBackup),
 } satisfies Partial<Record<BizChannel, ChannelReader>>;
