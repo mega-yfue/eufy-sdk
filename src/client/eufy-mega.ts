@@ -2373,6 +2373,9 @@ export class EufyMega extends EventEmitter {
    * Returns the connected client rather than installing it. Registration can outlive a `disconnect()`,
    * and {@link ensureRealtime} owns the decision of whether a finished bring-up is still the current
    * one — so this never overwrites a channel a later login already brought up.
+   *
+   * Persisting the seen ids after each push reports a failed `save` through `error` rather than throwing:
+   * the push handler runs inside the MCS socket's `data` callback, where a throw is an uncaught exception.
    */
   private async startPush(signal?: AbortSignal): Promise<PushClient> {
     if (!this.mega.auth) throw new Error("login() first");
@@ -2424,7 +2427,11 @@ export class EufyMega extends EventEmitter {
         const dsn = (out.payload.deviceSn as string | undefined) ?? ev.deviceSn;
         if (dsn) this.prewarmForEvent(out.event, dsn);
       }
-      store.save({ creds: persistedCreds, persistentIds: client.getPersistentIds() });
+      try {
+        store.save({ creds: persistedCreds, persistentIds: client.getPersistentIds() });
+      } catch (e) {
+        this.reportError(e);
+      }
     });
     await new Promise<void>((resolve, reject) => {
       const cleanup = () => {
