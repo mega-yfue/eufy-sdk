@@ -1027,11 +1027,14 @@ export class EufyMega extends EventEmitter {
   /**
    * On a successful login, kick off auto-realtime (unless `autoRealtime:false`). Fire-and-forget so
    * `login()` returns as soon as the session is ready — realtime channels come up in the background and
-   * surface failures via `error`. Idempotent through the retained generation promise.
+   * surface failures via `error`. Idempotent through the retained generation promise. A login for a
+   * different account drops every stored image; one for the same account drops only the lifecycle
+   * failures recorded against the session it replaces.
    */
   private afterLogin(result: LoginResult): LoginResult {
     if (result.status === LoginStatus.Ok) {
       if (this.storedImageAccount && this.storedImageAccount !== result.session.userId) this.storedImages?.clear();
+      else this.storedImages?.clearLifecycleErrors();
       this.storedImageAccount = result.session.userId;
       const auth = this.mega.auth;
       if (auth?.userId) this.tuya.bind(auth.userId, this.mega.regionShard, this.opts.countryCode);

@@ -105,6 +105,17 @@ export class StoredImageCache {
     return Promise.reject(new StoredSnapshotUnavailableError(reason, "No stored snapshot is available"));
   }
 
+  /**
+   * Forget every device's recorded lifecycle failure, keeping retained bytes and candidate state.
+   *
+   * A lifecycle failure describes the session that was current when the download ran, so it no longer
+   * holds once a login succeeds again; {@link snapshotStored} then answers from the retained image, or
+   * with the reason a stored image is absent.
+   */
+  clearLifecycleErrors(): void {
+    for (const state of this.devices.values()) state.lifecycleError = undefined;
+  }
+
   /** Invalidate all retained and candidate state. */
   clear(): void {
     this.generation += 1;

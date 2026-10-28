@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PersistedSession, SessionStore } from "../../core/store.js";
 import type { EufyDevice } from "../../core/types.js";
 import type { ThumbnailCandidate } from "../../transport/push/types.js";
-import { LoginStatus, type LoginResult } from "../../transport/http/mega-client.js";
+import { LoginStatus, SessionExpiredError, type LoginResult } from "../../transport/http/mega-client.js";
 import { PushClient } from "../../transport/push/push-client.js";
 import { EufyMega } from "../eufy-mega.js";
 import { LiveSnapshotUnavailableError } from "../../core/contracts.js";
@@ -260,6 +260,21 @@ describe("stored snapshot client lifecycle", () => {
     await client.eufy.login();
 
     await expect(action()).rejects.toMatchObject({ reason: "not-observed" });
+  });
+
+  it("a successful login for the same account clears a session failure and keeps the retained bytes", async () => {
+    const client = makeClient();
+    await client.eufy.login();
+    const image = jpeg("before-expiry");
+    const action = await retainImage(client, image);
+    const expired = new SessionExpiredError("session expired");
+    client.download.mockRejectedValue(expired);
+    await client.internals.observeStoredImage({ ...exactCandidate(), url: `${IMAGE_URL}?next` });
+    await vi.waitFor(async () => expect(action()).rejects.toBe(expired));
+
+    await client.eufy.login();
+
+    await expect(action()).resolves.toBe(image);
   });
 });
 
