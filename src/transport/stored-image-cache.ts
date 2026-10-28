@@ -50,6 +50,8 @@ export class StoredImageCache {
   private readonly activeDevices = new Set<string>();
   private activeDownloads = 0;
   private generation = 0;
+  /** Bumped by {@link clearLifecycleErrors}; a lifecycle failure from a download started under an older count is ignored. */
+  private lifecycle = 0;
 
   constructor(
     private readonly downloader: (url: string, deviceKey: string) => Promise<Buffer>,
@@ -110,9 +112,10 @@ export class StoredImageCache {
    *
    * A lifecycle failure describes the session that was current when the download ran, so it no longer
    * holds once a login succeeds again; {@link snapshotStored} then answers from the retained image, or
-   * with the reason a stored image is absent.
+   * with the reason a stored image is absent. A download in flight across the call cannot record one.
    */
   clearLifecycleErrors(): void {
+    this.lifecycle += 1;
     for (const state of this.devices.values()) state.lifecycleError = undefined;
   }
 
@@ -133,22 +136,25 @@ export class StoredImageCache {
       state.inFlight = candidate;
       this.activeDownloads += 1;
       this.activeDevices.add(candidate.deviceKey);
+      const lifecycle = this.lifecycle;
       void this.downloader(candidate.url, candidate.deviceKey).then(
-        (image) => this.complete(candidate, image),
-        (error: unknown) => this.complete(candidate, undefined, error),
+        (image) => this.complete(candidate, lifecycle, image),
+        (error: unknown) => this.complete(candidate, lifecycle, undefined, error),
       );
     }
   }
 
-  private complete(candidate: Candidate, image: Buffer | undefined, error?: unknown): void {
+  private complete(candidate: Candidate, lifecycle: number, image: Buffer | undefined, error?: unknown): void {
     this.activeDownloads -= 1;
     this.activeDevices.delete(candidate.deviceKey);
     const state = this.devices.get(candidate.deviceKey);
     if (candidate.generation === this.generation && state?.inFlight === candidate) {
       state.inFlight = undefined;
       if (error !== undefined && this.isLifecycleError(error)) {
-        state.lifecycleError = error;
-        state.reason = undefined;
+        if (lifecycle === this.lifecycle) {
+          state.lifecycleError = error;
+          state.reason = undefined;
+        }
       } else if (image === undefined && this.retryLater(state, candidate, error)) {
         state.lifecycleError = undefined;
       } else if (image === undefined) {
