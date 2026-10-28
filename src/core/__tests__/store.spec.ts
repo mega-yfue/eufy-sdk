@@ -18,9 +18,6 @@ import { FileFcmStore } from "../../transport/push/store.js";
 /** A write that dies part-way, as a full disk or a killed process leaves it. */
 const partialWrite = vi.hoisted(() => ({ armed: false }));
 
-/** A chmod the process is not allowed to make, as on a file another user owns. */
-const chmodRefused = vi.hoisted(() => ({ armed: false }));
-
 vi.mock("node:fs", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs")>();
   return {
@@ -31,16 +28,12 @@ vi.mock("node:fs", async (importOriginal) => {
       real.writeFileSync(file, String(data).slice(0, 5), opts);
       throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
     },
-    chmodSync: (...args: Parameters<typeof real.chmodSync>) => {
-      if (!chmodRefused.armed) return real.chmodSync(...args);
-      throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
-    },
   };
 });
 
 /**
  * Both file stores keep a complete, owner-only record on disk: a write that fails part-way leaves the
- * previous record readable, and every save leaves the file at `0o600`, including one that existed first.
+ * previous record readable, and every atomic save leaves the file at `0o600`, including one that existed first.
  */
 describe.each([
   ["FileSessionStore", (p: string) => new FileSessionStore<unknown>(p)],
@@ -48,7 +41,6 @@ describe.each([
 ])("%s", (_name, make) => {
   afterEach(() => {
     partialWrite.armed = false;
-    chmodRefused.armed = false;
   });
 
   const fresh = () => join(mkdtempSync(join(tmpdir(), "store-spec-")), "s.json");
@@ -121,29 +113,7 @@ describe.each([
       }
 
       expect(JSON.parse(readFileSync(path, "utf-8"))).toEqual({ token: "t" });
-      expect(statSync(path).mode & 0o777).toBe(0o600);
       expect(readdirSync(dir)).toEqual(["s.json"]);
-    },
-  );
-
-  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
-    "saves in place when the mode cannot be changed",
-    () => {
-      const path = fresh();
-      writeFileSync(path, "{}", { mode: 0o644 });
-      chmodSync(path, 0o644);
-      const dir = join(path, "..");
-      chmodSync(dir, 0o555);
-      chmodRefused.armed = true;
-      try {
-        make(path).save({ token: "t" });
-      } finally {
-        chmodRefused.armed = false;
-        chmodSync(dir, 0o755);
-      }
-
-      expect(JSON.parse(readFileSync(path, "utf-8"))).toEqual({ token: "t" });
-      expect(statSync(path).mode & 0o777).toBe(0o644);
     },
   );
 });

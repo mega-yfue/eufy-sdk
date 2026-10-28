@@ -9,7 +9,6 @@
  */
 import { randomUUID } from "node:crypto";
 import {
-  chmodSync,
   lstatSync,
   mkdirSync,
   readFileSync,
@@ -111,9 +110,8 @@ function realTarget(path: string): string {
  * old one until the rename, the new one after — and the symlink itself stays in place. When the directory
  * refuses the temp file or the rename (`EACCES`, `EPERM`, `EBUSY`, `EXDEV`, `EROFS`: a read-only directory
  * around a writable file, a single-file bind mount), `save` rewrites the file in place instead, which is
- * not atomic, and tightens it to mode `0o600` when the process may change its mode, leaving the mode as it
- * was otherwise. The atomic path always leaves `0o600`, whatever mode an existing file had. Any other
- * failure removes the temp file and throws.
+ * not atomic and keeps an existing file's mode. The atomic path always leaves `0o600`, whatever mode an
+ * existing file had. Any other failure removes the temp file and throws.
  */
 export class FileSessionStore<T = PersistedSession> implements SessionStore<T> {
   constructor(private readonly path: string) {}
@@ -140,11 +138,6 @@ export class FileSessionStore<T = PersistedSession> implements SessionStore<T> {
       rmSync(tmp, { force: true });
       if (!IN_PLACE_CODES.has((e as NodeJS.ErrnoException).code ?? "")) throw e;
       writeFileSync(target, data, { mode: 0o600 });
-      try {
-        chmodSync(target, 0o600);
-      } catch {
-        /* not the file's owner */
-      }
     }
   }
   clear(): void {
