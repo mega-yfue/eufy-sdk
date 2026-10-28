@@ -7,7 +7,7 @@
  * of it and go straight to data calls — no estimate_domain, no key/exchange, no
  * login, no 2FA — until the token expires (or a call 401s, which clears it).
  */
-import { mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { RegionShard } from "../transport/http/mega-client.js";
 
@@ -69,7 +69,14 @@ export class MemorySessionStore<T = PersistedSession> implements SessionStore<T>
   }
 }
 
-/** JSON-file store, e.g. new FileSessionStore("./.eufy-session.json"). */
+/**
+ * JSON-file store, e.g. new FileSessionStore("./.eufy-session.json").
+ *
+ * `save` writes a fresh owner-only (`0o600`) temp file beside the target and renames it over the target,
+ * so the file on disk is always a complete record — the old one until the rename, the new one after — and
+ * always carries that mode, whatever mode an existing file had. A failed write removes the temp file and
+ * throws, leaving the previous record in place.
+ */
 export class FileSessionStore<T = PersistedSession> implements SessionStore<T> {
   constructor(private readonly path: string) {}
   load(): T | null {
@@ -85,7 +92,15 @@ export class FileSessionStore<T = PersistedSession> implements SessionStore<T> {
     } catch {
       /* dir exists */
     }
-    writeFileSync(this.path, JSON.stringify(s, null, 2), { mode: 0o600 });
+    const tmp = `${this.path}.${process.pid}.tmp`;
+    try {
+      rmSync(tmp, { force: true });
+      writeFileSync(tmp, JSON.stringify(s, null, 2), { mode: 0o600, flag: "wx" });
+      renameSync(tmp, this.path);
+    } catch (e) {
+      rmSync(tmp, { force: true });
+      throw e;
+    }
   }
   clear(): void {
     try {
