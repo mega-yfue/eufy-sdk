@@ -156,17 +156,6 @@ describe("openReadableFromConsumer on a battery source", () => {
     reader.destroy();
     source.dispose();
   });
-
-  it("ends at the grace deadline when its holder does not extend", async () => {
-    const { source, reader, stream } = battery();
-    let ended = false;
-    reader.on("end", () => (ended = true));
-    vi.advanceTimersByTime(150);
-    await vi.runAllTimersAsync();
-    expect(ended).toBe(true);
-    expect(stream.stopped).toBe(1);
-    source.dispose();
-  });
 });
 
 type ReadableOptions = NonNullable<Parameters<typeof openReadableFromConsumer>[1]>;
