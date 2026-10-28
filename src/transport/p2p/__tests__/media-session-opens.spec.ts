@@ -33,6 +33,7 @@ class FakeSession extends EventEmitter {
   opts: Record<string, unknown>;
   hasKey: boolean;
   connectsAfterMs: number;
+  closed = false;
   constructor(opts: Record<string, unknown>) {
     super();
     this.opts = opts;
@@ -44,7 +45,8 @@ class FakeSession extends EventEmitter {
   }
   async connect() {
     if (this.connectsAfterMs === 0) this.isConnected = true;
-    else if (Number.isFinite(this.connectsAfterMs)) setTimeout(() => (this.isConnected = true), this.connectsAfterMs);
+    else if (Number.isFinite(this.connectsAfterMs))
+      setTimeout(() => (this.isConnected = !this.closed), this.connectsAfterMs);
   }
   /** A key wait begun before the path answers is the one that runs out: the key rides the connected path. */
   async awaitLevel2Key() {
@@ -53,7 +55,11 @@ class FakeSession extends EventEmitter {
   repromptLevel2Key() {
     return false;
   }
+  /** As the real one does, it drops the connection at once and emits `close` only once its END send settles. */
   async close() {
+    this.closed = true;
+    this.isConnected = false;
+    await new Promise((resolve) => setTimeout(resolve, 5));
     this.emit("close");
   }
 }
@@ -227,8 +233,9 @@ describe("a second live camera on a claimed station session", () => {
   });
 
   /**
-   * The refused session's negotiation is spent, and nothing else releases it: a wired station's session never
-   * idles out and no source holds it. Left registered, it is what every later open of the camera is handed.
+   * Nothing else releases a refused session: a wired station's session never idles out and no source holds
+   * it. Its `close` lands only after its END send, so an open in that window must already find it gone, and
+   * the late `close` must leave the new connection's claim alone.
    */
   it("closes a media session it refuses, so the camera's next open dials a fresh connection", async () => {
     const r = router();
@@ -236,10 +243,33 @@ describe("a second live camera on a claimed station session", () => {
     nextSessionHasNoKey = true;
     await expect(openLive(r, CAM_B)).rejects.toMatchObject({ name: "StationKeyUnavailableError" });
 
-    await expect(openLive(r, CAM_B)).resolves.toBeDefined();
+    (await openLive(r, CAM_B)).attach();
+    await once(built[1], "close");
 
     expect(built).toHaveLength(3);
-    expect(built[2]).not.toBe(built[1]);
+    expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(`${STATION_SN}#live:2`);
+  });
+
+  /** An abort stops only the aborted caller's wait; a concurrent open of the same camera shares the session. */
+  it("leaves the media session open for a concurrent open when one caller aborts", async () => {
+    const r = router();
+    (await openLive(r, CAM_A)).attach();
+    nextSessionConnectsAfterMs = 400;
+    const ac = new AbortController();
+    const open = (opts: object) =>
+      (r as unknown as { sharedLiveSourceFor(s: string, o: object, m: boolean): Promise<unknown> }).sharedLiveSourceFor(
+        CAM_B,
+        opts,
+        true,
+      );
+    const aborted = open({ signal: ac.signal });
+    const other = open({});
+    setTimeout(() => ac.abort(), 100);
+
+    await expect(aborted).rejects.toMatchObject({ name: "AbortError" });
+    await expect(other).resolves.toBeDefined();
+    expect(built).toHaveLength(2);
+    expect(built[1].closed).toBe(false);
   });
 
   /**
