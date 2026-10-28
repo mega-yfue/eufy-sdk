@@ -453,12 +453,10 @@ export class LiveStream extends EventEmitter {
    * The payload of an audio frame. On a stream with an ECIES decoder, a sealed frame ({@link isSealedAudio}) is
    * opened under the media key of the latest keyframe, and answers `undefined` when it does not open or arrives
    * before any keyframe gave a media key, since its bytes are ciphertext. Every other frame is the bytes after
-   * its header.
+   * its header, empty for a frame that carries only its header.
    */
   private audioPayload(frame: Buffer): Buffer | undefined {
-    if (!this.decoder || !isSealedAudio(frame)) {
-      return frame.length > AUDIO_HEADER_LEN ? frame.subarray(AUDIO_HEADER_LEN) : frame;
-    }
+    if (!this.decoder || !isSealedAudio(frame)) return frame.subarray(AUDIO_HEADER_LEN);
     const mediaKey = this.decoder.currentMediaKey;
     return mediaKey ? openSealedAudio(frame, mediaKey) : undefined;
   }
