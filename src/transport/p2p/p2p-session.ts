@@ -546,11 +546,14 @@ export class P2PSession extends EventEmitter {
   private level2Seq = 0;
   private rsaPrivateKey?: KeyObject;
   private rsaModulusHex?: string;
-  /** Guards the one-shot level-2 key negotiation kicked off by the GATEWAYINFO reply. */
+  /**
+   * Whether a level-2 key negotiation kicked off by a GATEWAYINFO reply is in flight. Cleared when it
+   * settles, so a later reply — the answer to {@link repromptLevel2Key} — negotiates again.
+   */
   private level2Negotiating = false;
   /**
    * Whether waiting for a level-2 key can still change the answer: `false` once one has been negotiated,
-   * once the one-shot negotiation concluded without one, and from the start when nothing can negotiate one.
+   * once a negotiation concluded without one, and from the start when nothing can negotiate one.
    */
   private level2Pending: boolean;
   /** Waiters parked in {@link awaitLevel2Key}, woken the moment the negotiation settles either way. */
@@ -755,6 +758,7 @@ export class P2PSession extends EventEmitter {
   /** Record that the level-2 negotiation has finished, with or without a key, and wake every waiter. */
   private settleLevel2(reason: "terminal" | "closed" = "terminal"): void {
     this.level2Pending = false;
+    this.level2Negotiating = false;
     const outcome = this.level2Key ? "key" : reason;
     for (const wake of this.level2Waiters.splice(0)) wake(outcome);
   }
@@ -764,13 +768,14 @@ export class P2PSession extends EventEmitter {
    * `cipher_id`, resolve that cipher's private keys once (cloud `get_ciphers`, via the configured
    * `resolveCipherKey`), run the ECIES unwrap with the ECC key, and `setLevel2Key()`. A cipher with no
    * ECC key uses its RSA key instead and holds the RSA-decrypted 16-byte key as the AES-128-ECB level-2
-   * key. One-shot; emits `level2Ready` only when the AES-256-GCM key is negotiated, traces
+   * key. Emits `level2Ready` only when the AES-256-GCM key is negotiated, traces
    * `level2-set-payload-only` instead for the AES-128-ECB key, and emits `error` when the ECC unwrap
    * fails; an RSA unwrap failure is only traced (non-fatal either way — level-1 traffic keeps working).
    *
-   * Every outcome settles the wait in {@link awaitLevel2Key}, because being one-shot is what makes a
-   * failure final for this connection generation: nothing will retry it there, so a later command must be
-   * told at once rather than left to time out against a key that is not coming.
+   * Every outcome settles the wait in {@link awaitLevel2Key}, so a later command is told at once rather than
+   * left to time out against a key that is not coming. Settling also re-opens the negotiation, so a later
+   * GATEWAYINFO reply in the same connection generation runs it again; a lookup that completes after its
+   * generation ended settles nothing.
    */
   private negotiateLevel2Key(gwPayload: Buffer): void {
     this.level2Negotiating = true;
