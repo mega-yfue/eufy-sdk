@@ -51,6 +51,13 @@ export function isNotAuthorized(err: unknown): boolean {
 }
 
 /**
+ * Thrown by {@link SecureMqtt.subscribeDevice} when the broker refuses every topic of the device on the
+ * connection's credential scope. The refusal is a SUBACK grant, not a lost request, so the same connection
+ * answers a repeat SUBSCRIBE the same way.
+ */
+export class SubscriptionDeniedError extends Error {}
+
+/**
  * Per-user mTLS credentials as returned by get_user_mqtt_info.
  *
  * Broker credentials as the cloud returns them — internal transport detail.
@@ -223,15 +230,16 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
    *
    * The grants are INSPECTED, not assumed: AWS IoT refuses a policy-denied filter with a
    * {@link SUBACK_FAILURE} grant rather than failing the connection. A denied topic is reported via
-   * `error` naming the credential scope; only an all-denied device throws, so a line that grants its
-   * state channel but refuses (say) a business leg still works.
+   * `error` naming the credential scope; only an all-denied device throws, with
+   * {@link SubscriptionDeniedError}, so a line that grants its state channel but refuses (say) a business
+   * leg still works. A transport failure is thrown as it arrived.
    */
   async subscribeDevice(device: EufyDevice): Promise<void> {
     const topics = [...subscribeTopics(device)];
     const { denied } = await this.subscribeEach(topics);
     const scope = this.o.credentials.app_name ?? "default";
     if (denied.length === topics.length) {
-      throw new Error(
+      throw new SubscriptionDeniedError(
         `subscribe ${device.sn}: every topic denied on credential scope "${scope}" — ` +
           `this line's topics are granted to a different scope (${denied.join(", ")})`,
       );

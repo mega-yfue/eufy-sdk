@@ -37,7 +37,7 @@ vi.mock("mqtt", () => ({
   },
 }));
 
-const { SecureMqtt } = await import("../secure-mqtt.js");
+const { SecureMqtt, SubscriptionDeniedError } = await import("../secure-mqtt.js");
 
 const CREDS = {
   endpoint_addr: "aiot-mqtt-eu.anker.com",
@@ -94,7 +94,9 @@ describe("SecureMqtt.subscribeDevice — a partly refused line", () => {
       `dt/eufy_home/T2000/${VACUUM.sn}/param_info`,
     ]);
 
-    await expect(m.subscribeDevice(VACUUM)).rejects.toThrow(/every topic denied on credential scope "eufy_mega"/);
+    const err = await m.subscribeDevice(VACUUM).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(SubscriptionDeniedError);
+    expect((err as Error).message).toMatch(/every topic denied on credential scope "eufy_mega"/);
   });
 
   it("rethrows a failure that carries no SUBACK", async () => {

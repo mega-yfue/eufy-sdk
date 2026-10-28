@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EufyMega } from "../eufy-mega.js";
 import { LoginStatus, SessionExpiredError } from "../../transport/http/mega-client.js";
 import { PushClient } from "../../transport/push/push-client.js";
+import { SubscriptionDeniedError } from "../../transport/mqtt/secure-mqtt.js";
 import type { EufyDevice } from "../../core/types.js";
 
 /**
@@ -516,6 +517,32 @@ describe("EufyMega auto-realtime", () => {
     await (c.eufy as any).pollOnce();
 
     expect(transport.subscribeDevice.mock.calls.map(([d]) => d.sn)).toEqual(["M1", "M1"]);
+  });
+
+  it("a poll pass does not subscribe again a device the broker refused on that transport", async () => {
+    const c = makeClient({ mqtt: 0 }, { pollMs: 0 });
+    vi.spyOn((c.eufy as any).registry, "pollChanges").mockResolvedValue({
+      params: [],
+      added: [],
+      removed: [],
+      reported: [],
+    });
+    const errors = vi.fn();
+    c.eufy.on("error", errors);
+    const transport = {
+      subscribeDevice: vi.fn(async (_: EufyDevice) => {}),
+      disconnect: vi.fn(async () => {}),
+    };
+    transport.subscribeDevice.mockRejectedValue(new SubscriptionDeniedError("subscribe M1: every topic denied"));
+    c.mqtt.mockResolvedValue(transport);
+    (c.eufy as any).getMqttDevices.mockReturnValue([{ sn: "M1", category: "eufy_mega" } as unknown as EufyDevice]);
+
+    await (c.eufy as any).ensureRealtime();
+    await (c.eufy as any).pollOnce();
+    await (c.eufy as any).pollOnce();
+
+    expect(transport.subscribeDevice.mock.calls.map(([d]) => d.sn)).toEqual(["M1"]);
+    expect(errors).toHaveBeenCalledTimes(1);
   });
 
   it("a poll pass retries a failed scope only after its backoff, doubling between failures", async () => {

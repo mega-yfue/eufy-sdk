@@ -15,7 +15,12 @@
  */
 import { EventEmitter } from "node:events";
 import { MegaHttpClient, LoginStatus, SessionExpiredError, type LoginResult } from "../transport/http/mega-client.js";
-import { SecureMqtt, isNotAuthorized, type SecureMqttCredentials } from "../transport/mqtt/secure-mqtt.js";
+import {
+  SecureMqtt,
+  SubscriptionDeniedError,
+  isNotAuthorized,
+  type SecureMqttCredentials,
+} from "../transport/mqtt/secure-mqtt.js";
 import { mqttAppName, mqttScopeFor, type MqttScope } from "../transport/mqtt/topics.js";
 import { buildAppShapedClientId, mqttUuidFrom } from "../transport/mqtt/app-client-id.js";
 import { parseStateInfoSignal } from "../transport/mqtt/availability.js";
@@ -2066,8 +2071,10 @@ export class EufyMega extends EventEmitter {
    * Subscribe the devices on one credential scope; a failing subscribe is reported, not fatal (one
    * unreachable device must not stop the rest of the roster from coming up).
    * A device is recorded in that transport's {@link mqttSubscribed} entry before its subscribe is awaited,
-   * so a pass running alongside skips it, and removed again when the subscribe fails, so a later
-   * {@link syncMqttRoster} pass retries it. Stops once `transport` is no longer the one installed for
+   * so a pass running alongside skips it, and removed again when the subscribe fails in transport, so a later
+   * {@link syncMqttRoster} pass retries it. A device the broker refuses outright
+   * ({@link SubscriptionDeniedError}) stays recorded: that transport answers it the same way every time, so
+   * it is attempted once per transport. Stops once `transport` is no longer the one installed for
    * `scope`.
    *
    * A Tuya clean-line device (`eufy_home_tuya`) is not subscribed: its state lives on the Tuya cloud,
@@ -2082,7 +2089,7 @@ export class EufyMega extends EventEmitter {
       subscribed.add(d.sn);
       try {
         await transport.subscribeDevice(d).catch((e: unknown) => {
-          subscribed.delete(d.sn);
+          if (!(e instanceof SubscriptionDeniedError)) subscribed.delete(d.sn);
           throw e;
         });
         await this.sendRealtimeInit(d.sn);
