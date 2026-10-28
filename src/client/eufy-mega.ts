@@ -23,6 +23,7 @@ import { parseDpMessage, parseAiotDpReport } from "../transport/mqtt/dp-codec.js
 import { parseBizMapFrame } from "../transport/mqtt/biz-stream.js";
 import type { BizMapFrame } from "../transport/mqtt/biz-stream.js";
 import { decodeMapFrame } from "./map-channels.js";
+import { NOTIFY_TRACE_MESSAGE, notifyTrace, type NotifyTrace } from "./notify-trace.js";
 import { VacuumMapStore } from "../model/index.js";
 import { type P2PSession, type P2PFrame } from "../transport/p2p/p2p-session.js";
 import { P2PCommandRouter } from "../transport/p2p/command-router.js";
@@ -945,6 +946,9 @@ export class EufyMega extends EventEmitter {
    * report a bare value rather than that array, which the generic unwrap cannot recognise. Semantic
    * events are edge-triggered: the same change also arrives as a push seconds later, and is announced
    * once.
+   *
+   * A frame carrying params, or a notification nothing decoded, is logged at debug level under
+   * {@link NOTIFY_TRACE_MESSAGE} as a redacted {@link NotifyTrace}.
    */
   private onP2PFrame(stationSn: string, f: P2PFrame): void {
     this.emit("p2p", f);
@@ -958,8 +962,12 @@ export class EufyMega extends EventEmitter {
         : undefined,
     };
     if (f.params) this.applyRealtimeState(deviceSn, f.params);
-    this.applyRealtimeReport(deviceSn, decodeCapabilityState(signal, caps));
-    for (const ev of decodeCapabilityEvent(signal, caps))
+    const states = decodeCapabilityState(signal, caps);
+    const events = decodeCapabilityEvent(signal, caps);
+    this.applyRealtimeReport(deviceSn, states);
+    const trace = notifyTrace(f, signal.deviceType, states.length > 0 || events.length > 0);
+    if (trace) (this.opts.logger ?? noopLogger).debug(NOTIFY_TRACE_MESSAGE, trace);
+    for (const ev of events)
       this.emitSemantic(ev.event, deviceSn ? { deviceSn, ...ev.payload } : ev.payload, {
         edge: true,
         refresh: ev.refresh,
