@@ -492,6 +492,32 @@ describe("EufyMega auto-realtime", () => {
     expect(oldT.subscribeDevice.mock.calls.map(([d]) => d.sn)).toEqual(["M1"]);
   });
 
+  it("a poll pass subscribes again a device whose subscribe failed on an earlier pass", async () => {
+    const c = makeClient({ mqtt: 0 }, { pollMs: 0 });
+    vi.spyOn((c.eufy as any).registry, "pollChanges").mockResolvedValue({
+      params: [],
+      added: [],
+      removed: [],
+      reported: [],
+    });
+    const errors = vi.fn();
+    c.eufy.on("error", errors);
+    const transport = {
+      subscribeDevice: vi.fn(async (_: EufyDevice) => {}),
+      disconnect: vi.fn(async () => {}),
+    };
+    transport.subscribeDevice.mockRejectedValueOnce(new Error("subscribe timed out"));
+    c.mqtt.mockResolvedValue(transport);
+    (c.eufy as any).getMqttDevices.mockReturnValue([{ sn: "M1", category: "eufy_mega" } as unknown as EufyDevice]);
+
+    await (c.eufy as any).ensureRealtime();
+    expect(errors).toHaveBeenCalledTimes(1);
+    await (c.eufy as any).pollOnce();
+    await (c.eufy as any).pollOnce();
+
+    expect(transport.subscribeDevice.mock.calls.map(([d]) => d.sn)).toEqual(["M1", "M1"]);
+  });
+
   it("a poll pass retries a failed scope only after its backoff, doubling between failures", async () => {
     const c = makeClient({ mqtt: 1 }, { pollMs: 0 });
     vi.spyOn((c.eufy as any).registry, "pollChanges").mockResolvedValue({

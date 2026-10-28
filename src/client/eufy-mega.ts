@@ -270,8 +270,9 @@ export class EufyMega extends EventEmitter {
    * publish await the SAME fully-connected transport instead of racing (and never open two). */
   private readonly mqttReady = new Map<MqttScope, Promise<void>>();
   /**
-   * Serials {@link subscribeMqttDevices} has subscribed, per transport, so a later pass subscribes only
-   * devices that transport has not carried yet. Keyed by transport, so a new connection starts empty.
+   * Serials {@link subscribeMqttDevices} has subscribed or is subscribing, per transport, so a later pass
+   * subscribes only devices that transport has not carried yet. Keyed by transport, so a new connection
+   * starts empty.
    */
   private readonly mqttSubscribed = new WeakMap<RealtimeTransport, Set<string>>();
   /**
@@ -2064,8 +2065,10 @@ export class EufyMega extends EventEmitter {
   /**
    * Subscribe the devices on one credential scope; a failing subscribe is reported, not fatal (one
    * unreachable device must not stop the rest of the roster from coming up).
-   * A device is attempted once per transport: one already in that transport's {@link mqttSubscribed}
-   * entry is skipped. Stops once `transport` is no longer the one installed for `scope`.
+   * A device is recorded in that transport's {@link mqttSubscribed} entry before its subscribe is awaited,
+   * so a pass running alongside skips it, and removed again when the subscribe fails, so a later
+   * {@link syncMqttRoster} pass retries it. Stops once `transport` is no longer the one installed for
+   * `scope`.
    *
    * A Tuya clean-line device (`eufy_home_tuya`) is not subscribed: its state lives on the Tuya cloud,
    * and the broker refuses its `eufy_home` topics on every credential.
@@ -2078,7 +2081,10 @@ export class EufyMega extends EventEmitter {
       if (subscribed.has(d.sn)) continue;
       subscribed.add(d.sn);
       try {
-        await transport.subscribeDevice(d);
+        await transport.subscribeDevice(d).catch((e: unknown) => {
+          subscribed.delete(d.sn);
+          throw e;
+        });
         await this.sendRealtimeInit(d.sn);
       } catch (e) {
         this.reportError(e);
