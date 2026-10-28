@@ -86,7 +86,8 @@ export const ARMING_CMD = {
    * was captured on holds a level-2 key and seals it level-2, while an own-session camera that never
    * negotiates one carries the same envelope level-1. See `armingCommand`.
    *
-   * A T8410C takes the mode as a direct frame instead of this envelope; see {@link DIRECT_ARMING_MODELS}.
+   * A T8410C and a T8410 take the mode as a direct frame instead of this envelope; see
+   * {@link DIRECT_ARMING_MODELS} and {@link BROADCAST_ARMING_MODELS}.
    */
   SET_ARMING: 1224,
   /**
@@ -157,6 +158,15 @@ const STANDALONE_ACTION_MODELS: ReadonlySet<string> = new Set(["T8170", "T8171"]
  * are written on this frame ({@link DIRECT_ARMING_MODES}). No other model is confirmed for this frame.
  */
 const DIRECT_ARMING_MODELS: ReadonlySet<string> = new Set(["T8410C"]);
+
+/**
+ * The models whose guard-mode write is the direct frame on the station broadcast channel 255, sealed at the
+ * session's own level ({@link STATION_CHANNEL}, `form` `"auto"`): the same 132-byte body as
+ * {@link DIRECT_ARMING_MODELS}. A standalone T8410's session is level-1, and it leaves the `1350` set-payload
+ * envelope unapplied: the write is sent, and param 1224 keeps the old mode through the 20 s readback.
+ * Pending live confirmation on a T8410; only the modes in {@link DIRECT_ARMING_MODES} are written.
+ */
+const BROADCAST_ARMING_MODELS: ReadonlySet<string> = new Set(["T8410"]);
 
 /** The modes confirmed on the direct frame; any other throws. */
 const DIRECT_ARMING_MODES: ReadonlySet<ArmingMode> = new Set<ArmingMode>(["away", "home", "disarmed"]);
@@ -265,11 +275,15 @@ function armingCommand(mode: ArmingMode, ctx: CommandContext): Command {
   if (!ctx.accountName) {
     throw new Error(`arming: missing account identity (user_name) [${describeDevice(ctx)}]`);
   }
-  if (DIRECT_ARMING_MODELS.has(ctx.model ?? "")) {
+  const model = ctx.model ?? "";
+  const broadcast = BROADCAST_ARMING_MODELS.has(model);
+  if (broadcast || DIRECT_ARMING_MODELS.has(model)) {
     if (!DIRECT_ARMING_MODES.has(mode)) {
       throw new Error(`arming: mode ${mode} is unconfirmed on the direct 1224 frame [${describeDevice(ctx)}]`);
     }
-    return setStationScalar(ARMING_CMD.SET_ARMING, ARMING_MODE_WIRE[mode], ctx.channel);
+    return broadcast
+      ? setStationScalar(ARMING_CMD.SET_ARMING, ARMING_MODE_WIRE[mode], STATION_CHANNEL, "auto")
+      : setStationScalar(ARMING_CMD.SET_ARMING, ARMING_MODE_WIRE[mode], ctx.channel);
   }
   return setPayload(
     ARMING_CMD.SET_ARMING,
@@ -433,8 +447,8 @@ export const ARMING_MEMBERS = {
       "Guard mode (verified: param 1224 = GUARD_MODE, read/write mechanism confirmed). Reads and SETS all " +
       "9 modes the app defines — away/home/schedule/custom1/custom2/custom3/off/geo/disarmed. Three are " +
       "byte-captured writes and six are live-confirmed (each sent and observed to report its own " +
-      "MODE_SWITCH); see ARMING_MODE_WIRE in arming.ts for the per-value evidence. On a T8410C only " +
-      "away, home and disarmed are writable.",
+      "MODE_SWITCH); see ARMING_MODE_WIRE in arming.ts for the per-value evidence. On a T8410C and a " +
+      "T8410 only away, home and disarmed are writable.",
     observation: {
       event: "armingModeChanged",
       reflects: (value) => ({ param: ARMING_CMD.SET_ARMING, expected: ARMING_MODE_WIRE[armingModeOf(value)!] }),
