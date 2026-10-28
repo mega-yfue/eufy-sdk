@@ -16,7 +16,8 @@ const STATION_SN = "T8030P0000000000";
 const P2P_DID = "XXXXXXX-000000-XXXXX";
 
 function attachedSession(stationSn = STATION_SN) {
-  const built = new P2PSession({ stationSn, p2pDid: P2P_DID });
+  const built = new P2PSession({ stationSn, p2pDid: P2P_DID, noBroadcast: true });
+  built.on("error", () => undefined);
   const internals = built as unknown as {
     connectAddress?: { address: string; port: number };
     level2Key?: Buffer;
@@ -24,10 +25,16 @@ function attachedSession(stationSn = STATION_SN) {
     decryptLevel2: (payload: Buffer, signCode: number) => Buffer | undefined;
     handleFrame: (header: unknown, payload: Buffer, dataType: number) => void;
   };
-  internals.connectAddress = { address: "203.0.113.1", port: 32100 };
-  internals.level2Key = Buffer.alloc(32, 7);
+  const sendable = () => {
+    internals.connectAddress = { address: "203.0.113.1", port: 32100 };
+    internals.level2Key = Buffer.alloc(32, 7);
+  };
+  sendable();
   const sent: unknown[][] = [];
-  internals.send = (...args: unknown[]) => sent.push(args);
+  internals.send = (...args: unknown[]) => {
+    sent.push(args);
+    (args[4] as (() => void) | undefined)?.();
+  };
   const startPayload = (): { key: string; ClientOS: string } => {
     const data = sent.at(-1)![2] as Buffer;
     const header = parseDataFrameHeader(data.subarray(4));
@@ -37,7 +44,11 @@ function attachedSession(stationSn = STATION_SN) {
   const offered = (): string => startPayload().key;
   const video = (channel: number) =>
     internals.handleFrame({ commandId: 1300, channel, signCode: 0, bytesToRead: 22 }, Buffer.alloc(22), 1);
-  return { session: built, offered, startPayload, video };
+  const unsendable = () => {
+    internals.connectAddress = undefined;
+    internals.level2Key = undefined;
+  };
+  return { session: built, offered, startPayload, video, sent, sendable, unsendable };
 }
 
 const start = (session: P2PSession, channel = 2) => session.startLiveMedia(channel, "account", true);
@@ -171,5 +182,35 @@ describe("an attached camera's media start", () => {
     start(session);
 
     expect(offered()).not.toBe(ecc);
+  });
+
+  it("offers the P-256 point on the first start sent, after a start that could not be sent", () => {
+    const { session, offered, sent, sendable, unsendable } = attachedSession();
+    unsendable();
+    start(session);
+    expect(sent).toHaveLength(0);
+
+    sendable();
+    start(session);
+
+    expect(offered()).toMatch(/^[0-9a-f]{128}$/);
+  });
+
+  it("offers the P-256 point again on a new connection after an unanswered offer on the last one", async () => {
+    const { session, offered, sendable } = attachedSession();
+    start(session);
+    start(session);
+    expect(offered()).toMatch(/^[0-9a-f]{256}$/);
+
+    await session.connect();
+    await session.close();
+    await session.connect();
+    sendable();
+    try {
+      start(session);
+      expect(offered()).toMatch(/^[0-9a-f]{128}$/);
+    } finally {
+      await session.close();
+    }
   });
 });

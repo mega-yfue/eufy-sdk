@@ -550,8 +550,8 @@ export class P2PSession extends EventEmitter {
   /** The P-256 pair an attached camera's media start offers; see {@link mediaEccPrivateKey}. */
   private mediaEcc?: { privateKey: Buffer; point: string };
   /**
-   * Per attached channel, the media-key type its latest start offered, or that last answered, and whether a
-   * keyframe has answered it. See {@link attachedStartKey} and {@link settleAttachedKey}.
+   * Per attached channel, the media-key type its latest start offered on this connection, or that last answered,
+   * and whether a keyframe has answered it. See {@link attachedStartKey} and {@link settleAttachedKey}.
    */
   private readonly attachedStartKeys = new Map<number, { kind: "ecc" | "rsa"; answered: boolean }>();
   /** Guards the one-shot level-2 key negotiation kicked off by the GATEWAYINFO reply. */
@@ -895,6 +895,7 @@ export class P2PSession extends EventEmitter {
     this.closed = false;
     this.connectionGeneration += 1;
     this.ackedRounds = undefined;
+    this.attachedStartKeys.clear();
     this.resetInboundSequencing();
     if (!this.level2KeyServes("set-payload")) {
       this.level2Pending = this.cfg.resolveCipherKey !== undefined;
@@ -1312,7 +1313,7 @@ export class P2PSession extends EventEmitter {
   ): void {
     if (homeBaseAttached) {
       this.tracedDatagramGaps = 0;
-      const key = this.attachedStartKey(channel);
+      const key = this.connectAddress && this.level2Key ? this.attachedStartKey(channel) : undefined;
       this.trace({
         phase: "media-command",
         topology: "attached",
@@ -1950,13 +1951,14 @@ export class P2PSession extends EventEmitter {
   }
 
   /**
-   * The media-key type the next attached start on `channel` offers: ECC, the current app's form, for the first
-   * start there; RSA for every start after one that no keyframe answered before it was re-issued; and, once a
-   * keyframe has answered, the type that opened it, until {@link settleAttachedKey} records another. Only an
-   * opened keyframe answers: frames no key opens, and deltas, do not. A re-issue is a full restart on an
-   * attached camera, so a camera that cannot read the point is asked with RSA, the start every station answers,
-   * and is not asked with the point again while that goes unanswered. A stream decoding with the session's
-   * pair reads either answer. A station without {@link mediaEccPrivateKey} is offered RSA only.
+   * The media-key type the next attached start sent on `channel` offers, recorded as offered: ECC, the current
+   * app's form, for the first start this connection sends there; RSA for every start after one that no keyframe
+   * answered before it was re-issued; and, once a keyframe has answered, the type that opened it, until
+   * {@link settleAttachedKey} records another. Only an opened keyframe answers: frames no key opens, and deltas,
+   * do not. A re-issue is a full restart on an attached camera, so a camera that cannot read the point is asked
+   * with RSA, the start every station answers, and is not asked with the point again while that goes unanswered.
+   * A stream decoding with the session's pair reads either answer. A station without {@link mediaEccPrivateKey}
+   * is offered RSA only. A start that cannot be sent offers nothing and records nothing.
    */
   private attachedStartKey(channel: number): "ecc" | "rsa" {
     if (!this.mediaEccPrivateKey) return "rsa";
