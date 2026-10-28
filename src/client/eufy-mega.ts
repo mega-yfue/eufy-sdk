@@ -174,9 +174,9 @@ const DEFAULT_PREWARM_TIERS: readonly PowerTier[] = ["wired", "battery"];
 const SESSION_RECYCLE_WAIT_MS = 5_000;
 
 /**
- * Backoff bounds for bringing push up again after its startup attempt failed: the first retry waits the
- * minimum, each following one doubles, capped at the maximum — the same ten-minute ceiling the MCS
- * socket's own reconnect backs off to.
+ * Backoff bounds for bringing push, or one secure-MQTT scope, up again after an attempt failed: the
+ * first retry waits the minimum, each following one doubles, capped at the maximum — the same
+ * ten-minute ceiling the MCS socket's own reconnect backs off to.
  */
 const PUSH_RETRY_MIN_MS = 30_000;
 const PUSH_RETRY_MAX_MS = 600_000;
@@ -270,10 +270,16 @@ export class EufyMega extends EventEmitter {
    * publish await the SAME fully-connected transport instead of racing (and never open two). */
   private readonly mqttReady = new Map<MqttScope, Promise<void>>();
   /**
-   * Serials {@link subscribeMqttDevices} has subscribed on the installed transports, so a later pass
-   * subscribes only devices the roster gained since. Cleared with the transports.
+   * Serials {@link subscribeMqttDevices} has subscribed, per transport, so a later pass subscribes only
+   * devices that transport has not carried yet. Keyed by transport, so a new connection starts empty.
    */
-  private readonly mqttSubscribed = new Set<string>();
+  private readonly mqttSubscribed = new WeakMap<RealtimeTransport, Set<string>>();
+  /**
+   * Per scope, when {@link syncMqttRoster} may next attempt a bring-up that failed, and the delay that
+   * set it: doubled from {@link PUSH_RETRY_MIN_MS} on each consecutive failure, capped at
+   * {@link PUSH_RETRY_MAX_MS}, dropped on success and with the transports.
+   */
+  private readonly mqttRetry = new Map<MqttScope, { at: number; delayMs: number }>();
   /** Device list/record/capability resolution + the frame→caps cache. */
   private readonly registry: DeviceRegistry;
   private pushClient?: PushClient;
@@ -530,9 +536,15 @@ export class EufyMega extends EventEmitter {
         return;
       }
       this.transports.set(scope, mqtt);
+      this.mqttRetry.delete(scope);
       await this.subscribeMqttDevices(scope, mqtt);
     })().catch((e) => {
-      if (this.mqttReady.get(scope) === attempt) this.mqttReady.delete(scope);
+      if (this.mqttReady.get(scope) === attempt) {
+        this.mqttReady.delete(scope);
+        const prev = this.mqttRetry.get(scope)?.delayMs;
+        const delayMs = prev ? Math.min(prev * 2, PUSH_RETRY_MAX_MS) : PUSH_RETRY_MIN_MS;
+        this.mqttRetry.set(scope, { at: Date.now() + delayMs, delayMs });
+      }
       throw e;
     });
     this.mqttReady.set(scope, attempt);
@@ -2052,15 +2064,19 @@ export class EufyMega extends EventEmitter {
   /**
    * Subscribe the devices on one credential scope; a failing subscribe is reported, not fatal (one
    * unreachable device must not stop the rest of the roster from coming up).
-   * A device is attempted once per installed transport: one already in {@link mqttSubscribed} is skipped.
+   * A device is attempted once per transport: one already in that transport's {@link mqttSubscribed}
+   * entry is skipped. Stops once `transport` is no longer the one installed for `scope`.
    *
    * A Tuya clean-line device (`eufy_home_tuya`) is not subscribed: its state lives on the Tuya cloud,
    * and the broker refuses its `eufy_home` topics on every credential.
    */
   private async subscribeMqttDevices(scope: MqttScope, transport: RealtimeTransport): Promise<void> {
+    let subscribed = this.mqttSubscribed.get(transport);
+    if (!subscribed) this.mqttSubscribed.set(transport, (subscribed = new Set()));
     for (const d of this.getMqttDevices().filter((dev) => !isTuyaVacuum(dev) && mqttScopeFor(dev) === scope)) {
-      if (this.mqttSubscribed.has(d.sn)) continue;
-      this.mqttSubscribed.add(d.sn);
+      if (this.transports.get(scope) !== transport) return;
+      if (subscribed.has(d.sn)) continue;
+      subscribed.add(d.sn);
       try {
         await transport.subscribeDevice(d);
         await this.sendRealtimeInit(d.sn);
@@ -2074,13 +2090,14 @@ export class EufyMega extends EventEmitter {
    * Start every credential scope the roster now needs and has no transport for, and subscribe the
    * devices that joined a scope already up — each scope's failure reported, not thrown. A no-op once
    * the realtime generation is superseded or was never started. A scope whose bring-up failed is
-   * attempted again here, since {@link ensureMqttStarted} clears a failed memo.
+   * attempted again here once its {@link mqttRetry} backoff has elapsed.
    */
   private async syncMqttRoster(): Promise<void> {
     if (this.realtimeGeneration?.epoch !== this.realtimeEpoch) return;
     await Promise.all(
       this.mqttScopesInUse().map(async (scope) => {
         const transport = this.transports.get(scope);
+        if (!transport && (this.mqttRetry.get(scope)?.at ?? 0) > Date.now()) return;
         try {
           await (transport ? this.subscribeMqttDevices(scope, transport) : this.ensureMqttStarted(scope));
         } catch (e) {
@@ -2544,7 +2561,7 @@ export class EufyMega extends EventEmitter {
     await Promise.all([...this.transports.values()].map((t) => t.disconnect()));
     this.transports.clear();
     this.mqttReady.clear();
-    this.mqttSubscribed.clear();
+    this.mqttRetry.clear();
   }
 
   /**

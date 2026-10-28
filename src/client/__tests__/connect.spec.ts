@@ -464,6 +464,63 @@ describe("EufyMega auto-realtime", () => {
     expect(transport.subscribeDevice.mock.calls.map(([d]) => d.sn)).toEqual(["M1", "M2"]);
   });
 
+  it("a subscribe loop cut off by disconnect leaves the next login's transport to subscribe every device", async () => {
+    const c = makeClient({ mqtt: 0 });
+    const dev = (sn: string) => ({ sn, category: "eufy_mega" }) as unknown as EufyDevice;
+    (c.eufy as any).getMqttDevices.mockReturnValue([dev("M1"), dev("M2"), dev("M3")]);
+    vi.spyOn(c.eufy as any, "sendRealtimeInit").mockResolvedValue(undefined);
+    c.eufy.on("error", () => {});
+    let release!: () => void;
+    const hang = new Promise<void>((r) => (release = r));
+    const oldT = {
+      subscribeDevice: vi.fn(async (d: EufyDevice) => {
+        if (d.sn === "M1") await hang;
+      }),
+      disconnect: vi.fn(async () => {}),
+    };
+    const newT = { subscribeDevice: vi.fn(async (_: EufyDevice) => {}), disconnect: vi.fn(async () => {}) };
+    c.mqtt.mockResolvedValueOnce(oldT).mockResolvedValueOnce(newT);
+
+    void (c.eufy as any).ensureRealtime().catch(() => {});
+    await vi.waitFor(() => expect(oldT.subscribeDevice).toHaveBeenCalledTimes(1));
+    await c.eufy.disconnect();
+    release();
+    await new Promise((r) => setTimeout(r, 10));
+    await (c.eufy as any).ensureRealtime();
+
+    expect(newT.subscribeDevice.mock.calls.map(([d]) => d.sn)).toEqual(["M1", "M2", "M3"]);
+    expect(oldT.subscribeDevice.mock.calls.map(([d]) => d.sn)).toEqual(["M1"]);
+  });
+
+  it("a poll pass retries a failed scope only after its backoff, doubling between failures", async () => {
+    const c = makeClient({ mqtt: 1 }, { pollMs: 0 });
+    vi.spyOn((c.eufy as any).registry, "pollChanges").mockResolvedValue({
+      params: [],
+      added: [],
+      removed: [],
+      reported: [],
+    });
+    c.mqtt.mockRejectedValue(new Error("broker down"));
+    const errors = vi.fn();
+    c.eufy.on("error", errors);
+    let now = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+
+    await (c.eufy as any).ensureRealtime();
+    await (c.eufy as any).pollOnce();
+    expect(c.mqtt).toHaveBeenCalledTimes(1);
+    now += 30_000;
+    await (c.eufy as any).pollOnce();
+    expect(c.mqtt).toHaveBeenCalledTimes(2);
+    now += 30_000;
+    await (c.eufy as any).pollOnce();
+    expect(c.mqtt).toHaveBeenCalledTimes(2);
+    now += 30_000;
+    await (c.eufy as any).pollOnce();
+    expect(c.mqtt).toHaveBeenCalledTimes(3);
+    expect(errors).toHaveBeenCalledTimes(3);
+  });
+
   it("does not open a second transport when every MQTT device is on one scope", async () => {
     const c = makeClient({ mqtt: 2, category: "eufy_life" });
     await (c.eufy as any).ensureRealtime();
