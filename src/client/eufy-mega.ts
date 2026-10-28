@@ -1667,6 +1667,9 @@ export class EufyMega extends EventEmitter {
    * device absent from the previous pass is skipped — first sight is discovery, not a transition;
    * {@link deviceState} answers an initial reading.
    *
+   * A device with changed params is re-resolved by {@link widenCapabilities} once per pass, however many
+   * of its params moved, since each re-resolution is a cloud param-list read.
+   *
    * Then re-reads every Tuya clean-line robot from the Tuya cloud ({@link readTuyaDevices}): its state
    * is not in the cloud record this pass diffs and no live channel carries it, so the poll is where it
    * stays fresh. That read runs after the `try`, not inside it, so a cloud error on the list diff does
@@ -1682,7 +1685,7 @@ export class EufyMega extends EventEmitter {
         for (const out of decodeCapabilityEvent({ source: "poll", ...change }, this.capsForEvent(change.deviceSn)))
           this.emitSemantic(out.event, out.payload, { refresh: out.refresh });
       for (const dev of diff.reported) this.emit("deviceState", this.stateOf(dev));
-      for (const change of diff.params) await this.widenCapabilities(change.deviceSn);
+      for (const sn of new Set(diff.params.map((c) => c.deviceSn))) await this.widenCapabilities(sn);
     } catch (e) {
       this.reportError(e);
     }
