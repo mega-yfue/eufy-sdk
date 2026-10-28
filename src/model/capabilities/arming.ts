@@ -166,19 +166,10 @@ const DIRECT_ARMING_MODELS: ReadonlySet<string> = new Set(["T8410C"]);
  * envelope unapplied: the write is sent, and param 1224 keeps the old mode through the 20 s readback.
  * Away (0), Home (1), Schedule (2), Geofencing (47) and Disarmed (63) were each sent as this frame live on
  * 2026-10-28, on a level-1 session, and each was confirmed applied; for Disarmed, param 1151 in the
- * camera's own 1103 report moved from 0 to 63 and the readback converged. Only the modes in
- * {@link BROADCAST_ARMING_MODES} are written.
+ * camera's own 1103 report moved from 0 to 63 and the readback converged. The frame carries the same
+ * `mode_type` integers as the envelope, so every mode in {@link ARMING_MODE_WIRE} is written.
  */
 const BROADCAST_ARMING_MODELS: ReadonlySet<string> = new Set(["T8410"]);
-
-/** The modes confirmed on the broadcast-channel frame; any other throws. */
-const BROADCAST_ARMING_MODES: ReadonlySet<ArmingMode> = new Set<ArmingMode>([
-  "away",
-  "home",
-  "schedule",
-  "geo",
-  "disarmed",
-]);
 
 /** The modes confirmed on the direct frame; any other throws. */
 const DIRECT_ARMING_MODES: ReadonlySet<ArmingMode> = new Set<ArmingMode>(["away", "home", "disarmed"]);
@@ -288,14 +279,14 @@ function armingCommand(mode: ArmingMode, ctx: CommandContext): Command {
     throw new Error(`arming: missing account identity (user_name) [${describeDevice(ctx)}]`);
   }
   const model = ctx.model ?? "";
-  const broadcast = BROADCAST_ARMING_MODELS.has(model);
-  if (broadcast || DIRECT_ARMING_MODELS.has(model)) {
-    if (!(broadcast ? BROADCAST_ARMING_MODES : DIRECT_ARMING_MODES).has(mode)) {
+  if (BROADCAST_ARMING_MODELS.has(model)) {
+    return setStationScalar(ARMING_CMD.SET_ARMING, ARMING_MODE_WIRE[mode], STATION_CHANNEL, "auto");
+  }
+  if (DIRECT_ARMING_MODELS.has(model)) {
+    if (!DIRECT_ARMING_MODES.has(mode)) {
       throw new Error(`arming: mode ${mode} is unconfirmed on the direct 1224 frame [${describeDevice(ctx)}]`);
     }
-    return broadcast
-      ? setStationScalar(ARMING_CMD.SET_ARMING, ARMING_MODE_WIRE[mode], STATION_CHANNEL, "auto")
-      : setStationScalar(ARMING_CMD.SET_ARMING, ARMING_MODE_WIRE[mode], ctx.channel);
+    return setStationScalar(ARMING_CMD.SET_ARMING, ARMING_MODE_WIRE[mode], ctx.channel);
   }
   return setPayload(
     ARMING_CMD.SET_ARMING,
@@ -461,7 +452,7 @@ export const ARMING_MEMBERS = {
       "9 modes the app defines — away/home/schedule/custom1/custom2/custom3/off/geo/disarmed. Three are " +
       "byte-captured writes and six are live-confirmed (each sent and observed to report its own " +
       "MODE_SWITCH); see ARMING_MODE_WIRE in arming.ts for the per-value evidence. On a T8410C only " +
-      "away, home and disarmed are writable; on a T8410 also schedule and geo.",
+      "away, home and disarmed are writable.",
     observation: {
       event: "armingModeChanged",
       reflects: (value) => ({ param: ARMING_CMD.SET_ARMING, expected: ARMING_MODE_WIRE[armingModeOf(value)!] }),
