@@ -8,8 +8,18 @@
  * login, no 2FA — until the token expires (or a call 401s, which clears it).
  */
 import { randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, resolve } from "node:path";
 import type { RegionShard } from "../transport/http/mega-client.js";
 
 /**
@@ -73,27 +83,37 @@ export class MemorySessionStore<T = PersistedSession> implements SessionStore<T>
 /** Errors from creating or renaming the temp file that mean the directory, not the file, refuses the write. */
 const IN_PLACE_CODES = new Set(["EACCES", "EPERM", "EBUSY", "EXDEV", "EROFS"]);
 
-/** The real file behind `path`, following symlinks; `path` itself when it does not exist yet. */
+/**
+ * The real file behind `path`, following symlinks; `path` itself when it does not exist yet. A dangling
+ * symlink answers the file its target names (resolved against the link's directory, and followed again
+ * when that is itself a link), so the record is created there and the link is kept.
+ */
 function realTarget(path: string): string {
   try {
     return realpathSync(path);
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return path;
-    throw e;
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    try {
+      if (!lstatSync(path).isSymbolicLink()) return path;
+    } catch {
+      return path;
+    }
+    return realTarget(resolve(dirname(path), readlinkSync(path)));
   }
 }
 
 /**
  * JSON-file store, e.g. new FileSessionStore("./.eufy-session.json").
  *
- * `save` resolves a symlinked path to its real file, writes a fresh owner-only (`0o600`) temp file under a
- * random name beside that file and renames it over it, so where the directory allows it the file on disk
- * is always a complete record — the old one until the rename, the new one after — and the symlink itself
- * stays in place. When the directory refuses the temp file or the rename (`EACCES`, `EPERM`, `EBUSY`,
- * `EXDEV`, `EROFS`: a read-only directory around a writable file, a single-file bind mount), `save`
- * rewrites the file in place instead, which is not atomic, and tightens it to mode `0o600` when the
- * process may change its mode, leaving the mode as it was otherwise. The atomic path always leaves
- * `0o600`, whatever mode an existing file had. Any other failure removes the temp file and throws.
+ * `save` resolves a symlinked path to its real file (the file a dangling symlink names, created with its
+ * directory), writes a fresh owner-only (`0o600`) temp file under a random name beside that file and
+ * renames it over it, so where the directory allows it the file on disk is always a complete record — the
+ * old one until the rename, the new one after — and the symlink itself stays in place. When the directory
+ * refuses the temp file or the rename (`EACCES`, `EPERM`, `EBUSY`, `EXDEV`, `EROFS`: a read-only directory
+ * around a writable file, a single-file bind mount), `save` rewrites the file in place instead, which is
+ * not atomic, and tightens it to mode `0o600` when the process may change its mode, leaving the mode as it
+ * was otherwise. The atomic path always leaves `0o600`, whatever mode an existing file had. Any other
+ * failure removes the temp file and throws.
  */
 export class FileSessionStore<T = PersistedSession> implements SessionStore<T> {
   constructor(private readonly path: string) {}
@@ -105,12 +125,12 @@ export class FileSessionStore<T = PersistedSession> implements SessionStore<T> {
     }
   }
   save(s: T): void {
+    const target = realTarget(this.path);
     try {
-      mkdirSync(dirname(this.path), { recursive: true });
+      mkdirSync(dirname(target), { recursive: true });
     } catch {
       /* dir exists */
     }
-    const target = realTarget(this.path);
     const data = JSON.stringify(s, null, 2);
     const tmp = `${target}.${randomUUID()}.tmp`;
     try {

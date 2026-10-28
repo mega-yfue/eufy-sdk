@@ -92,6 +92,21 @@ describe.each([
     expect(readdirSync(join(dir, "real"))).toEqual(["target.json"]);
   });
 
+  it.skipIf(process.platform === "win32")("creates the missing target of a dangling symlink and keeps the link", () => {
+    const dir = mkdtempSync(join(tmpdir(), "store-spec-"));
+    mkdirSync(join(dir, "real"));
+    const link = join(dir, "link.json");
+    symlinkSync(join("real", "target.json"), link);
+
+    make(link).save({ token: "t" });
+
+    const real = join(dir, "real", "target.json");
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(readFileSync(real, "utf-8"))).toEqual({ token: "t" });
+    expect(statSync(real).mode & 0o777).toBe(0o600);
+    expect(readdirSync(join(dir, "real"))).toEqual(["target.json"]);
+  });
+
   it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
     "saves in place to a writable file inside a read-only directory",
     () => {
