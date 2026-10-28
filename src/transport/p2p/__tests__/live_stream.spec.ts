@@ -138,6 +138,16 @@ describe("LiveStream", () => {
     expect(audio[0].data.equals(payload)).toBe(true);
   });
 
+  it("emits nothing for an audio frame with no bytes past its header", () => {
+    const { session, live } = mk();
+    const audio: any[] = [];
+    live.on("audio", (f) => audio.push(f));
+    live.start();
+    session.push(p2pAudioFrame(0, Buffer.alloc(0)) as any);
+    session.push({ commandId: 1301, channel: 0, signCode: 0, data: Buffer.alloc(8) } as any);
+    expect(audio).toHaveLength(0);
+  });
+
   it("maps each codec id the app accepts, and re-reads it on every frame", () => {
     const { session, live } = mk();
     const audio: any[] = [];
