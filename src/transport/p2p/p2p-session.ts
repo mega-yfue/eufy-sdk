@@ -70,6 +70,7 @@ import { traceLiveStart, type LiveTrace } from "./live-trace.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { abortable } from "../abortable.js";
 import { LEVEL2_SETTLE_MS } from "./level2-settle.js";
+import { StationUnreachableError } from "../../core/contracts.js";
 
 const LOCAL_LOOKUP_PORT = 32108;
 const HEARTBEAT_MS = 5_000;
@@ -883,10 +884,11 @@ export class P2PSession extends EventEmitter {
   /**
    * Open the socket and start the lookup → hole-punch handshake.
    *
-   * A socket closed while binding never invokes its bind callback, so the bind wait also settles on the
-   * socket's `close`. After each await (the socket bind and the punch-probe binds), a connect whose
-   * session was closed meanwhile returns without starting the handshake, so it never sends a lookup or
-   * arms a timer on a closed session.
+   * A socket closed or failing while binding never invokes its bind callback, so the bind wait also
+   * settles on the socket's `close` and `error`. On `close`, a connect whose session was closed meanwhile
+   * returns without starting the handshake, so it never sends a lookup or arms a timer on a closed
+   * session. On `error`, connect closes the session and rejects with {@link StationUnreachableError}
+   * carrying the bind error as its `cause`.
    */
   async connect(): Promise<void> {
     if (this.connecting || this.connected) return;
@@ -909,9 +911,11 @@ export class P2PSession extends EventEmitter {
     socket.on("error", (e) => this.emit("error", e));
 
     const generation = this.connectionGeneration;
-    await new Promise<void>((resolve) => {
+    await new Promise<void>((resolve, reject) => {
       socket.once("close", resolve);
+      socket.once("error", reject);
       socket.bind(() => {
+        socket.off("error", reject);
         try {
           socket.setBroadcast(true);
         } catch {
@@ -920,6 +924,9 @@ export class P2PSession extends EventEmitter {
         this.requestReceiveBuffer(socket);
         resolve();
       });
+    }).catch(async (error: unknown) => {
+      await this.close();
+      throw new StationUnreachableError(this.cfg.stationSn, 0, { cause: error });
     });
     if (generation !== this.connectionGeneration) return;
 
@@ -936,7 +943,7 @@ export class P2PSession extends EventEmitter {
       });
     }
     if (this.cloudLookup) await this.startPunchProbes();
-    if (generation !== this.connectionGeneration) return;
+    if (this.closed) return;
     this.trace({
       phase: "lookup-channels",
       local: !this.cfg.noBroadcast || this.cfg.localAddress !== undefined,
