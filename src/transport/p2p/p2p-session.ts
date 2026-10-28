@@ -665,7 +665,8 @@ export class P2PSession extends EventEmitter {
    * The session grace runs from connect, when the station is prompted for `CMD_GATEWAYINFO`. A negotiation
    * beginning later does not restart it: best-effort media can proceed without the key, and restarting
    * would charge another grace to a source that may already be streaming. A session whose negotiation has
-   * settled answers without waiting at all, since being one-shot is what makes that answer final.
+   * settled answers without waiting at all: the answer stands until {@link repromptLevel2Key} re-opens the
+   * wait, since the station is prompted for `CMD_GATEWAYINFO` only on connect and on that re-prompt.
    *
    * An own-session camera whose grace expires here is NOT thereby a camera that will fail to stream. Measured
    * on one account: own-session cameras of two device types negotiated a key, three others never did, and
@@ -733,12 +734,13 @@ export class P2PSession extends EventEmitter {
   /**
    * Ask the station for its gateway info a second time, re-opening a negotiation that concluded without a key.
    *
-   * The negotiation is one-shot per connection: the station is prompted once on connect, and a reply that
-   * never lands settles the wait so {@link awaitLevel2Key} answers `false` at once forever after. That is the
+   * Without this the station is prompted once on connect, and a negotiation that settles without a key
+   * leaves {@link awaitLevel2Key} answering `false` at once for the rest of that connection. That is the
    * right answer for best-effort media, which proceeds at level-1 — but an operation whose ONLY wire is
    * level-2 is then refused for the whole life of that connection, while a fresh session over the same
    * device negotiates a key normally. Measured: a session that had settled refused every such operation
-   * until it was rebuilt, at which point the station answered with a cipher id straight away.
+   * until it was rebuilt, at which point the station answered with a cipher id straight away. The reply to
+   * this ask runs the negotiation again and settles the re-opened wait either way.
    *
    * Bounded to one extra ask per connection, so a burst of such operations cannot turn a silent station into a
    * flood, and answers whether it asked — `false` when a key is already held, when nothing can negotiate one,
@@ -2470,6 +2472,13 @@ export class P2PSession extends EventEmitter {
     }
   }
 
+  /**
+   * Decrypt and dispatch one inbound data frame.
+   *
+   * A `CMD_GATEWAYINFO` (1100) reply carries the ECIES envelope for the level-2 session key. When a
+   * cipher-key resolver is configured, no key that seals a set-payload is held and no negotiation is in
+   * flight, the reply starts one (async, fire-and-forget); a reply landing while one is in flight is ignored.
+   */
   private handleFrame(header: P2PDataFrameHeader, payload: Buffer, dataType: number): void {
     let data = payload;
     // Media frames (video 1300 / audio 1301) are NOT level-1/2 control frames — their bodies use the
@@ -2493,8 +2502,6 @@ export class P2PSession extends EventEmitter {
         /* leave as-is; emit raw */
       }
     }
-    // The CMD_GATEWAYINFO (1100) reply carries the ECIES envelope for the level-2 session
-    // key. If a cipher-key resolver is configured, negotiate the key once (async, fire-and-forget).
     if (
       header.commandId === CMD_GATEWAYINFO &&
       header.signCode <= 1 &&
