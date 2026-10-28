@@ -336,8 +336,8 @@ describe("level-2 key re-prompt", () => {
 
   /**
    * The reply to the re-prompt is negotiated like the first one. A negotiation that concluded without a
-   * key no longer holds the gate closed, so the second gateway-info reply runs the cipher lookup again and
-   * settles the wait the re-prompt re-opened, rather than leaving it to spend its whole grace.
+   * key leaves the gate open, so the reply to the re-prompt runs the cipher lookup again and settles the
+   * re-opened wait.
    */
   it("negotiates the reply to the re-prompt after a first negotiation left no key", async () => {
     const resolveCipherKey = vi.fn(async () => undefined);
