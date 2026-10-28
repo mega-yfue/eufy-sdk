@@ -885,8 +885,8 @@ export class P2PSession extends EventEmitter {
    *
    * A socket closed while binding never invokes its bind callback, so the bind wait also settles on the
    * socket's `close`. After each await (the socket bind and the punch-probe binds), a connect whose
-   * session was closed or reconnected meanwhile returns without starting the handshake, so it never
-   * sends a lookup or arms a timer that belongs to the newer connection.
+   * session was closed meanwhile returns without starting the handshake, so it never sends a lookup or
+   * arms a timer on a closed session.
    */
   async connect(): Promise<void> {
     if (this.connecting || this.connected) return;
