@@ -319,6 +319,38 @@ describe("a second live camera on a claimed station session", () => {
     expect(keys).toContain(STATION_SN);
     expect(built).toHaveLength(2);
   });
+
+  /**
+   * A build that opens its own connection files its source only once that connection is up, so a second
+   * request for the same camera lands while nothing is cached. Both must leave with the one source the
+   * router keeps, or the other's teardown closes the connection that source streams on.
+   */
+  it("hands two simultaneous live requests for one camera the same source", async () => {
+    const r = router();
+    (await openLive(r, CAM_A)).attach();
+
+    const [first, second] = await Promise.all([openLive(r, CAM_B), openLive(r, CAM_B)]);
+
+    expect(second).toBe(first);
+    expect(sources(r).get(`${STATION_SN}:2`)).toBe(first);
+    expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(`${STATION_SN}#live:2`);
+    expect(built).toHaveLength(2);
+  });
+
+  it("hands a still asked for during a live build the source that build files", async () => {
+    const r = router();
+    (await openLive(r, CAM_A)).attach();
+    const openStill = (
+      r as unknown as { sharedLiveSourceFor(s: string, o: object): Promise<unknown> }
+    ).sharedLiveSourceFor.bind(r);
+
+    const [live, still] = await Promise.all([openLive(r, CAM_B), openStill(CAM_B, {})]);
+
+    expect(still).toBe(live);
+    expect(sources(r).get(`${STATION_SN}:2`)).toBe(live);
+    expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(`${STATION_SN}#live:2`);
+  });
+
   it("keeps independent media delivering when the station-control connection closes", async () => {
     const r = router();
     const a = await openLive(r, CAM_A);
