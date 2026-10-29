@@ -7,21 +7,30 @@
  *  - **Plaintext** (`signCode 0`, e.g. HomeBase-attached cameras): a fixed 22-byte frame header
  *    (`parseVideoFrameHeader`) followed directly by Annex-B NAL units — verified live (960×540,
  *    keyframe = header flag bit0). We strip the 22-byte header.
- *  - **Encrypted** (E2E cameras): the body is AES-256-GCM under a per-stream media key wrapped in a
- *    keyframe ECIES envelope. If an `eccPrivateKey` is supplied we run `VideoFrameDecoder`; otherwise
- *    those frames are skipped (no key → no video).
+ *  - **Encrypted keyframes**: either the AES-256-GCM body under a media key wrapped in an ECIES envelope
+ *    for an offered P-256 key ({@link VideoFrameDecoder}), or an AES-ECB head under a media key wrapped for
+ *    the session's RSA key ({@link P2PSession.decodeVideoFrame}). An attached camera's start on a station
+ *    with a {@link P2PSession.mediaEccPrivateKey} offers that P-256 key first, so its stream decodes with
+ *    that pair unless `eccPrivateKey` names another.
  *
  * Emits: `video` ({@link LiveVideoFrame} — Annex-B), `audio` ({@link LiveAudioFrame}), `start`, `stop`,
  * `error`.
  */
 import { EventEmitter } from "node:events";
 import { STATION_CHANNEL, type P2PSession, type P2PFrame } from "./p2p-session.js";
-import { AccessUnitAssembler, VideoFrameDecoder } from "./video.js";
+import { AccessUnitAssembler, VideoFrameDecoder, beginsAccessUnit } from "./video.js";
 import { sniffAnnexbCodec } from "./annexb.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { traceLiveStart, type LiveTrace } from "./live-trace.js";
 import type { LiveAudioFrame, LiveVideoFrame, VideoCodec } from "../../core/contracts.js";
-import { AUDIO_CODECS, AUDIO_HEADER_LEN, AUDIO_TYPE_OFFSET, CMD_AUDIO_FRAME } from "./audio-frame.js";
+import {
+  AUDIO_CODECS,
+  AUDIO_HEADER_LEN,
+  AUDIO_TYPE_OFFSET,
+  CMD_AUDIO_FRAME,
+  isSealedAudio,
+  openSealedAudio,
+} from "./audio-frame.js";
 
 const CMD_VIDEO_FRAME = 1300;
 const VIDEO_HEADER_LEN = 0x16; // 22-byte CMD_VIDEO_FRAME header before the Annex-B payload
@@ -80,7 +89,10 @@ export interface LiveStreamOptions {
    * however long the station keeps serving that sibling instead of this one.
    */
   channel?: number;
-  /** Camera ECC private key (32B) for E2E/encrypted cameras; omit for plaintext cameras. */
+  /**
+   * P-256 private key (32B) whose public point the camera wraps each keyframe's media key for. Defaults, on an
+   * attached camera, to the session's {@link P2PSession.mediaEccPrivateKey}, the pair its start offers.
+   */
   eccPrivateKey?: Buffer;
   /** Admin account id — required for the level-2 (`signCode 8`) media-start payload selecting a camera. */
   accountId?: string;
@@ -140,6 +152,8 @@ export class LiveStream extends EventEmitter {
   private tracedFirstVideoUnit = false;
   private tracedFirstKeyframe = false;
   private tracedDecodeFailures = 0;
+  /** How the frame that opened the latest access unit was read; see {@link settleStartKey}. */
+  private unitOpenedBy: "ecc" | "rsa" | "plain" = "plain";
   private tracedFirstForeignFrame = false;
   private stallTimer?: ReturnType<typeof setTimeout>;
   /**
@@ -162,7 +176,8 @@ export class LiveStream extends EventEmitter {
     this.logger = opts.logger ?? noopLogger;
     this.channel = opts.channel ?? STATION_CHANNEL;
     if (opts.homeBaseAttached && opts.channel !== undefined) this.mediaChannel = opts.channel;
-    if (opts.eccPrivateKey) this.decoder = new VideoFrameDecoder(opts.eccPrivateKey);
+    const eccPrivateKey = opts.eccPrivateKey ?? (opts.homeBaseAttached ? session.mediaEccPrivateKey : undefined);
+    if (eccPrivateKey) this.decoder = new VideoFrameDecoder(eccPrivateKey);
   }
 
   /** Emit a live trace under its session's handle and the channel this stream pulls. */
@@ -326,7 +341,10 @@ export class LiveStream extends EventEmitter {
           }
           // Sniff the codec only on a keyframe (it carries the parameter sets); delta frames have no
           // config NAL, so they inherit the last-known codec.
-          if (unit.keyframe) this.lastCodec = sniffAnnexbCodec(unit.data) ?? this.lastCodec;
+          if (unit.keyframe) {
+            this.lastCodec = sniffAnnexbCodec(unit.data) ?? this.lastCodec;
+            this.settleStartKey();
+          }
           this.settleKeepalive();
           this.emit("video", {
             sourceTimestamp: unit.sourceTimestamp,
@@ -338,8 +356,8 @@ export class LiveStream extends EventEmitter {
           });
         }
       } else if (f.commandId === CMD_AUDIO_FRAME) {
-        const audio = f.data.length > AUDIO_HEADER_LEN ? f.data.subarray(AUDIO_HEADER_LEN) : f.data;
-        if (audio.length) {
+        const audio = this.audioPayload(f.data);
+        if (audio?.length) {
           const codecId = f.data.length > AUDIO_TYPE_OFFSET ? f.data.readUInt8(AUDIO_TYPE_OFFSET) : undefined;
           const codec = codecId === undefined ? undefined : AUDIO_CODECS[codecId];
           if (!codec) {
@@ -396,18 +414,53 @@ export class LiveStream extends EventEmitter {
   }
 
   /**
-   * The Annex-B payload of a frame that starts an access unit. The session decodes it when it can (it
-   * holds the RSA private key, and handles the plaintext form); the legacy header-strip and the ECIES
-   * {@link VideoFrameDecoder} are the fallbacks for an E2E camera.
+   * The Annex-B payload of a frame that starts an access unit. The authenticated ECIES/GCM
+   * {@link VideoFrameDecoder} goes first: its HMAC and GCM checks fail closed on a frame not sealed for its
+   * key. The session's RSA path cannot: on Node ≥ 24.5, PKCS#1 v1.5 decryption of a key not wrapped for it
+   * returns pseudo-random bytes instead of throwing (implicit rejection), which would decode an ECC
+   * keyframe into noise. The session's decode, which also passes plaintext frames, and the header strip
+   * follow. A payload that opens an access unit records how it was read: by the ECIES path, or otherwise by
+   * its sign code, sealed (`"rsa"`) or in the clear (`"plain"`).
    */
   private annexbOf(payload: Buffer, signCode: number): Buffer | undefined {
-    const annexb = this.session.decodeVideoFrame?.(payload, signCode) ?? this.plaintextAnnexB(payload);
-    if (annexb) return annexb;
     const decoded = this.decoder?.decodeFrame(payload)?.h264;
-    if (!decoded && this.tracedDecodeFailures++ < MAX_TRACED_DECODE_FAILURES) {
+    if (decoded) {
+      if (beginsAccessUnit(decoded)) this.unitOpenedBy = "ecc";
+      return decoded;
+    }
+    const annexb = this.session.decodeVideoFrame?.(payload, signCode) ?? this.plaintextAnnexB(payload);
+    if (!annexb && this.tracedDecodeFailures++ < MAX_TRACED_DECODE_FAILURES) {
       this.trace({ phase: "video-decode-empty", signCode });
     }
-    return decoded;
+    if (annexb && beginsAccessUnit(annexb)) this.unitOpenedBy = signCode > 0 ? "rsa" : "plain";
+    return annexb;
+  }
+
+  /**
+   * Tell the session how this keyframe was opened, which answers the attached starts on this channel
+   * ({@link P2PSession.settleAttachedKey}), and re-issue the start when the session asks for one: a plaintext
+   * keyframe answering the session's P-256 offer, from a camera that did not use the point, which the next
+   * start asks with RSA. Only a delivered keyframe answers: a frame no key opens, or a continuation without the
+   * frame that opened its unit, delivers nothing.
+   */
+  private settleStartKey(): void {
+    if (!this.session.settleAttachedKey?.(this.channel, this.unitOpenedBy)) return;
+    this.logger.debug(`[live ch${this.channel}] plaintext keyframe answered the P-256 offer — re-starting with RSA`);
+    this.sendStart();
+  }
+
+  /**
+   * The payload of an audio frame. On a stream with an ECIES decoder, a sealed frame ({@link isSealedAudio}) is
+   * opened under the media key of the latest keyframe, and answers `undefined` when it does not open or arrives
+   * before any keyframe gave a media key, since its bytes are ciphertext. Every other frame is the bytes after
+   * its header.
+   */
+  private audioPayload(frame: Buffer): Buffer | undefined {
+    if (!this.decoder || !isSealedAudio(frame)) {
+      return frame.length > AUDIO_HEADER_LEN ? frame.subarray(AUDIO_HEADER_LEN) : frame;
+    }
+    const mediaKey = this.decoder.currentMediaKey;
+    return mediaKey ? openSealedAudio(frame, mediaKey) : undefined;
   }
 
   /**

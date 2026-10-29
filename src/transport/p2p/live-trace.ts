@@ -20,7 +20,14 @@ export const LIVE_TRACE_MESSAGE = "[live] start trace";
 /** One bounded startup observation. */
 export type LiveTrace =
   /** A media start or keepalive was sent, with the topology and encryption level it was sent under. */
-  | { phase: "media-command"; topology: "attached" | "own"; action: "start" | "keepalive"; level2: boolean }
+  | {
+      phase: "media-command";
+      topology: "attached" | "own";
+      action: "start" | "keepalive";
+      level2: boolean;
+      /** The media-key type an attached start offered. */
+      key?: "ecc" | "rsa";
+    }
   /** The device acknowledged a retained start, or that start was repeated / abandoned unacknowledged. */
   | { phase: "media-command-ack" | "media-command-retry" | "media-command-unacknowledged"; action: "start" }
   /** The first inbound video command, and whether this stream's channel filter accepted it. */
