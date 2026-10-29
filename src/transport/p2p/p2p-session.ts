@@ -1147,8 +1147,10 @@ export class P2PSession extends EventEmitter {
     } else if (hasHeader(msg, ResponseMessageType.LOOKUP_ADDR)) {
       if (!this.connected) {
         const addr = parseLookupAddr(msg);
-        this.logger.debug(`[p2p] ${this.cfg.stationSn} LOOKUP_ADDR -> ${addr.host}:${addr.port}`);
-        if (addr.host !== "0.0.0.0") this.beginCheckCam(addr, socket);
+        if (addr) {
+          this.logger.debug(`[p2p] ${this.cfg.stationSn} LOOKUP_ADDR -> ${addr.host}:${addr.port}`);
+          if (addr.host !== "0.0.0.0") this.beginCheckCam(addr, socket);
+        }
       }
     } else if (hasHeader(msg, ResponseMessageType.RLY_TO)) {
       const to = parseRelayTo(msg);
@@ -2285,8 +2287,11 @@ export class P2PSession extends EventEmitter {
    *
    * Only once the data type's reorder wait passes, or {@link REORDER_MAX_DATAGRAMS} pile up, is the datagram
    * treated as lost: a pending frame is discarded and delivery resumes from the earliest held datagram.
+   *
+   * A datagram shorter than the 8-byte DATA header carries no sequence number and is dropped unacknowledged.
    */
   private onData(msg: Buffer, addr: Address): void {
+    if (msg.length < 8) return;
     const dataTypeBuffer = msg.subarray(4, 6);
     const seqNo = msg.subarray(6, 8).readUInt16BE();
     const dataType = dataTypeBuffer[1]; // 0=DATA 1=VIDEO 2=CONTROL 3=BINARY
