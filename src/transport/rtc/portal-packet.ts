@@ -8,9 +8,15 @@
  *
  * Every offset is the portal bundle's header builder and parser (`Gr()` / `Qr()`) and its
  * `worker_sctp_send`.
+ *
+ * A large notify frame (a table read, a stored image) arrives as one zstd stream whose plaintext is a
+ * whole packet, header included; a small one arrives plain. {@link parsePortalPacket} opens both.
  */
+import { zstdDecompressSync } from "node:zlib";
 
 const MAGIC = Buffer.from("XZYH", "ascii");
+/** The zstd frame magic, little-endian, as the first four bytes of a compressed notify frame read. */
+const ZSTD_MAGIC_LE = 0xfd2fb528;
 export const PORTAL_HEADER_LENGTH = 16;
 /** The SET_PAYLOAD envelope. */
 export const PORTAL_CMD_SET_PAYLOAD = 1350;
@@ -135,13 +141,29 @@ function parseJsonBody(buf: Buffer): unknown {
 }
 
 /**
- * Parse an inbound packet. On the command channel the body opens with the int32 result code and may
- * carry JSON after it; on the notify channel the whole body is JSON with a nested `cmd`.
+ * The packet a frame carries: the frame itself, or the plaintext of a zstd stream whose first four bytes
+ * are the zstd magic. `undefined` when the stream does not decompress.
+ */
+function unwrapZstd(buf: Buffer): Buffer | undefined {
+  if (buf.length < 4 || buf.readUInt32LE(0) !== ZSTD_MAGIC_LE) return buf;
+  try {
+    return zstdDecompressSync(buf);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Parse an inbound packet, opening a zstd-compressed one first. On the command channel the body opens
+ * with the int32 result code and may carry JSON after it; on the notify channel the whole body is JSON
+ * with a nested `cmd`. `undefined` for a frame that is neither a packet nor a stream holding one.
  */
 export function parsePortalPacket(buf: Buffer, linkType: number = PortalLinkType.COMMAND): PortalResponse | undefined {
-  const header = parsePortalHeader(buf);
+  const packet = unwrapZstd(buf);
+  if (!packet) return undefined;
+  const header = parsePortalHeader(packet);
   if (!header) return undefined;
-  const body = buf.subarray(PORTAL_HEADER_LENGTH, PORTAL_HEADER_LENGTH + header.paramLength);
+  const body = packet.subarray(PORTAL_HEADER_LENGTH, PORTAL_HEADER_LENGTH + header.paramLength);
   if (linkType === PortalLinkType.NOTIFY) {
     const data = parseJsonBody(body);
     const cmd =

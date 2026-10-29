@@ -1,3 +1,4 @@
+import { zstdCompressSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import {
   PORTAL_HEADER_LENGTH,
@@ -82,6 +83,24 @@ describe("portal packet bodies", () => {
 
   it("returns undefined for anything that isn't a portal packet", () => {
     expect(parsePortalPacket(Buffer.from("hello"))).toBeUndefined();
+  });
+});
+
+describe("compressed notify frames", () => {
+  const rows = [{ device_sn: "T8000P0000000002", record_id: 1, thumb_path: "/zx/hdd_data0/Camera020000/a.jpg" }];
+  const json = Buffer.from(JSON.stringify({ cmd: 10000, count: 1, data: rows, mIntRet: 0 }), "utf8");
+  const plain = Buffer.concat([buildPortalHeader(1306, json.length, 255, 0, 0), json]);
+
+  it("opens a zstd stream and parses the packet inside as it would the plain one, or answers undefined", () => {
+    const compressed = zstdCompressSync(plain);
+    expect(compressed.readUInt32LE(0)).toBe(0xfd2fb528);
+    expect(isPortalPacket(compressed)).toBe(false);
+    const parsed = parsePortalPacket(compressed, PortalLinkType.NOTIFY);
+    expect(parsed).toEqual(parsePortalPacket(plain, PortalLinkType.NOTIFY));
+    expect(parsed?.cmd).toBe(10000);
+    expect((parsed?.data as { data: unknown[] }).data).toEqual(rows);
+    const corrupt = Buffer.concat([compressed.subarray(0, 12), Buffer.from("not zstd payload")]);
+    expect(parsePortalPacket(corrupt, PortalLinkType.NOTIFY)).toBeUndefined();
   });
 });
 
