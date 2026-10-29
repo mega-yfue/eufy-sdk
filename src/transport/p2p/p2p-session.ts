@@ -546,11 +546,14 @@ export class P2PSession extends EventEmitter {
   private level2Seq = 0;
   private rsaPrivateKey?: KeyObject;
   private rsaModulusHex?: string;
-  /** Guards the one-shot level-2 key negotiation kicked off by the GATEWAYINFO reply. */
+  /**
+   * Whether a level-2 key negotiation kicked off by a GATEWAYINFO reply is in flight. Cleared when it
+   * settles, so a later reply — the answer to {@link repromptLevel2Key} — negotiates again.
+   */
   private level2Negotiating = false;
   /**
    * Whether waiting for a level-2 key can still change the answer: `false` once one has been negotiated,
-   * once the one-shot negotiation concluded without one, and from the start when nothing can negotiate one.
+   * once a negotiation concluded without one, and from the start when nothing can negotiate one.
    */
   private level2Pending: boolean;
   /** Waiters parked in {@link awaitLevel2Key}, woken the moment the negotiation settles either way. */
@@ -662,7 +665,8 @@ export class P2PSession extends EventEmitter {
    * The session grace runs from connect, when the station is prompted for `CMD_GATEWAYINFO`. A negotiation
    * beginning later does not restart it: best-effort media can proceed without the key, and restarting
    * would charge another grace to a source that may already be streaming. A session whose negotiation has
-   * settled answers without waiting at all, since being one-shot is what makes that answer final.
+   * settled answers without waiting at all: the answer stands until {@link repromptLevel2Key} re-opens the
+   * wait, since the station is prompted for `CMD_GATEWAYINFO` only on connect and on that re-prompt.
    *
    * An own-session camera whose grace expires here is NOT thereby a camera that will fail to stream. Measured
    * on one account: own-session cameras of two device types negotiated a key, three others never did, and
@@ -730,12 +734,13 @@ export class P2PSession extends EventEmitter {
   /**
    * Ask the station for its gateway info a second time, re-opening a negotiation that concluded without a key.
    *
-   * The negotiation is one-shot per connection: the station is prompted once on connect, and a reply that
-   * never lands settles the wait so {@link awaitLevel2Key} answers `false` at once forever after. That is the
+   * Without this the station is prompted once on connect, and a negotiation that settles without a key
+   * leaves {@link awaitLevel2Key} answering `false` at once for the rest of that connection. That is the
    * right answer for best-effort media, which proceeds at level-1 — but an operation whose ONLY wire is
    * level-2 is then refused for the whole life of that connection, while a fresh session over the same
    * device negotiates a key normally. Measured: a session that had settled refused every such operation
-   * until it was rebuilt, at which point the station answered with a cipher id straight away.
+   * until it was rebuilt, at which point the station answered with a cipher id straight away. The reply to
+   * this ask runs the negotiation again and settles the re-opened wait either way.
    *
    * Bounded to one extra ask per connection, so a burst of such operations cannot turn a silent station into a
    * flood, and answers whether it asked — `false` when a key is already held, when nothing can negotiate one,
@@ -755,6 +760,7 @@ export class P2PSession extends EventEmitter {
   /** Record that the level-2 negotiation has finished, with or without a key, and wake every waiter. */
   private settleLevel2(reason: "terminal" | "closed" = "terminal"): void {
     this.level2Pending = false;
+    this.level2Negotiating = false;
     const outcome = this.level2Key ? "key" : reason;
     for (const wake of this.level2Waiters.splice(0)) wake(outcome);
   }
@@ -764,13 +770,14 @@ export class P2PSession extends EventEmitter {
    * `cipher_id`, resolve that cipher's private keys once (cloud `get_ciphers`, via the configured
    * `resolveCipherKey`), run the ECIES unwrap with the ECC key, and `setLevel2Key()`. A cipher with no
    * ECC key uses its RSA key instead and holds the RSA-decrypted 16-byte key as the AES-128-ECB level-2
-   * key. One-shot; emits `level2Ready` only when the AES-256-GCM key is negotiated, traces
+   * key. Emits `level2Ready` only when the AES-256-GCM key is negotiated, traces
    * `level2-set-payload-only` instead for the AES-128-ECB key, and emits `error` when the ECC unwrap
    * fails; an RSA unwrap failure is only traced (non-fatal either way — level-1 traffic keeps working).
    *
-   * Every outcome settles the wait in {@link awaitLevel2Key}, because being one-shot is what makes a
-   * failure final for this connection generation: nothing will retry it there, so a later command must be
-   * told at once rather than left to time out against a key that is not coming.
+   * Every outcome settles the wait in {@link awaitLevel2Key}, so a later command is told at once rather than
+   * left to time out against a key that is not coming. Settling also re-opens the negotiation, so a later
+   * GATEWAYINFO reply in the same connection generation runs it again; a lookup that completes after its
+   * generation ended settles nothing.
    */
   private negotiateLevel2Key(gwPayload: Buffer): void {
     this.level2Negotiating = true;
@@ -2465,6 +2472,13 @@ export class P2PSession extends EventEmitter {
     }
   }
 
+  /**
+   * Decrypt and dispatch one inbound data frame.
+   *
+   * A `CMD_GATEWAYINFO` (1100) reply carries the ECIES envelope for the level-2 session key. When a
+   * cipher-key resolver is configured, no key that seals a set-payload is held and no negotiation is in
+   * flight, the reply starts one (async, fire-and-forget); a reply landing while one is in flight is ignored.
+   */
   private handleFrame(header: P2PDataFrameHeader, payload: Buffer, dataType: number): void {
     let data = payload;
     // Media frames (video 1300 / audio 1301) are NOT level-1/2 control frames — their bodies use the
@@ -2488,8 +2502,6 @@ export class P2PSession extends EventEmitter {
         /* leave as-is; emit raw */
       }
     }
-    // The CMD_GATEWAYINFO (1100) reply carries the ECIES envelope for the level-2 session
-    // key. If a cipher-key resolver is configured, negotiate the key once (async, fire-and-forget).
     if (
       header.commandId === CMD_GATEWAYINFO &&
       header.signCode <= 1 &&
