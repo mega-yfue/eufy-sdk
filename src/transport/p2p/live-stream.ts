@@ -302,6 +302,7 @@ export class LiveStream extends EventEmitter {
     return undefined;
   }
 
+  /** Emit one accepted media frame; an audio frame with no bytes past its header emits nothing. */
   private onFrame(f: P2PFrame): void {
     const accepted = this.acceptsMedia(f);
     if (f.commandId === CMD_VIDEO_FRAME && !this.tracedFirstVideoCommand) {
@@ -338,7 +339,7 @@ export class LiveStream extends EventEmitter {
           });
         }
       } else if (f.commandId === CMD_AUDIO_FRAME) {
-        const audio = f.data.length > AUDIO_HEADER_LEN ? f.data.subarray(AUDIO_HEADER_LEN) : f.data;
+        const audio = f.data.subarray(AUDIO_HEADER_LEN);
         if (audio.length) {
           const codecId = f.data.length > AUDIO_TYPE_OFFSET ? f.data.readUInt8(AUDIO_TYPE_OFFSET) : undefined;
           const codec = codecId === undefined ? undefined : AUDIO_CODECS[codecId];
