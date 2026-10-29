@@ -224,12 +224,12 @@ export async function sendApiRequest<T = unknown>(
 
 /**
  * CONTROL: publish device data-points. `dps` is `{ "<dpId>": <value> }`; note it is JSON-stringified
- * INSIDE the postData (Tuya nests the dps map as a string). Action `smartlife.m.device.dp.publish` v2.0.
+ * INSIDE the postData (Tuya nests the dps map as a string). Action `smartlife.m.device.dp.publish` v1.0 (standard device control).
  */
 export function buildPublishDpsAction(devId: string, gwId: string, dps: Record<string, unknown>): TuyaAction {
   return {
     a: "smartlife.m.device.dp.publish",
-    v: "2.0",
+    v: "1.0",
     postData: JSON.stringify({ gwId, devId, dps: JSON.stringify(dps) }),
   };
 }
