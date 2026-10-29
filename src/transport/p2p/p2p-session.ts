@@ -1998,14 +1998,18 @@ export class P2PSession extends EventEmitter {
   }
 
   /**
-   * The session's P-256 pair: the private scalar, and the public point as 128 hex characters, `x ‖ y`
-   * without the uncompressed-point prefix, the form the current app's attached-camera start carries in `key`.
+   * The session's P-256 pair: the private scalar as 32 bytes, and the public point as 128 hex characters,
+   * `x ‖ y` without the uncompressed-point prefix, the form the current app's attached-camera start carries in
+   * `key`. `ECDH.getPrivateKey()` drops a scalar's leading zero bytes, so the scalar is padded back to 32.
    */
   private mediaEccPair(): { privateKey: Buffer; point: string } {
     if (!this.mediaEcc) {
       const ecdh = createECDH("prime256v1");
       ecdh.generateKeys();
-      this.mediaEcc = { privateKey: ecdh.getPrivateKey(), point: ecdh.getPublicKey().subarray(1).toString("hex") };
+      this.mediaEcc = {
+        privateKey: Buffer.from(ecdh.getPrivateKey("hex").padStart(64, "0"), "hex"),
+        point: ecdh.getPublicKey().subarray(1).toString("hex"),
+      };
     }
     return this.mediaEcc;
   }
