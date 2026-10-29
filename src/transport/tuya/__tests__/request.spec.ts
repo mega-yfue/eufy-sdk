@@ -88,10 +88,10 @@ describe("buildApiParams", () => {
 });
 
 describe("dp action builders", () => {
-  it("publishDps: smartlife.m.device.dp.publish v2.0 with nested stringified dps", () => {
+  it("publishDps: smartlife.m.device.dp.publish v1.0 with nested stringified dps", () => {
     const action = buildPublishDpsAction("dev-1", "gw-1", { "101": true, "102": 50 });
     expect(action.a).toBe("smartlife.m.device.dp.publish");
-    expect(action.v).toBe("2.0");
+    expect(action.v).toBe("1.0");
     expect(JSON.parse(action.postData!)).toEqual({
       gwId: "gw-1",
       devId: "dev-1",
