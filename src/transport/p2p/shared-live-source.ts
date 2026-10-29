@@ -559,7 +559,8 @@ export class SharedLiveSource {
    *
    * The previous stream is dropped rather than stopped through the state machine: it speaks to a session that
    * is gone, and its `stop` would be read as an upstream end. Only a warm-up that asked for a replacement
-   * rewarms, so this is inert on a source that is streaming or has already failed.
+   * rewarms, so this is inert on a source that is streaming or has already failed. Each call replaces the
+   * re-issue ticker rather than adding one, so the start goes out once per interval however often it runs.
    */
   rewarm(): void {
     if (this.disposed || !this.sessionReplacementAsked || this._state !== "warming") return;
@@ -570,6 +571,7 @@ export class SharedLiveSource {
     this.openStream();
     this.warmAttempts++;
     this.logger.debug(`${this.tag} warming again on a replacement session (attempt ${this.warmAttempts})`);
+    if (this.warmRetryTimer) clearInterval(this.warmRetryTimer);
     this.warmRetryTimer = setInterval(() => this.reissueStart(), this.warmRetryMs);
   }
 
