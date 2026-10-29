@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { P2PCommandRouter, type P2PRouterDeps } from "../command-router.js";
 import { connectedSession, type FakeP2PSession } from "./session-fixtures.js";
 
@@ -222,6 +222,25 @@ describe("a second camera on a station already serving one", () => {
 
     expect(await live(r, DOORBELL)).toBeDefined();
   });
+
+  /** Off the HomeBase 3, a fragment recording and a live view route as they always have. */
+  it("keeps a fragment recording on the station's own session while a sibling is watched", async () => {
+    const r = router();
+    (await live(r, SIBLING)).attach();
+    const recording = r.mediaProviderFor(DOORBELL).recordFragments!();
+
+    await vi.waitFor(() => expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(STATION_SN));
+    recording.stop();
+  });
+
+  it("hands a live view the still's source already on the station's own session", async () => {
+    const r = router();
+    const still = await r.sharedLiveSourceFor(DOORBELL);
+    still.attach().detach();
+
+    expect(await live(r, DOORBELL)).toBe(still);
+    expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(STATION_SN);
+  });
 });
 
 /**
@@ -237,5 +256,79 @@ describe("a standalone camera", () => {
 
     expect(await live(r, SOLO_A)).toBeDefined();
     expect(sources(r).has(`${SOLO_B}:0`)).toBe(true);
+  });
+});
+
+/**
+ * A HomeBase 3 can keep serving the camera it last served on a session: one went on sending a previous
+ * camera's channel down its own session after that pull had moved away, and the next camera started there
+ * received none of its own. So on that model every continuous pull of an attached camera gets a connection
+ * of its own, and a still's source left unwatched on the station's session is not handed to a live view.
+ */
+describe("an attached camera on a HomeBase 3", () => {
+  const HB3 = "T8030P0000000000";
+
+  function hb3Router() {
+    const session = connectedSession(true) as FakeP2PSession;
+    const attached = (sn: string, channel: number) => ({
+      sn,
+      stationSn: HB3,
+      channel,
+      raw: { parent_sn: HB3, device_channel: channel, member: { admin_user_id: ACCOUNT_ID } },
+    });
+    const built = new P2PCommandRouter({
+      mega: {} as P2PRouterDeps["mega"],
+      listDevices: () =>
+        [
+          { sn: HB3, stationSn: HB3, channel: 0, model: "T8030", raw: { member: { admin_user_id: ACCOUNT_ID } } },
+          attached(DOORBELL, 2),
+          attached(SIBLING, 0),
+        ] as never,
+      ensureDevices: async () => {},
+      onConnect: () => {},
+      onClose: () => {},
+      onError: () => {},
+      onLevel2Ready: () => {},
+      onFrame: () => {},
+    });
+    const manager = (built as unknown as { manager: Manager }).manager;
+    manager.register(HB3, session);
+    for (const channel of [0, 2]) manager.register(`${HB3}#live:${channel}`, session, HB3);
+    return built;
+  }
+
+  it("gets a connection of its own even when the station is serving nobody", async () => {
+    const r = hb3Router();
+    (await live(r, DOORBELL)).attach();
+
+    expect(sessionKeys(r).get(`${HB3}:2`)).toBe(`${HB3}#live:2`);
+  });
+
+  it("does not take over a still's unwatched source on the station's session", async () => {
+    const r = hb3Router();
+    const still = await r.sharedLiveSourceFor(DOORBELL);
+    still.attach().detach();
+    expect(sessionKeys(r).get(`${HB3}:2`)).toBe(HB3);
+
+    const view = await live(r, DOORBELL);
+
+    expect(view).not.toBe(still);
+    expect(still.state).toBe("stopped");
+    expect(sessionKeys(r).get(`${HB3}:2`)).toBe(`${HB3}#live:2`);
+  });
+
+  it("puts a fragment recording on a connection of its own", async () => {
+    const r = hb3Router();
+    const recording = r.mediaProviderFor(DOORBELL).recordFragments!();
+
+    await vi.waitFor(() => expect(sessionKeys(r).get(`${HB3}:2`)).toBe(`${HB3}#live:2`));
+    recording.stop();
+  });
+
+  it("still sends a still down the station's own session", async () => {
+    const r = hb3Router();
+    await r.sharedLiveSourceFor(DOORBELL);
+
+    expect(sessionKeys(r).get(`${HB3}:2`)).toBe(HB3);
   });
 });
