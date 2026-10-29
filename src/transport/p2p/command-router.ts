@@ -530,7 +530,7 @@ export class P2PCommandRouter {
         if (!did) throw new Error(`no P2P endpoint (p2p_did) for station ${parentSn}`);
         let dskKey: string | undefined;
         try {
-          dskKey = (await this.deps.mega.getDskKeys([parentSn]))[parentSn]?.dskKey;
+          dskKey = (await this.deps.mega.getDskKeys([stationDev]))[parentSn]?.dskKey;
         } catch (e) {
           this.deps.onError(e instanceof Error ? e : new Error(String(e)));
         }

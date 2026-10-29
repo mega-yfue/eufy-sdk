@@ -23,6 +23,7 @@ import {
 } from "../../core/crypto.js";
 import { MemorySessionStore, isSessionValid, type SessionStore } from "../../core/store.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
+import type { EufyDevice } from "../../core/types.js";
 import type { SecureMqttCredentials } from "../mqtt/secure-mqtt.js";
 import { withoutTokenEcho } from "../token-echo.js";
 import { downloadMediaResource, mediaFailureError, MediaDownloadAuthenticationError } from "./media-download.js";
@@ -783,12 +784,12 @@ export class MegaHttpClient {
   }
 
   /**
-   * Fetch the per-station DSK key used in the P2P cloud-lookup payload. Mirrors
+   * Fetch the per-station DSK key using each station's reported cloud category. Mirrors
    * the legacy `get_dsk_keys` body shape on the mega devicerelation service.
    * The P2P *local* lookup path does not need this; only the cloud path does.
    */
   async getDskKeys(
-    stationSns: string[],
+    stations: ReadonlyArray<Pick<EufyDevice, "sn" | "category">>,
     priorDsks: Record<string, string> = {},
   ): Promise<Record<string, { dskKey: string; expiration: number }>> {
     // Captured v6 shape (app-devicerelation): the server keys off a `device_dsks`
@@ -798,10 +799,10 @@ export class MegaHttpClient {
     // `invalid_dsks` map mirrors the same data. No `transaction` field.
     const invalid: Record<string, string> = {};
     const deviceDsks: Array<{ invalid_dsk: string; device_sn: string; category: string }> = [];
-    for (const sn of stationSns) {
+    for (const { sn, category } of stations) {
       const prev = priorDsks[sn] ?? "";
       invalid[sn] = prev;
-      deviceDsks.push({ invalid_dsk: prev, device_sn: sn, category: "eufy_security" });
+      deviceDsks.push({ invalid_dsk: prev, device_sn: sn, category: category || "eufy_security" });
     }
     // Response echoes a `device_dsks` array keyed by `device_sn` (each entry:
     // { device_sn, dsk_key, expiration, enabled, about_to_be_replaced }).
@@ -810,7 +811,7 @@ export class MegaHttpClient {
     }>("devicerelation", "/app/devicerelation/get_dsk_keys", {
       device_dsks: deviceDsks,
       invalid_dsks: invalid,
-      station_sns: stationSns,
+      station_sns: stations.map(({ sn }) => sn),
     });
     const out: Record<string, { dskKey: string; expiration: number }> = {};
     for (const k of res.device_dsks ?? []) out[k.device_sn] = { dskKey: k.dsk_key, expiration: k.expiration };
