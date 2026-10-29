@@ -115,6 +115,18 @@ describe("deviceState event", () => {
     expect(seen[0]).toMatchObject({ sn: "SENSOR", lastSeenMs: 9_000_000 }); // wire seconds → ms
   });
 
+  it("fires on the next poll after the station answered its own P2P session, with the answer's time", async () => {
+    const { eufy, seen } = withCloud([[{ sn: "STATION", updateTime: 1_000 }]]);
+    await (eufy as any).pollOnce();
+    (eufy as any).p2p.deps.onPeerAnswer("STATION", 9_000_000);
+
+    await (eufy as any).pollOnce();
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ sn: "STATION", lastSeenMs: 9_000_000 });
+    expect(eufy.deviceState("STATION").lastSeenMs).toBe(9_000_000);
+  });
+
   it("does not fire when last-seen didn't advance", async () => {
     const { eufy, seen } = withCloud([[{ sn: "SENSOR", updateTime: 9_000 }]]);
     await (eufy as any).pollOnce();

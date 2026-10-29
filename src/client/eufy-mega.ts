@@ -181,6 +181,14 @@ const SESSION_RECYCLE_WAIT_MS = 5_000;
 const PUSH_RETRY_MIN_MS = 30_000;
 const PUSH_RETRY_MAX_MS = 600_000;
 
+/**
+ * Backoff bounds for reopening a wired station's session: the first reopen runs at once, the next waits
+ * the minimum, each following one doubles, capped at the maximum. A connect attempt to a station that does
+ * not answer already takes the session's connect timeout, so these are the pauses between attempts.
+ */
+const STATION_REOPEN_MIN_MS = 5_000;
+const STATION_REOPEN_MAX_MS = 300_000;
+
 interface RealtimeGeneration {
   readonly epoch: number;
   readonly readiness: MutableRealtimeReadiness;
@@ -339,6 +347,12 @@ export class EufyMega extends EventEmitter {
   private readonly pollTimer = new Timer();
   /** Armed while a failed push bring-up waits to be retried; cancelled by {@link disconnect}. */
   private readonly pushRetryTimer = new Timer();
+  /**
+   * Per wired station, the pending reopen of its session and the pause before the next one; see
+   * {@link reopenWiredStation}. Dropped for a station when its session connects, and wholly by
+   * {@link disconnect}.
+   */
+  private readonly stationReopens = new Map<string, { timer: Timer; delayMs: number }>();
 
   constructor(opts: EufyMegaOptions) {
     super();
@@ -378,10 +392,18 @@ export class EufyMega extends EventEmitter {
       ensureDevices: async () => {
         await this.registry.getDevices();
       },
-      onConnect: (sn) => this.emit("p2pConnect", sn),
-      onClose: (sn) => this.emit("p2pClose", sn),
+      onConnect: (sn) => {
+        this.stationReopens.get(sn)?.timer.cancel();
+        this.stationReopens.delete(sn);
+        this.emit("p2pConnect", sn);
+      },
+      onClose: (sn) => {
+        this.emit("p2pClose", sn);
+        this.reopenWiredStation(sn);
+      },
       onError: (e) => this.reportError(e),
       onLevel2Ready: (sn, cipherId) => this.emit("p2pLevel2Ready", { stationSn: sn, cipherId }),
+      onPeerAnswer: (sn, atMs) => this.registry.markSeen(sn, atMs),
       onFrame: (stationSn, f) => this.onP2PFrame(stationSn, f),
     });
     this.rtc = new RtcCommandRouter({
@@ -875,14 +897,30 @@ export class EufyMega extends EventEmitter {
     ]);
   }
 
-  /** Reopen a wired station that {@link recycleStandaloneSession} closed, while the generation that warmed it is current. */
+  /**
+   * Reopen a wired station's session while the generation that warmed it is current: after
+   * {@link recycleStandaloneSession} closed it, after it closed on its own, or after its warm-up failed.
+   *
+   * A wired station's session is the persistent one realtime start opened, so a station left without one
+   * receives nothing until a command dials it again. The first reopen runs at once; one that fails is
+   * retried after {@link STATION_REOPEN_MIN_MS}, doubling up to {@link STATION_REOPEN_MAX_MS}, until the
+   * session connects or the generation ends. One reopen is pending per station at a time, and each failure
+   * is reported once, by {@link P2PCommandRouter.ensureStation}.
+   */
   private reopenWiredStation(sn: string): void {
     const generation = this.realtimeGeneration;
     if (generation?.epoch !== this.realtimeEpoch) return;
     if (this.p2p.stationKeyOf(sn) !== sn || !this.registry.p2pDevices().some((d) => d.sn === sn)) return;
     if (this.stationPower(sn) !== "wired") return;
-    void this.p2p.ensureStation(sn, generation.abort.signal).catch((error) => {
-      if (!generation.abort.signal.aborted) this.reportError(error);
+    const reopen = this.stationReopens.get(sn) ?? { timer: new Timer(), delayMs: 0 };
+    this.stationReopens.set(sn, reopen);
+    if (reopen.timer.pending) return;
+    reopen.timer.arm(reopen.delayMs, () => {
+      if (generation.epoch !== this.realtimeEpoch) return;
+      reopen.delayMs = Math.min(Math.max(reopen.delayMs * 2, STATION_REOPEN_MIN_MS), STATION_REOPEN_MAX_MS);
+      void this.p2p.ensureStation(sn, generation.abort.signal).catch(() => {
+        if (!generation.abort.signal.aborted && this.stationReopens.get(sn) === reopen) this.reopenWiredStation(sn);
+      });
     });
   }
 
@@ -1855,7 +1893,8 @@ export class EufyMega extends EventEmitter {
   }
 
   /** Eagerly open P2P sessions for WIRED stations only (persistent — they don't drain). Battery
-   *  stations stay closed until an on-demand open. Best-effort per station. */
+   *  stations stay closed until an on-demand open. Best-effort per station: one that fails is handed to
+   *  {@link reopenWiredStation}. */
   private async warmWiredP2P(
     readiness = createPlaneReadiness(),
     signal?: AbortSignal,
@@ -1878,6 +1917,7 @@ export class EufyMega extends EventEmitter {
             if (signal?.aborted) return;
             readiness.failed++;
             readiness.pending--;
+            this.reopenWiredStation(sn);
           },
         ),
       ),
@@ -2525,6 +2565,8 @@ export class EufyMega extends EventEmitter {
   private async teardownRealtime(): Promise<void> {
     this.pollTimer.cancel();
     this.pushRetryTimer.cancel();
+    for (const { timer } of this.stationReopens.values()) timer.cancel();
+    this.stationReopens.clear();
     this.lastStateAnnounced.clear();
     await this.closeMqttTransports();
     this.rtc.close();

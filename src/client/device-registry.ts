@@ -117,6 +117,11 @@ function mergeParams(
   }
 }
 
+/** The later of two optional times in ms, or `undefined` when neither is known. */
+function newest(a: number | undefined, b: number | undefined): number | undefined {
+  return a === undefined ? b : b === undefined ? a : Math.max(a, b);
+}
+
 /**
  * The freshest param timestamp as **milliseconds**, or `undefined` when nothing was stamped — the
  * derivation behind {@link EufyDevice.lastSeenMs}. Converts from the wire's seconds exactly once, here.
@@ -303,6 +308,7 @@ export class DeviceRegistry {
     }
 
     const seen = new Map<string, EufyDevice>();
+    const prior = new Map(this.devices.map((d) => [d.sn, d.lastSeenMs]));
     for (const body of bodies) {
       let res: { devices?: any[] };
       try {
@@ -335,7 +341,7 @@ export class DeviceRegistry {
           p2pDid: raw.p2p_did,
           params,
           paramUpdatedAt,
-          lastSeenMs: lastSeenMsOf(paramUpdatedAt),
+          lastSeenMs: newest(lastSeenMsOf(paramUpdatedAt), prior.get(raw.device_sn)),
           raw,
           deviceClass,
           ...c,
@@ -577,6 +583,16 @@ export class DeviceRegistry {
   }
 
   /**
+   * Record that `sn` was heard on a realtime wire at `atMs`, advancing its {@link EufyDevice.lastSeenMs}.
+   *
+   * Only ever moves the time forward, and survives a {@link getDevices} rebuild.
+   */
+  markSeen(sn: string, atMs: number): void {
+    const dev = this.devices.find((d) => d.sn === sn);
+    if (dev) dev.lastSeenMs = newest(dev.lastSeenMs, atMs);
+  }
+
+  /**
    * Record state a device reported over its realtime wire, merging into whatever it last reported.
    *
    * Merged rather than replaced because a report can be partial — a status frame that omits a field is
@@ -589,8 +605,7 @@ export class DeviceRegistry {
   applyRealtimeParams(sn: string, params: Record<number, string>): void {
     if (!Object.keys(params).length) return;
     this.dpParams.set(sn, { ...this.dpParams.get(sn), ...params });
-    const dev = this.devices.find((d) => d.sn === sn);
-    if (dev) dev.lastSeenMs = Date.now();
+    this.markSeen(sn, Date.now());
     this.deviceCapsCache.delete(sn);
     const waiters = this.stateWaiters.get(sn);
     if (waiters) {
