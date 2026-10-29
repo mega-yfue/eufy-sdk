@@ -269,6 +269,12 @@ export class EufyMega extends EventEmitter {
   /** Shared in-flight/settled `startMqtt()` promise PER SCOPE — so realtime bring-up and an on-demand
    * publish await the SAME fully-connected transport instead of racing (and never open two). */
   private readonly mqttReady = new Map<MqttScope, Promise<void>>();
+  /**
+   * Serials {@link subscribeMqttDevices} has subscribed or is subscribing, per transport, so a later pass
+   * subscribes only devices that transport has not carried yet. Keyed by transport, so a new connection
+   * starts empty.
+   */
+  private readonly mqttSubscribed = new WeakMap<RealtimeTransport, Set<string>>();
   /** Device list/record/capability resolution + the frame→caps cache. */
   private readonly registry: DeviceRegistry;
   private pushClient?: PushClient;
@@ -1667,6 +1673,9 @@ export class EufyMega extends EventEmitter {
    * device absent from the previous pass is skipped — first sight is discovery, not a transition;
    * {@link deviceState} answers an initial reading.
    *
+   * Then brings the secure-MQTT plane up to the roster ({@link syncMqttRoster}): the startup bring-up
+   * sized it from the roster at login, which is empty when the cloud was unreachable then.
+   *
    * Then re-reads every Tuya clean-line robot from the Tuya cloud ({@link readTuyaDevices}): its state
    * is not in the cloud record this pass diffs and no live channel carries it, so the poll is where it
    * stays fresh. That read runs after the `try`, not inside it, so a cloud error on the list diff does
@@ -1683,6 +1692,7 @@ export class EufyMega extends EventEmitter {
           this.emitSemantic(out.event, out.payload, { refresh: out.refresh });
       for (const dev of diff.reported) this.emit("deviceState", this.stateOf(dev));
       for (const change of diff.params) await this.widenCapabilities(change.deviceSn);
+      await this.syncMqttRoster();
     } catch (e) {
       this.reportError(e);
     }
@@ -2043,12 +2053,19 @@ export class EufyMega extends EventEmitter {
   /**
    * Subscribe the devices on one credential scope; a failing subscribe is reported, not fatal (one
    * unreachable device must not stop the rest of the roster from coming up).
+   * A device is recorded in that transport's {@link mqttSubscribed} entry before its subscribe is awaited,
+   * whatever the outcome, so a pass running alongside or after skips it: each device is attempted once
+   * per transport.
    *
    * A Tuya clean-line device (`eufy_home_tuya`) is not subscribed: its state lives on the Tuya cloud,
    * and the broker refuses its `eufy_home` topics on every credential.
    */
-  private async subscribeMqttDevices(scope: MqttScope, transport: SecureMqtt): Promise<void> {
+  private async subscribeMqttDevices(scope: MqttScope, transport: RealtimeTransport): Promise<void> {
+    let subscribed = this.mqttSubscribed.get(transport);
+    if (!subscribed) this.mqttSubscribed.set(transport, (subscribed = new Set()));
     for (const d of this.getMqttDevices().filter((dev) => !isTuyaVacuum(dev) && mqttScopeFor(dev) === scope)) {
+      if (subscribed.has(d.sn)) continue;
+      subscribed.add(d.sn);
       try {
         await transport.subscribeDevice(d);
         await this.sendRealtimeInit(d.sn);
@@ -2056,6 +2073,25 @@ export class EufyMega extends EventEmitter {
         this.reportError(e);
       }
     }
+  }
+
+  /**
+   * Start every credential scope the roster now needs and has no transport for, and subscribe the
+   * devices that joined a scope already up — each scope's failure reported, not thrown. A no-op once
+   * the realtime generation is superseded or was never started.
+   */
+  private async syncMqttRoster(): Promise<void> {
+    if (this.realtimeGeneration?.epoch !== this.realtimeEpoch) return;
+    await Promise.all(
+      this.mqttScopesInUse().map(async (scope) => {
+        const transport = this.transports.get(scope);
+        try {
+          await (transport ? this.subscribeMqttDevices(scope, transport) : this.ensureMqttStarted(scope));
+        } catch (e) {
+          this.reportError(e);
+        }
+      }),
+    );
   }
 
   /**

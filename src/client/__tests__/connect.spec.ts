@@ -440,6 +440,30 @@ describe("EufyMega auto-realtime", () => {
     expect(c.mqtt.mock.calls.map((a) => a[0]).sort()).toEqual(["default", "eufy_life"]);
   });
 
+  it("a poll pass starts the scope a login-time empty roster skipped, then subscribes later devices", async () => {
+    const c = makeClient({ mqtt: 0 }, { pollMs: 0 });
+    vi.spyOn((c.eufy as any).registry, "pollChanges").mockResolvedValue({
+      params: [],
+      added: [],
+      removed: [],
+      reported: [],
+    });
+    await (c.eufy as any).ensureRealtime();
+    expect(c.mqtt).not.toHaveBeenCalled();
+
+    const first = { sn: "M1", category: "eufy_mega" } as unknown as EufyDevice;
+    const later = { sn: "M2", category: "eufy_mega" } as unknown as EufyDevice;
+    const transport = { subscribeDevice: vi.fn(async (_: EufyDevice) => {}), disconnect: vi.fn(async () => {}) };
+    c.mqtt.mockResolvedValue(transport);
+    (c.eufy as any).getMqttDevices.mockReturnValue([first]);
+    await (c.eufy as any).pollOnce();
+    (c.eufy as any).getMqttDevices.mockReturnValue([first, later]);
+    await (c.eufy as any).pollOnce();
+
+    expect(c.mqtt.mock.calls.map((a) => a[0])).toEqual(["default"]);
+    expect(transport.subscribeDevice.mock.calls.map(([d]) => d.sn)).toEqual(["M1", "M2"]);
+  });
+
   it("does not open a second transport when every MQTT device is on one scope", async () => {
     const c = makeClient({ mqtt: 2, category: "eufy_life" });
     await (c.eufy as any).ensureRealtime();
