@@ -479,16 +479,29 @@ export class P2PCommandRouter {
    * so a start issued before the key arrives is dropped as `media-command-unsent`, and the stream then
    * shows nothing until a later keepalive tick happens to find the key. A connected session that cannot
    * carry the start is not a connected session, so this refuses rather than returning one.
+   *
+   * A session refused its key within the grace, or never connected, is closed and dropped from the manager at
+   * once. Nothing else releases it: no source holds it, a wired station's session never idles out, and the
+   * manager hands the same session to every later open of the camera, so the next open dials a fresh
+   * connection instead. A session another open has since replaced is left to its own close.
    */
   private async openMediaSession(parentSn: string, channel: number, signal?: AbortSignal): Promise<P2PSession> {
-    const session = await this.openSession(P2PCommandRouter.mediaSessionKey(parentSn, channel), parentSn);
-    await this.awaitConnected(session, parentSn, signal);
-    let ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal);
-    if (!ready && session.repromptLevel2Key()) {
-      ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal);
+    const mediaKey = P2PCommandRouter.mediaSessionKey(parentSn, channel);
+    const session = await this.openSession(mediaKey, parentSn);
+    try {
+      await this.awaitConnected(session, parentSn, signal);
+      let ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal);
+      if (!ready && session.repromptLevel2Key()) {
+        ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal);
+      }
+      if (!ready) throw new StationKeyUnavailableError(parentSn);
+      return session;
+    } catch (error) {
+      if (!signal?.aborted && this.manager.get(mediaKey) === session) {
+        void this.manager.close(mediaKey).catch((e) => this.reportError(e instanceof Error ? e : new Error(String(e))));
+      }
+      throw error;
     }
-    if (!ready) throw new StationKeyUnavailableError(parentSn);
-    return session;
   }
 
   /**

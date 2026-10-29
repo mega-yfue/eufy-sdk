@@ -53,7 +53,10 @@ class FakeSession extends EventEmitter {
   repromptLevel2Key() {
     return false;
   }
+  /** As the real one does, it drops the connection at once and emits `close` only once its END send settles. */
   async close() {
+    this.isConnected = false;
+    await new Promise((resolve) => setTimeout(resolve, 5));
     this.emit("close");
   }
 }
@@ -224,6 +227,24 @@ describe("a second live camera on a claimed station session", () => {
 
     nextSessionHasNoKey = true;
     await expect(openLive(r, CAM_B)).rejects.toMatchObject({ name: "StationKeyUnavailableError" });
+  });
+
+  /**
+   * Nothing else releases a refused session: a wired station's session never idles out and no source holds
+   * it. Its `close` lands only after its END send, so an open in that window must already find it gone, and
+   * the late `close` must leave the new connection's claim alone.
+   */
+  it("closes a media session it refuses, so the camera's next open dials a fresh connection", async () => {
+    const r = router();
+    (await openLive(r, CAM_A)).attach();
+    nextSessionHasNoKey = true;
+    await expect(openLive(r, CAM_B)).rejects.toMatchObject({ name: "StationKeyUnavailableError" });
+
+    (await openLive(r, CAM_B)).attach();
+    await once(built[1], "close");
+
+    expect(built).toHaveLength(3);
+    expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(`${STATION_SN}#live:2`);
   });
 
   /**
