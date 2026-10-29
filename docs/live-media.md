@@ -555,7 +555,8 @@ session idle-detaches so a battery device sleeps — see [Connectivity & battery
   (deadline elapsed / source error / source ended), `stage` (`awaiting-first-frame` when the source
   delivered nothing at all, `audio-only` when it was streaming audio and never sent a video frame,
   `awaiting-keyframe` when video units arrived but none was decodable), `timeoutMs`, and `attempts` —
-  the media starts actually issued. Handle `error`.
+  the media starts actually issued. Handle `error`. The window is 20s with a re-issue every 2s by default;
+  `warmRetryMs` on `live()` sets the re-issue interval, fixed by whichever call opens the pull.
 - **A camera that is switched off looks like a broken transport.** It keeps its session, accepts the media
   start, and then sends audio and never a video frame — measured: 234 audio frames, no video, no
   stream-status report and no lost datagrams across a 20s window, then 217 video access units with nothing
