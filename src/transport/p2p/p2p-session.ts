@@ -70,6 +70,7 @@ import { traceLiveStart, type LiveTrace } from "./live-trace.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { abortable } from "../abortable.js";
 import { LEVEL2_SETTLE_MS } from "./level2-settle.js";
+import { StationUnreachableError } from "../../core/contracts.js";
 
 const LOCAL_LOOKUP_PORT = 32108;
 const HEARTBEAT_MS = 5_000;
@@ -880,7 +881,15 @@ export class P2PSession extends EventEmitter {
     );
   }
 
-  /** Open the socket and start the lookup → hole-punch handshake. */
+  /**
+   * Open the socket and start the lookup → hole-punch handshake.
+   *
+   * A socket closed or failing while binding never invokes its bind callback, so the bind wait also
+   * settles on the socket's `close` and `error`. On `close`, a connect whose session was closed meanwhile
+   * returns without starting the handshake, so it never sends a lookup or arms a timer on a closed
+   * session. On `error`, connect closes the session and rejects with {@link StationUnreachableError}
+   * carrying the bind error as its `cause`.
+   */
   async connect(): Promise<void> {
     if (this.connecting || this.connected) return;
     this.connecting = true;
@@ -901,8 +910,12 @@ export class P2PSession extends EventEmitter {
     socket.on("message", (msg, rinfo) => this.onMessage(msg, rinfo, socket));
     socket.on("error", (e) => this.emit("error", e));
 
-    await new Promise<void>((resolve) => {
+    const generation = this.connectionGeneration;
+    await new Promise<void>((resolve, reject) => {
+      socket.once("close", resolve);
+      socket.once("error", reject);
       socket.bind(() => {
+        socket.off("error", reject);
         try {
           socket.setBroadcast(true);
         } catch {
@@ -911,7 +924,11 @@ export class P2PSession extends EventEmitter {
         this.requestReceiveBuffer(socket);
         resolve();
       });
+    }).catch(async (error: unknown) => {
+      await this.close();
+      throw new StationUnreachableError(this.cfg.stationSn, 0, { cause: error });
     });
+    if (generation !== this.connectionGeneration) return;
 
     void P2PSession.detectLocalIp().then((host) => {
       if (host && !this.closed) this.selfHost = host;
@@ -920,7 +937,6 @@ export class P2PSession extends EventEmitter {
     const { dskKey, cloudAddresses } = this.cfg;
     this.cloudLookup = dskKey && cloudAddresses?.length ? { key: dskKey, addresses: cloudAddresses } : undefined;
     if (this.cloudLookup && cloudAddresses) {
-      const generation = this.connectionGeneration;
       void resolveLookupServers(cloudAddresses).then((addresses) => {
         if (this.cloudLookup && !this.closed && generation === this.connectionGeneration)
           this.cloudLookup.addresses = addresses;
