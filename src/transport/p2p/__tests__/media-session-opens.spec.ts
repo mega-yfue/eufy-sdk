@@ -319,6 +319,96 @@ describe("a second live camera on a claimed station session", () => {
     expect(keys).toContain(STATION_SN);
     expect(built).toHaveLength(2);
   });
+
+  /**
+   * A build that opens its own connection files its source only once that connection is up, so a second
+   * request for the same camera lands while nothing is cached. Both must leave with the one source the
+   * router keeps, or the other's teardown closes the connection that source streams on.
+   */
+  it("hands two simultaneous live requests for one camera the same source", async () => {
+    const r = router();
+    (await openLive(r, CAM_A)).attach();
+
+    const [first, second] = await Promise.all([openLive(r, CAM_B), openLive(r, CAM_B)]);
+
+    expect(second).toBe(first);
+    expect(sources(r).get(`${STATION_SN}:2`)).toBe(first);
+    expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(`${STATION_SN}#live:2`);
+    expect(built).toHaveLength(2);
+  });
+
+  it("hands a still asked for during a live build the source that build files", async () => {
+    const r = router();
+    (await openLive(r, CAM_A)).attach();
+    const openStill = (
+      r as unknown as { sharedLiveSourceFor(s: string, o: object): Promise<unknown> }
+    ).sharedLiveSourceFor.bind(r);
+
+    const [live, still] = await Promise.all([openLive(r, CAM_B), openStill(CAM_B, {})]);
+
+    expect(still).toBe(live);
+    expect(sources(r).get(`${STATION_SN}:2`)).toBe(live);
+    expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(`${STATION_SN}#live:2`);
+  });
+
+  it("lets a request waiting on another's build leave as soon as its own signal aborts", async () => {
+    vi.useFakeTimers();
+    try {
+      const r = router();
+      (await openLive(r, CAM_A)).attach();
+
+      nextSessionConnectsAfterMs = Infinity;
+      const building = openLive(r, CAM_B).catch(() => undefined);
+      const abort = new AbortController();
+      const waiting = (
+        r as unknown as { sharedLiveSourceFor(s: string, o: object, m: boolean): Promise<unknown> }
+      ).sharedLiveSourceFor(CAM_B, { signal: abort.signal }, true);
+      let left: unknown;
+      waiting.catch((error) => (left = error));
+      await vi.advanceTimersByTimeAsync(100);
+
+      abort.abort();
+      await vi.advanceTimersByTimeAsync(100);
+
+      expect(left).toMatchObject({ name: "AbortError" });
+      expect(built).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(CONNECT_TIMEOUT_MS + 400);
+      await building;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * The station's session closing while a build waits on its own connection drops the sibling that
+   * claimed it, and the build then fails. A request that waited on that build files its source on a
+   * session it resolves after the wait, never on the one that closed.
+   */
+  it("files a waiter's source on a live station session after the build it waited on failed", async () => {
+    vi.useFakeTimers();
+    try {
+      const r = router();
+      (await openLive(r, CAM_A)).attach();
+      const closed = built[0];
+
+      nextSessionConnectsAfterMs = Infinity;
+      const building = openLive(r, CAM_B).catch(() => undefined);
+      const waiting = openLive(r, CAM_B);
+      await vi.advanceTimersByTimeAsync(100);
+      await closed.close();
+      await vi.advanceTimersByTimeAsync(CONNECT_TIMEOUT_MS + 400);
+      await building;
+
+      const source = await waiting;
+      source.attach();
+      expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(STATION_SN);
+      expect((source as unknown as { stream: { session: FakeSession } }).stream.session).not.toBe(closed);
+      await r.closeAll();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps independent media delivering when the station-control connection closes", async () => {
     const r = router();
     const a = await openLive(r, CAM_A);
