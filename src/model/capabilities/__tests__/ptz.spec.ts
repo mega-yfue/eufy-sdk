@@ -86,6 +86,11 @@ describe("ptz capability module", () => {
       }
       expect(PTZ.detection?.deviceTypes).toEqual(expect.arrayContaining([31, 35, 111]));
     });
+    it("detects a SoloCam E30 (deviceType 88) that reports no preset params", () => {
+      const rec = { model: "T8171", deviceType: 88, params: {} };
+      expect(detectCapabilities(rec, "camera")).toContain("ptz");
+      expect(resolveDevice(rec).capabilities).toContain("ptz");
+    });
     it("a fixed-lens T8134 reporting preset params as 0 is not pan-tilt", () => {
       const presets = { 6090: "0", 6091: "0", 6092: "0" };
       expect(detectCapabilities({ model: "T8134", deviceType: 63, params: presets }, "camera")).not.toContain("ptz");
