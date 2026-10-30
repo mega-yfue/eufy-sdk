@@ -50,6 +50,48 @@ describe("v2 reconstruction cost", () => {
     expect(vi.mocked(encode)).not.toHaveBeenCalled();
   });
 
+  /**
+   * A 1280×720 frame at quality 30: too large to probe whole within the budget, and foggy under the
+   * reference tables, so it needs the correction the probe measures. FULLY SYNTHETIC — a gradient
+   * encoded here, cut at its SOS behind a DRI(0) segment the way the second v2 form is.
+   */
+  it("probes a large frame on a bounded band and still corrects its contrast", () => {
+    const width = 1280;
+    const height = 720;
+    const pixels = Buffer.alloc(width * height * 4);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const at = (y * width + x) * 4;
+        pixels[at] = Math.round((x * 255) / (width - 1));
+        pixels[at + 1] = Math.round(((x + y) * 255) / (width + height - 2));
+        pixels[at + 2] = Math.round((((x * 7 + y * 3) % 256) * 255) / 255);
+        pixels[at + 3] = 255;
+      }
+    }
+    const jpeg = Buffer.from(encode({ width, height, data: pixels }, 30).data);
+    const scan = jpeg.subarray(jpeg.indexOf(Buffer.from([0xff, 0xda, 0x00, 0x0c])));
+    const blob = Buffer.concat([
+      Buffer.from("v2_eufysecurity:"),
+      Buffer.alloc(64, 0x5a),
+      Buffer.from([0xff, 0xdd, 0x00, 0x04, 0x00, 0x00]),
+      scan,
+    ]);
+    vi.mocked(decode).mockClear();
+
+    const out = decodeImageV2(blob);
+    expect(out).not.toBeNull();
+
+    expect(vi.mocked(decode)).toHaveBeenCalledTimes(1);
+    const probed = vi.mocked(decode).mock.results[0]!.value as { width: number; height: number };
+    expect(probed.width).toBe(width);
+    expect(probed.width * probed.height).toBeLessThanOrEqual(640 * 480);
+
+    const sof = out!.indexOf(Buffer.from([0xff, 0xc0]));
+    expect({ height: out!.readUInt16BE(sof + 5), width: out!.readUInt16BE(sof + 7) }).toEqual({ width, height });
+    const dqt = out!.indexOf(Buffer.from([0xff, 0xdb]));
+    expect(out![dqt + 5]).toBeGreaterThan(5);
+  });
+
   it("decodes nothing at all when no geometry explains the scan", () => {
     const blob = readFixture("v2_thumbnail_176x144.b64");
     expect(decodeImageV2(blob.subarray(0, blob.length - 400))).toBeNull();
