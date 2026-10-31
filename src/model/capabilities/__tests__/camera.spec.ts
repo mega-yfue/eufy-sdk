@@ -795,6 +795,29 @@ describe("camera capability module", () => {
       expect(camera(ctx(0, { codec: "camera", ...evidence }), media).acts.setWatermark).toBeTypeOf("function");
     });
 
+    it("the T8530 video lock is offered live view as a managed stream and as a Readable", () => {
+      const media: MediaProvider = {
+        snapshotStored: async () => Buffer.alloc(0),
+        snapshotLive: async () => ({ jpeg: Buffer.alloc(0), width: 1, height: 1 }),
+        live: async () => ({}) as never,
+        record: async () => Buffer.alloc(0),
+        openReadable: async () => ({}) as never,
+        recordFragments: () => ({}) as never,
+        downloadRecording: async () => ({}) as never,
+        talkback: async () => ({}) as never,
+      };
+      const lock = camera(
+        ctx(0, {
+          codec: "lock",
+          deviceType: DeviceType.LOCK_8530,
+          capabilities: new Set(["lock", "camera", "snapshot"] as const),
+        }),
+        media,
+      ).acts as Record<string, unknown>;
+      const offered = Object.keys(lock).filter((k) => typeof lock[k] === "function");
+      expect(offered.sort()).toEqual(["live", "openReadable"]);
+    });
+
     it("a stored-recording download passes the pushed recording name and cipher id through unchanged", async () => {
       const seen: unknown[] = [];
       const recording = { video: Buffer.from([1]), frames: 1, missingFrames: 0, durationMs: 0, fps: 0 };
