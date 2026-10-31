@@ -1,6 +1,6 @@
 import { asBool, coerceEnumValue } from "../../core/util.js";
 import { DeviceType } from "../device-types.js";
-import { isIndoorCamera, isIndoorCamMini, isIndoorPanTiltS350 } from "../device-family.js";
+import { isIndoorCamera, isIndoorCamMini, isIndoorPanTiltS350, isVideoSmartLock } from "../device-family.js";
 import { setScalar, setPayload, setJson, isCameraCodec, hasCapability } from "./access.js";
 import { AUDIO_CMD } from "./audio.js";
 import { DOORBELL_CMD } from "./doorbell.js";
@@ -955,10 +955,11 @@ export const CAMERA_MEMBERS = {
       }),
     "Record N seconds → an mp4/h264 buffer.",
   ),
+  /** The T8530 serves its live feed as a Readable too; its other media pulls stay withheld. */
   openReadable: provided(
     "media",
     (m, { ctx, read }) =>
-      isCameraCodec(ctx) &&
+      (isCameraCodec(ctx) || isVideoSmartLock(ctx)) &&
       m.openReadable &&
       (async (opts?: Parameters<NonNullable<MediaProvider["openReadable"]>>[0]) => {
         refuseWhenDisabled(ctx, read);
