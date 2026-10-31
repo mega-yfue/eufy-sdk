@@ -94,10 +94,10 @@ export class RtcSession extends EventEmitter<RtcSessionEvents> {
           this.emit("error", e instanceof Error ? e : new Error(String(e)));
         });
     });
-    this.signaling.on("close", () => {
-      this.connected = false;
-      this.announceClose();
-    });
+    // A closed socket ends the session, peer included. Left open, the orphaned peer keeps the call alive on
+    // the hub, and a T9000 answers every later call (the host's and the vendor app's) with `scall 486`
+    // until that peer's ICE gives up.
+    this.signaling.on("close", () => this.shutdown());
     this.signaling.on("error", (e) => this.emit("error", e));
 
     this.peer.on("iceCandidate", (c) => this.trickle(toWireCandidate(c)));
