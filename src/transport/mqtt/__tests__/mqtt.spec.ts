@@ -28,22 +28,20 @@ describe("subscribeTopics — clean-line devices (vacuum/mower)", () => {
   };
   const mower: EufyDevice = { ...vacuum, sn: "T2900X00001", model: "T2900", deviceClass: "mower" };
 
-  it("vacuum subscribes all five eufy_home topics (cmd/res + cmd/req + biz/res + biz/req + dt/param_info)", () => {
+  it("vacuum subscribes all four eufy_home topics (cmd/res + biz/res + biz/req + dt/param_info)", () => {
     const topics = subscribeTopics(vacuum);
     expect(topics).toEqual([
       "cmd/eufy_home/T2351/T2351X00001/res",
-      "cmd/eufy_home/T2351/T2351X00001/req",
       "biz/eufy_home/T2351/T2351X00001/res",
       "biz/eufy_home/T2351/T2351X00001/req",
       "dt/eufy_home/T2351/T2351X00001/param_info",
     ]);
   });
 
-  it("mower subscribes the same five-topic set", () => {
+  it("mower subscribes the same four-topic set", () => {
     const topics = subscribeTopics(mower);
     expect(topics).toEqual([
       "cmd/eufy_home/T2900/T2900X00001/res",
-      "cmd/eufy_home/T2900/T2900X00001/req",
       "biz/eufy_home/T2900/T2900X00001/res",
       "biz/eufy_home/T2900/T2900X00001/req",
       "dt/eufy_home/T2900/T2900X00001/param_info",
