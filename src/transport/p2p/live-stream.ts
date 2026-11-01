@@ -91,7 +91,7 @@ export interface LiveStreamOptions {
   channel?: number;
   /**
    * P-256 private key (32B) whose public point the camera wraps each keyframe's media key for. Defaults, on an
-   * attached camera, to the session's {@link P2PSession.mediaEccPrivateKey}, the pair its start offers.
+   * attached camera, to the session's `P2PSession.mediaEccPrivateKey`, the pair its start offers.
    */
   eccPrivateKey?: Buffer;
   /** Admin account id — required for the level-2 (`signCode 8`) media-start payload selecting a camera. */
