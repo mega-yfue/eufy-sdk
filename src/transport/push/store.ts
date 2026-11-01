@@ -2,8 +2,7 @@
  * Persistence for FCM credentials + seen persistent-ids, so we register the FCM
  * token ONCE and just reconnect (and don't re-receive old pushes) across runs.
  */
-import { mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
-import { dirname } from "node:path";
+import { FileSessionStore } from "../../core/store.js";
 import type { FcmCredentials } from "./types.js";
 
 export interface PersistedPush {
@@ -30,28 +29,5 @@ export class MemoryFcmStore implements FcmStore {
   }
 }
 
-export class FileFcmStore implements FcmStore {
-  constructor(private readonly path: string) {}
-  load(): PersistedPush | null {
-    try {
-      return JSON.parse(readFileSync(this.path, "utf-8")) as PersistedPush;
-    } catch {
-      return null;
-    }
-  }
-  save(p: PersistedPush): void {
-    try {
-      mkdirSync(dirname(this.path), { recursive: true });
-    } catch {
-      /* exists */
-    }
-    writeFileSync(this.path, JSON.stringify(p, null, 2), { mode: 0o600 });
-  }
-  clear(): void {
-    try {
-      rmSync(this.path);
-    } catch {
-      /* gone */
-    }
-  }
-}
+/** JSON-file FCM store: the {@link FileSessionStore} file format and write guarantees, on the push record. */
+export class FileFcmStore extends FileSessionStore<PersistedPush> implements FcmStore {}
