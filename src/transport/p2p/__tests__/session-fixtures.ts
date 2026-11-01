@@ -30,6 +30,7 @@ export interface FakeP2PSession extends EventEmitter {
   hasLevel2Key: boolean;
   awaitLevel2Key: ReturnType<typeof vi.fn>;
   repromptLevel2Key: ReturnType<typeof vi.fn>;
+  gatewayInfoUnanswered: boolean;
   /** What a second ask would achieve: `true` = the key arrives on the retry. Default: nothing to be had. */
   keyArrivesOnReprompt: boolean;
 }
@@ -47,6 +48,7 @@ export function connectedSession(hasLevel2Key = true): FakeP2PSession {
   session.traceId = "station-fake";
   session.hasLevel2Key = hasLevel2Key;
   session.keyArrivesOnReprompt = false;
+  session.gatewayInfoUnanswered = false;
   session.awaitLevel2Key = vi.fn(async () => session.hasLevel2Key);
   session.repromptLevel2Key = vi.fn(() => {
     if (session.hasLevel2Key || !session.keyArrivesOnReprompt) return false;

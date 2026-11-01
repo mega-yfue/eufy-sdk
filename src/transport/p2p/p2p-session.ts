@@ -631,6 +631,15 @@ export class P2PSession extends EventEmitter {
   }
 
   /**
+   * Whether this connection is still owed its first `CMD_GATEWAYINFO` reply: a negotiation can still change
+   * the answer and none has started. `false` once a reply began one, once one concluded, and from the start
+   * when nothing can negotiate a key.
+   */
+  get gatewayInfoUnanswered(): boolean {
+    return this.level2Pending && !this.level2Negotiating;
+  }
+
+  /**
    * Whether the held level-2 key can frame for `sender`: every level-2 sender needs the AES-256-GCM key,
    * and `"set-payload"` ({@link sendControlLevel2}) also takes the AES-128-ECB key of an RSA cipher.
    */

@@ -9,6 +9,7 @@ const ACCOUNT_ID = "0000000000000000000000000000000000000000";
 
 const HARD_GRACE_MS = 25_000;
 const SETTLE_GRACE_MS = 8_000;
+const REASK_GRACE_MS = 10_000;
 
 interface FakeSession extends FakeP2PSession {
   sendSetPayload: ReturnType<typeof vi.fn>;
@@ -91,6 +92,26 @@ describe("resolving a session defers the level-2 wait to the session", () => {
       .dispatchCommand(DEVICE_SN, { kind: "set-param", param: 6, value: 0, form: "auto", channel: 1 })
       .catch(() => undefined);
     expect(session.awaitLevel2Key).toHaveBeenCalledWith(SETTLE_GRACE_MS, "session");
+  });
+
+  /**
+   * A station that has answered no `CMD_GATEWAYINFO` by the time the settle wait ends is asked once more, and
+   * the caller waits for that answer before choosing its seal.
+   *
+   * An unanswered ask says nothing about the key: it says the station is not ready for the command either.
+   * Measured on a standalone T8423: a level-1 `1224` sent before its first gateway-info reply is acknowledged
+   * and never applied, and the same write sent once the second ask was answered applies in about 2.5 s.
+   */
+  it("asks a station that answered no gateway info once more before choosing a seal", async () => {
+    const { router, session } = setup(false);
+    session.gatewayInfoUnanswered = true;
+    session.repromptLevel2Key = vi.fn(() => true);
+    await router
+      .dispatchCommand(DEVICE_SN, { kind: "set-param", param: 6, value: 0, form: "auto", channel: 1 })
+      .catch(() => undefined);
+    expect(session.repromptLevel2Key).toHaveBeenCalledTimes(1);
+    expect(session.awaitLevel2Key).toHaveBeenNthCalledWith(1, SETTLE_GRACE_MS, "session");
+    expect(session.awaitLevel2Key).toHaveBeenNthCalledWith(2, REASK_GRACE_MS, "call");
   });
 
   /**
