@@ -37,10 +37,10 @@ export const MOWER_DP = {
 } as const;
 
 /** The `net_media_type` (DP 134) range, as the schema lists it. */
-export const MOWER_NETWORKS = ["None", "Wifi", "Cellular"] as const;
+const MOWER_NETWORKS = ["None", "Wifi", "Cellular"] as const;
 
 /** The mower's network link (DP 134). */
-export type MowerNetwork = (typeof MOWER_NETWORKS)[number];
+type MowerNetwork = (typeof MOWER_NETWORKS)[number];
 
 /**
  * Every `mower` read, declared once.
