@@ -203,6 +203,25 @@ describe("camera capability module", () => {
       await expect(camera(t8442).acts.setNightVision!(NightVision.FullColor)).rejects.toThrow(message);
     });
 
+    it("reads a 1277 value outside the published options as undefined, getter and announcement alike", () => {
+      const params = { [CAMERA_CMD.NIGHT_VISION_TYPE]: "2" };
+      const read = (value: string) => () => ({ value: Number(value) });
+      const reported = ctx(3, { model: "T8425", paramIds: new Set([CAMERA_CMD.NIGHT_VISION_TYPE]) });
+      expect(bind<CameraActions>("camera", reported, { read: read("6") }).acts.nightVision).toBeUndefined();
+      expect(bind<CameraActions>("camera", reported, { read: read("2") }).acts.nightVision).toBe(NightVision.FullColor);
+
+      const dev = Device.fromRecord("TEST-SN", { model: "T8425", params });
+      expect(dev.announcements(dev.applyParams({ [CAMERA_CMD.NIGHT_VISION_TYPE]: "6" }))).toEqual([
+        { property: "nightVision" },
+      ]);
+    });
+
+    it("keeps a number member's labels a label set, not a domain", () => {
+      const reported = ctx(0, { paramIds: new Set([1020]) });
+      const acts = bind<CameraActions>("camera", reported, { read: () => ({ value: 5 }) }).acts;
+      expect(acts.streamingQuality).toBe(5);
+    });
+
     it("keeps the 1277 property and 1350 payload for T8425", () => {
       const older = ctx(3, { model: "T8425", paramIds: new Set([CAMERA_CMD.NIGHT_VISION_TYPE]) });
       const dev = Device.fromRecord("TEST-SN", { model: "T8425", params: { 1277: "2" } });
