@@ -95,7 +95,7 @@ import type {
   RealtimePlaneReadiness,
   RealtimeReadiness,
   StationFace,
-  StationFacesOptions,
+  StationReadOptions,
   WaitForRealtimeOptions,
 } from "./types.js";
 
@@ -108,7 +108,7 @@ export type {
   RealtimePlaneReadiness,
   RealtimeReadiness,
   StationFace,
-  StationFacesOptions,
+  StationReadOptions,
   WaitForRealtimeOptions,
 } from "./types.js";
 
@@ -1027,11 +1027,14 @@ export class EufyMega extends EventEmitter {
   /**
    * On a successful login, kick off auto-realtime (unless `autoRealtime:false`). Fire-and-forget so
    * `login()` returns as soon as the session is ready — realtime channels come up in the background and
-   * surface failures via `error`. Idempotent through the retained generation promise.
+   * surface failures via `error`. Idempotent through the retained generation promise. A login for a
+   * different account drops every stored image; one for the same account drops only the lifecycle
+   * failures recorded against the session it replaces.
    */
   private afterLogin(result: LoginResult): LoginResult {
     if (result.status === LoginStatus.Ok) {
       if (this.storedImageAccount && this.storedImageAccount !== result.session.userId) this.storedImages?.clear();
+      else this.storedImages?.clearLifecycleErrors();
       this.storedImageAccount = result.session.userId;
       const auth = this.mega.auth;
       if (auth?.userId) this.tuya.bind(auth.userId, this.mega.regionShard, this.opts.countryCode);
@@ -1667,6 +1670,9 @@ export class EufyMega extends EventEmitter {
    * device absent from the previous pass is skipped — first sight is discovery, not a transition;
    * {@link deviceState} answers an initial reading.
    *
+   * A device with changed params is re-resolved by {@link widenCapabilities} once per pass, however many
+   * of its params moved, since each re-resolution is a cloud param-list read.
+   *
    * Then re-reads every Tuya clean-line robot from the Tuya cloud ({@link readTuyaDevices}): its state
    * is not in the cloud record this pass diffs and no live channel carries it, so the poll is where it
    * stays fresh. That read runs after the `try`, not inside it, so a cloud error on the list diff does
@@ -1682,7 +1688,7 @@ export class EufyMega extends EventEmitter {
         for (const out of decodeCapabilityEvent({ source: "poll", ...change }, this.capsForEvent(change.deviceSn)))
           this.emitSemantic(out.event, out.payload, { refresh: out.refresh });
       for (const dev of diff.reported) this.emit("deviceState", this.stateOf(dev));
-      for (const change of diff.params) await this.widenCapabilities(change.deviceSn);
+      for (const sn of new Set(diff.params.map((c) => c.deviceSn))) await this.widenCapabilities(sn);
     } catch (e) {
       this.reportError(e);
     }
@@ -2089,30 +2095,72 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * The people enrolled on a station, read from its own `person_basic_info` table over P2P.
+   * The people enrolled on a station, read from its own `person_basic_info` table through
+   * {@link readStationTable}.
    *
    * The cloud roster (`api.getFaces()`) answers empty for an account that keeps its faces on the
    * station, because they were never uploaded — the station holds them.
    *
-   * Resolves with the rows the station returned. Rejects on a station that cannot be reached, on a
-   * record stating no `admin_user_id`, and on the reply not arriving whole in time. Assembling that
-   * reply is `P2PSession.readDatabase`'s; this resolves which station and which account id.
+   * Resolves with the rows the station returned that are objects. Rejects as {@link readStationTable}
+   * does.
    *
    * `stranger<n>` names are the station's own placeholders for a face nobody has named, and are
    * returned as they arrive; a caller that wants only named people filters them.
    */
-  async getStationFaces(stationSn: string, opts: StationFacesOptions = {}): Promise<StationFace[]> {
-    if (!this.registry.list().length) await this.getDevices();
-    const station = this.p2p.stationKeyOf(stationSn);
-    const accountId = this.adminUserIdOf(station);
-    if (!accountId) throw new Error(`getStationFaces: no admin_user_id on record for ${station}`);
+  async getStationFaces(stationSn: string, opts: StationReadOptions = {}): Promise<StationFace[]> {
+    const rows = await this.readStationTable(stationSn, "person_basic_info", opts);
+    return rows.filter((row): row is StationFace => typeof row === "object" && row !== null);
+  }
 
+  /**
+   * The rows of one of a station's own tables (`history_record_info`, `person_basic_info`, …), read over
+   * the transport the station speaks: the control channel of a HomeBase S1 Pro (T9000), P2P for any
+   * other station. The query is the table's whole content; the rows are the station's, shaped by it.
+   *
+   * Resolves with the rows the station returned. Rejects on a serial not in the device list, on a record
+   * stating no `admin_user_id`, on a station that cannot be reached, on a query the station refuses, and
+   * on the reply not arriving in time. Assembling the reply is the transport's; this resolves which
+   * station, which transport and which account id.
+   */
+  async readStationTable(stationSn: string, table: string, opts: StationReadOptions = {}): Promise<unknown[]> {
+    const { station, accountId, route } = await this.stationReadTarget("readStationTable", stationSn);
+    if (route) return this.rtc.readTable(route, table, opts);
     await this.p2p.ensureStation(station, opts.signal);
     const session = this.p2p.getSessions().get(station);
-    if (!session) throw new Error(`getStationFaces: no P2P session for ${station}`);
+    if (!session) throw new Error(`readStationTable: no P2P session for ${station}`);
+    return session.readDatabase(table, { accountId, ...opts });
+  }
 
-    const rows = await session.readDatabase("person_basic_info", { accountId, ...opts });
-    return rows.filter((row): row is StationFace => typeof row === "object" && row !== null);
+  /**
+   * One image stored on a HomeBase S1 Pro (T9000), by the on-station path a table row names
+   * (`thumb_path`, …), read over the station's control channel.
+   *
+   * Resolves with the image bytes as the station holds them. Rejects on a serial not in the device list,
+   * on a record stating no `admin_user_id`, on a station other than a T9000, on a station that cannot be
+   * reached, and on the reply not arriving in time. Fetching the image is the transport's; this resolves
+   * which station and which account id.
+   */
+  async readStationImage(stationSn: string, filePath: string, opts: StationReadOptions = {}): Promise<Buffer> {
+    const { station, route } = await this.stationReadTarget("readStationImage", stationSn);
+    if (!route) throw new Error(`readStationImage: ${station} is not a T9000; its stored images are not read here`);
+    return this.rtc.readImage(route, filePath, opts);
+  }
+
+  /**
+   * The station a database read goes to, its `admin_user_id` and, for a T9000, its RTC route. Throws,
+   * prefixed with `op`, on a serial the device list does not carry and on a record stating no admin id.
+   */
+  private async stationReadTarget(
+    op: string,
+    stationSn: string,
+  ): Promise<{ station: string; accountId: string; route: RtcRoute | undefined }> {
+    if (!this.registry.list().length) await this.getDevices();
+    const station = this.p2p.stationKeyOf(stationSn);
+    const found = this.stationOf(station);
+    if (!found.station) throw new Error(`${op}: ${station} is not in the device list`);
+    const accountId = this.adminUserIdOf(station);
+    if (!accountId) throw new Error(`${op}: no admin_user_id on record for ${station}`);
+    return { station, accountId, route: found.t9000 ? this.rtcRouteFor(station) : undefined };
   }
 
   /** The station's own `admin_user_id`, which its database refuses the query without. */
@@ -2373,6 +2421,9 @@ export class EufyMega extends EventEmitter {
    * Returns the connected client rather than installing it. Registration can outlive a `disconnect()`,
    * and {@link ensureRealtime} owns the decision of whether a finished bring-up is still the current
    * one — so this never overwrites a channel a later login already brought up.
+   *
+   * Persisting the seen ids after each push reports a failed `save` through `error` rather than throwing:
+   * the push handler runs inside the MCS socket's `data` callback, where a throw is an uncaught exception.
    */
   private async startPush(signal?: AbortSignal): Promise<PushClient> {
     if (!this.mega.auth) throw new Error("login() first");
@@ -2424,7 +2475,11 @@ export class EufyMega extends EventEmitter {
         const dsn = (out.payload.deviceSn as string | undefined) ?? ev.deviceSn;
         if (dsn) this.prewarmForEvent(out.event, dsn);
       }
-      store.save({ creds: persistedCreds, persistentIds: client.getPersistentIds() });
+      try {
+        store.save({ creds: persistedCreds, persistentIds: client.getPersistentIds() });
+      } catch (e) {
+        this.reportError(e);
+      }
     });
     await new Promise<void>((resolve, reject) => {
       const cleanup = () => {

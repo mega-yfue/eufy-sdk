@@ -247,9 +247,9 @@ export interface StationFace {
   [column: string]: unknown;
 }
 
-/** How long to wait for a station's database reply, and how to give up early. */
-export interface StationFacesOptions {
-  /** Default 15s. A full table is a handful of frames; a station that will not answer says nothing. */
+/** How long to wait for a station's reply to a read, and how to give up early. */
+export interface StationReadOptions {
+  /** Default 15s. A station that will not answer says nothing. */
   timeoutMs?: number;
   signal?: AbortSignal;
 }
