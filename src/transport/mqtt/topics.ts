@@ -86,8 +86,9 @@ export function secureTopic(device: EufyDevice, leg: "req" | "res"): string {
  * `/res` (present in the app's subscribe list but observed to carry nothing on this line),
  * `synq/…/state_info` (online/offline), and `/app/ota/res` (OTA progress).
  *
- * Clean-line devices (vacuum/mower) subscribe four topics on the `eufy_home` prefix:
+ * Clean-line devices (vacuum/mower) subscribe five topics on the `eufy_home` prefix:
  *   - `cmd/…/res` — device→app DP reports and command replies (confirmed live on T2351)
+ *   - `cmd/…/req` — app→device commands, as the broker relays them to every subscriber of the device
  *   - `biz/…/res` — cloud→app business-layer responses (TopicManager.getBizReqTopic())
  *   - `biz/…/req` — cloud ACKs for app→cloud business requests (subscribe for ACKs)
  *   - `dt/…/param_info` — device-twin parameter push
@@ -101,7 +102,7 @@ export function subscribeTopics(device: EufyDevice): readonly string[] {
   }
   if (device.deviceClass === "vacuum" || device.deviceClass === "mower") {
     const base = `${EUFY_HOME}/${device.model}/${device.sn}`;
-    return [`cmd/${base}/res`, `biz/${base}/res`, `biz/${base}/req`, `dt/${base}/param_info`];
+    return [`cmd/${base}/res`, `cmd/${base}/req`, `biz/${base}/res`, `biz/${base}/req`, `dt/${base}/param_info`];
   }
   return [secureTopic(device, "res")];
 }
