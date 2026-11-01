@@ -265,6 +265,45 @@ describe("RtcSession", () => {
     expect(closed).toHaveBeenCalledTimes(1);
   });
 
+  it("closes the peer when the signalling socket drops under an up session, and announces close once", async () => {
+    const s = await authenticated(setup());
+    const closed = vi.fn();
+    s.session.on("close", closed);
+    s.peer.emit("commandChannelOpen");
+    expect(s.session.isConnected).toBe(true);
+    s.sig.isOpen = false;
+    s.sig.emit("close", 1006, "");
+    expect(s.session.isConnected).toBe(false);
+    expect(s.peer.close).toHaveBeenCalledTimes(1);
+    expect(closed).toHaveBeenCalledTimes(1);
+    s.peer.emit("connectionState", "closed");
+    s.session.close();
+    expect(closed).toHaveBeenCalledTimes(1);
+    expect(s.peer.close).toHaveBeenCalledTimes(1);
+    expect(s.sig.sendHangup).not.toHaveBeenCalled();
+  });
+
+  it("rejects a connect() waiting for auth at once when the socket closes, and closes the peer", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = setup();
+      const closed = vi.fn();
+      s.session.on("close", closed);
+      const connecting = s.session.connect();
+      const settled = expect(connecting).rejects.toThrow(/closed while waiting for signalling auth/);
+      await vi.waitFor(() => expect(s.sig.connect).toHaveBeenCalled());
+      s.sig.isOpen = false;
+      s.sig.emit("close", 1006, "");
+      await settled;
+      expect(s.peer.close).toHaveBeenCalledTimes(1);
+      expect(closed).toHaveBeenCalledTimes(1);
+      expect(s.sig.sendCall).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("stops reporting connected when the command channel closes under a live peer", async () => {
     const s = await authenticated(setup());
     const closed = vi.fn();

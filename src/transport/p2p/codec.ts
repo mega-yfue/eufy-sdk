@@ -564,9 +564,9 @@ function readAddress(buf: Buffer, offset: number): Address {
   };
 }
 
-/** Parse a LOOKUP_ADDR or RLY_TO message's leading address record. */
-export function parseLookupAddr(msg: Buffer): Address {
-  return readAddress(msg, 4);
+/** A LOOKUP_ADDR message's leading address record, or `undefined` for a message too short to carry it. */
+export function parseLookupAddr(msg: Buffer): Address | undefined {
+  return msg.length >= 12 ? readAddress(msg, 4) : undefined;
 }
 
 /** The relay servers a LIST_REQ_ACK names, in the order listed, without the unspecified address; records past the message's end are dropped. */

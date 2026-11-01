@@ -133,6 +133,12 @@ const RTSP_URL_READ_TIMEOUT_MS = 12_000;
  */
 const TALKBACK_CODEC_WAIT_MS = 3000;
 
+/**
+ * Stations that can keep serving the camera they last served on a session, so every continuous pull of an attached
+ * camera gets a connection of its own, even when the station's own session is free.
+ */
+const OWN_LIVE_SESSION_MODELS: ReadonlySet<string> = new Set(["T8030"]);
+
 /** Models whose speaker plays `aac-eld` talkback; every other model talks `aac-lc`. */
 const ELD_TALKBACK_MODELS: ReadonlySet<string> = new Set(["T8410C"]);
 
@@ -293,6 +299,18 @@ export class P2PCommandRouter {
    * {@link liveSources} is a claim in flight.
    */
   private readonly liveSessionKeys = new Map<string, string>();
+  /**
+   * The live source build in flight per `${parentSn}:${channel}`, settled once its connection is opened
+   * or refused.
+   *
+   * A build awaits its media session before it can file the source in {@link liveSources}, so a second
+   * request for the same camera in that window finds nothing cached. Building a second source there
+   * overwrites the first, and the orphan's teardown then closes the connection the cached one streams
+   * on. A request that finds a build here waits for it, until its own signal aborts, then resolves its
+   * session again and reuses what the build filed, or builds its own when that build failed. The entry
+   * is removed when the build settles and its promise never rejects, so each wait ends on a later state.
+   */
+  private readonly liveSourceBuilds = new Map<string, Promise<void>>();
   /**
    * The open talkback per `${parentSn}:${channel}`, if any. The device plays one audio stream at a
    * time and the session carries one audio sequence, so this path is exclusive where a live pull is
@@ -481,16 +499,29 @@ export class P2PCommandRouter {
    * so a start issued before the key arrives is dropped as `media-command-unsent`, and the stream then
    * shows nothing until a later keepalive tick happens to find the key. A connected session that cannot
    * carry the start is not a connected session, so this refuses rather than returning one.
+   *
+   * A session refused its key within the grace, or never connected, is closed and dropped from the manager at
+   * once. Nothing else releases it: no source holds it, a wired station's session never idles out, and the
+   * manager hands the same session to every later open of the camera, so the next open dials a fresh
+   * connection instead. A session another open has since replaced is left to its own close.
    */
   private async openMediaSession(parentSn: string, channel: number, signal?: AbortSignal): Promise<P2PSession> {
-    const session = await this.openSession(P2PCommandRouter.mediaSessionKey(parentSn, channel), parentSn);
-    await this.awaitConnected(session, parentSn, signal);
-    let ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal);
-    if (!ready && session.repromptLevel2Key()) {
-      ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal);
+    const mediaKey = P2PCommandRouter.mediaSessionKey(parentSn, channel);
+    const session = await this.openSession(mediaKey, parentSn);
+    try {
+      await this.awaitConnected(session, parentSn, signal);
+      let ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal);
+      if (!ready && session.repromptLevel2Key()) {
+        ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal);
+      }
+      if (!ready) throw new StationKeyUnavailableError(parentSn);
+      return session;
+    } catch (error) {
+      if (!signal?.aborted && this.manager.get(mediaKey) === session) {
+        void this.manager.close(mediaKey).catch((e) => this.reportError(e instanceof Error ? e : new Error(String(e))));
+      }
+      throw error;
     }
-    if (!ready) throw new StationKeyUnavailableError(parentSn);
-    return session;
   }
 
   /**
@@ -532,7 +563,7 @@ export class P2PCommandRouter {
         if (!did) throw new Error(`no P2P endpoint (p2p_did) for station ${parentSn}`);
         let dskKey: string | undefined;
         try {
-          dskKey = (await this.deps.mega.getDskKeys([parentSn]))[parentSn]?.dskKey;
+          dskKey = (await this.deps.mega.getDskKeys([stationDev]))[parentSn]?.dskKey;
         } catch (e) {
           this.deps.onError(e instanceof Error ? e : new Error(String(e)));
         }
@@ -1044,8 +1075,9 @@ export class P2PCommandRouter {
    * {@link releaseLingeringSiblings}. A pull with consumers is never touched. The release runs before the
    * reuse branch, so a reuse frees the station as a cold start does.
    *
-   * `mayOpenOwnSession` decides whether a camera that finds the station's own session claimed may open a
-   * connection of its own for it. Only the continuous-pull egresses pass it. A still must not: it wants one
+   * `continuous` decides whether a camera that finds the station's own session claimed may open a
+   * connection of its own for it; on an {@link OWN_LIVE_SESSION_MODELS} station it always gets one, and an
+   * unwatched source left on the station's session is rebuilt there. Only the continuous-pull egresses pass it. A still must not: it wants one
    * frame, and a socket plus a level-2 negotiation per thumbnail is a cost a tile refresh cannot justify —
    * so a still asked for while a sibling is being watched contends as it always did, and the caller's
    * retained image answers it. A live view still outranks a tile; what changed is that two live views no
@@ -1054,19 +1086,28 @@ export class P2PCommandRouter {
    * The session goes into a {@link HeldSession} cell, so it can be replaced under a source that stays in
    * place.
    */
-  async sharedLiveSourceFor(
-    sn: string,
-    opts: SharedLiveOpts = {},
-    mayOpenOwnSession = false,
-  ): Promise<SharedLiveSource> {
+  async sharedLiveSourceFor(sn: string, opts: SharedLiveOpts = {}, continuous = false): Promise<SharedLiveSource> {
     const { session, parentSn, channel, accountId, homeBaseAttached } = await this.resolveSession(sn, {
       waitLevel2: "soft",
       requireLevel2ForAttached: true,
       signal: opts.signal,
     });
     const key = `${parentSn}:${channel}`;
+    const build = this.liveSourceBuilds.get(key);
+    if (build) {
+      await abortable(build, opts.signal);
+      return this.sharedLiveSourceFor(sn, opts, continuous);
+    }
+    const ownSession = continuous && homeBaseAttached && this.ownsLiveSession(parentSn);
     let source = this.liveSources.get(key);
-    if (source && source.state === "stopped") {
+    if (
+      source &&
+      (source.state === "stopped" ||
+        (ownSession &&
+          source.state !== "idle" &&
+          source.consumerCount === 0 &&
+          this.liveSessionKeys.get(key) === parentSn))
+    ) {
       this.dropLiveSource(key);
       source = undefined;
     }
@@ -1074,10 +1115,12 @@ export class P2PCommandRouter {
     if (!source) {
       const logger = this.deps.logger ?? noopLogger;
       const sessionKey =
-        mayOpenOwnSession && homeBaseAttached && this.stationSessionInUse(parentSn, key)
+        ownSession || (continuous && homeBaseAttached && this.stationSessionInUse(parentSn, key))
           ? P2PCommandRouter.mediaSessionKey(parentSn, channel)
           : parentSn;
       this.liveSessionKeys.set(key, sessionKey);
+      const built = Promise.withResolvers<void>();
+      this.liveSourceBuilds.set(key, built.promise);
       let held: HeldSession;
       try {
         held = {
@@ -1086,6 +1129,9 @@ export class P2PCommandRouter {
       } catch (error) {
         this.liveSessionKeys.delete(key);
         throw error;
+      } finally {
+        this.liveSourceBuilds.delete(key);
+        built.resolve();
       }
       source = new SharedLiveSource({
         makeStream: (ctx) =>
@@ -1379,13 +1425,21 @@ export class P2PCommandRouter {
    * yield CMAF fragments (init segment first, then a `moof`+`mdat` per keyframe boundary) muxed by the
    * dependency-free internal fMP4 muxer. The returned recording handle exposes battery-budget notices
    * and detaches its consumer on `stop`, iterator return, or iterator throw. No ffmpeg.
+   *
+   * It is a continuous pull only on an {@link OWN_LIVE_SESSION_MODELS} station; elsewhere it never opens a
+   * connection of its own.
    */
   recordFragments(
     sn: string,
     opts: { fragmentSeconds?: number; eccPrivateKey?: Buffer; keepAliveMs?: number } & SharedSourceHints = {},
   ): FragmentRecording {
-    const source = this.sharedLiveSourceFor(sn, opts);
+    const source = this.sharedLiveSourceFor(sn, opts, this.ownsLiveSession(this.stationKeyOf(sn)));
     return new FragmentRecording(source, opts);
+  }
+
+  /** Whether `stationSn` is an {@link OWN_LIVE_SESSION_MODELS} station. */
+  private ownsLiveSession(stationSn: string): boolean {
+    return OWN_LIVE_SESSION_MODELS.has(this.recordFor(stationSn)?.model ?? "");
   }
 
   /**

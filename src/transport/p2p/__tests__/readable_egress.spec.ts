@@ -1,6 +1,11 @@
 import { openReadableFromConsumer } from "../readable-egress.js";
 import { SharedLiveSource } from "../shared-live-source.js";
-import type { LiveStreamHandle, LiveVideoFrame, ReceivedVideoFrame } from "../../../core/contracts.js";
+import type {
+  LiveStreamHandle,
+  LiveVideoFrame,
+  ReceivedVideoFrame,
+  StreamBudgetNotice,
+} from "../../../core/contracts.js";
 import { EventEmitter } from "node:events";
 
 class FakeStream extends EventEmitter implements LiveStreamHandle {
@@ -114,6 +119,41 @@ describe("openReadableFromConsumer", () => {
     expect(r.destroyed).toBe(true);
     expect(source.consumerCount).toBe(0);
     expect(source.state).toBe("stopped");
+    source.dispose();
+  });
+});
+
+describe("openReadableFromConsumer on a battery source", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  function battery() {
+    let stream!: FakeStream;
+    const source = new SharedLiveSource({
+      makeStream: () => (stream = new FakeStream()),
+      powered: "battery",
+      batteryBudgetMs: 100,
+      budgetGraceMs: 50,
+    });
+    const reader = openReadableFromConsumer(source.attach());
+    reader.resume();
+    stream.video(frame(true));
+    return { source, reader, stream };
+  }
+
+  it("re-emits the budget notice so its holder can extend past the grace", () => {
+    const { source, reader, stream } = battery();
+    const notices: StreamBudgetNotice[] = [];
+    reader.on("budget", (notice: StreamBudgetNotice) => {
+      notices.push(notice);
+      notice.extend();
+    });
+    vi.advanceTimersByTime(150);
+    expect(notices).toHaveLength(1);
+    expect(notices[0].graceMs).toBe(50);
+    expect(stream.stopped).toBe(0);
+    expect(source.consumerCount).toBe(1);
+    reader.destroy();
     source.dispose();
   });
 });
