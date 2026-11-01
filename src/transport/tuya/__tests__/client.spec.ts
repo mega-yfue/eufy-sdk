@@ -76,17 +76,10 @@ describe("TuyaClient", () => {
     expect(sentPostData(body)).toEqual({ devId: "dev-1" });
   });
 
-  it("publishDps refuses to send by default (unverified write gate)", async () => {
+  it("publishDps posts standard control v1.0 with nested dps", async () => {
     const { http, calls } = stubHttp([{ success: true }]);
     const c = new TuyaClient({ signer: new FixedSigner(), chKey: "7cbfe6d8", http });
-    await expect(c.publishDps("dev-1", "gw-1", { "101": true })).rejects.toThrow(/UNVERIFIED/);
-    expect(calls).toHaveLength(0); // nothing was sent
-  });
-
-  it("publishDps posts standard control v1.0 with nested dps when allowUnverified", async () => {
-    const { http, calls } = stubHttp([{ success: true }]);
-    const c = new TuyaClient({ signer: new FixedSigner(), chKey: "7cbfe6d8", http });
-    await c.publishDps("dev-1", "gw-1", { "101": true }, { allowUnverified: true });
+    await c.publishDps("dev-1", "gw-1", { "101": true });
     const body = new URLSearchParams(calls[0].body);
     expect(body.get("a")).toBe("smartlife.m.device.dp.publish");
     expect(body.get("v")).toBe("1.0");
