@@ -78,7 +78,7 @@ describe("SecureMqtt.subscribeDevice — a partly refused line", () => {
 
     await expect(m.subscribeDevice(VACUUM)).resolves.toBeUndefined();
 
-    expect(client.subscribeAsync).toHaveBeenCalledTimes(4);
+    expect(client.subscribeAsync).toHaveBeenCalledTimes(5);
     expect(errors.map((e) => e.message)).toEqual([
       `subscribe ${VACUUM.sn}: "biz/eufy_home/T2000/${VACUUM.sn}/req" denied on credential scope "eufy_mega"`,
       `subscribe ${VACUUM.sn}: "dt/eufy_home/T2000/${VACUUM.sn}/param_info" denied on credential scope "eufy_mega"`,
@@ -89,6 +89,7 @@ describe("SecureMqtt.subscribeDevice — a partly refused line", () => {
     const { m } = await connected();
     refused = new Set([
       `cmd/eufy_home/T2000/${VACUUM.sn}/res`,
+      `cmd/eufy_home/T2000/${VACUUM.sn}/req`,
       `biz/eufy_home/T2000/${VACUUM.sn}/res`,
       `biz/eufy_home/T2000/${VACUUM.sn}/req`,
       `dt/eufy_home/T2000/${VACUUM.sn}/param_info`,
