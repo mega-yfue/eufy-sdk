@@ -333,6 +333,36 @@ describe("level-2 key re-prompt", () => {
     expect(target.repromptLevel2Key()).toBe(false);
     expect(sent).toEqual([1100]);
   });
+
+  /**
+   * The reply to the re-prompt is negotiated like the first one. A negotiation that concluded without a
+   * key leaves the gate open, so the reply to the re-prompt runs the cipher lookup again and settles the
+   * re-opened wait.
+   */
+  it("negotiates the reply to the re-prompt after a first negotiation left no key", async () => {
+    const resolveCipherKey = vi.fn(async () => undefined);
+    const target = session(resolveCipherKey);
+    (target as unknown as { sendCommand(c: number): void }).sendCommand = () => {};
+    (target as unknown as { connectAddress?: object }).connectAddress = { host: "0.0.0.0", port: 1 };
+    const reply = (): void =>
+      (target as unknown as { handleFrame(h: object, p: Buffer, t: number): void }).handleFrame(
+        { commandId: 1100, signCode: 0, bytesToRead: 64 },
+        gatewayInfo(3),
+        0,
+      );
+
+    reply();
+    await expect(target.awaitLevel2Key(25_000)).resolves.toBe(false);
+    expect(target.repromptLevel2Key()).toBe(true);
+
+    const started = Date.now();
+    const waiting = target.awaitLevel2Key(1_000, "call");
+    reply();
+
+    await expect(waiting).resolves.toBe(false);
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(resolveCipherKey).toHaveBeenCalledTimes(2);
+  });
 });
 
 /**
