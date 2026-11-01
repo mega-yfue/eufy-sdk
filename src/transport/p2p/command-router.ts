@@ -133,6 +133,12 @@ const RTSP_URL_READ_TIMEOUT_MS = 12_000;
  */
 const TALKBACK_CODEC_WAIT_MS = 3000;
 
+/**
+ * Stations that can keep serving the camera they last served on a session, so every continuous pull of an attached
+ * camera gets a connection of its own, even when the station's own session is free.
+ */
+const OWN_LIVE_SESSION_MODELS: ReadonlySet<string> = new Set(["T8030"]);
+
 /** Models whose speaker plays `aac-eld` talkback; every other model talks `aac-lc`. */
 const ELD_TALKBACK_MODELS: ReadonlySet<string> = new Set(["T8410C"]);
 
@@ -1039,8 +1045,9 @@ export class P2PCommandRouter {
    * {@link releaseLingeringSiblings}. A pull with consumers is never touched. The release runs before the
    * reuse branch, so a reuse frees the station as a cold start does.
    *
-   * `mayOpenOwnSession` decides whether a camera that finds the station's own session claimed may open a
-   * connection of its own for it. Only the continuous-pull egresses pass it. A still must not: it wants one
+   * `continuous` decides whether a camera that finds the station's own session claimed may open a
+   * connection of its own for it; on an {@link OWN_LIVE_SESSION_MODELS} station it always gets one, and an
+   * unwatched source left on the station's session is rebuilt there. Only the continuous-pull egresses pass it. A still must not: it wants one
    * frame, and a socket plus a level-2 negotiation per thumbnail is a cost a tile refresh cannot justify —
    * so a still asked for while a sibling is being watched contends as it always did, and the caller's
    * retained image answers it. A live view still outranks a tile; what changed is that two live views no
@@ -1049,19 +1056,23 @@ export class P2PCommandRouter {
    * The session goes into a {@link HeldSession} cell, so it can be replaced under a source that stays in
    * place.
    */
-  async sharedLiveSourceFor(
-    sn: string,
-    opts: SharedLiveOpts = {},
-    mayOpenOwnSession = false,
-  ): Promise<SharedLiveSource> {
+  async sharedLiveSourceFor(sn: string, opts: SharedLiveOpts = {}, continuous = false): Promise<SharedLiveSource> {
     const { session, parentSn, channel, accountId, homeBaseAttached } = await this.resolveSession(sn, {
       waitLevel2: "soft",
       requireLevel2ForAttached: true,
       signal: opts.signal,
     });
     const key = `${parentSn}:${channel}`;
+    const ownSession = continuous && homeBaseAttached && this.ownsLiveSession(parentSn);
     let source = this.liveSources.get(key);
-    if (source && source.state === "stopped") {
+    if (
+      source &&
+      (source.state === "stopped" ||
+        (ownSession &&
+          source.state !== "idle" &&
+          source.consumerCount === 0 &&
+          this.liveSessionKeys.get(key) === parentSn))
+    ) {
       this.dropLiveSource(key);
       source = undefined;
     }
@@ -1069,7 +1080,7 @@ export class P2PCommandRouter {
     if (!source) {
       const logger = this.deps.logger ?? noopLogger;
       const sessionKey =
-        mayOpenOwnSession && homeBaseAttached && this.stationSessionInUse(parentSn, key)
+        ownSession || (continuous && homeBaseAttached && this.stationSessionInUse(parentSn, key))
           ? P2PCommandRouter.mediaSessionKey(parentSn, channel)
           : parentSn;
       this.liveSessionKeys.set(key, sessionKey);
@@ -1374,13 +1385,21 @@ export class P2PCommandRouter {
    * yield CMAF fragments (init segment first, then a `moof`+`mdat` per keyframe boundary) muxed by the
    * dependency-free internal fMP4 muxer. The returned recording handle exposes battery-budget notices
    * and detaches its consumer on `stop`, iterator return, or iterator throw. No ffmpeg.
+   *
+   * It is a continuous pull only on an {@link OWN_LIVE_SESSION_MODELS} station; elsewhere it never opens a
+   * connection of its own.
    */
   recordFragments(
     sn: string,
     opts: { fragmentSeconds?: number; eccPrivateKey?: Buffer; keepAliveMs?: number } & SharedSourceHints = {},
   ): FragmentRecording {
-    const source = this.sharedLiveSourceFor(sn, opts);
+    const source = this.sharedLiveSourceFor(sn, opts, this.ownsLiveSession(this.stationKeyOf(sn)));
     return new FragmentRecording(source, opts);
+  }
+
+  /** Whether `stationSn` is an {@link OWN_LIVE_SESSION_MODELS} station. */
+  private ownsLiveSession(stationSn: string): boolean {
+    return OWN_LIVE_SESSION_MODELS.has(this.recordFor(stationSn)?.model ?? "");
   }
 
   /**
