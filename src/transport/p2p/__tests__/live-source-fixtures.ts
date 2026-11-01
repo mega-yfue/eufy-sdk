@@ -329,6 +329,16 @@ export class FakeP2PSession extends EventEmitter {
     return data.subarray(VIDEO_HEADER_LEN, VIDEO_HEADER_LEN + declared);
   }
 
+  /** How each delivered keyframe was opened, in the order {@link P2PSession.settleAttachedKey} was told. */
+  readonly settled: ("ecc" | "rsa" | "plain")[] = [];
+  /** What {@link settleAttachedKey} answers: whether the session wants a new start. */
+  restartOnSettle = false;
+
+  settleAttachedKey(_channel: number, opened: "ecc" | "rsa" | "plain"): boolean {
+    this.settled.push(opened);
+    return this.restartOnSettle;
+  }
+
   startLiveMedia(channel?: number): void {
     this.starts.push(channel);
   }
