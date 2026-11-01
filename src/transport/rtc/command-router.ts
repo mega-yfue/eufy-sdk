@@ -14,6 +14,11 @@
  * a live pull holds it open. Sends on a session are serialised; an ACK is correlated by its outer command
  * and segment, since it carries no inner command. An ACK is not an observation of the resulting state.
  *
+ * The station's own database is read over the same channel: a `set-payload` with inner `1306`
+ * (CMD_DATABASE) answers a table and inner `1308` (CMD_DATABASE_IMAGE) a stored image, each as one
+ * notify frame carrying the whole document, zstd-compressed when large. The notify link carries
+ * unrelated station reports between them, so a reply is matched by its content, never by arrival order.
+ *
  * Live view of an attached camera rides the same session (the hub accepts one RTC session per account),
  * through one shared live source per station: the station serves one camera at a time, so a second
  * camera is refused until the first one's view ends.
@@ -30,6 +35,13 @@ import {
 import type { Logger } from "../../core/logger.js";
 import { abortable } from "../abortable.js";
 import { captureSnapshotFromShared } from "../p2p/media.js";
+import {
+  CMD_DATABASE,
+  CMD_DATABASE_IMAGE,
+  DB_QUERY,
+  DB_TABLE_TIMEOUT_MS,
+  fullTableQuery,
+} from "../p2p/database-wire.js";
 import { openReadableFromConsumer } from "../p2p/readable-egress.js";
 import { SharedLiveSource, attachUnlessAborted } from "../p2p/shared-live-source.js";
 import { RtcLiveStream } from "./live.js";
@@ -126,6 +138,13 @@ interface StationSession {
   leases: number;
 }
 
+/** What a send waits for instead of its ACK: the notify body `pick` claims, its bound, and its abort. */
+interface StationReply<T> {
+  pick: (body: Record<string, unknown>) => T | undefined;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
 /**
  * A {@link RtcCommandRouter.keepWarm} hold on one station: the keepalive timer sending
  * {@link PORTAL_KEEPALIVE}, the session listeners that end it and record the hub's echo, and whether the
@@ -156,6 +175,7 @@ export class RtcCommandRouter {
   private readonly lives = new Map<string, StationLive>();
   private readonly warm = new Map<string, WarmHold>();
   private readonly callSources = new Map<string, SharedLiveSource>();
+  private lastTransaction = 0;
 
   constructor(private readonly deps: RtcCommandRouterDeps) {}
 
@@ -164,23 +184,105 @@ export class RtcCommandRouter {
       throw new Error(`rtc: ${cmd.kind} is not routable over the RTC control channel (only set-payload or set-json)`);
     }
     if (route.mediaTrack) throw new Error(`rtc: ${route.stationSn} serves media only and takes no portal command`);
-    const identity = this.deps.identity();
-    if (!identity) throw new Error(`rtc: not logged in, cannot drive ${route.stationSn}`);
-    const { stationSn } = route;
-    const adminUserId = route.adminUserId || identity.userId;
     const channel = route.attached ? cmd.channel : PORTAL_STATION_CHANNEL;
-    const st = await this.stationSession(route, adminUserId, identity);
-    const outerCmd = cmd.kind === "set-json" ? PORTAL_CMD_CONTROL_PAYLOAD : PORTAL_CMD_SET_PAYLOAD;
-    const innerCmd = cmd.kind === "set-json" ? cmd.param : cmd.cmd;
-    const payload =
-      cmd.kind === "set-json"
-        ? { account_id: adminUserId, cmd: cmd.param, commandType: cmd.param, data: cmd.data }
-        : { account_id: adminUserId, cmd: cmd.cmd, mValue3: cmd.mValue3 ?? 0, payload: cmd.payload };
-    const segment = st.seg.next();
-    const packet = buildPortalPacket({ commandId: outerCmd, channel, segment, payload });
-    const run = st.queue.then(() => this.sendAwaitAck(stationSn, st, packet, outerCmd, innerCmd, channel, segment));
-    st.queue = run.catch(() => undefined);
-    return run;
+    if (cmd.kind === "set-json") {
+      return this.sendQueued(route, PORTAL_CMD_CONTROL_PAYLOAD, cmd.param, channel, {
+        cmd: cmd.param,
+        commandType: cmd.param,
+        data: cmd.data,
+      });
+    }
+    return this.sendQueued(route, PORTAL_CMD_SET_PAYLOAD, cmd.cmd, channel, {
+      cmd: cmd.cmd,
+      mValue3: cmd.mValue3 ?? 0,
+      payload: cmd.payload,
+    });
+  }
+
+  /**
+   * Query one on-station table over the station's control channel and answer its rows.
+   *
+   * Sends the `1350` envelope with inner `{cmd: 1306, payload: {cmd: 10000, table, payload, transaction}}`,
+   * the whole-table query, on the station channel. The hub ACKs on the command link and answers with one notify frame whose body
+   * carries `{cmd, table, data, mIntRet, msg, transaction, …}`, echoing the read's `transaction`; that echo
+   * is the only thing a reply is attributed by, and every read sends a `transaction` no other read on this
+   * router has sent. Resolves with the reply's `data` rows. Rejects with the hub's `msg` on a non-zero
+   * `mIntRet`, on an ACK refusing the envelope, at once when `signal` aborts (queued or sent), when the
+   * session closes, and when `timeoutMs` (default {@link DB_TABLE_TIMEOUT_MS}) elapses with no reply.
+   *
+   * One read or command at a time per station: the read holds the station's send queue until it settles.
+   */
+  readTable(
+    route: RtcRoute,
+    table: string,
+    opts: { timeoutMs?: number; signal?: AbortSignal } = {},
+  ): Promise<unknown[]> {
+    const transaction = this.nextTransaction();
+    const inner = {
+      cmd: DB_QUERY.FULL_TABLE,
+      table,
+      payload: fullTableQuery(),
+      transaction,
+    };
+    return this.sendQueued(
+      route,
+      PORTAL_CMD_SET_PAYLOAD,
+      CMD_DATABASE,
+      PORTAL_STATION_CHANNEL,
+      { cmd: CMD_DATABASE, mValue3: 0, payload: inner },
+      {
+        timeoutMs: opts.timeoutMs,
+        signal: opts.signal,
+        pick: (body) => {
+          if (String(body.transaction) !== transaction) return undefined;
+          if (typeof body.mIntRet === "number" && body.mIntRet !== 0) {
+            throw new Error(`rtc: ${route.stationSn} refused ${table}: ${body.msg ?? body.mIntRet} (${body.mIntRet})`);
+          }
+          return Array.isArray(body.data) ? body.data : undefined;
+        },
+      },
+    );
+  }
+
+  /**
+   * Fetch one stored image by its on-station path over the station's control channel.
+   *
+   * Sends the `1350` envelope with inner `{cmd: 1308, payload: [{file}]}` on the station channel. The hub
+   * ACKs on the command link and answers with one notify frame whose body is `{file, content}`, `content`
+   * the image in base64, and no `transaction`; the reply is the one whose `file` equals `filePath`. A reply
+   * arriving after an abandoned read of the same path carries that path's bytes, which are the bytes a
+   * later read of it asks for. Resolves with the decoded bytes. Rejects on an ACK refusing the envelope,
+   * at once when `signal` aborts (queued or sent), when the session closes, and when `timeoutMs` (default
+   * {@link DB_TABLE_TIMEOUT_MS}) elapses with no reply.
+   *
+   * One read or command at a time per station: the read holds the station's send queue until it settles.
+   */
+  readImage(
+    route: RtcRoute,
+    filePath: string,
+    opts: { timeoutMs?: number; signal?: AbortSignal } = {},
+  ): Promise<Buffer> {
+    return this.sendQueued(
+      route,
+      PORTAL_CMD_SET_PAYLOAD,
+      CMD_DATABASE_IMAGE,
+      PORTAL_STATION_CHANNEL,
+      { cmd: CMD_DATABASE_IMAGE, mValue3: 0, payload: [{ file: filePath }] },
+      {
+        ...opts,
+        pick: (body) =>
+          body.file === filePath && typeof body.content === "string" ? Buffer.from(body.content, "base64") : undefined,
+      },
+    );
+  }
+
+  /**
+   * A `transaction` stamp in the vendor app's shape, a decimal epoch-in-milliseconds string, strictly
+   * greater than the last one this router issued, so two reads in the same millisecond never share one.
+   */
+  private nextTransaction(): string {
+    this.lastTransaction = Math.max(Date.now(), this.lastTransaction + 1);
+    return String(this.lastTransaction);
   }
 
   /**
@@ -394,11 +496,52 @@ export class RtcCommandRouter {
   }
 
   /**
-   * Completes on the command ACK or a correlated control-result notification. The notification must
-   * match the request channel, parameter and segment and contain a structured payload. Receipt does
-   * not establish physical actuation. The command is sent once, bounded by {@link ACK_TIMEOUT_MS}.
+   * Send one envelope on the station's session, queued behind its other sends, and settle as
+   * {@link sendAwaitAck} does. `body` is the inner payload; the station session, the `account_id` it is
+   * stamped with and the packet are resolved here, so a command and a read reach the wire through the same
+   * steps. With `reply.signal`, the caller's wait rejects the moment it aborts, also while the send is still
+   * queued; a send not yet made by then is skipped.
    */
-  private sendAwaitAck(
+  private async sendQueued<T = void>(
+    route: RtcRoute,
+    outerCmd: number,
+    innerCmd: number,
+    channel: number,
+    body: Record<string, unknown>,
+    reply?: StationReply<T>,
+  ): Promise<T> {
+    reply?.signal?.throwIfAborted();
+    const identity = this.deps.identity();
+    if (!identity) throw new Error(`rtc: not logged in, cannot drive ${route.stationSn}`);
+    const adminUserId = route.adminUserId || identity.userId;
+    const st = await abortable(this.stationSession(route, adminUserId, identity), reply?.signal);
+    const segment = st.seg.next();
+    const packet = buildPortalPacket({
+      commandId: outerCmd,
+      channel,
+      segment,
+      payload: { account_id: adminUserId, ...body },
+    });
+    const run = st.queue.then(() =>
+      this.sendAwaitAck(route.stationSn, st, packet, outerCmd, innerCmd, channel, segment, reply),
+    );
+    st.queue = run.catch(() => undefined);
+    return abortable(run, reply?.signal);
+  }
+
+  /**
+   * Without `reply`, completes on the command ACK or a correlated control-result notification. The
+   * notification must match the request channel, parameter and segment and contain a structured payload.
+   * Receipt does not establish physical actuation. Bounded by {@link ACK_TIMEOUT_MS}.
+   *
+   * With `reply`, a zero-result ACK is not the answer: the first notify body (an object) for which
+   * `reply.pick` answers a value resolves with it, one `pick` throws on rejects with that error, and every
+   * other notify frame is left alone. Bounded by `reply.timeoutMs` (default {@link DB_TABLE_TIMEOUT_MS}),
+   * and ended by `reply.signal`; one already aborted is not sent.
+   *
+   * Either way an ACK with a non-zero result code rejects, and the command is sent once.
+   */
+  private sendAwaitAck<T = void>(
     sn: string,
     st: StationSession,
     packet: Buffer,
@@ -406,11 +549,30 @@ export class RtcCommandRouter {
     innerCmd: number,
     channel: number,
     segment: number,
-  ): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
+    reply?: StationReply<T>,
+  ): Promise<T> {
+    const timeoutMs = reply ? (reply.timeoutMs ?? DB_TABLE_TIMEOUT_MS) : ACK_TIMEOUT_MS;
+    const awaited = reply ? "reply" : "ACK";
+    return new Promise<T>((resolve, reject) => {
       const onData = (frame: Buffer, linkType: number) => {
         const p = parsePortalPacket(frame, linkType);
-        if (!p || p.segment !== segment) return;
+        if (!p) return;
+        if (reply && linkType === PortalLinkType.NOTIFY && typeof p.data === "object" && p.data !== null) {
+          let picked: T | undefined;
+          try {
+            picked = reply.pick(p.data as Record<string, unknown>);
+          } catch (e) {
+            cleanup();
+            reject(e instanceof Error ? e : new Error(String(e)));
+            return;
+          }
+          if (picked === undefined) return;
+          cleanup();
+          this.deps.logger?.debug?.(`[rtc] ${sn} cmd ${innerCmd} answered`);
+          resolve(picked);
+          return;
+        }
+        if (p.segment !== segment) return;
         const acknowledgement = linkType === PortalLinkType.COMMAND && p.commandId === outerCmd && !!p.isResponse;
         const d = p.data as { payload?: unknown } | null | undefined;
         const notification =
@@ -423,30 +585,41 @@ export class RtcCommandRouter {
           typeof d?.payload === "object" &&
           d.payload !== null;
         if (!acknowledgement && !notification) return;
+        if (reply && p.errCode === 0) return;
         cleanup();
         if (acknowledgement && p.errCode !== 0) {
           reject(new Error(`rtc: ${sn} rejected cmd ${innerCmd} (err ${p.errCode})`));
         } else {
           this.deps.logger?.debug?.(`[rtc] ${sn} cmd ${innerCmd} acked`);
-          resolve();
+          resolve(undefined as T);
         }
       };
       const onClose = () => {
         cleanup();
-        reject(new Error(`rtc: ${sn} session closed while waiting for cmd ${innerCmd} ACK`));
+        reject(new Error(`rtc: ${sn} session closed while waiting for cmd ${innerCmd} ${awaited}`));
+      };
+      const onAbort = () => {
+        cleanup();
+        reject(reply?.signal?.reason);
       };
       const timer = setTimeout(() => {
         cleanup();
-        reject(new Error(`rtc: ${sn} cmd ${innerCmd} ACK timed out after ${ACK_TIMEOUT_MS}ms`));
-      }, ACK_TIMEOUT_MS);
+        reject(new Error(`rtc: ${sn} cmd ${innerCmd} ${awaited} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
       const cleanup = () => {
         clearTimeout(timer);
         st.session.off("commandData", onData);
         st.session.off("close", onClose);
+        reply?.signal?.removeEventListener("abort", onAbort);
         this.touch(sn, st);
       };
+      if (reply?.signal?.aborted) {
+        onAbort();
+        return;
+      }
       st.session.on("commandData", onData);
       st.session.on("close", onClose);
+      reply?.signal?.addEventListener("abort", onAbort, { once: true });
       if (!st.session.sendCommand(packet)) {
         cleanup();
         reject(new Error(`rtc: ${sn} command channel not open, cmd ${innerCmd} not sent`));

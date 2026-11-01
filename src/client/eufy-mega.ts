@@ -95,7 +95,7 @@ import type {
   RealtimePlaneReadiness,
   RealtimeReadiness,
   StationFace,
-  StationFacesOptions,
+  StationReadOptions,
   WaitForRealtimeOptions,
 } from "./types.js";
 
@@ -108,7 +108,7 @@ export type {
   RealtimePlaneReadiness,
   RealtimeReadiness,
   StationFace,
-  StationFacesOptions,
+  StationReadOptions,
   WaitForRealtimeOptions,
 } from "./types.js";
 
@@ -2089,30 +2089,72 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * The people enrolled on a station, read from its own `person_basic_info` table over P2P.
+   * The people enrolled on a station, read from its own `person_basic_info` table through
+   * {@link readStationTable}.
    *
    * The cloud roster (`api.getFaces()`) answers empty for an account that keeps its faces on the
    * station, because they were never uploaded — the station holds them.
    *
-   * Resolves with the rows the station returned. Rejects on a station that cannot be reached, on a
-   * record stating no `admin_user_id`, and on the reply not arriving whole in time. Assembling that
-   * reply is `P2PSession.readDatabase`'s; this resolves which station and which account id.
+   * Resolves with the rows the station returned that are objects. Rejects as {@link readStationTable}
+   * does.
    *
    * `stranger<n>` names are the station's own placeholders for a face nobody has named, and are
    * returned as they arrive; a caller that wants only named people filters them.
    */
-  async getStationFaces(stationSn: string, opts: StationFacesOptions = {}): Promise<StationFace[]> {
-    if (!this.registry.list().length) await this.getDevices();
-    const station = this.p2p.stationKeyOf(stationSn);
-    const accountId = this.adminUserIdOf(station);
-    if (!accountId) throw new Error(`getStationFaces: no admin_user_id on record for ${station}`);
+  async getStationFaces(stationSn: string, opts: StationReadOptions = {}): Promise<StationFace[]> {
+    const rows = await this.readStationTable(stationSn, "person_basic_info", opts);
+    return rows.filter((row): row is StationFace => typeof row === "object" && row !== null);
+  }
 
+  /**
+   * The rows of one of a station's own tables (`history_record_info`, `person_basic_info`, …), read over
+   * the transport the station speaks: the control channel of a HomeBase S1 Pro (T9000), P2P for any
+   * other station. The query is the table's whole content; the rows are the station's, shaped by it.
+   *
+   * Resolves with the rows the station returned. Rejects on a serial not in the device list, on a record
+   * stating no `admin_user_id`, on a station that cannot be reached, on a query the station refuses, and
+   * on the reply not arriving in time. Assembling the reply is the transport's; this resolves which
+   * station, which transport and which account id.
+   */
+  async readStationTable(stationSn: string, table: string, opts: StationReadOptions = {}): Promise<unknown[]> {
+    const { station, accountId, route } = await this.stationReadTarget("readStationTable", stationSn);
+    if (route) return this.rtc.readTable(route, table, opts);
     await this.p2p.ensureStation(station, opts.signal);
     const session = this.p2p.getSessions().get(station);
-    if (!session) throw new Error(`getStationFaces: no P2P session for ${station}`);
+    if (!session) throw new Error(`readStationTable: no P2P session for ${station}`);
+    return session.readDatabase(table, { accountId, ...opts });
+  }
 
-    const rows = await session.readDatabase("person_basic_info", { accountId, ...opts });
-    return rows.filter((row): row is StationFace => typeof row === "object" && row !== null);
+  /**
+   * One image stored on a HomeBase S1 Pro (T9000), by the on-station path a table row names
+   * (`thumb_path`, …), read over the station's control channel.
+   *
+   * Resolves with the image bytes as the station holds them. Rejects on a serial not in the device list,
+   * on a record stating no `admin_user_id`, on a station other than a T9000, on a station that cannot be
+   * reached, and on the reply not arriving in time. Fetching the image is the transport's; this resolves
+   * which station and which account id.
+   */
+  async readStationImage(stationSn: string, filePath: string, opts: StationReadOptions = {}): Promise<Buffer> {
+    const { station, route } = await this.stationReadTarget("readStationImage", stationSn);
+    if (!route) throw new Error(`readStationImage: ${station} is not a T9000; its stored images are not read here`);
+    return this.rtc.readImage(route, filePath, opts);
+  }
+
+  /**
+   * The station a database read goes to, its `admin_user_id` and, for a T9000, its RTC route. Throws,
+   * prefixed with `op`, on a serial the device list does not carry and on a record stating no admin id.
+   */
+  private async stationReadTarget(
+    op: string,
+    stationSn: string,
+  ): Promise<{ station: string; accountId: string; route: RtcRoute | undefined }> {
+    if (!this.registry.list().length) await this.getDevices();
+    const station = this.p2p.stationKeyOf(stationSn);
+    const found = this.stationOf(station);
+    if (!found.station) throw new Error(`${op}: ${station} is not in the device list`);
+    const accountId = this.adminUserIdOf(station);
+    if (!accountId) throw new Error(`${op}: no admin_user_id on record for ${station}`);
+    return { station, accountId, route: found.t9000 ? this.rtcRouteFor(station) : undefined };
   }
 
   /** The station's own `admin_user_id`, which its database refuses the query without. */
