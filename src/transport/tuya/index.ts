@@ -20,7 +20,7 @@
  *   ✅ chKey = "7cbfe6d8" per-appId constant
  *   ✅ login() — username.token.get → RSA-encrypt(MD5(password)) → password.login.reg
  *      (shadow account must be provisioned via eufy Security app first)
- *   ✅ getDeviceDps / publishDps builders ready; publishDps gated behind allowUnverified
+ *   ✅ getDeviceDps / publishDps — standard-control round-trip verified on T2276
  */
 export * from "./account.js";
 export * from "./sign.js";

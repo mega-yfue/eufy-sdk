@@ -216,26 +216,10 @@ export class TuyaClient {
    * CONTROL: publish data-points to a device (`smartlife.m.device.dp.publish`). `dps` is
    * `{ "<dpId>": <value> }`. `gwId` is the gateway/parent id (equals `devId` for a standalone gw).
    *
-   * ⚠️ UNVERIFIED write — refuses to send by default. The `dp.publish` param shape
-   * ({@link buildPublishDpsAction}) is derived, NOT pinned against a confirmed exchange,
-   * and the login round-trip that yields a real `sid` is unproven too. A wrong shape comes back as a
-   * generic Tuya error indistinguishable from a real device rejection, so blindly sending would hide
-   * that ambiguity. Pass `{ allowUnverified: true }` to send anyway; the gate drops when the write is
-   * captured + confirmed against a device.
+   * Standard-control publishing and login were verified on T2276. Individual DP semantics
+   * remain model-specific; successful acceptance does not establish physical execution.
    */
-  async publishDps<T = unknown>(
-    devId: string,
-    gwId: string,
-    dps: Record<string, unknown>,
-    opts: { allowUnverified?: boolean } = {},
-  ): Promise<TuyaEnvelope<T>> {
-    if (!opts.allowUnverified) {
-      throw new Error(
-        "tuya publishDps is UNVERIFIED: the dp.publish request shape is reversed-not-captured and the " +
-          "login→sid round-trip is unproven, so a Tuya error cannot be told apart from a real device " +
-          "rejection. Pass { allowUnverified: true } to send anyway.",
-      );
-    }
+  async publishDps<T = unknown>(devId: string, gwId: string, dps: Record<string, unknown>): Promise<TuyaEnvelope<T>> {
     return this.call<T>(buildPublishDpsAction(devId, gwId, dps));
   }
 }

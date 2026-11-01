@@ -77,11 +77,11 @@ const FALLBACK_CODECS: readonly Codec[] = [
  * preserves the catalogue-wide baseline; a module that installs nothing there retries its declared
  * device type, then codecs admitted by its own custom detection predicate.
  */
-const built = (m: CapabilityModule): CapabilityActions => {
+const built = (m: CapabilityModule, category = "eufy_home"): CapabilityActions => {
   const ctx: CommandContext = {
     channel: 0,
     codec: "camera",
-    category: "eufy_home",
+    category,
     paramIds: new Set(m.properties.map((p) => p.paramType)),
     capabilities: new Set([m.capability, "snapshot"]),
   };
@@ -420,6 +420,7 @@ const writtenByAMember = (property: string): boolean =>
 const SETTER_ELSEWHERE: Record<string, string> = {
   "rtsp.recordingMode": "setRecordingMode",
   "locate.locating": "locate",
+  "vacuum_clean.cleaningStrength": "setCleaningStrength",
   "lock.locked": "lock",
   // Both halves of the doorbell's param 1705 (live-view quality + encoding format) must be written
   // together, so `videoQuality` is `writtenElsewhere` via setVideoQuality, which takes both.
@@ -429,7 +430,10 @@ const SETTER_ELSEWHERE: Record<string, string> = {
 describe("published schema — every writable property has a reachable setter", () => {
   it.each(writables)("$label is settable, not writable-in-name-only", ({ mod, property }) => {
     const named = SETTER_ELSEWHERE[`${mod.capability}.${property}`];
-    const reachable = writtenByAMember(property) || (named !== undefined && typeof built(mod)[named] === "function");
+    const reachable =
+      writtenByAMember(property) ||
+      (named !== undefined &&
+        ["eufy_home", "eufy_home_tuya"].some((category) => typeof built(mod, category)[named] === "function"));
     expect(reachable).toBe(true);
   });
 

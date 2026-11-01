@@ -43,6 +43,7 @@ import {
   type ConsumablePart,
 } from "../vacuum-clean.js";
 import { bind } from "./bind.js";
+import { buildActions } from "../index.js";
 import { byteCodec, frame, int, str, sub, varint } from "./proto-bytes.js";
 
 /**
@@ -320,7 +321,7 @@ const _setPowerArg: Exact<Parameters<NonNullable<typeof vac.setPower>>[0], boole
 const _noSetActivity: Exact<"setActivity" extends keyof VacuumCleanActions ? true : false, false> = true;
 const _noSetBattery: Exact<"setBattery" extends keyof VacuumCleanActions ? true : false, false> = true;
 
-// startCleaning is a MethodMember gated by isAiotVacuum or DP 2 in paramIds — absent only on Tuya-category devices that haven't reported DP 2.
+// startCleaning is optional: AIoT or the Tuya family path with its backing DPs.
 const _startCleaning: Exact<typeof vac.startCleaning, (() => Promise<void>) | undefined> = true;
 
 // errorCode is an evidence-gated read for the legacy Tuya clean line.
@@ -972,14 +973,101 @@ describe("vacuum_clean — DP-based action routing", () => {
     expect(acts.pauseCleaning).toBeUndefined();
   });
 
-  it("write actions are absent on a Tuya device, even when it reported DP 2 and DP 101", () => {
-    // No Tuya clean-line write has been confirmed on a device, and dispatching one would route
-    // through the Tuya command router, which refuses unverified writes by default. An advertised
-    // verb that throws on the happy path is worse than an absent one.
+  it("offers Tuya pause and dock from reported DPs without a model allowlist", () => {
     const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx("T2266", "eufy_home_tuya", tuyaDps));
     expect(acts.startCleaning).toBeUndefined();
+    expect(acts.returnToDock).toBeDefined();
+    expect(acts.pauseCleaning).toBeDefined();
+    expect(acts.resumeCleaning).toBeUndefined();
+  });
+
+  it.each(["T2276", "T2266", undefined])(
+    "exposes three Tuya controls for model %s and preserves ordered payloads",
+    async (model) => {
+      const { acts, sent } = bind<VacuumCleanActions>(
+        "vacuum_clean",
+        fakeCtx(model, "eufy_home_tuya", new Set([2, 5, 101])),
+      );
+      expect(acts.resumeCleaning).toBeUndefined();
+      await acts.startCleaning!();
+      await acts.pauseCleaning!();
+      await acts.returnToDock!();
+      expect(sent).toEqual([
+        { kind: "aiot-dp", dp: 5, value: "auto" },
+        { kind: "aiot-dp", dp: 2, value: true },
+        { kind: "aiot-dp", dp: 2, value: false },
+        { kind: "aiot-dp", dp: 101, value: true },
+      ]);
+    },
+  );
+
+  it("requires each control's backing DPs on T2276", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx("T2276", "eufy_home_tuya", new Set([2])));
+    expect(acts.startCleaning).toBeUndefined();
+    expect(acts.pauseCleaning).toBeDefined();
     expect(acts.returnToDock).toBeUndefined();
-    expect(acts.pauseCleaning).toBeUndefined();
+    expect(acts.resumeCleaning).toBeUndefined();
+  });
+
+  it("sends the four tested Tuya suction levels and rejects unverified values", async () => {
+    const { acts, sent } = bind<VacuumCleanActions>(
+      "vacuum_clean",
+      fakeCtx(undefined, "eufy_home_tuya", new Set([102])),
+    );
+    for (const level of ["Quiet", "Standard", "Turbo", "Max"] as const) await acts.setCleaningStrength!(level);
+    expect(sent).toEqual(["Quiet", "Standard", "Turbo", "Max"].map((value) => ({ kind: "aiot-dp", dp: 102, value })));
+    // @ts-expect-error — a reported Off state is not a verified write
+    await expect(acts.setCleaningStrength!("Off")).rejects.toThrow(RangeError);
+    // @ts-expect-error — unknown external input
+    await expect(acts.setCleaningStrength!("BoostIQ")).rejects.toThrow(RangeError);
+    expect(sent).toHaveLength(4);
+  });
+
+  it("hides Tuya suction writes without DP 102 or on AIoT", () => {
+    expect(
+      bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya")).acts.setCleaningStrength,
+    ).toBeUndefined();
+    expect(
+      bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home", new Set([102]))).acts
+        .setCleaningStrength,
+    ).toBeUndefined();
+  });
+
+  it("cancels docking on Tuya with reported DP 101 and can send the robot back", async () => {
+    const { acts, sent } = bind<VacuumCleanActions>(
+      "vacuum_clean",
+      fakeCtx(undefined, "eufy_home_tuya", new Set([101])),
+    );
+    await acts.returnToDock!();
+    await acts.setStopReturnToDock!(true);
+    await acts.returnToDock!();
+    expect(sent).toEqual([
+      { kind: "aiot-dp", dp: 101, value: true },
+      { kind: "aiot-dp", dp: 101, value: false },
+      { kind: "aiot-dp", dp: 101, value: true },
+    ]);
+  });
+
+  it("hides cancellation without reported DP 101 and on AIoT", () => {
+    expect(
+      bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya")).acts.setStopReturnToDock,
+    ).toBeUndefined();
+    expect(
+      bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home", new Set([101]))).acts
+        .setStopReturnToDock,
+    ).toBeUndefined();
+  });
+
+  it("does not send play if the auto-mode write is rejected", async () => {
+    const dispatch = vi.fn().mockRejectedValue(new Error("mode rejected"));
+    const actions = buildActions(["vacuum_clean"], {
+      ctx: fakeCtx("T2276", "eufy_home_tuya", new Set([2, 5, 101])),
+      sink: { dispatch },
+      read: () => undefined,
+    });
+    const acts = actions.vacuumClean as VacuumCleanActions;
+    await expect(acts.startCleaning!()).rejects.toThrow("mode rejected");
+    expect(dispatch).toHaveBeenCalledTimes(1);
   });
 
   it("dispatches the AIoT ModeCtrl frame, never a legacy bool DP", async () => {

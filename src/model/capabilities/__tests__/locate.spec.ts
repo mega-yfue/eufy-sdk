@@ -30,13 +30,21 @@ describe("locate — platform routing", () => {
     expect(bind<LocateActions>("locate", locateCtx(new Set())).acts.locate).toBeDefined();
   });
 
-  it("is absent on a Tuya device — the DP 103 write is unconfirmed, so none is offered", () => {
-    // Dispatching DP 103 would route through the Tuya command router, which refuses unverified
-    // writes by default. A verb that is advertised and then throws is worse than an absent one.
+  it("requires reported DP 103 on a Tuya device", () => {
     const reported = { ...locateCtx(new Set([103])), category: "eufy_home_tuya" };
     const silent = { ...locateCtx(new Set()), category: "eufy_home_tuya" };
-    expect(bind<LocateActions>("locate", reported).acts.locate).toBeUndefined();
+    expect(bind<LocateActions>("locate", reported).acts.locate).toBeDefined();
     expect(bind<LocateActions>("locate", silent).acts.locate).toBeUndefined();
+  });
+
+  it("sends both locate directions over Tuya DP 103", async () => {
+    const { acts, sent } = bind<LocateActions>("locate", { ...locateCtx(new Set([103])), category: "eufy_home_tuya" });
+    await acts.locate!();
+    await acts.locate!(false);
+    expect(sent).toEqual([
+      { kind: "aiot-dp", dp: 103, value: true },
+      { kind: "aiot-dp", dp: 103, value: false },
+    ]);
   });
 
   it("dispatches DP 160 = true", async () => {

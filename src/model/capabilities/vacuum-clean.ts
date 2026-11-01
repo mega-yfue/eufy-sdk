@@ -1613,14 +1613,17 @@ export function decodeVacuumActivity(raw: ParamValue | undefined, codec: RawDpCo
  */
 export type VacuumCleanActions = Surface<typeof VACUUM_CLEAN_MEMBERS>;
 
+/** Tuya family and reported-DP gate. Physical control testing covers X8 Pro / T2276 only. */
+function hasTuyaControlDps(ctx: AvailabilityContext, ...dps: number[]): boolean {
+  return isTuyaVacuum(ctx) && dps.every((dp) => ctx.paramIds?.has(dp));
+}
+
 /**
  * Every `vacuum_clean` read plus the writes and mode-control verbs.
  *
- * Every write here is AIoT-only, gated on `isAiotVacuum`: `power` (DP 151) and the three mode-control
- * verbs (`startCleaning`, `returnToDock`, `pauseCleaning`, all DP 152 `ModeCtrlRequest`). DP 151 and
- * DP 152 belong to the shared AIoT product schema rather than to a device's reported param set, so
- * gating them on a reported DP would hide them on real hardware. No legacy Tuya clean-line write is
- * dispatched at all — that direction has no live `publishDps` capture behind it.
+ * AIoT writes use the shared product schema. Tuya start, pause and dock writes are
+ * available after the corresponding DPs have been reported. Physical testing covers
+ * X8 Pro / T2276 only; other Tuya models have not been tested.
  *
  * Each AIoT mode-control verb carries its own `seq` counter per bind (the T2351 accepts per-closure
  * counters — two separately-obtained action objects both starting at 112 do not cause the device to
@@ -1947,7 +1950,8 @@ export const VACUUM_CLEAN_MEMBERS = {
   },
   /**
    * Suction / cleaning strength (DP 102, Enum string). Live-confirmed "Off" at rest.
-   * Write direction is unverified — no live publishDps capture.
+   * Quiet, Standard, Turbo and Max writes tested physically on X8 Pro / T2276.
+   * Off is a reported state, not a verified write.
    *
    * Known values from schemaInfo.schema: `TUYA_CLEANING_STRENGTHS`.
    */
@@ -1955,6 +1959,7 @@ export const VACUUM_CLEAN_MEMBERS = {
     param: TUYA_VACUUM_DP.CLEANING_STRENGTH,
     type: "string",
     provenance: "mega",
+    writtenElsewhere: true,
     decode: (raw): TuyaCleaningStrength | undefined => {
       const s = typeof raw === "string" ? raw : undefined;
       return s !== undefined && (TUYA_CLEANING_STRENGTHS as readonly string[]).includes(s)
@@ -1964,8 +1969,20 @@ export const VACUUM_CLEAN_MEMBERS = {
     decodedKind: "enum",
     decodedValues: TUYA_CLEANING_STRENGTHS,
     description:
-      "Suction/cleaning strength from DP 102 (cleaning_strength, Enum). X8 Pro Tuya clean line. Live-confirmed Off. Write unverified.",
+      "Suction/cleaning strength from DP 102 (cleaning_strength, Enum). X8 Pro Tuya clean line. Reads include Off; writable levels tested only on X8 Pro / T2276.",
   },
+  /** Set Tuya suction. Physical testing covers X8 Pro / T2276 only; Off is not a verified command. */
+  setCleaningStrength: method(
+    ({ sink }) =>
+      async (strength: Exclude<TuyaCleaningStrength, "Off">): Promise<void> => {
+        if ((strength as string) === "Off" || !(TUYA_CLEANING_STRENGTHS as readonly string[]).includes(strength)) {
+          throw new RangeError("Supported Tuya cleaning strengths: Quiet, Standard, Turbo, Max");
+        }
+        await sink.dispatch(aiotDp(TUYA_VACUUM_DP.CLEANING_STRENGTH, strength));
+      },
+    "Set suction to Quiet, Standard, Turbo or Max. Tuya tested only on X8 Pro / T2276.",
+    (ctx) => hasTuyaControlDps(ctx, TUYA_VACUUM_DP.CLEANING_STRENGTH),
+  ),
   /**
    * Mop water flow level (DP 105, Enum string). Live-confirmed "Mid" at rest.
    * Write direction is unverified — no live publishDps capture.
@@ -2790,6 +2807,8 @@ export const VACUUM_CLEAN_MEMBERS = {
   /**
    * Carry on with a paused job rather than starting a new one — the counterpart to
    * {@link VACUUM_CLEAN_MEMBERS.pauseCleaning}.
+   * T2276 standalone play was accepted but did not resume at 3, 8 or 15 seconds;
+   * Tuya resume remains absent. Starting auto-clean is not proof of resuming a job.
    */
   resumeCleaning: method(
     ({ sink }) =>
@@ -2828,18 +2847,19 @@ export const VACUUM_CLEAN_MEMBERS = {
       "Stop washing the mops (ModeCtrlRequest method 17 over DP 152). Method number not captured — unverified.",
   },
   /**
-   * Call off a return-to-dock in progress, leaving the robot where it is.
+   * Call off a return-to-dock in progress. Tuya cancellation was physically observed on
+   * X8 Pro / T2276; the work status still reported Recharge at 3, 8 and 15 seconds.
+   * AIoT cancellation remains unavailable because its command has not been verified.
    */
   stopReturnToDock: {
     type: "bool",
     kind: "boolean",
     writeOnly: true,
-    unverified: true,
-    write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.STOP_GOHOME, nextModeCtrlSeq())),
-    available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
+    write: () => aiotDp(TUYA_VACUUM_DP.GO_HOME, false),
+    available: (ctx: AvailabilityContext) => hasTuyaControlDps(ctx, TUYA_VACUUM_DP.GO_HOME),
     provenance: "mega",
     description:
-      "Stop returning to the dock (ModeCtrlRequest method 15 over DP 152). Method number not captured — unverified.",
+      "Cancel returning to the dock. Tuya tested only on X8 Pro / T2276; reported work status may remain returning.",
   },
   /**
    * Clean the robot's immediate surroundings. Takes no target — the spot is wherever it is standing,
@@ -2970,29 +2990,43 @@ export const VACUUM_CLEAN_MEMBERS = {
     description:
       "Stop smart-follow mode (ModeCtrlRequest method 18 over DP 152). Method number not captured — unverified.",
   },
-  /** Start an auto-clean run via ModeCtrlRequest method 0 with one `AutoClean` pass (DP 152). AIoT only — Tuya write unverified. */
+  /** Start auto-clean. T2276 uses the verified ordered mode-then-play sequence. */
   startCleaning: method(
-    ({ sink }) =>
-      (): Promise<void> =>
-        sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeAutoClean())),
-    "Start an auto-clean run (ModeCtrlRequest method 0, AutoClean clean_times 1, over DP 152).",
-    isAiotVacuum,
+    ({ sink, ctx }) =>
+      async (): Promise<void> => {
+        if (isTuyaVacuum(ctx)) {
+          await sink.dispatch(aiotDp(TUYA_VACUUM_DP.MODE, "auto"));
+          await sink.dispatch(aiotDp(TUYA_VACUUM_DP.PLAY_PAUSE, true));
+        } else {
+          await sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeAutoClean()));
+        }
+      },
+    "Start an auto-clean run. AIoT and Tuya; Tuya tested only on X8 Pro / T2276.",
+    (ctx) => isAiotVacuum(ctx) || hasTuyaControlDps(ctx, TUYA_VACUUM_DP.MODE, TUYA_VACUUM_DP.PLAY_PAUSE),
   ),
-  /** Return to the dock via ModeCtrlRequest method 6 (DP 152). AIoT only — Tuya write unverified. */
+  /** Return to the dock. T2276's return command is device-verified. */
   returnToDock: method(
-    ({ sink }) =>
+    ({ sink, ctx }) =>
       (): Promise<void> =>
-        sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_GOHOME, nextModeCtrlSeq()))),
-    "Return to the dock (ModeCtrlRequest method 6 over DP 152).",
-    isAiotVacuum,
+        sink.dispatch(
+          isTuyaVacuum(ctx)
+            ? aiotDp(TUYA_VACUUM_DP.GO_HOME, true)
+            : aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_GOHOME, nextModeCtrlSeq())),
+        ),
+    "Return to the dock. AIoT and Tuya; Tuya tested only on X8 Pro / T2276.",
+    (ctx) => isAiotVacuum(ctx) || hasTuyaControlDps(ctx, TUYA_VACUUM_DP.GO_HOME),
   ),
-  /** Pause the current cleaning task via ModeCtrlRequest method 13 (DP 152). AIoT only — Tuya write unverified. */
+  /** Pause cleaning. T2276's pause command is device-verified; resume is not. */
   pauseCleaning: method(
-    ({ sink }) =>
+    ({ sink, ctx }) =>
       (): Promise<void> =>
-        sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.PAUSE_TASK, nextModeCtrlSeq()))),
-    "Pause the current cleaning task (ModeCtrlRequest method 13 over DP 152).",
-    isAiotVacuum,
+        sink.dispatch(
+          isTuyaVacuum(ctx)
+            ? aiotDp(TUYA_VACUUM_DP.PLAY_PAUSE, false)
+            : aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.PAUSE_TASK, nextModeCtrlSeq())),
+        ),
+    "Pause cleaning. AIoT and Tuya; Tuya tested only on X8 Pro / T2276.",
+    (ctx) => isAiotVacuum(ctx) || hasTuyaControlDps(ctx, TUYA_VACUUM_DP.PLAY_PAUSE),
   ),
 
   /**
