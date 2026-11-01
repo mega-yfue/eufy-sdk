@@ -550,6 +550,8 @@ export class P2PSession extends EventEmitter {
   private readonly level2Waiters: Array<(outcome: "key" | "terminal" | "closed") => void> = [];
   /** Whether this connection has already been asked a second time for its gateway info — see {@link repromptLevel2Key}. */
   private level2Reprompted = false;
+  /** When the second `CMD_GATEWAYINFO` ask was sent on this connection: where a `"re-ask"` grace is measured from. */
+  private level2RepromptedAtMs?: number;
   /** When this session connected — the instant the level-2 negotiation had its chance to start. */
   private connectedAtMs?: number;
   /** Connection generation that owns every asynchronous result derived from its gateway envelope. */
@@ -631,9 +633,9 @@ export class P2PSession extends EventEmitter {
   }
 
   /**
-   * Whether this connection is still owed its first `CMD_GATEWAYINFO` reply: a negotiation can still change
-   * the answer and none has started. `false` once a reply began one, once one concluded, and from the start
-   * when nothing can negotiate a key.
+   * Whether the latest `CMD_GATEWAYINFO` ask on this connection is still unanswered: a reply can still arrive
+   * and no negotiation is in flight. `false` while a reply is being negotiated, once the negotiation it opened
+   * concluded, and from the start when nothing can negotiate a key.
    */
   get gatewayInfoUnanswered(): boolean {
     return this.level2Pending && !this.level2Negotiating;
@@ -667,6 +669,10 @@ export class P2PSession extends EventEmitter {
    * settled answers without waiting at all: the answer stands until {@link repromptLevel2Key} re-opens the
    * wait, since the station is prompted for `CMD_GATEWAYINFO` only on connect and on that re-prompt.
    *
+   * A `"re-ask"` grace runs from that re-prompt, measured once like the session grace: every caller arriving
+   * while it runs waits for the same deadline, and one arriving after it has passed waits for nothing. A
+   * connection that was never re-prompted measures it from the call.
+   *
    * An own-session camera whose grace expires here is NOT thereby a camera that will fail to stream. Measured
    * on one account: own-session cameras of two device types negotiated a key, three others never did, and
    * cameras from that second group streamed normally at level-1 — including one of the same firmware as an
@@ -679,7 +685,7 @@ export class P2PSession extends EventEmitter {
    */
   async awaitLevel2Key(
     graceMs: number,
-    graceFrom: "call" | "session" = "call",
+    graceFrom: "call" | "session" | "re-ask" = "call",
     sender: "every" | "set-payload" = "every",
   ): Promise<boolean> {
     if (this.closed) {
@@ -691,7 +697,12 @@ export class P2PSession extends EventEmitter {
       this.trace({ phase: "level2-unavailable", reason: "not-negotiating" });
       return false;
     }
-    const since = graceFrom === "call" ? Date.now() : (this.connectedAtMs ?? Date.now());
+    const since =
+      graceFrom === "session"
+        ? (this.connectedAtMs ?? Date.now())
+        : graceFrom === "re-ask"
+          ? (this.level2RepromptedAtMs ?? Date.now())
+          : Date.now();
     const remaining = graceMs - (Date.now() - since);
     if (remaining <= 0) {
       this.logger.debug(`[p2p] ${this.cfg.stationSn} no level-2 key and its ${graceMs}ms grace has elapsed`);
@@ -750,6 +761,7 @@ export class P2PSession extends EventEmitter {
     if (this.closed || this.level2KeyServes("set-payload") || this.level2Reprompted) return false;
     if (!this.cfg.resolveCipherKey || !this.connectAddress) return false;
     this.level2Reprompted = true;
+    this.level2RepromptedAtMs = Date.now();
     this.level2Pending = true;
     this.logger.debug(`[p2p] ${this.cfg.stationSn} asking again for the level-2 key`);
     this.sendCommand(CMD_GATEWAYINFO);
@@ -898,6 +910,7 @@ export class P2PSession extends EventEmitter {
       this.level2Pending = this.cfg.resolveCipherKey !== undefined;
       this.level2Negotiating = false;
       this.level2Reprompted = false;
+      this.level2RepromptedAtMs = undefined;
       this.gatewayCipherId = undefined;
       this.clearCommandCount = 0;
     }

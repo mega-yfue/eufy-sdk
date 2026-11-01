@@ -185,6 +185,22 @@ describe("level-2 key wait", () => {
     expect(Date.now() - started).toBeLessThan(10);
   });
 
+  /**
+   * A re-ask grace is the connection's second ask, measured from when it was sent: two callers waiting on it
+   * share one deadline, and one arriving after it has passed has already missed the answer.
+   */
+  it("measures a re-ask grace from the second ask, not from the call", async () => {
+    const target = session(async () => undefined);
+    connectedAgo(target, 30_000);
+    (target as unknown as { sendCommand(c: number): void }).sendCommand = () => {};
+    (target as unknown as { connectAddress?: object }).connectAddress = { host: "0.0.0.0", port: 1 };
+    expect(target.repromptLevel2Key()).toBe(true);
+    (target as unknown as { level2RepromptedAtMs?: number }).level2RepromptedAtMs = Date.now() - 9_960;
+    const started = Date.now();
+    await expect(target.awaitLevel2Key(10_000, "re-ask")).resolves.toBe(false);
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
   /** A session that never connected has not had its chance yet, so the whole grace is still ahead of it. */
   it("gives an unconnected session its full grace", async () => {
     const target = new P2PSession({ stationSn: STATION_SN, p2pDid: P2P_DID, resolveCipherKey: async () => undefined });

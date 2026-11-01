@@ -100,12 +100,20 @@ const DIRECT_CMD_SENDS = 5;
 const LEVEL2_GRACE_MS = 25_000;
 
 /**
- * How long a `"settle"` caller waits for the answer to a second `CMD_GATEWAYINFO` ask, per call, when the
- * station answered no first ask within {@link LEVEL2_SETTLE_MS}. A station that has not answered is not
- * ready for the command either: a standalone T8423 acknowledges a level-1 `1224` sent before its first
- * gateway-info reply and does not apply it.
+ * How long `"settle"` callers wait for the answer to a second `CMD_GATEWAYINFO` ask, measured once from that
+ * ask, when a {@link REASK_GATEWAYINFO_MODELS} station answered no first ask within {@link LEVEL2_SETTLE_MS}.
+ * Such a station is not ready for the command either: a standalone T8423 acknowledges a level-1 `1224` sent
+ * before its first gateway-info reply and does not apply it.
  */
 const LEVEL2_REASK_MS = 10_000;
+
+/**
+ * Stations a `"settle"` caller asks for gateway info once more before choosing a seal. Only the model the
+ * dropped write was measured on: every other station that answers no first ask proceeds at level 1 after
+ * {@link LEVEL2_SETTLE_MS} as before, so a standalone session that is rebuilt after each write pays nothing
+ * more per write.
+ */
+const REASK_GATEWAYINFO_MODELS: ReadonlySet<string> = new Set(["T8423"]);
 
 /** Standalone stations whose level-1 session is not reset. */
 const KEEP_LEVEL1_SESSION_MODELS: ReadonlySet<string> = new Set(["T8423"]);
@@ -1660,9 +1668,10 @@ export class P2PCommandRouter {
    *
    *  - `true` — cannot frame without it. Waits the full grace, re-prompts once, and throws if refused.
    *  - `"settle"` — picks its seal once from {@link P2PSession.hasLevel2Key}. Waits {@link LEVEL2_SETTLE_MS}
-   *    session-scoped for the negotiation to conclude either way, then proceeds. A station that has answered
-   *    no `CMD_GATEWAYINFO` by then is asked once more and given {@link LEVEL2_REASK_MS} per call for that
-   *    answer, because such a station drops a level-1 write sent meanwhile. Never throws.
+   *    session-scoped for the negotiation to conclude either way, then proceeds. A {@link REASK_GATEWAYINFO_MODELS}
+   *    station that has answered no `CMD_GATEWAYINFO` by then is asked once more, and every settle caller
+   *    waits for that answer until {@link LEVEL2_REASK_MS} from the ask, because such a station drops a
+   *    level-1 write sent meanwhile. Never throws.
    *  - `"soft"` — frames per send and is re-issued, so it does not wait at all.
    *  - `false` / absent — no wait; enough to read topology.
    *
@@ -1675,8 +1684,8 @@ export class P2PCommandRouter {
    *
    * A caller that REQUIRES the key re-prompts a negotiation that concluded without one — see
    * {@link P2PSession.repromptLevel2Key}, which explains why one settled negotiation is not the last word. A
-   * `"settle"` caller re-prompts only a station that answered nothing: a negotiation that concluded without a
-   * key is its answer.
+   * `"settle"` caller re-prompts only a {@link REASK_GATEWAYINFO_MODELS} station that answered nothing: a
+   * negotiation that concluded without a key is its answer.
    *
    * A session whose {@link P2PSession.pathAnswering} is false is closed and re-resolved before it is handed
    * over: the station answers every heartbeat, so a path silent past several of them is gone. A session
@@ -1746,8 +1755,9 @@ export class P2PCommandRouter {
     if (opts.waitLevel2) {
       if (opts.waitLevel2 === "settle") {
         const served = await abortable(session.awaitLevel2Key(LEVEL2_SETTLE_MS, "session"), opts.signal);
-        if (!served && session.gatewayInfoUnanswered && session.repromptLevel2Key()) {
-          await abortable(session.awaitLevel2Key(LEVEL2_REASK_MS, "call"), opts.signal);
+        if (!served && session.gatewayInfoUnanswered && REASK_GATEWAYINFO_MODELS.has(stationModel ?? "")) {
+          session.repromptLevel2Key();
+          await abortable(session.awaitLevel2Key(LEVEL2_REASK_MS, "re-ask"), opts.signal);
         }
         return { session, parentSn, channel, accountId, homeBaseAttached };
       }

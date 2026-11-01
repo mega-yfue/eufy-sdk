@@ -19,7 +19,7 @@ interface FakeSession extends FakeP2PSession {
   sendIntStringCommand: ReturnType<typeof vi.fn>;
 }
 
-function setup(hasLevel2Key: boolean, attached = true) {
+function setup(hasLevel2Key: boolean, attached = true, model?: string) {
   const session = connectedSession(hasLevel2Key) as FakeSession;
   session.sendSetPayload = vi.fn();
   session.sendControlLevel2 = vi.fn(() => true);
@@ -32,6 +32,7 @@ function setup(hasLevel2Key: boolean, attached = true) {
       {
         sn: DEVICE_SN,
         stationSn: attached ? STATION_SN : DEVICE_SN,
+        ...(model ? { model } : {}),
         channel: 1,
         raw: {
           ...(attached ? { parent_sn: STATION_SN } : {}),
@@ -102,8 +103,8 @@ describe("resolving a session defers the level-2 wait to the session", () => {
    * Measured on a standalone T8423: a level-1 `1224` sent before its first gateway-info reply is acknowledged
    * and never applied, and the same write sent once the second ask was answered applies in about 2.5 s.
    */
-  it("asks a station that answered no gateway info once more before choosing a seal", async () => {
-    const { router, session } = setup(false);
+  it("asks a T8423 that answered no gateway info once more before choosing a seal", async () => {
+    const { router, session } = setup(false, false, "T8423");
     session.gatewayInfoUnanswered = true;
     session.repromptLevel2Key = vi.fn(() => true);
     await router
@@ -111,7 +112,40 @@ describe("resolving a session defers the level-2 wait to the session", () => {
       .catch(() => undefined);
     expect(session.repromptLevel2Key).toHaveBeenCalledTimes(1);
     expect(session.awaitLevel2Key).toHaveBeenNthCalledWith(1, SETTLE_GRACE_MS, "session");
-    expect(session.awaitLevel2Key).toHaveBeenNthCalledWith(2, REASK_GRACE_MS, "call");
+    expect(session.awaitLevel2Key).toHaveBeenNthCalledWith(2, REASK_GRACE_MS, "re-ask");
+  });
+
+  /**
+   * The second ask is the session's, placed once per connection; the wait for its answer is measured from
+   * that ask. A settle caller that arrives while the first one is still waiting therefore waits for the same
+   * deadline, instead of finding the ask spent and framing at level 1 at once — the write the station drops.
+   */
+  it("holds every settle caller to the one re-ask deadline", async () => {
+    const { router, session } = setup(false, false, "T8423");
+    session.gatewayInfoUnanswered = true;
+    session.repromptLevel2Key = vi.fn().mockReturnValueOnce(true).mockReturnValue(false);
+    const write = { kind: "set-param", param: 6, value: 0, form: "auto", channel: 1 } as const;
+    await Promise.all([
+      router.dispatchCommand(DEVICE_SN, write).catch(() => undefined),
+      router.dispatchCommand(DEVICE_SN, write).catch(() => undefined),
+    ]);
+    const reaskWaits = session.awaitLevel2Key.mock.calls.filter(([, from]) => from === "re-ask");
+    expect(reaskWaits).toEqual([
+      [REASK_GRACE_MS, "re-ask"],
+      [REASK_GRACE_MS, "re-ask"],
+    ]);
+  });
+
+  /** The dropped write was measured on one model; every other station keeps its seal after the settle wait. */
+  it("leaves a station outside the re-ask scope at its seal after the settle wait", async () => {
+    const { router, session } = setup(false, false, "T8010");
+    session.gatewayInfoUnanswered = true;
+    session.repromptLevel2Key = vi.fn(() => true);
+    await router
+      .dispatchCommand(DEVICE_SN, { kind: "set-param", param: 6, value: 0, form: "auto", channel: 1 })
+      .catch(() => undefined);
+    expect(session.repromptLevel2Key).not.toHaveBeenCalled();
+    expect(session.awaitLevel2Key).toHaveBeenCalledTimes(1);
   });
 
   /**
