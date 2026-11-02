@@ -363,6 +363,27 @@ function paramReport(payload: unknown): Record<number, string> | undefined {
 }
 
 /**
+ * Split a station's `CMD_CAMERA_INFO` table into one `param_type → param_value` map per channel, or
+ * `undefined` when the report names a single device.
+ *
+ * A HomeBase answers on its own channel with every attached camera's params in one root array, each
+ * entry's `dev_type` naming the channel it belongs to and 255 naming the station. Flattened, each id keeps
+ * whichever channel came last, so no camera reads its own state from it. A camera reporting its own state
+ * names one `dev_type` throughout, and stays a single report.
+ */
+function channelReport(payload: unknown): Record<number, Record<number, string>> | undefined {
+  const list = (payload as { params?: unknown } | undefined)?.params;
+  if (!Array.isArray(list)) return undefined;
+  const out: Record<number, Record<number, string>> = {};
+  for (const entry of list) {
+    const p = entry as { dev_type?: unknown; param_type?: unknown; param_value?: unknown };
+    if (typeof p?.dev_type !== "number" || typeof p.param_type !== "number" || p.param_value == null) continue;
+    (out[p.dev_type] ??= {})[p.param_type] = String(p.param_value);
+  }
+  return Object.keys(out).length > 1 ? out : undefined;
+}
+
+/**
  * A decoded P2P data/notification frame.
  *
  * A decoded PPCS frame. Internal wire shape — surfaced on the facade's diagnostic event only.
@@ -388,6 +409,12 @@ export interface P2PFrame extends P2PDataFrameHeader {
    * the values as device state without any per-capability decoder.
    */
   params?: Record<number, string>;
+  /**
+   * A station's camera-info table, one `param_type → param_value` map per channel it names (255 is the
+   * station). Set instead of {@link params} when the report spans more than one channel, so each
+   * channel's state can land on the device attached there.
+   */
+  channelParams?: Record<number, Record<number, string>>;
 }
 
 /** Per-process counter behind {@link P2PSession.traceId} — see it for why this is not a serial. */
@@ -2518,12 +2545,14 @@ export class P2PSession extends EventEmitter {
       } catch {
         /* not JSON */
       }
+      const byChannel = header.commandId === CMD_CAMERA_INFO ? channelReport(frame.json) : undefined;
       const reported =
         header.commandId === CMD_NOTIFY_PAYLOAD
           ? paramReport(frame.json?.payload)
-          : header.commandId === CMD_CAMERA_INFO
+          : header.commandId === CMD_CAMERA_INFO && !byChannel
             ? paramReport(frame.json)
             : undefined;
+      if (byChannel) frame.channelParams = byChannel;
       if (reported) frame.params = reported;
     }
     // CMD_NAS_SWITCH (1145) is the RTSP publish switch, but the station also pushes it BACK as a data

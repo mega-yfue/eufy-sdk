@@ -939,6 +939,8 @@ export class EufyMega extends EventEmitter {
    * fans same-kind sensors out by channel, so the resolved serial is folded in; a payload's own
    * fields still win on conflict.
    *
+   * A station's camera-info table lands per channel, each channel's params on the device attached there.
+   *
    * Params the station volunteered land as device state first. They arrive in the cloud record's own
    * `param_type → value` shape, so no capability has to claim an id it does not own, and the reads
    * they back stop waiting for the next cloud poll. A capability decode follows for the frames that
@@ -958,6 +960,8 @@ export class EufyMega extends EventEmitter {
         : undefined,
     };
     if (f.params) this.applyRealtimeState(deviceSn, f.params);
+    for (const [channel, params] of Object.entries(f.channelParams ?? {}))
+      this.applyRealtimeState(this.registry.serialForFrame(stationSn, Number(channel)), params);
     this.applyRealtimeReport(deviceSn, decodeCapabilityState(signal, caps));
     for (const ev of decodeCapabilityEvent(signal, caps))
       this.emitSemantic(ev.event, deviceSn ? { deviceSn, ...ev.payload } : ev.payload, {
