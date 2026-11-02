@@ -42,6 +42,9 @@ pull that finds the station's own session already carrying one gets **a connecti
 cameras on one HomeBase stream at full rate together. Measured on two attached cameras, one at 3840×2160:
 both held ~15 fps for the length of the run, where the same pair down one session could only take turns.
 
+A HomeBase 3 (T8030) can keep serving the camera it last served on a session, so there every live pull of an
+attached camera gets a connection of its own, even when the station's session is free.
+
 A **still** never opens a connection of its own: it wants one frame, and a socket plus a key negotiation per
 thumbnail is not worth it. So a still asked for while a sibling is being watched still yields, and the
 retained image answers it.

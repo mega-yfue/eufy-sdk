@@ -34,6 +34,7 @@ const station = {
   realtime: "p2p",
   p2pDid: STATION_DID,
   stationSn: STATION_SN,
+  category: "eufy_security",
   raw: { member: { admin_user_id: "0".repeat(40) } },
 } as unknown as EufyDevice;
 
@@ -49,10 +50,11 @@ const attached = {
 
 function router(devices: EufyDevice[]) {
   const errors: Error[] = [];
+  const getDskKeys = vi.fn().mockResolvedValue({ [STATION_SN]: { dskKey: DSK_KEY } });
   const deps: P2PRouterDeps = {
     mega: {
       auth: { userId: "u1", authToken: "t" },
-      getDskKeys: vi.fn().mockResolvedValue({ [STATION_SN]: { dskKey: DSK_KEY } }),
+      getDskKeys,
       getCiphers: vi.fn().mockResolvedValue([]),
     } as unknown as P2PRouterDeps["mega"],
     listDevices: () => devices,
@@ -63,7 +65,7 @@ function router(devices: EufyDevice[]) {
     onLevel2Ready: () => {},
     onFrame: () => {},
   };
-  return { p2p: new P2PCommandRouter(deps), errors };
+  return { p2p: new P2PCommandRouter(deps), errors, getDskKeys };
 }
 
 beforeEach(() => {
@@ -99,6 +101,15 @@ describe("opening a station whose own record is absent from the device list", ()
 });
 
 describe("opening a station present in the device list", () => {
+  it("requests keys using the owning station's record", async () => {
+    const record = { ...station, category: "eufy_care" };
+    const { p2p, getDskKeys } = router([record, attached]);
+
+    await p2p.deviceFor(ATTACHED_SN);
+
+    expect(getDskKeys).toHaveBeenCalledExactlyOnceWith([record]);
+  });
+
   it("dials the station's own endpoint and keys the DSK lookup on the same serial", async () => {
     const { p2p } = router([station, attached]);
 

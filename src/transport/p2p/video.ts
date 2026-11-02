@@ -290,7 +290,7 @@ function sameUnit(open: VideoFrameHeader, next: VideoFrameHeader): boolean {
 }
 
 /** Whether a decoded payload OPENS an access unit — a continuation begins mid-NAL, with no start code. */
-function beginsAccessUnit(body: Buffer): boolean {
+export function beginsAccessUnit(body: Buffer): boolean {
   if (body.length < 4 || body[0] !== 0 || body[1] !== 0) return false;
   return body[2] === 1 || (body[2] === 0 && body[3] === 1);
 }
