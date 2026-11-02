@@ -206,7 +206,7 @@ export const STATION_CHUNK_BYTES = 64000;
  * models:
  *
  *  - the frames of one unit **repeat its {@link VideoFrameHeader.sequence}**, and carry the unit's timestamp
- *    or one stamped up to {@link SPLIT_UNIT_STAMP_SPREAD_MS} later;
+ *    or one stamped up to `SPLIT_UNIT_STAMP_SPREAD_MS` later;
  *  - every frame of a split unit is filled to {@link STATION_CHUNK_BYTES} except the last;
  *  - a frame that STARTS a unit begins with an Annex-B start code once decoded, and a continuation begins
  *    mid-NAL, so it does not.
