@@ -213,6 +213,15 @@ Zone corners are **signed centimetres** in the map's own frame, whose origin sit
 first mapped from. Negative coordinates are ordinary and are encoded as such; passing them as unsigned
 values sends the robot somewhere real and wrong.
 
+Room ids and names come from the robot's map, which arrives on the map stream as the `map` event. A
+docked robot sends no map of its own accord; `requestMap` asks for it the way the vendor app does when
+its map view opens, and the map arrives on the stream within about a second:
+
+```ts
+eufy.on("map", ({ map }) => map.rooms?.rooms);
+await clean?.requestMap?.();
+```
+
 ### What is still missing
 
 The **clean parameters** — clean type, mop level, water level, clean extent, cleaning strength — are

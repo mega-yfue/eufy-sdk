@@ -430,6 +430,30 @@ export function encodeSceneClean(sceneId: number): string {
   return encodeModeCtrlParam(method, param, (p) => p.int(SCENE_CLEAN_ID, sceneId));
 }
 
+/** Field numbers of the map-watch write on DP 153 — see {@link encodeMapWatch}. */
+const MAP_WATCH_FIELD = {
+  /** The time the write is sent, in microseconds since the epoch. */
+  TIME_US: 1,
+  /** `1` on the write that asks for the map. */
+  WATCHING: 2,
+} as const;
+
+/**
+ * Build one of the two DP 153 writes the vendor app sends when its map view opens: the time in
+ * microseconds, and on the second write field 2 set to `1`.
+ *
+ * Captured from the vendor app on the device's `cmd/…/req` leg, three times with the same layout. The
+ * product catalogue lists DP 153 as uplink-only (`WorkStatus`); the vendor app writes this message to it
+ * all the same. {@link VACUUM_CLEAN_MEMBERS.requestMap} dispatches both.
+ * @internal
+ */
+export function encodeMapWatch(nowMs: number, watching: boolean): string {
+  return rawDp((w) => {
+    w.int(MAP_WATCH_FIELD.TIME_US, Math.floor(nowMs) * 1000);
+    if (watching) w.int(MAP_WATCH_FIELD.WATCHING, 1);
+  });
+}
+
 /**
  * Build a whole-floor auto clean carrying an `AutoClean` payload of one pass.
  * @internal
@@ -3010,6 +3034,26 @@ export const VACUUM_CLEAN_MEMBERS = {
       (sceneId: number): Promise<void> =>
         sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeSceneClean(sceneId))),
     "Run a saved cleaning scene by its id (ModeCtrlRequest method 24 over DP 152).",
+    isAiotVacuum,
+  ),
+
+  /**
+   * Ask the robot to push its whole map — plane, room outline, room list and restricted zones — on the
+   * map stream, as the vendor app does when its map view opens: two DP 153 writes, the time and then the
+   * time with field 2 set (see {@link encodeMapWatch}).
+   *
+   * A docked robot sends no map of its own accord, so this is how its room ids and names become
+   * readable without a clean. The map arrives on the stream like any other, not as this call's result.
+   *
+   * WATCHED: sent to a docked robot, it pushed its whole map within a second.
+   */
+  requestMap: method(
+    ({ sink }) =>
+      async (): Promise<void> => {
+        await sink.dispatch(aiotDp(VACUUM_DP.WORK_STATUS, encodeMapWatch(Date.now(), false)));
+        await sink.dispatch(aiotDp(VACUUM_DP.WORK_STATUS, encodeMapWatch(Date.now(), true)));
+      },
+    "Ask the robot to push its whole map on the map stream (two map-watch writes over DP 153).",
     isAiotVacuum,
   ),
 

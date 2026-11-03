@@ -29,6 +29,7 @@ import {
   encodeModeCtrl,
   encodeSelectRoomsClean,
   encodeSelectZonesClean,
+  encodeMapWatch,
   encodeSceneClean,
   encodeAutoClean,
   encodeCleanParam,
@@ -1572,6 +1573,29 @@ describe("area-selecting ModeCtrl frames", () => {
     expect(fields?.find((f) => f.field === 1)).toMatchObject({ value: BigInt(ModeCtrlParamMethod.SCENE.method) });
     const param = fields?.find((f) => f.field === ModeCtrlParamMethod.SCENE.param) as { value: Buffer };
     expect(byteCodec.nested(param.value)).toEqual([{ field: 1, kind: "int", value: 7n }]);
+  });
+});
+
+describe("asking a docked robot for its map", () => {
+  it("builds the bytes the vendor app sends, as captured", () => {
+    expect(encodeMapWatch(1793563243449, false)).toBe("CQiolYjgx+eXAw==");
+    expect(encodeMapWatch(1793563245024, true)).toBe("CwiApujgx+eXAxAB");
+  });
+
+  it("sends the time and then the time with the watch flag, both over DP 153, on an AIoT robot", async () => {
+    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home", new Set([151])));
+    await (acts as { requestMap: () => Promise<void> }).requestMap();
+    expect(sent).toHaveLength(2);
+    const fields = sent.map((cmd) => {
+      expect(cmd).toMatchObject({ kind: "aiot-dp", dp: VACUUM_DP.WORK_STATUS });
+      return byteCodec.decode(String((cmd as { value?: unknown }).value))?.map((f) => f.field);
+    });
+    expect(fields).toEqual([[1], [1, 2]]);
+  });
+
+  it("installs no map request on a Tuya robot", () => {
+    const tuya = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya", new Set([151])));
+    expect((tuya.acts as Record<string, unknown>)["requestMap"]).toBeUndefined();
   });
 });
 
