@@ -165,6 +165,16 @@ describe("resolveDevice — 3-tier composition", () => {
     }
   });
 
+  it("does not advertise a spotlight from the params reported by an Indoor Cam S350 (T8416)", () => {
+    const params = { 1400: "0", 1401: "70", 1403: "1", 1410: "100" };
+    const s350 = resolveDevice({ model: "T8416", deviceType: DeviceType.INDOOR_PT_CAMERA_S350, params });
+    expect(s350.capabilities).not.toContain("light");
+    const properties = s350.properties.map((p) => p.name);
+    for (const name of ["light", "brightness", "spotlightEnabled", "colorTemp"]) {
+      expect(properties).not.toContain(name);
+    }
+  });
+
   it.each([undefined, DeviceType.CAMERA_POE_S4])(
     "recognizes PoE S4 pan-tilt without reported preset parameters (device type %s)",
     (deviceType) => {
