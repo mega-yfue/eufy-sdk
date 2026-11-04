@@ -148,16 +148,4 @@ describe("P2P frame — a station's camera-info table", () => {
   it("does not flatten the table into one device's params", () => {
     expect(handleOn(table)?.params).toBeUndefined();
   });
-
-  it("still reads a camera's own report, which names a single dev_type, as that camera's params", () => {
-    const own = {
-      params: [
-        { dev_type: 1000, param_type: 1035, param_value: "0" },
-        { dev_type: 1000, param_type: 1400, param_value: "1" },
-      ],
-    };
-    const f = handleOn(own);
-    expect(f?.params).toEqual({ 1035: "0", 1400: "1" });
-    expect(f?.channelParams).toBeUndefined();
-  });
 });

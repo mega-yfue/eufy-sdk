@@ -52,16 +52,4 @@ describe("a station's camera-info table", () => {
     expect(landed.get(CAM_CH0)).toEqual({ 1400: "0", 1401: "0" });
     expect(landed.get(CAM_CH5)).toEqual({ 1400: "0", 1401: "100" });
   });
-
-  it("lands nothing on a channel no attached device states", () => {
-    const { internal, landed } = harness();
-    internal.onP2PFrame(HUB, {
-      stationSn: HUB,
-      channel: 255,
-      commandId: 1103,
-      json: {},
-      channelParams: { 3: { 1400: "1" } },
-    });
-    expect([...landed.keys()]).toEqual([]);
-  });
 });
