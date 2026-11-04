@@ -255,6 +255,47 @@ describe("DeviceRegistry", () => {
       expect(dev.paramUpdatedAt).toEqual({});
       expect(dev.lastSeenMs).toBeUndefined();
     });
+
+    it("keeps a realtime sighting newer than the cloud stamp across a refetch", async () => {
+      const reg = new DeviceRegistry({
+        mega: withParams([{ param_type: 1101, param_value: "88", update_time: 1_700_000_000 }]),
+        onError: () => {},
+      });
+      await reg.getDevices();
+      reg.markSeen("A", 1_700_000_900_000);
+      expect(reg.list()[0].lastSeenMs).toBe(1_700_000_900_000);
+
+      const [dev] = await reg.getDevices();
+
+      expect(dev.lastSeenMs).toBe(1_700_000_900_000);
+    });
+
+    it("never moves lastSeenMs backwards on an older sighting", async () => {
+      const reg = new DeviceRegistry({
+        mega: withParams([{ param_type: 1101, param_value: "88", update_time: 1_700_000_600 }]),
+        onError: () => {},
+      });
+      await reg.getDevices();
+      reg.markSeen("A", 1_700_000_000_000);
+
+      expect(reg.list()[0].lastSeenMs).toBe(1_700_000_600_000);
+      const [dev] = await reg.getDevices();
+      expect(dev.lastSeenMs).toBe(1_700_000_600_000);
+    });
+
+    it("reports a device heard on its realtime wire to the next poll", async () => {
+      const reg = new DeviceRegistry({
+        mega: withParams([{ param_type: 1101, param_value: "88", update_time: 1_700_000_000 }]),
+        onError: () => {},
+      });
+      await reg.pollChanges();
+      reg.markSeen("A", 1_700_000_900_000);
+
+      const diff = await reg.pollChanges();
+
+      expect(diff.reported.map((d) => d.sn)).toEqual(["A"]);
+      expect(diff.reported[0].lastSeenMs).toBe(1_700_000_900_000);
+    });
   });
 
   describe('pollParamChanges — the source:"poll" producer', () => {
