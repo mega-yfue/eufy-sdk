@@ -1694,6 +1694,9 @@ export class P2PCommandRouter {
    * sources on the replaced session are discarded before closing it (see {@link tearDownStation}).
    * Replaced at most once per resolution, so a station whose replacement is silent too is returned rather
    * than closed again.
+   *
+   * `clearFallback` hands over a session whose station {@link P2PSession.refusedLevel2} instead of throwing,
+   * for a caller that can send in the clear on such a session — see {@link sendFf09Envelope}.
    */
   private async resolveSession(
     sn: string,
@@ -1701,6 +1704,7 @@ export class P2PCommandRouter {
       waitLevel2?: boolean | "soft" | "settle";
       requireLevel2ForAttached?: boolean;
       level2Sender?: "set-payload";
+      clearFallback?: boolean;
       signal?: AbortSignal;
     } = {},
     /** Whether this resolution has already replaced a silent path — see the check below. */
@@ -1765,7 +1769,7 @@ export class P2PCommandRouter {
       if (!ready && session.repromptLevel2Key()) {
         ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call", sender), opts.signal);
       }
-      if (!ready) throw new StationKeyUnavailableError(parentSn);
+      if (!ready && !(opts.clearFallback && session.refusedLevel2)) throw new StationKeyUnavailableError(parentSn);
     }
     return { session, parentSn, channel, accountId, homeBaseAttached };
   }
@@ -2089,8 +2093,30 @@ export class P2PCommandRouter {
    * device channel. This is the P2P envelope; the capability module only supplies identity, never wire
    * bytes and never the routing channel — that's re-resolved here from the device record.
    */
+  /**
+   * Send one `ff09` frame's `1940` TRANSFER_PAYLOAD envelope as a `set-payload` (1350), `mValue3=0`, on the
+   * lock's resolved channel: level-2 through {@link sendSetPayloadEnvelope}, or once in the clear on a session
+   * whose station {@link P2PSession.refusedLevel2} — the Smart Lock C220 (T8506), which has no level-2 key to
+   * offer and answers its `ff09` commands only in the clear. One send there, not the level-2 replay: the
+   * frame's `seq_num` is spent by the first copy, so the lock refuses a repeat as out of sequence.
+   */
+  private async sendFf09Envelope(
+    sn: string,
+    payload: Record<string, unknown>,
+    resolved: ResolvedSession,
+  ): Promise<void> {
+    const { session, channel, accountId } = resolved;
+    if (session.refusedLevel2) {
+      if (!session.sendSetPayloadInTheClear(CMD_TRANSFER_PAYLOAD, channel, accountId, payload, 0)) {
+        throw new Error(`set-payload cmd ${CMD_TRANSFER_PAYLOAD} for ${sn} was never sent (session not connected)`);
+      }
+      return;
+    }
+    await this.sendSetPayloadEnvelope(sn, CMD_TRANSFER_PAYLOAD, payload, channel, 0, resolved);
+  }
+
   private async sendFf09Actuate(sn: string, cmd: Ff09Identity): Promise<void> {
-    const resolved = await this.resolveSession(sn, { waitLevel2: true });
+    const resolved = await this.resolveSession(sn, { waitLevel2: true, clearFallback: true });
     const frame = buildFf09Frame({
       engage: cmd.engage,
       adminUserId: cmd.adminUserId,
@@ -2098,14 +2124,7 @@ export class P2PCommandRouter {
       shortUserId: cmd.shortUserId,
       deviceSn: cmd.deviceSn,
     });
-    await this.sendSetPayloadEnvelope(
-      sn,
-      CMD_TRANSFER_PAYLOAD,
-      ff09TransferPayload(frame),
-      resolved.channel,
-      0,
-      resolved,
-    );
+    await this.sendFf09Envelope(sn, ff09TransferPayload(frame), resolved);
   }
 
   /**
@@ -2156,7 +2175,7 @@ export class P2PCommandRouter {
       delaySeconds?: number;
     },
   ): Promise<void> {
-    const resolved = await this.resolveSession(sn, { waitLevel2: true });
+    const resolved = await this.resolveSession(sn, { waitLevel2: true, clearFallback: true });
 
     // ── 1. GET current settings, matched back by keyTime (shared with getAutoLockState — see helper). ──
     const getReply = await this.fetchFf09SettingsGetReply(sn, cmd, resolved);
@@ -2171,14 +2190,7 @@ export class P2PCommandRouter {
       enabled: cmd.enabled,
       delaySeconds: cmd.delaySeconds,
     });
-    await this.sendSetPayloadEnvelope(
-      sn,
-      CMD_TRANSFER_PAYLOAD,
-      ff09TransferPayload(setFrame),
-      resolved.channel,
-      0,
-      resolved,
-    );
+    await this.sendFf09Envelope(sn, ff09TransferPayload(setFrame), resolved);
   }
 
   /**
@@ -2224,14 +2236,7 @@ export class P2PCommandRouter {
       session.on("data", onData);
     });
     try {
-      await this.sendSetPayloadEnvelope(
-        sn,
-        CMD_TRANSFER_PAYLOAD,
-        ff09TransferPayload(query),
-        resolved.channel,
-        0,
-        resolved,
-      );
+      await this.sendFf09Envelope(sn, ff09TransferPayload(query), resolved);
     } catch (e) {
       cleanup();
       throw e;
@@ -2257,7 +2262,7 @@ export class P2PCommandRouter {
    * has not been independently exercised against a real device yet.
    */
   async getAutoLockState(sn: string, cmd: { adminUserId: string; deviceSn: string }): Promise<AutoLockSnapshot> {
-    const resolved = await this.resolveSession(sn, { waitLevel2: true });
+    const resolved = await this.resolveSession(sn, { waitLevel2: true, clearFallback: true });
     const getReply = await this.fetchFf09SettingsGetReply(sn, cmd, resolved);
     return decodeFf09AutoLockSnapshot(
       parseFf09SettingsResponse(
@@ -2286,21 +2291,14 @@ export class P2PCommandRouter {
     sn: string,
     cmd: { adminUserId: string; deviceSn: string; settingId: number; value: boolean },
   ): Promise<void> {
-    const resolved = await this.resolveSession(sn, { waitLevel2: true });
+    const resolved = await this.resolveSession(sn, { waitLevel2: true, clearFallback: true });
     const frame = buildFf09SettingToggleFrame({
       adminUserId: cmd.adminUserId,
       deviceSn: cmd.deviceSn,
       settingId: cmd.settingId,
       value: cmd.value,
     });
-    await this.sendSetPayloadEnvelope(
-      sn,
-      CMD_TRANSFER_PAYLOAD,
-      ff09TransferPayload(frame),
-      resolved.channel,
-      0,
-      resolved,
-    );
+    await this.sendFf09Envelope(sn, ff09TransferPayload(frame), resolved);
   }
 
   /**

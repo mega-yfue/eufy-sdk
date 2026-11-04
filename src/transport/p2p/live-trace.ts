@@ -103,7 +103,13 @@ export type LiveTrace =
    */
   | {
       phase: "level2-unavailable";
-      reason: "no-cipher-key" | "derivation-failed" | "not-negotiating" | "session-closed" | "grace-elapsed";
+      reason:
+        | "no-cipher-key"
+        | "derivation-failed"
+        | "not-negotiating"
+        | "session-closed"
+        | "grace-elapsed"
+        | "gateway-refused";
       cipherId?: number;
       waitedMs?: number;
     }

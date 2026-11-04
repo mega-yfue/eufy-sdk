@@ -172,6 +172,20 @@ export function gatewayInfoCipherId(gwPayload: Buffer): number {
 }
 
 /**
+ * The negative result code a device answers `CMD_GATEWAYINFO` (1100) with in place of a cipher, or
+ * `undefined` when the reply names one.
+ *
+ * Measured on a Smart Lock C220 (T8506): a 36-byte reply in the clear opening `99 ff ff ff`, int32 LE
+ * `-103`, which {@link gatewayInfoCipherId} would otherwise read as `cipher_id` 65433 and look up in vain.
+ * A real cipher reply keeps a `cipher_id` in its low two bytes and never sets the int32's sign bit.
+ */
+export function gatewayInfoRefusal(gwPayload: Buffer): number | undefined {
+  if (gwPayload.length < 4) return undefined;
+  const code = gwPayload.readInt32LE(0);
+  return code < 0 ? code : undefined;
+}
+
+/**
  * The eufy ECIES KDF: HMAC-SHA256 feedback chaining under the label "ECIES". Each emitted
  * 32-byte block is `HMAC(shared, t ‖ "ECIES")` where `t` starts at the label and is updated to
  * `HMAC(shared, t)` before every block. Reversed byte-exact from `kdf_func` in `libmega_media_sdk.so`.

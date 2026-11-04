@@ -56,6 +56,7 @@ import {
   deriveLevel2KeyFromRsaGatewayInfo,
   frameMessage,
   gatewayInfoCipherId,
+  gatewayInfoRefusal,
   hasHeader,
   p2pCommandEncryptionKey,
   parseDataFrameHeader,
@@ -571,6 +572,8 @@ export class P2PSession extends EventEmitter {
   private readonly liveStartedChannels = new Map<number, "l1" | "l2" | "clear">();
   /** The `cipher_id` this connection's `CMD_GATEWAYINFO` reply named, once its negotiation has read it. */
   private gatewayCipherId?: number;
+  /** The negative result this connection's `CMD_GATEWAYINFO` reply carried instead of a cipher — see {@link gatewayInfoRefusal}. */
+  private gatewayRefusal?: number;
   /** The `n` of the last `[0x01, n]` header this connection sent in the clear — see {@link nextClearCommandBytes}. */
   private clearCommandCount = 0;
   private readonly unackedLiveStarts = new Map<number, RetainedDatagram & { channel: number }>();
@@ -748,6 +751,8 @@ export class P2PSession extends EventEmitter {
    */
   repromptLevel2Key(): boolean {
     if (this.closed || this.level2KeyServes("set-payload") || this.level2Reprompted) return false;
+    // A station that refused level-2 outright answers a second ask the same way.
+    if (this.gatewayRefusal !== undefined) return false;
     if (!this.cfg.resolveCipherKey || !this.connectAddress) return false;
     this.level2Reprompted = true;
     this.level2Pending = true;
@@ -779,6 +784,15 @@ export class P2PSession extends EventEmitter {
    * generation ended settles nothing.
    */
   private negotiateLevel2Key(gwPayload: Buffer): void {
+    const refusal = gatewayInfoRefusal(gwPayload);
+    if (refusal !== undefined) {
+      // No cipher to look up: the station said so. Settle at once rather than charge a cloud lookup.
+      this.gatewayRefusal = refusal;
+      this.logger.debug(`[p2p] ${this.cfg.stationSn} gateway info refused level-2 (result ${refusal})`);
+      this.trace({ phase: "level2-unavailable", reason: "gateway-refused" });
+      this.settleLevel2();
+      return;
+    }
     this.level2Negotiating = true;
     const generation = this.connectionGeneration;
     const cipherId = gatewayInfoCipherId(gwPayload);
@@ -908,6 +922,7 @@ export class P2PSession extends EventEmitter {
       this.level2Negotiating = false;
       this.level2Reprompted = false;
       this.gatewayCipherId = undefined;
+      this.gatewayRefusal = undefined;
       this.clearCommandCount = 0;
     }
 
@@ -1561,6 +1576,39 @@ export class P2PSession extends EventEmitter {
     ]);
     this.seqNumber = (this.seqNumber + 1) & 0xffff;
     this.send(this.connectAddress, RequestMessageType.DATA, data);
+  }
+
+  /**
+   * Whether this connection's station refused level-2 at `CMD_GATEWAYINFO` (a negative result in place of a
+   * cipher — see {@link gatewayInfoRefusal}) and holds no key. Such a station takes its `CMD_SET_PAYLOAD`
+   * commands in the clear: measured on a Smart Lock C220 (T8506), which answered an `ff09` settings GET and
+   * an `ff09` unlock sent through {@link sendSetPayloadInTheClear}, and ignored the same GET sealed level-1.
+   */
+  get refusedLevel2(): boolean {
+    return !this.level2Key && this.gatewayRefusal !== undefined;
+  }
+
+  /**
+   * Send a `CMD_SET_PAYLOAD` (1350) JSON command in the clear: signCode 0, header bytes from
+   * {@link nextClearCommandBytes}, the same envelope {@link sendControlLevel2} seals. For a station that
+   * {@link refusedLevel2}. Returns `false` when there is nowhere to send it.
+   */
+  sendSetPayloadInTheClear(
+    cmd: number,
+    channel: number,
+    accountId: string,
+    payload: Record<string, unknown>,
+    mValue3: number = cmd,
+  ): boolean {
+    if (!this.connectAddress) return false;
+    const json = JSON.stringify({ account_id: accountId, cmd, mChannel: channel, mValue3, payload });
+    const data = Buffer.concat([
+      buildCommandHeader(this.seqNumber, CMD_SET_PAYLOAD),
+      buildRawCommandPayload(Buffer.from(json, "utf-8"), channel, 0, this.nextClearCommandBytes(), 0),
+    ]);
+    this.seqNumber = (this.seqNumber + 1) & 0xffff;
+    this.send(this.connectAddress, RequestMessageType.DATA, data);
+    return true;
   }
 
   /**
