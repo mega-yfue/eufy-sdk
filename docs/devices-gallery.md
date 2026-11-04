@@ -160,6 +160,7 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
   <figcaption>Wired Doorbell <span class="model">T8201</span></figcaption>
 </figure>
 <figure>
+  <img src="/devices/security/security-T8202.webp" alt="Wired Doorbell 2K Pro T8202" loading="lazy" />
   <figcaption>Wired Doorbell 2K Pro <span class="model">T8202</span></figcaption>
 </figure>
 <figure>
@@ -183,9 +184,11 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
   <figcaption>Video Doorbell S4 <span class="model">T8215</span></figcaption>
 </figure>
 <figure>
+  <img src="/devices/security/security-T8220.webp" alt="Battery Doorbell Slim T8220" loading="lazy" />
   <figcaption>Battery Doorbell Slim <span class="model">T8220</span></figcaption>
 </figure>
 <figure>
+  <img src="/devices/security/security-T8221.webp" alt="Battery Doorbell 2E T8221" loading="lazy" />
   <figcaption>Battery Doorbell 2E <span class="model">T8221</span></figcaption>
 </figure>
 <figure>
@@ -193,9 +196,11 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
   <figcaption>Battery Doorbell <span class="model">T8222</span></figcaption>
 </figure>
 <figure>
+  <img src="/devices/security/security-T8223.webp" alt="Doorbell C31 T8223" loading="lazy" />
   <figcaption>Doorbell C31 <span class="model">T8223</span></figcaption>
 </figure>
 <figure>
+  <img src="/devices/security/security-T8224.webp" alt="Battery Doorbell C30 T8224" loading="lazy" />
   <figcaption>Battery Doorbell C30 <span class="model">T8224</span></figcaption>
 </figure>
 
@@ -222,6 +227,7 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
   <figcaption>Floodlight Cam E340 <span class="model">T8425</span></figcaption>
 </figure>
 <figure>
+  <img src="/devices/security/security-T8426.webp" alt="Floodlight Cam E30 T8426" loading="lazy" />
   <figcaption>Floodlight Cam E30 <span class="model">T8426</span></figcaption>
 </figure>
 
@@ -276,6 +282,7 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
   <figcaption>eufyCam 2C Pro <span class="model">T8141 · T8142 · T8142-Z</span></figcaption>
 </figure>
 <figure>
+  <img src="/devices/security/security-T8144.webp" alt="eufyCam E40 T8144" loading="lazy" />
   <figcaption>eufyCam E40 <span class="model">T8144</span></figcaption>
 </figure>
 <figure>
@@ -347,6 +354,7 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
   <figcaption>Wall Light Cam S120 <span class="model">T84A0</span></figcaption>
 </figure>
 <figure>
+  <img src="/devices/security/security-T81A0.webp" alt="Solar Wall Light Cam S120 T81A0" loading="lazy" />
   <figcaption>Solar Wall Light Cam S120 <span class="model">T81A0</span></figcaption>
 </figure>
 <figure>
