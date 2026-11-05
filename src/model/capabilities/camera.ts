@@ -729,6 +729,10 @@ export const CAMERA_MEMBERS = {
    * sensor omits it, and the wire accepts the value regardless — the device's own reported set is the
    * only statement of which of the three it has. `coerceEnumValue` rejects a value outside
    * {@link NightVision} rather than coercing it. The payload key on the wire is `night_sion`.
+   *
+   * 1277 carries more than these three on some models: the V6 app's per-model mappings put modes on
+   * 3, 5, 6 and 8 as well, and which model takes which mapping is not in the app bundle. A reported value
+   * outside the published options reads as `undefined` rather than as an unnamed number.
    */
   nightVision: {
     param: CAMERA_CMD.NIGHT_VISION_TYPE,

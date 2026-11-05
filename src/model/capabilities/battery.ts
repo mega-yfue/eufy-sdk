@@ -290,7 +290,7 @@ export const BATTERY_MEMBERS = cellGated({
   /**
    * 1293 is the READABLE indicator (6445 is write-only/cloud-hidden). Verified live on a T8124R via an
    * app-toggle before/after diff: 0 = Battery, 1 = External Solar Panel. Values beyond 0/1 (some models
-   * report 5) are shown raw — `enumValues` only labels the two that are confirmed.
+   * report 5) read as `undefined` — `enumValues` holds only the two that are confirmed.
    *
    * The write is a `1350` SET_PAYLOAD, inner cmd 1293, `{charge_mode:N}`, `mValue3` 0 (the app uses 0,
    * not the cmd id), and the setter accepts a NAME as well as the index the getter answers.
@@ -308,7 +308,7 @@ export const BATTERY_MEMBERS = cellGated({
     description:
       "Configured power source (1293): 0 = Battery, 1 = External Solar Panel. Verified live on T8124R. " +
       "The richer raw APP_CMD_SET_POWER_SOURCE blob is surfaced separately as `powerSourceInfo` (6445). " +
-      "Format varies by model (plain int or JSON {power_source:N}); values beyond 0/1 shown raw.",
+      "Format varies by model (plain int or JSON {power_source:N}); a value beyond 0/1 reads undefined.",
     write: (v, ctx) =>
       setPayload(
         BATTERY_PARAM.POWER_CHARGE,

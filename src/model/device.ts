@@ -503,7 +503,9 @@ export class Device {
     for (const name of changed) {
       const spec = this.specByName.get(name);
       if (!spec) continue;
-      const value = spec.raw ? undefined : narrow(spec.type, (n) => this.state.get(n), name);
+      const value = spec.raw
+        ? undefined
+        : narrow(spec.type, (n) => this.state.get(n), name, spec.kind === "enum" ? spec.enumValues : undefined);
       out.push(value === undefined ? { property: name } : { property: name, value });
     }
     return out;
