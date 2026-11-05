@@ -45,8 +45,7 @@
  * The probe is the module's whole memory cost, and `jpeg-js` charges about 35 bytes of resident memory
  * per pixel it decodes, so the probe reads at most {@link PROBE_PIXELS} — the whole of a VGA-sized
  * thumbnail, the top rows of a larger frame. Measured after JIT warm-up: about 10 MB of resident
- * memory per thumbnail at 632×472, 1280×720 and 1920×1080 alike, where a 1920×1080 frame probed whole
- * holds about 60 MB and still exceeds {@link PROBE_MEMORY_MB}.
+ * memory per thumbnail at 632×472, 1280×720 and 1920×1080 alike.
  *
  * Depends on `jpeg-js` (v0.4.x, BSD-3-Clause, pure-JS, **zero transitive dependencies**) for that one
  * probe decode.
@@ -198,10 +197,7 @@ function decodeSpliced(header: Buffer, tail: Buffer): Decoded | null {
  * The height of the band the probe decodes: the whole frame when it fits {@link PROBE_PIXELS}, else as
  * many whole MCU rows from the top as fit, and never less than one.
  *
- * A baseline scan with no restart markers can only be entered at its start, so a band is necessarily
- * its top rows. A header whose SOF states that shorter height makes `jpeg-js` decode those rows and
- * stop, and the contrast those rows span stands for the frame's — the substitute tables are wrong by
- * the same scale on every block, so any band measures it as long as the band spans the picture's range.
+ * A scan with no restart markers can only be entered at its start, so the band is its top rows.
  */
 function probeHeight(width: number, height: number, subsampling: number): number {
   if (width * height <= PROBE_PIXELS) return height;
