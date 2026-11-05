@@ -23,14 +23,6 @@ import { parseDpMessage, parseAiotDpReport } from "../transport/mqtt/dp-codec.js
 import { parseBizMapFrame } from "../transport/mqtt/biz-stream.js";
 import type { BizMapFrame } from "../transport/mqtt/biz-stream.js";
 import { decodeMapFrame } from "./map-channels.js";
-import {
-  NOTIFY_TRACE_MESSAGE,
-  POLL_CHANGE_TRACE_MESSAGE,
-  notifyTrace,
-  pollChangeTraces,
-  type NotifyTrace,
-  type PollChangeTrace,
-} from "./notify-trace.js";
 import { VacuumMapStore } from "../model/index.js";
 import { type P2PSession, type P2PFrame } from "../transport/p2p/p2p-session.js";
 import { P2PCommandRouter } from "../transport/p2p/command-router.js";
@@ -999,9 +991,6 @@ export class EufyMega extends EventEmitter {
    * report a bare value rather than that array, which the generic unwrap cannot recognise. Semantic
    * events are edge-triggered: the same change also arrives as a push seconds later, and is announced
    * once.
-   *
-   * A frame carrying params, or a notification nothing decoded, is logged at debug level under
-   * {@link NOTIFY_TRACE_MESSAGE} as a redacted {@link NotifyTrace}.
    */
   private onP2PFrame(stationSn: string, f: P2PFrame): void {
     this.emit("p2p", f);
@@ -1010,30 +999,19 @@ export class EufyMega extends EventEmitter {
     const signal = {
       source: "p2p-frame" as const,
       ...f,
-      deviceType: deviceSn ? this.deviceTypeOf(deviceSn) : undefined,
+      deviceType: deviceSn
+        ? (this.registry.require(deviceSn).raw as { device_type?: number } | undefined)?.device_type
+        : undefined,
     };
     if (f.params) this.applyRealtimeState(deviceSn, f.params);
     for (const [channel, params] of Object.entries(f.channelParams ?? {}))
       this.applyRealtimeState(this.registry.serialForFrame(stationSn, Number(channel)), params);
-    const states = decodeCapabilityState(signal, caps);
-    const events = decodeCapabilityEvent(signal, caps);
-    this.applyRealtimeReport(deviceSn, states);
-    const trace = notifyTrace(f, signal.deviceType, states.length > 0 || events.length > 0);
-    if (trace) (this.opts.logger ?? noopLogger).debug(NOTIFY_TRACE_MESSAGE, trace);
-    for (const ev of events)
+    this.applyRealtimeReport(deviceSn, decodeCapabilityState(signal, caps));
+    for (const ev of decodeCapabilityEvent(signal, caps))
       this.emitSemantic(ev.event, deviceSn ? { deviceSn, ...ev.payload } : ev.payload, {
         edge: true,
         refresh: ev.refresh,
       });
-  }
-
-  /** The cloud `device_type` a serial's record states; `undefined` for a serial the registry has not loaded. */
-  private deviceTypeOf(sn: string): number | undefined {
-    try {
-      return (this.registry.require(sn).raw as { device_type?: number } | undefined)?.device_type;
-    } catch {
-      return undefined;
-    }
   }
 
   /**
@@ -1750,9 +1728,6 @@ export class EufyMega extends EventEmitter {
    * is not in the cloud record this pass diffs and no live channel carries it, so the poll is where it
    * stays fresh. That read runs after the `try`, not inside it, so a cloud error on the list diff does
    * not skip it; it reports its own failures and never rejects.
-   *
-   * Each device's changes are logged at debug level under {@link POLL_CHANGE_TRACE_MESSAGE} as a redacted
-   * {@link PollChangeTrace}.
    */
   private async pollOnce(): Promise<void> {
     try {
@@ -1760,8 +1735,6 @@ export class EufyMega extends EventEmitter {
       for (const dev of diff.added) this.emit("deviceAdded", dev);
       for (const dev of diff.removed) this.emit("deviceRemoved", dev);
       this.applyPolledParams(diff.params);
-      for (const trace of pollChangeTraces(diff.params, (sn) => this.deviceTypeOf(sn)))
-        (this.opts.logger ?? noopLogger).debug(POLL_CHANGE_TRACE_MESSAGE, trace);
       for (const change of diff.params)
         for (const out of decodeCapabilityEvent({ source: "poll", ...change }, this.capsForEvent(change.deviceSn)))
           this.emitSemantic(out.event, out.payload, { refresh: out.refresh });
