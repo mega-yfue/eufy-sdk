@@ -754,7 +754,7 @@ export class P2PCommandRouter {
         );
         return;
       case "p2p-station-scalar":
-        await this.sendStationScalar(sn, cmd.cmd, cmd.value, cmd.channel);
+        await this.sendStationScalar(sn, cmd.cmd, cmd.value, cmd.channel, cmd.form);
         return;
       case "p2p-int-string":
         await this.sendIntString(sn, cmd.cmd, cmd.value, cmd.valueSub, cmd.channel);
@@ -801,24 +801,7 @@ export class P2PCommandRouter {
    * control here is.
    */
   async rebootStation(sn: string): Promise<void> {
-    await this.sendBySessionLevel(sn, {
-      l2: (resolved) =>
-        this.replayLevel2Send(
-          sn,
-          `reboot ${sn}`,
-          ({ session, accountId }) =>
-            session.sendRawLevel2Bytes(buildDirectBinaryBody(0, accountId), 255, P2P_ENVELOPE.RESTART_HUB, 8),
-          resolved,
-        ),
-      l1: (resolved) =>
-        this.replayLevel2Send(
-          sn,
-          `reboot ${sn}`,
-          ({ session, accountId }) =>
-            session.sendRawLevel1Bytes(buildDirectBinaryBody(0, accountId), 255, P2P_ENVELOPE.RESTART_HUB),
-          resolved,
-        ),
-    });
+    return this.sendStationScalar(sn, P2P_ENVELOPE.RESTART_HUB, 0, 255, "auto");
   }
 
   /**
@@ -1819,11 +1802,38 @@ export class P2PCommandRouter {
    * **Station-scoped scalar** (`p2p-station-scalar` intent): the 132-byte channel-less body
    * ({@link buildDirectBinaryBody} with no `channel`) on an EXPLICIT channel, signCode 8. The
    * HomeBase's own controls ride the station broadcast channel 255 (alarm/speaker volume 1235).
+   *
+   * `form` `"auto"` seals it at the session's level, as {@link sendBySessionLevel} defines it: level-2 on a
+   * keyed session, the same body sealed level-1 on a keyless one. Absent, the send waits for the level-2 key.
    */
-  private async sendStationScalar(sn: string, outerCmd: number, value: number, channel: number): Promise<void> {
-    await this.replayLevel2Send(sn, `station scalar cmd ${outerCmd}`, ({ session, accountId }) =>
-      session.sendRawLevel2Bytes(buildDirectBinaryBody(value, accountId), channel, outerCmd, 8),
-    );
+  private async sendStationScalar(
+    sn: string,
+    outerCmd: number,
+    value: number,
+    channel: number,
+    form?: "auto",
+  ): Promise<void> {
+    const describe = `station scalar cmd ${outerCmd}`;
+    const l2 = (resolved?: ResolvedSession) =>
+      this.replayLevel2Send(
+        sn,
+        describe,
+        ({ session, accountId }) =>
+          session.sendRawLevel2Bytes(buildDirectBinaryBody(value, accountId), channel, outerCmd, 8),
+        resolved,
+      );
+    if (form !== "auto") return l2();
+    await this.sendBySessionLevel(sn, {
+      l2,
+      l1: (resolved) =>
+        this.replayLevel2Send(
+          sn,
+          describe,
+          ({ session, accountId }) =>
+            session.sendRawLevel1Bytes(buildDirectBinaryBody(value, accountId), channel, outerCmd),
+          resolved,
+        ),
+    });
   }
 
   /** Send a level-1 int-plus-string frame with authenticated account identity injected by the transport. */

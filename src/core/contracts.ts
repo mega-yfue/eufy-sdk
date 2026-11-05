@@ -411,7 +411,14 @@ export type Command =
       level2Sender?: "set-payload";
     }
   | { kind: "p2p-privacy-burst"; enabled: boolean; channel: number }
-  | { kind: "p2p-station-scalar"; cmd: number; value: number; channel: number }
+  | {
+      kind: "p2p-station-scalar";
+      cmd: number;
+      value: number;
+      channel: number;
+      /** `"auto"`: the seal follows the session, level-2 with a key and level-1 without. Absent, level-2 only. */
+      form?: Extract<ScalarForm, "auto">;
+    }
   /** P2P int-plus-string frame; the transport injects the authenticated account id string. */
   | { kind: "p2p-int-string"; cmd: number; value: number; valueSub: number; channel: number }
   | ({ kind: "ff09-actuate" } & Ff09Identity)
