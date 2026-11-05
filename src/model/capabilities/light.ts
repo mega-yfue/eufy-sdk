@@ -130,7 +130,8 @@ function autoSpotlightCommand(on: boolean, ctx: CommandContext, opts: AutoSpotli
  * the shared family classifier. Provisional split, to be confirmed against the decompiled V6 app /
  * a confirmed exchange:
  *  - `"json"`: JSON control-payload (`{commandType:1400,data:{time,type,value}}` under 1700) —
- *    FLOODLIGHT_8425, wall-light cams, indoor pan/tilt (31/35) and CAMERA_4G_S330.
+ *    FLOODLIGHT_8425, wall-light cams (incl. the Wall Light Cam S4, T86C1, deviceType 298, confirmed
+ *    live), indoor pan/tilt (31/35) and CAMERA_4G_S330.
  *  - `"int-string"`: level-1 int+string — indoor/outdoor 1080p/2K siblings, outdoor-PT/solo-E30,
  *    E330 Pro (T8600, deviceType 24, confirmed live), and the Cam2C/Cam2/Cam3 families.
  * NOTE: this is FRAME SHAPE only, not encryption LEVEL. The level (L1 vs L2) is a runtime topology
@@ -331,18 +332,24 @@ export const LIGHT_MEMBERS = {
   },
 } as const satisfies Members;
 
+/**
+ * Models that report the spotlight params 1400/1401/1403 without having a spotlight, so for them those
+ * ids are not evidence of one. The camera status LED (1045) is never light evidence either.
+ * - T8171: three units on firmware 1.2.1.6 report 1400/1401/1403 and have no spotlight.
+ * - T8416 (Indoor Cam S350): reports 1400/1401/1403/1410 while its night vision is infrared only; the
+ *   vendor app offers no spotlight control for it.
+ */
+const NO_SPOTLIGHT_MODELS: ReadonlySet<string> = new Set(["T8171", "T8416"]);
+
 export const LIGHT: CapabilityModule = {
   capability: "light",
   description: "Floodlight / spotlight manual switch and brightness.",
   members: LIGHT_MEMBERS,
   properties: propertiesOf(LIGHT_MEMBERS),
-  // Three T8171 units on firmware 1.2.1.6 report 1400/1401/1403 without a spotlight, so those
-  // param ids are not sufficient evidence for that model. The camera status LED (1045) is not light.
-  // Other models keep the existing param and name evidence.
   detection: {
     modelHints: [/floodlight|wall.?light|spot.?light|search.?light/i],
     detect: (record) =>
-      record.model !== "T8171" &&
+      !NO_SPOTLIGHT_MODELS.has(record.model ?? "") &&
       [1400, 1401, 1403, 6080, 6082, 1413].some((param) => Object.hasOwn(record.params ?? {}, param)),
   },
   /**

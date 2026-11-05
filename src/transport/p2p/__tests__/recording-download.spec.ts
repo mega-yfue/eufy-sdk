@@ -23,8 +23,9 @@ describe("recording download", () => {
     vi.useRealTimers();
   });
 
-  it("builds the HomeBase 2 path from the channel and the pushed recording name", () => {
+  it("builds the HomeBase 2 path from the channel and a recording name", () => {
     expect(homeBase2RecordingPath(2, "20260101120000")).toBe("/media/mmcblk0p1/Camera02/20260101120000.dat");
+    expect(homeBase2RecordingPath(0, "h265_20260101120000")).toBe("/media/mmcblk0p1/Camera00/h265_20260101120000.dat");
     expect(homeBase2RecordingPath(0, "../../etc/passwd")).toBeUndefined();
     expect(homeBase2RecordingPath(0, "2026010112000")).toBeUndefined();
     expect(homeBase2RecordingPath(100, "20260101120000")).toBeUndefined();

@@ -20,7 +20,14 @@ export const LIVE_TRACE_MESSAGE = "[live] start trace";
 /** One bounded startup observation. */
 export type LiveTrace =
   /** A media start or keepalive was sent, with the topology and encryption level it was sent under. */
-  | { phase: "media-command"; topology: "attached" | "own"; action: "start" | "keepalive"; level2: boolean }
+  | {
+      phase: "media-command";
+      topology: "attached" | "own";
+      action: "start" | "keepalive";
+      level2: boolean;
+      /** The media-key type an attached start offered. */
+      key?: "ecc" | "rsa";
+    }
   /** The device acknowledged a retained start, or that start was repeated / abandoned unacknowledged. */
   | { phase: "media-command-ack" | "media-command-retry" | "media-command-unacknowledged"; action: "start" }
   /** The first inbound video command, and whether this stream's channel filter accepted it. */
@@ -87,10 +94,10 @@ export type LiveTrace =
    *
    * Every ending of a level-2 wait carries one of these reasons, so a start refused for want of a key is
    * accounted for however it ended. `grace-elapsed` is a wait that ran out and states how long was waited;
-   * the rest are answered without waiting, because the negotiation is one-shot per connection and a
-   * concluded one is final. `no-cipher-key` and `derivation-failed` are about this account's cipher
-   * material, `not-negotiating` and `session-closed` about the station or its connection — and only a
-   * reason reached under a negotiation has a cipher to name.
+   * the rest are answered without waiting, because a concluded negotiation stays concluded until a
+   * re-prompt for `CMD_GATEWAYINFO` re-opens it. `no-cipher-key` and `derivation-failed` are about this
+   * account's cipher material, `not-negotiating` and `session-closed` about the station or its connection —
+   * and only a reason reached under a negotiation has a cipher to name.
    *
    * A `grace-elapsed` start proceeds at level 1 where it has such a form, and not at all where it does not.
    */

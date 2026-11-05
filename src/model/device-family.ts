@@ -94,6 +94,7 @@ export const FLOODLIGHT_TYPES: ReadonlySet<number> = new Set<number>([
 export const WALL_LIGHT_TYPES: ReadonlySet<number> = new Set<number>([
   DeviceType.WALL_LIGHT_CAM,
   DeviceType.WALL_LIGHT_CAM_81A0,
+  DeviceType.WALL_LIGHT_CAM_T86C1,
 ]);
 
 /**
@@ -133,8 +134,11 @@ export const isStation9000 = (ctx: FamilyContext): boolean => ctx.deviceType ===
 /** T8N00 NVR, identified by its reported model. */
 export const isNvrT8N00 = (ctx: FamilyContext): boolean => ctx.model === "T8N00";
 
-/** PoE cameras whose media is served by their NVR's portal call. */
-export const isNvrMediaCamera = (ctx: FamilyContext): boolean => ctx.model === "T8E00" || ctx.model === "T8P00";
+/** Camera models whose media a T8N00 serves over its call. */
+const NVR_MEDIA_CAMERA_MODELS: ReadonlySet<string> = new Set(["T8E00", "T8P00", "T8P10", "T8162", "T8410", "T8214"]);
+/** A camera attached to a T8N00 whose media the NVR's call serves. */
+export const isNvrMediaCamera = (ctx: FamilyContext): boolean =>
+  ctx.model !== undefined && NVR_MEDIA_CAMERA_MODELS.has(ctx.model);
 /** PoE S4 camera with independently streamed fixed and movable optical views. */
 export const isNvrDualLensCamera = (ctx: FamilyContext): boolean => ctx.model === "T8E00";
 /** Video Doorbell C31 (T8223) or C30 (T8224), streamed by the app over the portal `call` route. */
