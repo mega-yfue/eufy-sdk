@@ -154,8 +154,9 @@ const STANDALONE_ACTION_MODELS: ReadonlySet<string> = new Set(["T8170", "T8171"]
  * (`mode_type` 1) and Away (`mode_type` 0) were captured and decrypted 2026-10-17, and where the camera
  * answers the `1350` form with result -103 at both level 1 and level 2. Away (0), Home (1) and Disarmed
  * (63) were each also sent as this frame live on 2026-10-17: the camera answered each on outer 1224 with
- * result 0 and param 1224 reported the requested mode within the readback window. The frame carries the same
- * `mode_type` integers as the envelope, so every mode in {@link ARMING_MODE_WIRE} is written.
+ * result 0 and param 1224 reported the requested mode within the readback window. Schedule (2), custom1 (3),
+ * custom2 (4), custom3 (5), off (6) and geo (47) were each sent as this frame live on a T8410C by
+ * 2026-11-05 and confirmed applied, so all nine modes in {@link ARMING_MODE_WIRE} are written.
  */
 const DIRECT_ARMING_MODELS: ReadonlySet<string> = new Set(["T8410C"]);
 
@@ -166,8 +167,9 @@ const DIRECT_ARMING_MODELS: ReadonlySet<string> = new Set(["T8410C"]);
  * envelope unapplied: the write is sent, and param 1224 keeps the old mode through the 20 s readback.
  * Away (0), Home (1), Schedule (2), Geofencing (47) and Disarmed (63) were each sent as this frame live on
  * 2026-10-28, on a level-1 session, and each was confirmed applied; for Disarmed, param 1151 in the
- * camera's own 1103 report moved from 0 to 63 and the readback converged. The frame carries the same
- * `mode_type` integers as the envelope, so every mode in {@link ARMING_MODE_WIRE} is written.
+ * camera's own 1103 report moved from 0 to 63 and the readback converged. custom1 (3), custom2 (4), custom3 (5)
+ * and off (6) were each sent as this frame live on a T8410 by 2026-11-05 and confirmed applied, so all nine
+ * modes in {@link ARMING_MODE_WIRE} are written.
  */
 const BROADCAST_ARMING_MODELS: ReadonlySet<string> = new Set(["T8410"]);
 

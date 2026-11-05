@@ -175,7 +175,7 @@ describe("arming capability module", () => {
   /**
    * On a T8410C the guard mode is the direct frame the vendor app sends: outer cmd 1224 itself, `mode_type`
    * as the scalar, the same `mode_type` integers as the envelope for every mode. Home and Away were captured
-   * from the app on 2026-10-17; the fixture identity is synthetic.
+   * from the app on 2026-10-17, and all nine modes were confirmed live; the fixture identity is synthetic.
    */
   describe("setMode on a T8410C (direct 1224 frame)", () => {
     const t8410c: CommandContext = { ...ctx, model: "T8410C" };
@@ -208,8 +208,8 @@ describe("arming capability module", () => {
 
   /**
    * On a T8410 the guard mode is the same direct 1224 body on the station broadcast channel 255, sealed at
-   * the session's level, carrying the same `mode_type` integers as the envelope for every mode. The fixture
-   * identity is synthetic.
+   * the session's level, carrying the same `mode_type` integers as the envelope for every mode. All nine
+   * modes were confirmed live; the fixture identity is synthetic.
    */
   describe("setMode on a T8410 (direct 1224 frame, channel 255)", () => {
     const t8410: CommandContext = { ...ctx, model: "T8410" };
