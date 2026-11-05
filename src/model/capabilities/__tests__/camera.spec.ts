@@ -793,7 +793,7 @@ describe("camera capability module", () => {
       expect("downloadRecording" in camera(ctx(), media).acts).toBe(false);
     });
 
-    it("a lock-codec device carrying camera is offered live view and nothing else", () => {
+    it("a lock-codec device other than the T8530 is offered live view alone; the T8530 adds openReadable", () => {
       const media: MediaProvider = {
         snapshotStored: async () => Buffer.alloc(0),
         snapshotLive: async () => ({ jpeg: Buffer.alloc(0), width: 1, height: 1 }),
@@ -812,6 +812,10 @@ describe("camera capability module", () => {
       const offered = Object.keys(lock).filter((k) => typeof lock[k] === "function");
       expect(offered).toEqual(["live"]);
       expect(camera(ctx(0, { codec: "camera", ...evidence }), media).acts.setWatermark).toBeTypeOf("function");
+      const videoLock = camera(ctx(0, { codec: "lock", deviceType: DeviceType.LOCK_8530, ...evidence }), media)
+        .acts as Record<string, unknown>;
+      const videoLockOffered = Object.keys(videoLock).filter((k) => typeof videoLock[k] === "function");
+      expect(videoLockOffered.sort()).toEqual(["live", "openReadable"]);
     });
 
     it("a stored-recording download passes the pushed recording name and cipher id through unchanged", async () => {
