@@ -917,7 +917,9 @@ export interface MediaProvider {
    * {@link ReceivedVideoFrame} envelopes whose original source-arrival time survives retained replay.
    * Raw mode ignores arrivalTime. Audio is available separately through {@link live} or muxed through
    * {@link recordFragments}; it is never interleaved into raw video. The caller owns the Readable's
-   * lifetime, and destroying it releases the shared pull.
+   * lifetime, and destroying it releases the shared pull. On a battery-budgeted source the Readable
+   * emits a `budget` event with a {@link StreamBudgetNotice}; unless `extend()` is called within its
+   * grace, the Readable ends.
    */
   openReadable?(
     opts?: { objectMode?: boolean; arrivalTime?: boolean } & SharedSourceHints & AbortableCall & MediaSourceSelection,

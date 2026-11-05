@@ -15,8 +15,10 @@
  *
  * The command data channel is the session: `close` fires once, when the channel closes, the peer fails,
  * the signalling socket drops or {@link RtcSession.close} is called, even while the peer connection is
- * nominally up. A peer that cannot be built when the hub grants the relay ends the session there: the
- * failure is emitted as `error` and `close` fires carrying it.
+ * nominally up. A dropped signalling socket closes the peer with it: a hub that still sees the peer
+ * answers every later `scall` with 486 until that peer's ICE gives up. A peer that cannot be built when
+ * the hub grants the relay ends the session there: the failure is emitted as `error` and `close` fires
+ * carrying it.
  *
  * A session whose peer is a {@link RtcPeerOptions.mediaTrack} peer has no command channel: `close` fires
  * when the peer fails or closes, and the video track's packets are emitted as `rtp`.
@@ -94,10 +96,7 @@ export class RtcSession extends EventEmitter<RtcSessionEvents> {
           this.emit("error", e instanceof Error ? e : new Error(String(e)));
         });
     });
-    this.signaling.on("close", () => {
-      this.connected = false;
-      this.announceClose();
-    });
+    this.signaling.on("close", () => this.shutdown());
     this.signaling.on("error", (e) => this.emit("error", e));
 
     this.peer.on("iceCandidate", (c) => this.trickle(toWireCandidate(c)));

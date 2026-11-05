@@ -140,6 +140,10 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
   <img src="/devices/security/security-T8N00.webp" alt="NVR S4 Max T8N00" loading="lazy" />
   <figcaption>NVR S4 Max <span class="model">T8N00</span></figcaption>
 </figure>
+<figure>
+  <img src="/devices/security/security-T9000.webp" alt="HomeBase S1 Pro T9000" loading="lazy" />
+  <figcaption>HomeBase S1 Pro <span class="model">T9000</span></figcaption>
+</figure>
 
 </div>
 
@@ -156,6 +160,7 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
   <figcaption>Wired Doorbell <span class="model">T8201</span></figcaption>
 </figure>
 <figure>
+  <img src="/devices/security/security-T8202.webp" alt="Wired Doorbell 2K Pro T8202" loading="lazy" />
   <figcaption>Wired Doorbell 2K Pro <span class="model">T8202</span></figcaption>
 </figure>
 <figure>
@@ -163,8 +168,8 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
   <figcaption>Wired Doorbell Dual <span class="model">T8203</span></figcaption>
 </figure>
 <figure>
-  <img src="/devices/security/security-T8210.webp" alt="Battery Doorbell 2K T8210" loading="lazy" />
-  <figcaption>Battery Doorbell 2K <span class="model">T8210</span></figcaption>
+  <img src="/devices/security/security-T8210.webp" alt="Battery Doorbell 2K T8210 · T8212" loading="lazy" />
+  <figcaption>Battery Doorbell 2K <span class="model">T8210 · T8212</span></figcaption>
 </figure>
 <figure>
   <img src="/devices/security/security-T8213.webp" alt="Battery Doorbell 2K Dual T8213" loading="lazy" />
@@ -175,9 +180,15 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
   <figcaption>Battery Doorbell E340 <span class="model">T8214</span></figcaption>
 </figure>
 <figure>
+  <img src="/devices/security/security-T8215.webp" alt="Video Doorbell S4 T8215" loading="lazy" />
+  <figcaption>Video Doorbell S4 <span class="model">T8215</span></figcaption>
+</figure>
+<figure>
+  <img src="/devices/security/security-T8220.webp" alt="Battery Doorbell Slim T8220" loading="lazy" />
   <figcaption>Battery Doorbell Slim <span class="model">T8220</span></figcaption>
 </figure>
 <figure>
+  <img src="/devices/security/security-T8221.webp" alt="Battery Doorbell 2E T8221" loading="lazy" />
   <figcaption>Battery Doorbell 2E <span class="model">T8221</span></figcaption>
 </figure>
 <figure>
@@ -185,9 +196,11 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
   <figcaption>Battery Doorbell <span class="model">T8222</span></figcaption>
 </figure>
 <figure>
+  <img src="/devices/security/security-T8223.webp" alt="Doorbell C31 T8223" loading="lazy" />
   <figcaption>Doorbell C31 <span class="model">T8223</span></figcaption>
 </figure>
 <figure>
+  <img src="/devices/security/security-T8224.webp" alt="Battery Doorbell C30 T8224" loading="lazy" />
   <figcaption>Battery Doorbell C30 <span class="model">T8224</span></figcaption>
 </figure>
 
@@ -214,6 +227,7 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
   <figcaption>Floodlight Cam E340 <span class="model">T8425</span></figcaption>
 </figure>
 <figure>
+  <img src="/devices/security/security-T8426.webp" alt="Floodlight Cam E30 T8426" loading="lazy" />
   <figcaption>Floodlight Cam E30 <span class="model">T8426</span></figcaption>
 </figure>
 
@@ -268,6 +282,7 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
   <figcaption>eufyCam 2C Pro <span class="model">T8141 · T8142 · T8142-Z</span></figcaption>
 </figure>
 <figure>
+  <img src="/devices/security/security-T8144.webp" alt="eufyCam E40 T8144" loading="lazy" />
   <figcaption>eufyCam E40 <span class="model">T8144</span></figcaption>
 </figure>
 <figure>
@@ -339,6 +354,7 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
   <figcaption>Wall Light Cam S120 <span class="model">T84A0</span></figcaption>
 </figure>
 <figure>
+  <img src="/devices/security/security-T81A0.webp" alt="Solar Wall Light Cam S120 T81A0" loading="lazy" />
   <figcaption>Solar Wall Light Cam S120 <span class="model">T81A0</span></figcaption>
 </figure>
 <figure>
@@ -360,6 +376,10 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
 <figure>
   <img src="/devices/security/security-T8E00.webp" alt="PoE Bullet PTZ Cam S4 T8E00" loading="lazy" />
   <figcaption>PoE Bullet PTZ Cam S4 <span class="model">T8E00</span></figcaption>
+</figure>
+<figure>
+  <img src="/devices/security/security-T8P00.webp" alt="PoE Cam E40 T8P00" loading="lazy" />
+  <figcaption>PoE Cam E40 <span class="model">T8P00</span></figcaption>
 </figure>
 <figure>
   <img src="/devices/security/security-T8W11C.webp" alt="Indoor Cam C220 T8W11 · T8W11C · T8419N" loading="lazy" />
@@ -496,6 +516,10 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
 <figure>
   <img src="/devices/security/security-T8920.webp" alt="water freeze sensor t8920 T8920" loading="lazy" />
   <figcaption>water freeze sensor t8920 <span class="model">T8920</span></figcaption>
+</figure>
+<figure>
+  <img src="/devices/security/security-T90E0.webp" alt="Entry Sensor E20 T90E0" loading="lazy" />
+  <figcaption>Entry Sensor E20 <span class="model">T90E0</span></figcaption>
 </figure>
 <figure>
   <img src="/devices/security/security-T90F0.webp" alt="flood freeze sensor e20 t90F0 T90F0" loading="lazy" />
@@ -742,6 +766,19 @@ The eufy **Clean** line — robot **vacuums** (the classic **RoboVac** and newer
 <figure>
   <img src="/devices/mower/mower-T2880.webp" alt="Mower E15 T2880" loading="lazy" />
   <figcaption>Mower E15 <span class="model">T2880</span></figcaption>
+</figure>
+
+</div>
+
+## 👶 Baby
+
+### 👶 Baby monitors
+
+<div class="device-gallery">
+
+<figure>
+  <img src="/devices/security/security-T8354.webp" alt="Baby Monitor E21 T8354" loading="lazy" />
+  <figcaption>Baby Monitor E21 <span class="model">T8354</span></figcaption>
 </figure>
 
 </div>

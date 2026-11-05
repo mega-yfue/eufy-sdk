@@ -20,6 +20,7 @@ import { isIP } from "node:net";
 import {
   constants,
   createCipheriv,
+  createECDH,
   createDecipheriv,
   generateKeyPairSync,
   privateDecrypt,
@@ -68,6 +69,10 @@ import {
 import { commandName, CommandType } from "./commands.js";
 import { traceLiveStart, type LiveTrace } from "./live-trace.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
+import { abortable } from "../abortable.js";
+import { LEVEL2_SETTLE_MS } from "./level2-settle.js";
+import { CMD_DATABASE, CMD_DATABASE_IMAGE, DB_QUERY, DB_TABLE_TIMEOUT_MS, fullTableQuery } from "./database-wire.js";
+import { StationUnreachableError } from "../../core/contracts.js";
 
 const LOCAL_LOOKUP_PORT = 32108;
 const HEARTBEAT_MS = 5_000;
@@ -296,16 +301,12 @@ const CMD_NOTIFY_PAYLOAD = 1351;
  * a sign-code-0 body is plaintext as sent, never ciphertext the decrypt could not open.
  */
 const PADDED_RESULT_BYTES = 132;
-/** CMD_CAMERA_INFO — a camera reporting its OWN params, as a root-level array. */
-const CMD_CAMERA_INFO = 1103;
-const CMD_DATABASE_IMAGE = 1308;
-/** CMD_DATABASE (1306) — P2P SQLite-ish query; reply carries `{cmd:10000,count,data:[…]}`. */
-const CMD_DATABASE = 1306;
 /**
- * Inner query cmds carried in a {@link CMD_DATABASE} payload. `FULL_TABLE` reads one table whole;
- * `COMBINATION_WITH_AI` is the AI event-history read that bundles the face roster.
+ * CMD_CAMERA_INFO — params as a root-level array. On a camera's channel it is that camera's OWN report; on
+ * {@link STATION_CHANNEL} a HomeBase answers with its whole table, every entry's `dev_type` naming the
+ * channel it belongs to.
  */
-const DB_QUERY = { FULL_TABLE: 10000, COMBINATION_WITH_AI: 10011, QUERY_LOCAL: 10017 } as const;
+const CMD_CAMERA_INFO = 1103;
 /** AAD for the level-2 (gateway/"signCode 8") AES-256-GCM frames — fixed across all eufy P2P. */
 const GCM_AAD = Buffer.from("eufy security");
 
@@ -353,7 +354,8 @@ export interface P2PSessionConfig {
  * params — which widens the evidence its typed reads are gated on, so a reply that merely happens to carry an
  * array must not be mistaken for a device reporting its own state. A station's notify nests an attached
  * device's array under `payload`; a camera's own `CMD_CAMERA_INFO` puts it at the root. Reading each only in
- * its measured shape is what keeps the distinction.
+ * its measured shape is what keeps the distinction. A `CMD_CAMERA_INFO` answered on {@link STATION_CHANNEL}
+ * is the station's per-channel table and is read by {@link channelReport} instead.
  */
 function paramReport(payload: unknown): Record<number, string> | undefined {
   const list = (payload as { params?: unknown } | undefined)?.params;
@@ -363,6 +365,26 @@ function paramReport(payload: unknown): Record<number, string> | undefined {
     const p = entry as { param_type?: unknown; param_value?: unknown };
     if (typeof p?.param_type !== "number" || p.param_value == null) continue;
     out[p.param_type] = String(p.param_value);
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/**
+ * Split a station's `CMD_CAMERA_INFO` table into one `param_type → param_value` map per channel, or
+ * `undefined` when the payload carries no entry naming one.
+ *
+ * A HomeBase answers on {@link STATION_CHANNEL} with every attached camera's params in one root array, each
+ * entry's `dev_type` naming the channel it belongs to and 255 naming the station. Flattened, each id keeps
+ * whichever channel came last, so no camera reads its own state from it.
+ */
+function channelReport(payload: unknown): Record<number, Record<number, string>> | undefined {
+  const list = (payload as { params?: unknown } | undefined)?.params;
+  if (!Array.isArray(list)) return undefined;
+  const out: Record<number, Record<number, string>> = {};
+  for (const entry of list) {
+    const p = entry as { dev_type?: unknown; param_type?: unknown; param_value?: unknown };
+    if (typeof p?.dev_type !== "number" || typeof p.param_type !== "number" || p.param_value == null) continue;
+    (out[p.dev_type] ??= {})[p.param_type] = String(p.param_value);
   }
   return Object.keys(out).length ? out : undefined;
 }
@@ -393,13 +415,16 @@ export interface P2PFrame extends P2PDataFrameHeader {
    * the values as device state without any per-capability decoder.
    */
   params?: Record<number, string>;
+  /**
+   * A station's camera-info table, one `param_type → param_value` map per channel it names (255 is the
+   * station). Set instead of {@link params} when the station answered on {@link STATION_CHANNEL}, so each
+   * channel's state can land on the device attached there.
+   */
+  channelParams?: Record<number, Record<number, string>>;
 }
 
 /** Per-process counter behind {@link P2PSession.traceId} — see it for why this is not a serial. */
 let traceSequence = 0;
-
-/** How long a station's database reply has to arrive whole, when the caller states no bound. */
-const DB_TABLE_TIMEOUT_MS = 15_000;
 
 /**
  * The rows or refusal code of the first complete table document in an accumulated `CMD_DATABASE` reply.
@@ -492,7 +517,12 @@ export class P2PSession extends EventEmitter {
   private audioStalled = false;
   private audioRetransmitTimer?: ReturnType<typeof setInterval>;
   private lastPongData?: Buffer;
-  /** When the selected peer last answered outbound P2P traffic on this connection. */
+  /**
+   * When the selected peer last answered outbound P2P traffic on this connection.
+   *
+   * Each answer also emits `peerAnswer` with this time: a PONG or an ACK from the connected address is the
+   * station replying on this connection now, which a heartbeat draws every {@link HEARTBEAT_MS}.
+   */
   private lastPeerAt?: number;
   /** Whether the silence has already been stated, so it is traced once per connection rather than per read. */
   private pathStaleTraced = false;
@@ -544,11 +574,21 @@ export class P2PSession extends EventEmitter {
   private level2Seq = 0;
   private rsaPrivateKey?: KeyObject;
   private rsaModulusHex?: string;
-  /** Guards the one-shot level-2 key negotiation kicked off by the GATEWAYINFO reply. */
+  /** The P-256 pair an attached camera's media start offers; see {@link mediaEccPrivateKey}. */
+  private mediaEcc?: { privateKey: Buffer; point: string };
+  /**
+   * Per attached channel, the media-key type its latest start offered on this connection, or that last answered,
+   * and whether a keyframe has answered it. See {@link attachedStartKey} and {@link settleAttachedKey}.
+   */
+  private readonly attachedStartKeys = new Map<number, { kind: "ecc" | "rsa"; answered: boolean }>();
+  /**
+   * Whether a level-2 key negotiation kicked off by a GATEWAYINFO reply is in flight. Cleared when it
+   * settles, so a later reply — the answer to {@link repromptLevel2Key} — negotiates again.
+   */
   private level2Negotiating = false;
   /**
    * Whether waiting for a level-2 key can still change the answer: `false` once one has been negotiated,
-   * once the one-shot negotiation concluded without one, and from the start when nothing can negotiate one.
+   * once a negotiation concluded without one, and from the start when nothing can negotiate one.
    */
   private level2Pending: boolean;
   /** Waiters parked in {@link awaitLevel2Key}, woken the moment the negotiation settles either way. */
@@ -660,7 +700,8 @@ export class P2PSession extends EventEmitter {
    * The session grace runs from connect, when the station is prompted for `CMD_GATEWAYINFO`. A negotiation
    * beginning later does not restart it: best-effort media can proceed without the key, and restarting
    * would charge another grace to a source that may already be streaming. A session whose negotiation has
-   * settled answers without waiting at all, since being one-shot is what makes that answer final.
+   * settled answers without waiting at all: the answer stands until {@link repromptLevel2Key} re-opens the
+   * wait, since the station is prompted for `CMD_GATEWAYINFO` only on connect and on that re-prompt.
    *
    * An own-session camera whose grace expires here is NOT thereby a camera that will fail to stream. Measured
    * on one account: own-session cameras of two device types negotiated a key, three others never did, and
@@ -728,12 +769,13 @@ export class P2PSession extends EventEmitter {
   /**
    * Ask the station for its gateway info a second time, re-opening a negotiation that concluded without a key.
    *
-   * The negotiation is one-shot per connection: the station is prompted once on connect, and a reply that
-   * never lands settles the wait so {@link awaitLevel2Key} answers `false` at once forever after. That is the
+   * Without this the station is prompted once on connect, and a negotiation that settles without a key
+   * leaves {@link awaitLevel2Key} answering `false` at once for the rest of that connection. That is the
    * right answer for best-effort media, which proceeds at level-1 — but an operation whose ONLY wire is
    * level-2 is then refused for the whole life of that connection, while a fresh session over the same
    * device negotiates a key normally. Measured: a session that had settled refused every such operation
-   * until it was rebuilt, at which point the station answered with a cipher id straight away.
+   * until it was rebuilt, at which point the station answered with a cipher id straight away. The reply to
+   * this ask runs the negotiation again and settles the re-opened wait either way.
    *
    * Bounded to one extra ask per connection, so a burst of such operations cannot turn a silent station into a
    * flood, and answers whether it asked — `false` when a key is already held, when nothing can negotiate one,
@@ -753,6 +795,7 @@ export class P2PSession extends EventEmitter {
   /** Record that the level-2 negotiation has finished, with or without a key, and wake every waiter. */
   private settleLevel2(reason: "terminal" | "closed" = "terminal"): void {
     this.level2Pending = false;
+    this.level2Negotiating = false;
     const outcome = this.level2Key ? "key" : reason;
     for (const wake of this.level2Waiters.splice(0)) wake(outcome);
   }
@@ -762,13 +805,14 @@ export class P2PSession extends EventEmitter {
    * `cipher_id`, resolve that cipher's private keys once (cloud `get_ciphers`, via the configured
    * `resolveCipherKey`), run the ECIES unwrap with the ECC key, and `setLevel2Key()`. A cipher with no
    * ECC key uses its RSA key instead and holds the RSA-decrypted 16-byte key as the AES-128-ECB level-2
-   * key. One-shot; emits `level2Ready` only when the AES-256-GCM key is negotiated, traces
+   * key. Emits `level2Ready` only when the AES-256-GCM key is negotiated, traces
    * `level2-set-payload-only` instead for the AES-128-ECB key, and emits `error` when the ECC unwrap
    * fails; an RSA unwrap failure is only traced (non-fatal either way — level-1 traffic keeps working).
    *
-   * Every outcome settles the wait in {@link awaitLevel2Key}, because being one-shot is what makes a
-   * failure final for this connection generation: nothing will retry it there, so a later command must be
-   * told at once rather than left to time out against a key that is not coming.
+   * Every outcome settles the wait in {@link awaitLevel2Key}, so a later command is told at once rather than
+   * left to time out against a key that is not coming. Settling also re-opens the negotiation, so a later
+   * GATEWAYINFO reply in the same connection generation runs it again; a lookup that completes after its
+   * generation ended settles nothing.
    */
   private negotiateLevel2Key(gwPayload: Buffer): void {
     this.level2Negotiating = true;
@@ -878,13 +922,22 @@ export class P2PSession extends EventEmitter {
     );
   }
 
-  /** Open the socket and start the lookup → hole-punch handshake. */
+  /**
+   * Open the socket and start the lookup → hole-punch handshake.
+   *
+   * A socket closed or failing while binding never invokes its bind callback, so the bind wait also
+   * settles on the socket's `close` and `error`. On `close`, a connect whose session was closed meanwhile
+   * returns without starting the handshake, so it never sends a lookup or arms a timer on a closed
+   * session. On `error`, connect closes the session and rejects with {@link StationUnreachableError}
+   * carrying the bind error as its `cause`.
+   */
   async connect(): Promise<void> {
     if (this.connecting || this.connected) return;
     this.connecting = true;
     this.closed = false;
     this.connectionGeneration += 1;
     this.ackedRounds = undefined;
+    this.attachedStartKeys.clear();
     this.resetInboundSequencing();
     if (!this.level2KeyServes("set-payload")) {
       this.level2Pending = this.cfg.resolveCipherKey !== undefined;
@@ -899,8 +952,12 @@ export class P2PSession extends EventEmitter {
     socket.on("message", (msg, rinfo) => this.onMessage(msg, rinfo, socket));
     socket.on("error", (e) => this.emit("error", e));
 
-    await new Promise<void>((resolve) => {
+    const generation = this.connectionGeneration;
+    await new Promise<void>((resolve, reject) => {
+      socket.once("close", resolve);
+      socket.once("error", reject);
       socket.bind(() => {
+        socket.off("error", reject);
         try {
           socket.setBroadcast(true);
         } catch {
@@ -909,7 +966,11 @@ export class P2PSession extends EventEmitter {
         this.requestReceiveBuffer(socket);
         resolve();
       });
+    }).catch(async (error: unknown) => {
+      await this.close();
+      throw new StationUnreachableError(this.cfg.stationSn, 0, { cause: error });
     });
+    if (generation !== this.connectionGeneration) return;
 
     void P2PSession.detectLocalIp().then((host) => {
       if (host && !this.closed) this.selfHost = host;
@@ -918,7 +979,6 @@ export class P2PSession extends EventEmitter {
     const { dskKey, cloudAddresses } = this.cfg;
     this.cloudLookup = dskKey && cloudAddresses?.length ? { key: dskKey, addresses: cloudAddresses } : undefined;
     if (this.cloudLookup && cloudAddresses) {
-      const generation = this.connectionGeneration;
       void resolveLookupServers(cloudAddresses).then((addresses) => {
         if (this.cloudLookup && !this.closed && generation === this.connectionGeneration)
           this.cloudLookup.addresses = addresses;
@@ -1132,6 +1192,7 @@ export class P2PSession extends EventEmitter {
     if (fromConnectedPeer && (hasHeader(msg, ResponseMessageType.PONG) || hasHeader(msg, ResponseMessageType.ACK))) {
       this.lastPeerAt = Date.now();
       this.pathStaleTraced = false;
+      this.emit("peerAnswer", this.lastPeerAt);
     }
     if (!hasHeader(msg, ResponseMessageType.DATA)) {
       this.logger.debug(
@@ -1145,8 +1206,10 @@ export class P2PSession extends EventEmitter {
     } else if (hasHeader(msg, ResponseMessageType.LOOKUP_ADDR)) {
       if (!this.connected) {
         const addr = parseLookupAddr(msg);
-        this.logger.debug(`[p2p] ${this.cfg.stationSn} LOOKUP_ADDR -> ${addr.host}:${addr.port}`);
-        if (addr.host !== "0.0.0.0") this.beginCheckCam(addr, socket);
+        if (addr) {
+          this.logger.debug(`[p2p] ${this.cfg.stationSn} LOOKUP_ADDR -> ${addr.host}:${addr.port}`);
+          if (addr.host !== "0.0.0.0") this.beginCheckCam(addr, socket);
+        }
       }
     } else if (hasHeader(msg, ResponseMessageType.RLY_TO)) {
       const to = parseRelayTo(msg);
@@ -1302,13 +1365,15 @@ export class P2PSession extends EventEmitter {
   ): void {
     if (homeBaseAttached) {
       this.tracedDatagramGaps = 0;
+      const key = this.connectAddress && this.level2Key ? this.attachedStartKey(channel) : undefined;
       this.trace({
         phase: "media-command",
         topology: "attached",
         action: "start",
         level2: !!this.level2Key,
+        key,
       });
-      this.sendMediaPayloadLevel2(CMD_START_REALTIME_MEDIA, channel, accountId, {});
+      this.sendMediaPayloadLevel2(CMD_START_REALTIME_MEDIA, channel, accountId, {}, key);
       return;
     }
     const want = this.level2Key ? "l2" : this.sendsInTheClear() ? "clear" : "l1";
@@ -1835,12 +1900,17 @@ export class P2PSession extends EventEmitter {
    * Send a CMD_SET_PAYLOAD(1350) wrapping `{account_id, cmd:<subCmd>, mChannel, mValue3:<subCmd>,
    * payload}`, encrypted level-2 (AES-256-GCM, signCode 8) — the app's media-control path. The
    * camera is selected by `mChannel` (= the device's `device_channel`) AND the frame-header channel.
+   * A start (HomeBase-controlled camera path, the V6 app's media-start envelope) also carries an
+   * `accountId` inside its payload and the media key `key` offers (see {@link attachedStartKey}). A start
+   * offering the P-256 point labels itself `ClientOS: "IOS"`, as every simple attached start in the app
+   * captures that carry that key form does; the RSA start keeps `"Android"`.
    */
   private sendMediaPayloadLevel2(
     subCmd: number,
     channel: number,
     accountId: string,
     payload: Record<string, unknown>,
+    key?: "ecc" | "rsa",
   ): void {
     if (!this.connectAddress || !this.level2Key) {
       this.trace({
@@ -1850,16 +1920,13 @@ export class P2PSession extends EventEmitter {
       return;
     }
     const isStart = subCmd === CMD_START_REALTIME_MEDIA;
-    // HomeBase-controlled camera path (the V6 app's media-start envelope): mChannel = device_channel,
-    // an extra accountId inside payload, an RSA public modulus for the media-key handshake, and the
-    // camera is ALSO selected by the FRAME-HEADER channel below.
     const innerPayload = isStart
       ? {
-          ClientOS: "Android",
+          ClientOS: key === "ecc" ? "IOS" : "Android",
           accountId,
           camera_type: 0,
           entrytype: 0,
-          key: this.rsaModulus(),
+          key: key === "ecc" ? this.mediaEccPair().point : this.rsaModulus(),
           streamtype: 2,
           ...payload,
         }
@@ -1936,6 +2003,70 @@ export class P2PSession extends EventEmitter {
   }
 
   /**
+   * The media-key type the next attached start sent on `channel` offers, recorded as offered: ECC, the current
+   * app's form, for the first start this connection sends there; RSA for every start after one that no keyframe
+   * answered before it was re-issued; and, once a keyframe has answered, the type that opened it, until
+   * {@link settleAttachedKey} records another. Only an opened keyframe answers: frames no key opens, and deltas,
+   * do not. A re-issue is a full restart on an attached camera, so a camera that cannot read the point is asked
+   * with RSA, the start every station answers, and is not asked with the point again while that goes unanswered.
+   * A stream decoding with the session's pair reads either answer. A station without {@link mediaEccPrivateKey}
+   * is offered RSA only. A start that cannot be sent offers nothing and records nothing.
+   */
+  private attachedStartKey(channel: number): "ecc" | "rsa" {
+    if (!this.mediaEccPrivateKey) return "rsa";
+    const last = this.attachedStartKeys.get(channel);
+    if (last?.answered) return last.kind;
+    const kind = last ? "rsa" : "ecc";
+    this.attachedStartKeys.set(channel, { kind, answered: false });
+    return kind;
+  }
+
+  /**
+   * Record how a keyframe of `channel` was opened, which answers the starts there. A keyframe opened under a
+   * key type is an answer of that type, whichever type the latest start offered: a station can serve the
+   * P-256 start after the RSA re-issue went out. A plaintext keyframe
+   * answering an unanswered P-256 offer is a camera that did not use the point, and the next start there offers
+   * RSA; once a P-256 answer has been opened it changes nothing, and answering RSA, it settles RSA. Answers
+   * whether a new start is needed. A channel no attached start has offered a key on is left as it is.
+   */
+  settleAttachedKey(channel: number, opened: "ecc" | "rsa" | "plain"): boolean {
+    const last = this.attachedStartKeys.get(channel);
+    if (!last) return false;
+    if (opened === "plain" && last.kind === "ecc") return !last.answered;
+    this.attachedStartKeys.set(channel, { kind: opened === "ecc" ? "ecc" : "rsa", answered: true });
+    return false;
+  }
+
+  /**
+   * The 32-byte P-256 private scalar paired with the point an attached camera's media start offers as `key`.
+   * A camera answering that start wraps each keyframe's AES-256-GCM media key in an ECIES envelope for this
+   * key ({@link VideoFrameDecoder}). Generated once per session, like the RSA pair.
+   *
+   * `undefined` unless the station is a HomeBase 3 (`T8030`): the app's P-256 start and the device runs
+   * that answered it were both observed on that station only.
+   */
+  get mediaEccPrivateKey(): Buffer | undefined {
+    return this.cfg.stationSn.startsWith("T8030") ? this.mediaEccPair().privateKey : undefined;
+  }
+
+  /**
+   * The session's P-256 pair: the private scalar as 32 bytes, and the public point as 128 hex characters,
+   * `x ‖ y` without the uncompressed-point prefix, the form the current app's attached-camera start carries in
+   * `key`. `ECDH.getPrivateKey()` drops a scalar's leading zero bytes, so the scalar is padded back to 32.
+   */
+  private mediaEccPair(): { privateKey: Buffer; point: string } {
+    if (!this.mediaEcc) {
+      const ecdh = createECDH("prime256v1");
+      ecdh.generateKeys();
+      this.mediaEcc = {
+        privateKey: Buffer.from(ecdh.getPrivateKey("hex").padStart(64, "0"), "hex"),
+        point: ecdh.getPublicKey().subarray(1).toString("hex"),
+      };
+    }
+    return this.mediaEcc;
+  }
+
+  /**
    * The RSA-1024 public-key modulus (128-byte hex) the station uses to wrap the per-stream media
    * key. Lazily generates a keypair; `rsaPrivateKey` decrypts the media key the station returns.
    */
@@ -1995,7 +2126,7 @@ export class P2PSession extends EventEmitter {
     });
     const body = Buffer.concat([
       buildCommandHeader(this.seqNumber, CMD_SET_PAYLOAD),
-      buildStringCommandPayload(value, channel, this.level1Key, 1),
+      this.databasePayload(value, channel),
     ]);
     this.seqNumber = (this.seqNumber + 1) & 0xffff;
     this.logger.debug(`[p2p] ${this.cfg.stationSn} requestImage ${filePath}`);
@@ -2038,7 +2169,7 @@ export class P2PSession extends EventEmitter {
     });
     const body = Buffer.concat([
       buildCommandHeader(this.seqNumber, CMD_SET_PAYLOAD),
-      buildStringCommandPayload(value, channel, this.level1Key, 1),
+      this.databasePayload(value, channel),
     ]);
     this.seqNumber = (this.seqNumber + 1) & 0xffff;
     this.logger.debug(`[p2p] ${this.cfg.stationSn} queryDatabase ${table} ch=${channel}`);
@@ -2046,23 +2177,14 @@ export class P2PSession extends EventEmitter {
   }
 
   /**
-   * Standard "give me the whole table" query params the eufy app uses for a direct
-   * `CMD_DATABASE` read (inner `cmd 10000`). `count` bounds the row count.
+   * The `CMD_SET_PAYLOAD` payload of a database read or stored-image request: the JSON level-1 encrypted, or
+   * in the clear with header bytes from {@link nextClearCommandBytes} on a session that {@link sendsInTheClear}
+   * and holds no level-2 key.
    */
-  private fullTableQuery(count = 2000): Record<string, unknown> {
-    return {
-      count,
-      start_date: "",
-      end_date: "",
-      start_id: 0,
-      end_id: 1,
-      flag: 0,
-      need_ai: 1,
-      res_unzip: 1,
-      update_time: "0",
-      start_time: "0",
-      alarm_id: "",
-    };
+  private databasePayload(value: string, channel: number): Buffer {
+    return !this.level2Key && this.sendsInTheClear()
+      ? buildRawCommandPayload(Buffer.from(value, "utf-8"), channel, 0, this.nextClearCommandBytes(), 0)
+      : buildStringCommandPayload(value, channel, this.level1Key, 1);
   }
 
   /**
@@ -2081,7 +2203,7 @@ export class P2PSession extends EventEmitter {
       accountId: opts.accountId,
       channel: opts.channel,
       innerCmd: DB_QUERY.FULL_TABLE,
-      query: this.fullTableQuery(),
+      query: fullTableQuery(),
     });
   }
 
@@ -2126,6 +2248,9 @@ export class P2PSession extends EventEmitter {
    *
    * One read at a time per session: while one is accumulating, every {@link queryDatabase} on the
    * session throws, so a second reply cannot land in this buffer.
+   *
+   * The query's framing follows the cipher the gateway-info reply names, so on a session still negotiating
+   * its level-2 key the query waits for that to settle, up to {@link LEVEL2_SETTLE_MS} from connect.
    */
   async readDatabase(
     table: string,
@@ -2138,10 +2263,11 @@ export class P2PSession extends EventEmitter {
     } = {},
   ): Promise<unknown[]> {
     if (opts.signal?.aborted) throw new Error("readDatabase: aborted");
+    if (this.level2Pending) await abortable(this.awaitLevel2Key(LEVEL2_SETTLE_MS, "session"), opts.signal);
     this.queryDatabase(table, {
       accountId: opts.accountId,
       innerCmd: opts.innerCmd,
-      query: opts.query ?? this.fullTableQuery(),
+      query: opts.query ?? fullTableQuery(),
     });
     this.dbReadInFlight = true;
     try {
@@ -2188,7 +2314,7 @@ export class P2PSession extends EventEmitter {
       accountId: opts.accountId,
       channel: opts.channel,
       innerCmd: DB_QUERY.FULL_TABLE,
-      query: this.fullTableQuery(),
+      query: fullTableQuery(),
     });
   }
 
@@ -2268,8 +2394,11 @@ export class P2PSession extends EventEmitter {
    *
    * Only once the data type's reorder wait passes, or {@link REORDER_MAX_DATAGRAMS} pile up, is the datagram
    * treated as lost: a pending frame is discarded and delivery resumes from the earliest held datagram.
+   *
+   * A datagram shorter than the 8-byte DATA header carries no sequence number and is dropped unacknowledged.
    */
   private onData(msg: Buffer, addr: Address): void {
+    if (msg.length < 8) return;
     const dataTypeBuffer = msg.subarray(4, 6);
     const seqNo = msg.subarray(6, 8).readUInt16BE();
     const dataType = dataTypeBuffer[1]; // 0=DATA 1=VIDEO 2=CONTROL 3=BINARY
@@ -2448,6 +2577,13 @@ export class P2PSession extends EventEmitter {
     }
   }
 
+  /**
+   * Decrypt and dispatch one inbound data frame.
+   *
+   * A `CMD_GATEWAYINFO` (1100) reply carries the ECIES envelope for the level-2 session key. When a
+   * cipher-key resolver is configured, no key that seals a set-payload is held and no negotiation is in
+   * flight, the reply starts one (async, fire-and-forget); a reply landing while one is in flight is ignored.
+   */
   private handleFrame(header: P2PDataFrameHeader, payload: Buffer, dataType: number): void {
     let data = payload;
     // Media frames (video 1300 / audio 1301) are NOT level-1/2 control frames — their bodies use the
@@ -2471,8 +2607,6 @@ export class P2PSession extends EventEmitter {
         /* leave as-is; emit raw */
       }
     }
-    // The CMD_GATEWAYINFO (1100) reply carries the ECIES envelope for the level-2 session
-    // key. If a cipher-key resolver is configured, negotiate the key once (async, fire-and-forget).
     if (
       header.commandId === CMD_GATEWAYINFO &&
       header.signCode <= 1 &&
@@ -2495,6 +2629,8 @@ export class P2PSession extends EventEmitter {
           /* ignore */
         }
       }
+    } else if (header.commandId === CMD_DATABASE && this.sendsInTheClear()) {
+      this.emit("dbChunk", { stationSn: this.cfg.stationSn, text: payload.toString("latin1") });
     }
     const frame: P2PFrame = {
       ...header,
@@ -2512,12 +2648,15 @@ export class P2PSession extends EventEmitter {
       } catch {
         /* not JSON */
       }
+      const stationTable = header.commandId === CMD_CAMERA_INFO && header.channel === STATION_CHANNEL;
+      const byChannel = stationTable ? channelReport(frame.json) : undefined;
       const reported =
         header.commandId === CMD_NOTIFY_PAYLOAD
           ? paramReport(frame.json?.payload)
-          : header.commandId === CMD_CAMERA_INFO
+          : header.commandId === CMD_CAMERA_INFO && !stationTable
             ? paramReport(frame.json)
             : undefined;
+      if (byChannel) frame.channelParams = byChannel;
       if (reported) frame.params = reported;
     }
     // CMD_NAS_SWITCH (1145) is the RTSP publish switch, but the station also pushes it BACK as a data

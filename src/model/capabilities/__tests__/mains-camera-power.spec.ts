@@ -21,6 +21,7 @@ describe("PoE camera power tier behind T8N00 (#437)", () => {
   it.each([
     ["T8E00", "Synthetic PoE Bullet PTZ Cam S4"],
     ["T8P00", "Synthetic PoE Cam E40"],
+    ["T8P10", "Synthetic PoE Cam E41"],
   ])("classifies %s as wired and withholds its sentinel battery reading", async (model, name) => {
     const sn = `${model}P0000000001`;
     const record = {

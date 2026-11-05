@@ -13,6 +13,7 @@ import {
   STREAMING_QUALITY_TIERS,
   resolveStreamingQuality,
 } from "../camera.js";
+import { DOORBELL_CMD } from "../doorbell.js";
 import type { RecordingQualityName } from "../camera.js";
 import { buildCommand } from "../index.js";
 import { actionSpecOf } from "../access.js";
@@ -422,6 +423,27 @@ describe("camera capability module", () => {
       expect(buildCommand("streamingQuality", "Max", ctx(2))).toMatchObject({ payload: { quality: 3 } });
     });
 
+    it("streamingQuality is not offered where the device reports the doorbell's own quality (1705)", () => {
+      const doorbell = (paramIds: number[]) =>
+        ctx(0, {
+          deviceType: DeviceType.BATTERY_DOORBELL_2,
+          model: "T8210",
+          capabilities: new Set(["camera", "doorbell"]),
+          paramIds: new Set(paramIds),
+        });
+      const withOwn = doorbell([1020, DOORBELL_CMD.VIDEO_QUALITY]);
+      const dev = Device.fromRecord("T8000P0000000000", { model: "T8210", params: { 1020: "5", 1705: "5" } });
+      dev.bindActions(withOwn, { dispatch: async () => undefined });
+      const acts = dev.camera!()!;
+      expect("streamingQuality" in acts).toBe(false);
+      expect("setStreamingQuality" in acts).toBe(false);
+      expect(buildCommand("streamingQuality", 0, withOwn)).toBeUndefined();
+      expect(buildCommand("streamingQuality", 0, doorbell([1020]))).toMatchObject({
+        cmd: CAMERA_CMD.STREAMING_QUALITY_SET,
+      });
+      expect(buildCommand("streamingQuality", 0, ctx(0))).toMatchObject({ cmd: CAMERA_CMD.STREAMING_QUALITY_SET });
+    });
+
     it("recordingQuality throws on a value that isn't a real tier (no bogus value on the fire-and-forget wire)", () => {
       const c = ctx(3); // verified tiers = 1/2/3
       // Out-of-range raw values must NOT produce a command (0 / negative / above top tier / non-tier name).
@@ -752,7 +774,7 @@ describe("camera capability module", () => {
       expect("downloadRecording" in camera(ctx(), media).acts).toBe(false);
     });
 
-    it("a lock-codec device carrying camera is offered live view and nothing else", () => {
+    it("a lock-codec device other than the T8530 is offered live view alone; the T8530 adds openReadable", () => {
       const media: MediaProvider = {
         snapshotStored: async () => Buffer.alloc(0),
         snapshotLive: async () => ({ jpeg: Buffer.alloc(0), width: 1, height: 1 }),
@@ -771,6 +793,10 @@ describe("camera capability module", () => {
       const offered = Object.keys(lock).filter((k) => typeof lock[k] === "function");
       expect(offered).toEqual(["live"]);
       expect(camera(ctx(0, { codec: "camera", ...evidence }), media).acts.setWatermark).toBeTypeOf("function");
+      const videoLock = camera(ctx(0, { codec: "lock", deviceType: DeviceType.LOCK_8530, ...evidence }), media)
+        .acts as Record<string, unknown>;
+      const videoLockOffered = Object.keys(videoLock).filter((k) => typeof videoLock[k] === "function");
+      expect(videoLockOffered.sort()).toEqual(["live", "openReadable"]);
     });
 
     it("a stored-recording download passes the pushed recording name and cipher id through unchanged", async () => {
