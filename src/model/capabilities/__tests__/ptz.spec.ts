@@ -33,9 +33,63 @@ const zoomCtx = (channel = 0): CommandContext => ctx(channel, [6204]);
 describe("ptz capability module", () => {
   it("declares the capability + schema", () => {
     expect(PTZ.capability).toBe("ptz");
-    // rotationSpeed is the only value member: position is an event, not a parameter.
-    expect(PTZ.properties.map((p) => p.name)).toEqual(["rotationSpeed"]);
-    expect(PTZ.properties[0].paramType).toBe(6015);
+    // Position is an event, not a parameter.
+    expect(PTZ.properties.map((p) => p.name)).toEqual(["motionTracking", "rotationSpeed"]);
+    expect(PTZ.properties.find((p) => p.name === "rotationSpeed")?.paramType).toBe(6015);
+  });
+
+  describe("motion tracking evidence", () => {
+    it("binds the reported value and a writable tracking control", async () => {
+      const { acts, sent } = bind<PtzActions>(
+        "ptz",
+        { ...ctx(0, [6016]), model: "T8410" },
+        {
+          read: (name) => (name === "motionTracking" ? { value: false } : undefined),
+        },
+      );
+      expect(acts.motionTracking).toBe(false);
+      expect(acts.setMotionTracking).toBeTypeOf("function");
+      await acts.setMotionTracking!(true);
+      await acts.setMotionTracking!(false);
+      expect(sent.map((command) => command.kind === "set-json" && command.data.value)).toEqual([1, 0]);
+    });
+
+    it.each([true, false])("preserves the verified tracking envelope for %s", (value) => {
+      expect(PTZ_MEMBERS.motionTracking.write!(value, { ...ctx(2, [6016]), model: "T8410" })).toEqual({
+        kind: "set-json",
+        param: 6016,
+        channel: 2,
+        data: {
+          enable: 0,
+          index: 0,
+          status: 0,
+          type: 0,
+          value: value ? 1 : 0,
+          voiceID: 0,
+          zonecount: 0,
+          transaction: expect.stringMatching(/^\d+$/),
+        },
+      });
+    });
+
+    it.each([0, 1, "false", null, undefined])("rejects non-boolean %s", (value) => {
+      expect(PTZ_MEMBERS.motionTracking.write!(value as never, ctx())).toBeUndefined();
+    });
+
+    it("does not reinterpret a different product family's lock parameter", () => {
+      const { acts } = bind<PtzActions>(
+        "ptz",
+        { ...ctx(0, [6016]), model: "T8170" },
+        {
+          read: () => ({ value: true }),
+        },
+      );
+      expect("motionTracking" in acts).toBe(false);
+    });
+
+    it("does not invent a current value on a T8410 that has never reported it", () => {
+      expect("motionTracking" in bind<PtzActions>("ptz", { ...ctx(), model: "T8410" }).acts).toBe(false);
+    });
   });
 
   describe("rotationSpeed (6015)", () => {
