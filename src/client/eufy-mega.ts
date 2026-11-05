@@ -335,10 +335,20 @@ export class EufyMega extends EventEmitter {
   constructor(opts: EufyMegaOptions) {
     super();
     this.opts = opts;
+    // `country` is not an SDK option — the account country is `countryCode`, which defaults to "US".
+    // A caller that passes `country` instead has it silently ignored. We only refuse the case that
+    // actually misroutes: a NON-"US" `country` with no `countryCode`, which would run as "US" (wrong
+    // shard → login succeeds but the house list is an empty placeholder). `country: "US"` already
+    // matches the default route, so it is left to pass through untouched.
     if ("country" in opts && opts.countryCode === undefined) {
-      throw new TypeError(
-        `option "country" is not read; the account country is "countryCode", so this client would run as "US".`,
-      );
+      const country = String((opts as { country?: unknown }).country ?? "").toUpperCase();
+      if (country !== "US") {
+        throw new TypeError(
+          `option "country" is not read; the account country is "countryCode". ` +
+            `With "country" set and no "countryCode", this client would silently run as "US" — ` +
+            `pass "countryCode" instead.`,
+        );
+      }
     }
     this.prewarmEvents = new Set(opts.prewarmEvents ?? []);
     this.prewarmTiers = new Set(opts.prewarmTiers ?? DEFAULT_PREWARM_TIERS);
