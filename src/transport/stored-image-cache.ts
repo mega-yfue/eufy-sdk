@@ -199,7 +199,7 @@ export class StoredImageCache {
     this.logger.warn("[stored-snapshot-cache] candidate failed", {
       class: failure,
       ...mediaFailureTag(error),
-      ...untaggedErrorClass(error),
+      ...(error instanceof Error && !mediaFailureTag(error).cause ? { errorName: error.name } : {}),
       observedAt: candidate.observedAt,
       retained: state.retained !== undefined,
     });
@@ -224,36 +224,4 @@ function mediaFailureTag(error: unknown): { cause?: MediaFailureReason; status?:
   return Number.isInteger(status) && (status as number) >= 100 && (status as number) <= 599
     ? { cause, status: status as number }
     : { cause };
-}
-
-/**
- * Built-in error constructors, matched by identity so a class name a downloader chose never reaches a
- * log line. `DOMException` is where `fetch` and `AbortSignal` put their aborts.
- */
-const BUILTIN_ERRORS: readonly (abstract new (...args: never[]) => unknown)[] = [
-  Error,
-  TypeError,
-  RangeError,
-  ReferenceError,
-  SyntaxError,
-  URIError,
-  EvalError,
-  AggregateError,
-  DOMException,
-];
-
-/**
- * What kind of error a failure was, when it carries no {@link MediaFailureReason} tag.
- *
- * A thrown value outside the tagged acquisition path says only that it came from elsewhere; its
- * constructor separates a programming fault (`TypeError`) from a deliberate throw (`Error`). The answer
- * is a closed vocabulary: a built-in constructor's name, `Error subclass` for any other `Error`, or the
- * `typeof` of a non-error value. Answers `{}` for a tagged error and for no error at all.
- */
-function untaggedErrorClass(error: unknown): { errorClass?: string } {
-  if (error === undefined || mediaFailureTag(error).cause) return {};
-  if (typeof error !== "object" || error === null) return { errorClass: error === null ? "null" : typeof error };
-  const builtin = BUILTIN_ERRORS.find((ctor) => Object.getPrototypeOf(error) === ctor.prototype);
-  if (builtin) return { errorClass: builtin.name };
-  return { errorClass: error instanceof Error ? "Error subclass" : "object" };
 }
