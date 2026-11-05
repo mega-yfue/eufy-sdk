@@ -746,12 +746,12 @@ export class P2PSession extends EventEmitter {
    *
    * Bounded to one extra ask per connection, so a burst of such operations cannot turn a silent station into a
    * flood, and answers whether it asked — `false` when a key is already held, when nothing can negotiate one,
-   * when the ask was already spent, or when there is nowhere to send it. Callers with a level-1 path must not
-   * use this: re-prompting on their behalf would be noise for an answer they do not need.
+   * when the ask was already spent, when the station refused level-2 outright and so answers a second ask the
+   * same way, or when there is nowhere to send it. Callers with a level-1 path must not use this: re-prompting
+   * on their behalf would be noise for an answer they do not need.
    */
   repromptLevel2Key(): boolean {
     if (this.closed || this.level2KeyServes("set-payload") || this.level2Reprompted) return false;
-    // A station that refused level-2 outright answers a second ask the same way.
     if (this.gatewayRefusal !== undefined) return false;
     if (!this.cfg.resolveCipherKey || !this.connectAddress) return false;
     this.level2Reprompted = true;
@@ -781,12 +781,12 @@ export class P2PSession extends EventEmitter {
    * Every outcome settles the wait in {@link awaitLevel2Key}, so a later command is told at once rather than
    * left to time out against a key that is not coming. Settling also re-opens the negotiation, so a later
    * GATEWAYINFO reply in the same connection generation runs it again; a lookup that completes after its
-   * generation ended settles nothing.
+   * generation ended settles nothing. A reply carrying a {@link gatewayInfoRefusal} names no cipher, so it
+   * settles at once with no cloud lookup.
    */
   private negotiateLevel2Key(gwPayload: Buffer): void {
     const refusal = gatewayInfoRefusal(gwPayload);
     if (refusal !== undefined) {
-      // No cipher to look up: the station said so. Settle at once rather than charge a cloud lookup.
       this.gatewayRefusal = refusal;
       this.logger.debug(`[p2p] ${this.cfg.stationSn} gateway info refused level-2 (result ${refusal})`);
       this.trace({ phase: "level2-unavailable", reason: "gateway-refused" });
@@ -1580,9 +1580,9 @@ export class P2PSession extends EventEmitter {
 
   /**
    * Whether this connection's station refused level-2 at `CMD_GATEWAYINFO` (a negative result in place of a
-   * cipher — see {@link gatewayInfoRefusal}) and holds no key. Such a station takes its `CMD_SET_PAYLOAD`
-   * commands in the clear: measured on a Smart Lock C220 (T8506), which answered an `ff09` settings GET and
-   * an `ff09` unlock sent through {@link sendSetPayloadInTheClear}, and ignored the same GET sealed level-1.
+   * cipher — see {@link gatewayInfoRefusal}) and holds no key. Measured on a Smart Lock C220 (T8506): an `ff09`
+   * settings GET, lock and unlock sent in the clear were each answered with status 0, and the same GET sealed
+   * level-1 was ignored.
    */
   get refusedLevel2(): boolean {
     return !this.level2Key && this.gatewayRefusal !== undefined;

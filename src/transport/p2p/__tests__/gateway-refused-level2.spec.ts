@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { StationKeyUnavailableError } from "../../../core/contracts.js";
 import { gatewayInfoCipherId, gatewayInfoRefusal } from "../codec.js";
 import { P2PSession } from "../p2p-session.js";
 import { P2PCommandRouter, type P2PRouterDeps } from "../command-router.js";
@@ -184,5 +185,19 @@ describe("an ff09 lock command on a station that refused level-2", () => {
 
     expect(session.sendSetPayloadInTheClear).not.toHaveBeenCalled();
     expect(session.sendControlLevel2).toHaveBeenCalled();
+  });
+
+  it.each([
+    ["auto-lock", { kind: "ff09-autolock", adminUserId: ADMIN, deviceSn: LOCK_SN, enabled: true }],
+    [
+      "setting toggle",
+      { kind: "ff09-setting-toggle", adminUserId: ADMIN, deviceSn: LOCK_SN, settingId: 1, value: true },
+    ],
+  ] as const)("still refuses a %s write, which no real device has confirmed in the clear", async (_name, command) => {
+    const { router, session } = makeRouter(true);
+
+    await expect(router.dispatchCommand(LOCK_SN, command)).rejects.toBeInstanceOf(StationKeyUnavailableError);
+
+    expect(session.sendSetPayloadInTheClear).not.toHaveBeenCalled();
   });
 });

@@ -1695,8 +1695,8 @@ export class P2PCommandRouter {
    * Replaced at most once per resolution, so a station whose replacement is silent too is returned rather
    * than closed again.
    *
-   * `clearFallback` hands over a session whose station {@link P2PSession.refusedLevel2} instead of throwing,
-   * for a caller that can send in the clear on such a session — see {@link sendFf09Envelope}.
+   * `clearFallback` hands over a session whose station {@link P2PSession.refusedLevel2} instead of throwing —
+   * see {@link sendFf09Envelope}.
    */
   private async resolveSession(
     sn: string,
@@ -2087,13 +2087,6 @@ export class P2PCommandRouter {
   private static readonly KEYED_REFUSAL_TWIN_MS = 500;
 
   /**
-   * **`ff09-actuate` intent** — build the `ff09` AES-128-CBC frame ({@link buildFf09Frame}, shared with the
-   * MQTT transport — see `transport/ff09.ts`) and dispatch it in the `1940` TRANSFER_PAYLOAD envelope
-   * (`{apiCommand, lock_payload, seq_num, time}`) as a `set-payload` (1350), `mValue3=0`, on the lock's
-   * device channel. This is the P2P envelope; the capability module only supplies identity, never wire
-   * bytes and never the routing channel — that's re-resolved here from the device record.
-   */
-  /**
    * Send one `ff09` frame's `1940` TRANSFER_PAYLOAD envelope as a `set-payload` (1350), `mValue3=0`, on the
    * lock's resolved channel: level-2 through {@link sendSetPayloadEnvelope}, or once in the clear on a session
    * whose station {@link P2PSession.refusedLevel2} — the Smart Lock C220 (T8506), which has no level-2 key to
@@ -2115,6 +2108,13 @@ export class P2PCommandRouter {
     await this.sendSetPayloadEnvelope(sn, CMD_TRANSFER_PAYLOAD, payload, channel, 0, resolved);
   }
 
+  /**
+   * **`ff09-actuate` intent** — build the `ff09` AES-128-CBC frame ({@link buildFf09Frame}, shared with the
+   * MQTT transport — see `transport/ff09.ts`) and dispatch it in the `1940` TRANSFER_PAYLOAD envelope
+   * (`{apiCommand, lock_payload, seq_num, time}`) as a `set-payload` (1350), `mValue3=0`, on the lock's
+   * device channel. This is the P2P envelope; the capability module only supplies identity, never wire
+   * bytes and never the routing channel — that's re-resolved here from the device record.
+   */
   private async sendFf09Actuate(sn: string, cmd: Ff09Identity): Promise<void> {
     const resolved = await this.resolveSession(sn, { waitLevel2: true, clearFallback: true });
     const frame = buildFf09Frame({
@@ -2175,7 +2175,7 @@ export class P2PCommandRouter {
       delaySeconds?: number;
     },
   ): Promise<void> {
-    const resolved = await this.resolveSession(sn, { waitLevel2: true, clearFallback: true });
+    const resolved = await this.resolveSession(sn, { waitLevel2: true });
 
     // ── 1. GET current settings, matched back by keyTime (shared with getAutoLockState — see helper). ──
     const getReply = await this.fetchFf09SettingsGetReply(sn, cmd, resolved);
@@ -2190,7 +2190,14 @@ export class P2PCommandRouter {
       enabled: cmd.enabled,
       delaySeconds: cmd.delaySeconds,
     });
-    await this.sendFf09Envelope(sn, ff09TransferPayload(setFrame), resolved);
+    await this.sendSetPayloadEnvelope(
+      sn,
+      CMD_TRANSFER_PAYLOAD,
+      ff09TransferPayload(setFrame),
+      resolved.channel,
+      0,
+      resolved,
+    );
   }
 
   /**
@@ -2291,14 +2298,21 @@ export class P2PCommandRouter {
     sn: string,
     cmd: { adminUserId: string; deviceSn: string; settingId: number; value: boolean },
   ): Promise<void> {
-    const resolved = await this.resolveSession(sn, { waitLevel2: true, clearFallback: true });
+    const resolved = await this.resolveSession(sn, { waitLevel2: true });
     const frame = buildFf09SettingToggleFrame({
       adminUserId: cmd.adminUserId,
       deviceSn: cmd.deviceSn,
       settingId: cmd.settingId,
       value: cmd.value,
     });
-    await this.sendFf09Envelope(sn, ff09TransferPayload(frame), resolved);
+    await this.sendSetPayloadEnvelope(
+      sn,
+      CMD_TRANSFER_PAYLOAD,
+      ff09TransferPayload(frame),
+      resolved.channel,
+      0,
+      resolved,
+    );
   }
 
   /**
