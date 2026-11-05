@@ -815,11 +815,7 @@ function reports(requires: readonly number[] | undefined, ctx: CommandContext): 
  * is stored as a decoded object. Handing either through a getter typed `number` is the one lie this
  * table exists to prevent.
  *
- * A `type: "enum"` value is a closed set, so `values` — the option set published for this device — is
- * part of its type: a stored number outside it answers `undefined`. A device can report a value no
- * option names, and handing one through a getter whose published options cannot hold it is the same
- * lie as a string through a `number`. A `number`
- * member's `enumValues` label a scalar and are not a domain, so only `enum` is checked.
+ * A number outside `values`, the options published for this device, answers `undefined`.
  *
  * Exported so the ONE narrowing the getters use is also the one a property-change announcement carries.
  * A second conversion of the wire value is precisely how a payload comes to disagree with the getter
@@ -835,7 +831,7 @@ export function narrow(
   if (type === "bool") return readBool(read, prop);
   if (type === "string") return readStr(read, prop);
   const n = readNum(read, prop);
-  return type === "enum" && values && n !== undefined && !(n in values) ? undefined : n;
+  return values && n !== undefined && !(n in values) ? undefined : n;
 }
 
 /**
@@ -955,8 +951,9 @@ export function bindMembers<M extends Members>(members: M, deps: MemberDeps): Su
       // The member's own wire wins; the owner's payload is the fallback for a device that does not
       // speak it. One `decode` sees whichever arrived and discriminates on the value's shape.
       const raw = (): unknown => read(prop)?.value ?? (borrowed === undefined ? undefined : read(borrowed)?.value);
-      const values = resolvedEnum(m, ctx).values;
-      const get = decode ? () => decode(raw(), rawDp, ctx) : () => narrow(m.type, read, prop, values);
+      const { values, dynamic } = resolvedEnum(m, ctx);
+      const domain = (dynamic ? "enum" : m.kind) === "enum" ? values : undefined;
+      const get = decode ? () => decode(raw(), rawDp, ctx) : () => narrow(m.type, read, prop, domain);
       Object.defineProperty(out, name, { get, enumerable: true, configurable: true });
     }
     if (!m.write || m.unverified || !installs(m, ctx)) continue;

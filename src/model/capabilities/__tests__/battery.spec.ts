@@ -227,6 +227,20 @@ describe("battery capability module", () => {
     expect(wm?.enumValues).toBeUndefined();
   });
 
+  it("reads workingMode against the domain published for the model, and raw where none is", () => {
+    const read = (model: string, value: number) =>
+      bind<BatteryActions>("battery", evidenced({ model }), { read: () => ({ value }) }).acts.workingMode;
+    expect(read("T8170P00", 2)).toBe(2);
+    expect(read("T8170P00", 9)).toBeUndefined();
+    expect(read("T8419P00", 9)).toBe(9);
+  });
+
+  it("reads a powerSource outside Battery/External Solar Panel as undefined", () => {
+    const read = (value: number) => bind<BatteryActions>("battery", evidenced(), { read: () => ({ value }) }).acts;
+    expect(read(1).powerSource).toBe(1);
+    expect(read(5).powerSource).toBeUndefined();
+  });
+
   it("resolveWorkingMode maps per model — cameras use DEFAULT, the T8214 doorbell its own map (confirmed live)", () => {
     // 3-mode cameras (identity) via DEFAULT fallback.
     expect(resolveWorkingMode("T8170T0000000000", 2)).toBe("Customize Recording");

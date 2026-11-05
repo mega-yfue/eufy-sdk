@@ -216,10 +216,11 @@ describe("camera capability module", () => {
       ]);
     });
 
-    it("keeps a number member's labels a label set, not a domain", () => {
+    it("checks a number member published as an enum against its options too", () => {
       const reported = ctx(0, { paramIds: new Set([1020]) });
-      const acts = bind<CameraActions>("camera", reported, { read: () => ({ value: 5 }) }).acts;
-      expect(acts.streamingQuality).toBe(5);
+      const read = (value: number) => bind<CameraActions>("camera", reported, { read: () => ({ value }) }).acts;
+      expect(read(5).streamingQuality).toBeUndefined();
+      expect(read(3).streamingQuality).toBe(3);
     });
 
     it("keeps the 1277 property and 1350 payload for T8425", () => {
