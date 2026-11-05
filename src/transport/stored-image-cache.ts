@@ -222,6 +222,7 @@ export class StoredImageCache {
     this.logger.warn("[stored-snapshot-cache] candidate failed", {
       class: failure,
       ...mediaFailureTag(error),
+      ...(error instanceof Error && !mediaFailureTag(error).cause ? { errorName: error.name } : {}),
       observedAt: candidate.observedAt,
       retained: state.retained !== undefined,
     });
