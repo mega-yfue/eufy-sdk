@@ -299,9 +299,15 @@ describe("StoredImageCache", () => {
     await flush();
 
     expect(warnings).toEqual([
-      ["[stored-snapshot-cache] candidate failed", { class: "download-failed", observedAt: 1234, retained: false }],
+      [
+        "[stored-snapshot-cache] candidate failed",
+        { class: "download-failed", errorClass: "Error", observedAt: 1234, retained: false },
+      ],
       ["[stored-snapshot-cache] candidate failed", { class: "invalid-image", observedAt: 5678, retained: false }],
-      ["[stored-snapshot-cache] candidate failed", { class: "download-failed", observedAt: 5678, retained: false }],
+      [
+        "[stored-snapshot-cache] candidate failed",
+        { class: "download-failed", errorClass: "Error", observedAt: 5678, retained: false },
+      ],
     ]);
     expect(JSON.stringify(warnings)).not.toMatch(/secret|response|https|device/);
   });
@@ -342,8 +348,43 @@ describe("StoredImageCache", () => {
     cache.observe("device-a", "https://secret.example/first");
     await flush();
 
-    expect(warnings[0]?.[1]).toEqual({ class: "download-failed", observedAt: expect.any(Number), retained: false });
+    expect(warnings[0]?.[1]).toEqual({
+      class: "download-failed",
+      errorClass: "Error",
+      observedAt: expect.any(Number),
+      retained: false,
+    });
     expect(JSON.stringify(warnings)).not.toMatch(/secret|response|https/);
+  });
+
+  it("names the kind of an untagged failure from a closed vocabulary, never from the error itself", async () => {
+    class SecretResponseError extends Error {}
+    const thrown: unknown[] = [new TypeError("x"), new SecretResponseError("x"), "secret response"];
+    const classes: unknown[] = [];
+    for (const value of thrown) {
+      const { log, warnings } = logger();
+      const cache = new StoredImageCache(async () => {
+        throw value;
+      }, log);
+      cache.observe("device-a", "https://secret.example/first");
+      await flush();
+      classes.push((warnings[0]?.[1] as { errorClass?: unknown }).errorClass);
+      expect(JSON.stringify(warnings)).not.toMatch(/secret|response|https/i);
+    }
+
+    expect(classes).toEqual(["TypeError", "Error subclass", "string"]);
+  });
+
+  it("names no error class for a failure that carries this SDK's own tag", async () => {
+    const { log, warnings } = logger();
+    const cache = new StoredImageCache(async () => {
+      throw Object.assign(new Error("x"), { mediaFailure: "network" });
+    }, log);
+
+    cache.observe("device-a", "https://media.example/one");
+    await flush();
+
+    expect(warnings[0]?.[1]).not.toHaveProperty("errorClass");
   });
 
   it("remembers a bounded window of attempted URLs rather than every URL forever", async () => {
