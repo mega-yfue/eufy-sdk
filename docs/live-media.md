@@ -16,7 +16,7 @@ also requires snapshot capability evidence and the stored-image cache described 
 
 ## One pull, many consumers
 
-Every consumer of a given camera and optical view shares **one** underlying media session (one live pull), fanned out
+Every consumer of a given camera, optical view and output resolution shares **one** underlying media session (one live pull), fanned out
 to all of them. `cam.live()` twice, a `snapshotLive()` while a `recordFragments()` runs, a
 `openReadable()` alongside a `live()` — all attach to the **same** shared source. There is exactly one
 start on the wire regardless of how many consumers attach.
@@ -611,3 +611,21 @@ So the APIs here do not claim negotiation or timing guarantees the device source
 fragment duration is a keyframe-bounded **minimum**, prebuffer is available only from an already-warm
 retained source, and fragmented recordings are caller-owned evented async iterables — which is how a
 caller extends a shared battery budget without control notices mixing into media output.
+
+### NVR output resolution
+
+`cam.outputResolutions?.()` reports the output sizes supported by the bound media route.
+The native NVR route reports `["1080p"]`. An omitted selection preserves the default
+output; it does not promise a particular maximum resolution.
+
+```ts
+const stream = await cam.live({ view: 0, outputResolution: "1080p" });
+stream.stop();
+```
+
+The NVR start request carries `stitch_resolution: {width: 1920, height: 1080}`.
+This selects the NVR's output geometry, not a separately identified camera substream,
+and does not change persistent live-view or recording-quality settings.
+`openReadable()` and `snapshotLive()` accept the same selection. A route that does not
+advertise it refuses the request before opening media. Consumers with different output
+selections use separate sources, including while an earlier source is warm.

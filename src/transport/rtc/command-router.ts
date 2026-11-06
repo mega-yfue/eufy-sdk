@@ -330,7 +330,7 @@ export class RtcCommandRouter {
       ...this.callMediaProviderFor(
         route,
         route.cameraSn,
-        (session, accountId, view) =>
+        (session, accountId, view, outputResolution) =>
           new RtcLiveStream({
             session,
             seg: new SegmentCounter(),
@@ -340,10 +340,12 @@ export class RtcCommandRouter {
             logger: this.deps.logger,
             nvr: true,
             view,
+            outputResolution,
           }),
         "record is not available over an NVR portal call",
       ),
       views,
+      outputResolutions: ["1080p"],
     };
   }
 
@@ -351,14 +353,20 @@ export class RtcCommandRouter {
   private callMediaProviderFor(
     route: RtcRoute,
     key: string,
-    makeStream: (session: RtcSession, accountId: string, view: number) => LiveStreamHandle,
+    makeStream: (
+      session: RtcSession,
+      accountId: string,
+      view: number,
+      outputResolution?: MediaSourceSelection["outputResolution"],
+    ) => LiveStreamHandle,
     recordError: string,
     warmTimeoutMs?: number,
   ): MediaProvider {
     const sourceFor = (opts: SharedSourceHints & AbortableCall & MediaSourceSelection = {}): SharedLiveSource => {
       opts.signal?.throwIfAborted();
       const view = opts.view ?? 0;
-      const sourceKey = view === 0 ? key : `${key}:view:${view}`;
+      const viewKey = view === 0 ? key : `${key}:view:${view}`;
+      const sourceKey = opts.outputResolution ? `${viewKey}:output:${opts.outputResolution}` : viewKey;
       let source = this.callSources.get(sourceKey);
       if (!source) {
         source = new SharedLiveSource({
@@ -366,7 +374,7 @@ export class RtcCommandRouter {
             const identity = this.deps.identity();
             if (!identity) throw new Error(`rtc: not logged in, cannot call ${route.stationSn}`);
             const accountId = route.adminUserId || identity.userId;
-            return makeStream(this.newSession(route, accountId, identity), accountId, view);
+            return makeStream(this.newSession(route, accountId, identity), accountId, view, opts.outputResolution);
           },
           label: sourceKey,
           logger: this.deps.logger,
