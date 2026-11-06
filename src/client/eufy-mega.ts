@@ -332,24 +332,26 @@ export class EufyMega extends EventEmitter {
   /** Armed while a failed push bring-up waits to be retried; cancelled by {@link disconnect}. */
   private readonly pushRetryTimer = new Timer();
 
+  /**
+   * Refuse the one misnamed option that misroutes silently. `country` is not read — the account country
+   * is {@link EufyMegaOptions.countryCode}, which defaults to `"US"` — so a caller that passes `country`
+   * has it ignored. We throw only for the case that changes routing: a non-`"US"` `country` with no
+   * `countryCode`, which would run on the US shard (login succeeds, but the house list comes back an empty
+   * placeholder). `country: "US"` already matches the default route, so it is left to pass through.
+   */
+  private static assertCountryOption(opts: EufyMegaOptions): void {
+    if (!("country" in opts) || opts.countryCode !== undefined) return;
+    if (String((opts as { country?: unknown }).country ?? "").toUpperCase() === "US") return;
+    throw new TypeError(
+      `option "country" is not read; the account country is "countryCode". ` +
+        `With "country" set and no "countryCode", this client would silently run as "US" — pass "countryCode" instead.`,
+    );
+  }
+
   constructor(opts: EufyMegaOptions) {
     super();
     this.opts = opts;
-    // `country` is not an SDK option — the account country is `countryCode`, which defaults to "US".
-    // A caller that passes `country` instead has it silently ignored. We only refuse the case that
-    // actually misroutes: a NON-"US" `country` with no `countryCode`, which would run as "US" (wrong
-    // shard → login succeeds but the house list is an empty placeholder). `country: "US"` already
-    // matches the default route, so it is left to pass through untouched.
-    if ("country" in opts && opts.countryCode === undefined) {
-      const country = String((opts as { country?: unknown }).country ?? "").toUpperCase();
-      if (country !== "US") {
-        throw new TypeError(
-          `option "country" is not read; the account country is "countryCode". ` +
-            `With "country" set and no "countryCode", this client would silently run as "US" — ` +
-            `pass "countryCode" instead.`,
-        );
-      }
-    }
+    EufyMega.assertCountryOption(opts);
     this.prewarmEvents = new Set(opts.prewarmEvents ?? []);
     this.prewarmTiers = new Set(opts.prewarmTiers ?? DEFAULT_PREWARM_TIERS);
     this.mega = new MegaHttpClient(opts);
