@@ -226,6 +226,8 @@ interface ResolvedSession {
   channel: number;
   accountId: string;
   homeBaseAttached: boolean;
+  /** Set when `clearFallback` admitted a session whose station {@link P2PSession.refusedLevel2}. */
+  sendsClear?: boolean;
 }
 
 /** The options of one {@link MediaProvider.downloadRecording} call. */
@@ -1773,11 +1775,12 @@ export class P2PCommandRouter {
         ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call", sender), opts.signal);
       }
       const sendsClear =
-        opts.clearFallback &&
+        opts.clearFallback === true &&
         !homeBaseAttached &&
         CLEAR_FF09_MODELS.has(this.recordFor(sn)?.model ?? "") &&
         session.refusedLevel2;
       if (!ready && !sendsClear) throw new StationKeyUnavailableError(parentSn);
+      return { session, parentSn, channel, accountId, homeBaseAttached, sendsClear };
     }
     return { session, parentSn, channel, accountId, homeBaseAttached };
   }
@@ -1918,7 +1921,8 @@ export class P2PCommandRouter {
     await this.replayLevel2Send(
       sn,
       `set-payload cmd ${cmd}`,
-      ({ session, accountId }) => session.sendControlLevel2(cmd, channel, accountId, payload, mValue3 ?? cmd),
+      ({ session, accountId, sendsClear }) =>
+        session.sendControlLevel2(cmd, channel, accountId, payload, mValue3 ?? cmd, sendsClear),
       resolved ?? (await this.resolveSession(sn, { waitLevel2: true, level2Sender })),
     );
   }
@@ -2269,7 +2273,7 @@ export class P2PCommandRouter {
    * has not been independently exercised against a real device yet.
    */
   async getAutoLockState(sn: string, cmd: { adminUserId: string; deviceSn: string }): Promise<AutoLockSnapshot> {
-    const resolved = await this.resolveSession(sn, { waitLevel2: true, clearFallback: true });
+    const resolved = await this.resolveSession(sn, { waitLevel2: true });
     const getReply = await this.fetchFf09SettingsGetReply(sn, cmd, resolved);
     return decodeFf09AutoLockSnapshot(
       parseFf09SettingsResponse(

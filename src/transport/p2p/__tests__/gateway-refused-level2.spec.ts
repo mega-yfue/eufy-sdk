@@ -37,7 +37,7 @@ function collectSends(session: P2PSession): Buffer[] {
     connectAddress: unknown;
     send: (addr: unknown, type: Buffer, payload: Buffer) => void;
   };
-  internals.connectAddress = { host: "192.168.1.2", port: 1 };
+  internals.connectAddress = { host: "<cam-lan-ip>", port: 32100 };
   internals.send = (_addr, _type, payload) => void sent.push(payload);
   return sent;
 }
@@ -138,8 +138,8 @@ describe("a station that refuses level-2 at gateway info", () => {
     const { session } = refusedSession();
     const sent = collectSends(session);
 
-    expect(session.sendControlLevel2(1940, 0, ADMIN, { apiCommand: 6018 }, 0)).toBe(true);
-    expect(session.sendControlLevel2(1940, 0, ADMIN, { apiCommand: 6018 }, 0)).toBe(true);
+    expect(session.sendControlLevel2(1940, 0, ADMIN, { apiCommand: 6018 }, 0, true)).toBe(true);
+    expect(session.sendControlLevel2(1940, 0, ADMIN, { apiCommand: 6018 }, 0, true)).toBe(true);
 
     const [first, second] = sent as [Buffer, Buffer];
     expect(first.readUInt16LE(8)).toBe(1350); // CMD_SET_PAYLOAD
@@ -157,14 +157,22 @@ describe("a station that refuses level-2 at gateway info", () => {
 
   it("frames nothing with nowhere to send it", () => {
     const { session } = refusedSession();
+    expect(session.sendControlLevel2(1940, 0, ADMIN, {}, 0, true)).toBe(false);
+  });
+
+  it("frames nothing on a refused session without the opt-in", () => {
+    const { session } = refusedSession();
+    const sent = collectSends(session);
+
     expect(session.sendControlLevel2(1940, 0, ADMIN, {}, 0)).toBe(false);
+    expect(sent).toHaveLength(0);
   });
 
   it("frames nothing in the clear on a keyless session that was not refused", () => {
     const session = new P2PSession({ stationSn: LOCK_SN, p2pDid: P2P_DID, resolveCipherKey: async () => undefined });
     const sent = collectSends(session);
 
-    expect(session.sendControlLevel2(1940, 0, ADMIN, {}, 0)).toBe(false);
+    expect(session.sendControlLevel2(1940, 0, ADMIN, {}, 0, true)).toBe(false);
     expect(sent).toHaveLength(0);
   });
 });
@@ -219,8 +227,8 @@ describe("an ff09 lock command on a station that refused level-2", () => {
     await router.dispatchCommand(LOCK_SN, unlock);
 
     expect(session.sendControlLevel2).toHaveBeenCalledTimes(5);
-    const [cmd, channel, , payload, mValue3] = session.sendControlLevel2.mock.calls[0]!;
-    expect([cmd, channel, mValue3]).toEqual([1940, 0, 0]);
+    const [cmd, channel, , payload, mValue3, clearOnRefusal] = session.sendControlLevel2.mock.calls[0]!;
+    expect([cmd, channel, mValue3, clearOnRefusal]).toEqual([1940, 0, 0, true]);
     expect(payload.apiCommand).toBe(LOCK_API_COMMAND.ON_OFF_LOCK);
     const plain = decryptFf09Frame({
       lockPayload: payload.lock_payload,
@@ -252,6 +260,16 @@ describe("an ff09 lock command on a station that refused level-2", () => {
     const { router, session } = makeRouter(true);
 
     await expect(router.dispatchCommand(LOCK_SN, command)).rejects.toBeInstanceOf(StationKeyUnavailableError);
+
+    expect(session.sendControlLevel2).not.toHaveBeenCalled();
+  });
+
+  it("still refuses the auto-lock read", async () => {
+    const { router, session } = makeRouter(true);
+
+    await expect(router.getAutoLockState(LOCK_SN, { adminUserId: ADMIN, deviceSn: LOCK_SN })).rejects.toBeInstanceOf(
+      StationKeyUnavailableError,
+    );
 
     expect(session.sendControlLevel2).not.toHaveBeenCalled();
   });
