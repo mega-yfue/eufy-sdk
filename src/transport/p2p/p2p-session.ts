@@ -13,6 +13,7 @@
  * datagram, so this parses one-frame-per-packet (with multiple frames per packet)
  * and does not reassemble frames that span datagrams.
  */
+import { isPrivateIpv4 } from "./lan-ip.js";
 import { EventEmitter } from "node:events";
 import dgram from "node:dgram";
 import { resolve4 } from "node:dns/promises";
@@ -317,6 +318,10 @@ const LEVEL2_SEQ_BASE = 0x01020300;
  * Transport wiring for a PPCS session — internal to the SDK; a host reaches sessions through the facade.
  * @internal
  */
+/** Ports either side of a device's reported address that every hole punch covers. */
+const PUNCH_NEIGHBOURHOOD = 3;
+const PUNCH_WIDE_INTERVAL_MS = 1000;
+
 export interface P2PSessionConfig {
   stationSn: string;
   p2pDid: string;
@@ -328,6 +333,11 @@ export interface P2PSessionConfig {
   localAddress?: string;
   /** Disable UDP broadcast local lookup (e.g. cloud-only). Default false. */
   noBroadcast?: boolean;
+  /**
+   * Hole-punch this many ports either side of a public address, for a device behind carrier NAT. Default
+   * {@link PUNCH_NEIGHBOURHOOD}; a smaller value changes nothing.
+   */
+  punchSpread?: number;
   /**
    * Resolve a station `cipher_id` → its private keys (from cloud `get_ciphers`): `ecc`, the ECC private
    * key hex (`ecc_private_key`), and `rsa`, the RSA private key (`private_key`). A plain string is the ECC key. Called once per
@@ -531,6 +541,8 @@ export class P2PSession extends EventEmitter {
   private connectTimer?: ReturnType<typeof setTimeout>;
   /** Extra sockets registered alongside {@link socket} while connecting; see {@link PUNCH_PROBE_SOCKETS}. */
   private probeSockets: dgram.Socket[] = [];
+  /** When each address and socket last had its wide punch (see {@link P2PSessionConfig.punchSpread}). */
+  private readonly widePunches = new Map<string, number>();
   /** Cloud lookup inputs resolved once for a connection. */
   private cloudLookup?: { key: string; addresses: Address[] };
   /**
@@ -1255,9 +1267,24 @@ export class P2PSession extends EventEmitter {
     const payload = buildCheckCamPayload(this.cfg.p2pDid);
     // Hole-punch the reported port and a small neighbourhood (NAT remapping).
     this.send(addr, RequestMessageType.CHECK_CAM, payload, socket);
-    for (let p = addr.port - 3; p <= addr.port + 3; p++)
+    for (let p = addr.port - PUNCH_NEIGHBOURHOOD; p <= addr.port + PUNCH_NEIGHBOURHOOD; p++)
       if (p !== addr.port && p > 0)
         this.send({ host: addr.host, port: p }, RequestMessageType.CHECK_CAM, payload, socket);
+    this.punchWide(addr, socket, payload);
+  }
+
+  /** The ports beyond the neighbourhood, up to `punchSpread`: public addresses only, once a second. */
+  private punchWide(addr: Address, socket: dgram.Socket, payload: Buffer): void {
+    const spread = this.cfg.punchSpread ?? 0;
+    if (spread <= PUNCH_NEIGHBOURHOOD || isPrivateIpv4(addr.host)) return;
+    const key = `${addr.host}:${addr.port}:${socket.address?.().port ?? ""}`;
+    const now = Date.now();
+    if (now - (this.widePunches.get(key) ?? -Infinity) < PUNCH_WIDE_INTERVAL_MS) return;
+    this.widePunches.set(key, now);
+    for (let offset = PUNCH_NEIGHBOURHOOD + 1; offset <= spread; offset++)
+      for (const port of [addr.port - offset, addr.port + offset])
+        if (port > 0 && port < 65536)
+          this.send({ host: addr.host, port }, RequestMessageType.CHECK_CAM, payload, socket);
   }
 
   /** Bind additional UDP source ports before the first cloud lookup. */
