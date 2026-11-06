@@ -277,16 +277,17 @@ re-authenticating.
 
 ## Options summary
 
-| Option                | Default               | Effect                                                                                                        |
-| --------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `autoRealtime`        | `true`                | Auto-start push/MQTT on login + on-demand P2P. `false` opts out.                                              |
-| `p2pIdleMs`           | `300000` (5 min)      | Idle window before a **battery** station detaches.                                                            |
-| `cacheTtlMs`          | `15000` (15 s)        | Freshness window for cached reads.                                                                            |
-| `prewarmEvents`       | `[]` (off)            | Which semantic events speculatively open P2P. Empty disables pre-warm.                                        |
-| `prewarmTiers`        | `["wired","battery"]` | Which station power tiers `prewarmEvents` may open. `["wired"]` spares batteries.                             |
-| `prewarmMs`           | `28000` (28 s)        | How long a pre-warm holds the session it opened; the tier's idle window follows.                              |
-| `pollMs`              | `600000` (10 min)     | How often cloud params are re-read for changes. `0` disables. Paced to the cloud's own refresh rate.          |
-| `storedSnapshotCache` | `true`                | Eagerly retain qualifying push JPEGs for passive `snapshotStored()`. `false` omits that method.               |
-| `localAddresses`      | —                     | LAN address override per station (`sn` → `host[:port]`) for direct P2P when the record's IP is wrong/blocked. |
+| Option                | Default               | Effect                                                                                                                                                                       |
+| --------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `autoRealtime`        | `true`                | Auto-start push/MQTT on login + on-demand P2P. `false` opts out.                                                                                                             |
+| `p2pIdleMs`           | `300000` (5 min)      | Idle window before a **battery** station detaches.                                                                                                                           |
+| `cacheTtlMs`          | `15000` (15 s)        | Freshness window for cached reads.                                                                                                                                           |
+| `prewarmEvents`       | `[]` (off)            | Which semantic events speculatively open P2P. Empty disables pre-warm.                                                                                                       |
+| `prewarmTiers`        | `["wired","battery"]` | Which station power tiers `prewarmEvents` may open. `["wired"]` spares batteries.                                                                                            |
+| `prewarmMs`           | `28000` (28 s)        | How long a pre-warm holds the session it opened; the tier's idle window follows.                                                                                             |
+| `pollMs`              | `600000` (10 min)     | How often cloud params are re-read for changes. `0` disables. Paced to the cloud's own refresh rate.                                                                         |
+| `storedSnapshotCache` | `true`                | Eagerly retain qualifying push JPEGs for passive `snapshotStored()`. `false` omits that method.                                                                              |
+| `localAddresses`      | —                     | LAN address override per station (`sn` → `host[:port]`) for direct P2P when the record's IP is wrong/blocked.                                                                |
+| `p2pPunchSpread`      | `3`                   | Hole-punch this many ports either side of a device's **public** address, at most once a second. For cameras behind a mobile carrier's NAT, whose port the default ±3 misses. |
 
 Next: [Live media](/live-media).
