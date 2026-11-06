@@ -19,7 +19,6 @@ import type { Command, CommandSink, MediaProvider } from "../../../core/contract
  *  6. a provider-gated method is described only on a device bound to that provider.
  */
 const MODULES = Object.values(CAPABILITY_MODULES);
-const BINDABLE = MODULES.filter((m) => m.actions || m.members);
 const sink: CommandSink = { dispatch: async () => undefined };
 const camelCase = (id: string): string => id.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
 
@@ -45,13 +44,26 @@ const ctxWith = (paramIds: Set<number>, model?: string): CommandContext => ({
   ...(model ? { model } : {}),
 });
 
-/** Describe the bound objects of a synthetic device that HAS every capability. */
-const describeAll = (paramIds: Set<number>, media?: MediaProvider): ReturnType<typeof describeCapabilities> =>
+/** The capabilities a synthetic device has by default — every one, so marker caps (e.g. `snapshot`,
+ *  which gates `snapshotStored`) are present. Binding a cap with no surface is a no-op. */
+const ALL_CAPS: readonly Capability[] = MODULES.map((m) => m.capability);
+
+/**
+ * Describe the bound objects of a synthetic device. By default it HAS every capability; pass `caps` to
+ * bind a realistic subset (e.g. a plain camera, where a lock would suppress the battery `level` read).
+ */
+const describeAll = (
+  paramIds: Set<number>,
+  caps: readonly Capability[] = ALL_CAPS,
+  media?: MediaProvider,
+): ReturnType<typeof describeCapabilities> =>
   describeCapabilities(
-    buildActions(
-      BINDABLE.map((m) => m.capability),
-      { ctx: ctxWith(paramIds), sink, read: () => undefined, media },
-    ),
+    buildActions(caps, {
+      ctx: { ...ctxWith(paramIds), capabilities: new Set(caps) },
+      sink,
+      read: () => undefined,
+      media,
+    }),
   );
 
 /**
@@ -147,14 +159,14 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
   it("describes only the reads the device reported, not the theoretical set", () => {
     const battery = CAPABILITY_MODULES.battery;
     const level = battery.members!.level as ValueMember;
-    const only = describeAll(new Set([level.param!])).find((d) => d.capability === "battery")!;
+    const only = describeAll(new Set([level.param!]), ["battery"]).find((d) => d.capability === "battery")!;
     expect(only.reads.map((r) => r.accessor)).toEqual(["level"]);
-    const all = describeAll(allParams()).find((d) => d.capability === "battery")!;
+    const all = describeAll(allParams(), ["battery"]).find((d) => d.capability === "battery")!;
     expect(all.reads.length).toBeGreaterThan(1);
   });
 
   it("publishes what a value means, not just how it is stored", () => {
-    const battery = describeAll(allParams()).find((d) => d.capability === "battery")!;
+    const battery = describeAll(allParams(), ["battery"]).find((d) => d.capability === "battery")!;
     expect(battery.reads.find((r) => r.accessor === "level")).toMatchObject({
       property: "battery",
       type: "number",
@@ -162,6 +174,17 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
       unit: "%",
       writable: false,
     });
+  });
+
+  it("gives a lock sole ownership of the `battery` property, the battery capability yielding its `level`", () => {
+    const paramIds = allParams();
+    const lockAndBattery = describeAll(paramIds, ["lock", "battery"]);
+    const owners = lockAndBattery.flatMap((cap) =>
+      cap.reads.filter((r) => r.property === "battery").map((r) => `${cap.accessor}.${r.accessor}`),
+    );
+    expect(owners).toEqual(["lock.battery"]);
+    const battery = lockAndBattery.find((d) => d.capability === "battery")!;
+    expect(battery.reads.some((r) => r.accessor === "temperature")).toBe(true);
   });
 
   it("describes a reported camera Wi-Fi signal as a read-only scalar without inferred units", () => {
@@ -235,7 +258,7 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
 
   it("describes a provider-gated method only on a device bound to that provider", () => {
     const withoutMedia = describeAll(allParams()).find((d) => d.capability === "camera")!;
-    const withMedia = describeAll(allParams(), {
+    const withMedia = describeAll(allParams(), ALL_CAPS, {
       snapshotStored: async () => Buffer.alloc(0),
     } as MediaProvider).find((d) => d.capability === "camera")!;
     const named = (d: typeof withMedia): string[] => [...d.actions.map((a) => a.name), ...d.undescribedActions];
@@ -251,7 +274,7 @@ describe("Device.describe — the manifest a caller renders from", () => {
   const record = { deviceType: 30, model: "T8114", category: "eufy_security", params: { 1101: "88", 1102: "1" } };
   const bound = (): Device => {
     const dev = Device.fromRecord("T8000P0000000000", record);
-    dev.bindActions(ctxWith(new Set([1101, 1102]), record.model), sink);
+    dev.bindActions({ ...ctxWith(new Set([1101, 1102]), record.model), capabilities: new Set(dev.capabilities) }, sink);
     return dev;
   };
 
