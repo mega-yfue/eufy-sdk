@@ -1,19 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
 import { StationKeyUnavailableError } from "../../../core/contracts.js";
-import { gatewayInfoCipherId, gatewayInfoRefusal } from "../codec.js";
+import { gatewayInfoCipherId, gatewayInfoRefused } from "../codec.js";
 import { P2PSession } from "../p2p-session.js";
 import { P2PCommandRouter, type P2PRouterDeps } from "../command-router.js";
 import { decryptFf09Frame, LOCK_API_COMMAND } from "../../ff09.js";
 import { connectedSession, traceCollector, type FakeP2PSession } from "./session-fixtures.js";
 
 const LOCK_SN = "T8506K0000000000";
+const HOMEBASE_SN = "T8010P0000000000";
 const P2P_DID = "XXXXXXX-000000-XXXXX";
 const ADMIN = "0000000000000000000000000000000000000000";
 
-/** The 36-byte `CMD_GATEWAYINFO` reply a Smart Lock C220 sends in the clear: int32 LE -103, then zeros. */
-function refusedGatewayInfo(): Buffer {
+/** A 36-byte `CMD_GATEWAYINFO` refusal: int32 LE `code`, then zeros. */
+function gatewayResult(code = -103): Buffer {
   const payload = Buffer.alloc(36);
-  payload.writeInt32LE(-103, 0);
+  payload.writeInt32LE(code, 0);
   return payload;
 }
 
@@ -24,22 +25,44 @@ function cipherGatewayInfo(cipherId: number): Buffer {
   return payload;
 }
 
-describe("gatewayInfoRefusal", () => {
-  it("reads the C220's reply as result -103, not as a cipher", () => {
-    const reply = refusedGatewayInfo();
+/** Hand a `CMD_GATEWAYINFO` reply to the session's negotiation. */
+function negotiate(session: P2PSession, payload: Buffer): void {
+  (session as unknown as { negotiateLevel2Key(payload: Buffer): void }).negotiateLevel2Key(payload);
+}
+
+/** Give the session an address and collect what it sends there. */
+function collectSends(session: P2PSession): Buffer[] {
+  const sent: Buffer[] = [];
+  const internals = session as unknown as {
+    connectAddress: unknown;
+    send: (addr: unknown, type: Buffer, payload: Buffer) => void;
+  };
+  internals.connectAddress = { host: "192.168.1.2", port: 1 };
+  internals.send = (_addr, _type, payload) => void sent.push(payload);
+  return sent;
+}
+
+describe("gatewayInfoRefused", () => {
+  it("reads result -103 as a refusal, not as a cipher", () => {
+    const reply = gatewayResult();
     expect(reply.subarray(0, 4).toString("hex")).toBe("99ffffff");
-    expect(gatewayInfoRefusal(reply)).toBe(-103);
+    expect(gatewayInfoRefused(reply)).toBe(true);
     // What the cipher read alone makes of it — the id nobody holds a key for.
     expect(gatewayInfoCipherId(reply)).toBe(65433);
   });
 
-  it("answers undefined for a reply that names a cipher", () => {
-    expect(gatewayInfoRefusal(cipherGatewayInfo(125))).toBeUndefined();
-    expect(gatewayInfoRefusal(cipherGatewayInfo(0))).toBeUndefined();
+  it("does not read a reply that names a cipher as a refusal", () => {
+    expect(gatewayInfoRefused(cipherGatewayInfo(125))).toBe(false);
+    expect(gatewayInfoRefused(cipherGatewayInfo(0))).toBe(false);
   });
 
-  it("answers undefined for a reply too short to carry a result", () => {
-    expect(gatewayInfoRefusal(Buffer.from([0x99, 0xff]))).toBeUndefined();
+  it("does not read any other negative result as a refusal", () => {
+    expect(gatewayInfoRefused(gatewayResult(-1))).toBe(false);
+    expect(gatewayInfoRefused(gatewayResult(-104))).toBe(false);
+  });
+
+  it("does not read a reply too short to carry a result as a refusal", () => {
+    expect(gatewayInfoRefused(Buffer.from([0x99, 0xff]))).toBe(false);
   });
 });
 
@@ -48,7 +71,7 @@ describe("a station that refuses level-2 at gateway info", () => {
     const { logger, traces } = traceCollector();
     const resolveCipherKey = vi.fn(async () => undefined);
     const session = new P2PSession({ stationSn: LOCK_SN, p2pDid: P2P_DID, logger, resolveCipherKey });
-    (session as unknown as { negotiateLevel2Key(payload: Buffer): void }).negotiateLevel2Key(refusedGatewayInfo());
+    negotiate(session, gatewayResult());
     return { session, traces, resolveCipherKey };
   };
 
@@ -67,32 +90,56 @@ describe("a station that refuses level-2 at gateway info", () => {
     });
   });
 
-  it("is not asked a second time", () => {
+  it("settles the one bounded re-ask on the next refusal", async () => {
     const { session } = refusedSession();
-    (session as unknown as { connectAddress: unknown }).connectAddress = { host: "192.168.1.2", port: 1 };
+    const sent = collectSends(session);
 
+    expect(session.repromptLevel2Key()).toBe(true);
+    const wait = session.awaitLevel2Key(60_000, "call");
+    negotiate(session, gatewayResult());
+
+    await expect(wait).resolves.toBe(false);
+    expect(sent).toHaveLength(1);
+    expect(session.refusedLevel2).toBe(true);
     expect(session.repromptLevel2Key()).toBe(false);
   });
 
   it("is not a refused station when the reply named a cipher", () => {
     const session = new P2PSession({ stationSn: LOCK_SN, p2pDid: P2P_DID, resolveCipherKey: async () => undefined });
-    (session as unknown as { negotiateLevel2Key(payload: Buffer): void }).negotiateLevel2Key(cipherGatewayInfo(7));
+    negotiate(session, cipherGatewayInfo(7));
 
     expect(session.refusedLevel2).toBe(false);
   });
 
-  it("frames a set-payload in the clear: signCode 0, header [01 n], the JSON as plaintext", () => {
-    const { session } = refusedSession();
-    const sent: Buffer[] = [];
-    const internals = session as unknown as {
-      connectAddress: unknown;
-      send: (addr: unknown, type: Buffer, payload: Buffer) => void;
-    };
-    internals.connectAddress = { host: "192.168.1.2", port: 1 };
-    internals.send = (_addr, _type, payload) => void sent.push(payload);
+  it("leaves any other negative result on the no-key path", () => {
+    const resolveCipherKey = vi.fn(async () => undefined);
+    const session = new P2PSession({ stationSn: LOCK_SN, p2pDid: P2P_DID, resolveCipherKey });
+    negotiate(session, gatewayResult(-1));
 
-    expect(session.sendSetPayloadInTheClear(1940, 0, ADMIN, { apiCommand: 6018 }, 0)).toBe(true);
-    expect(session.sendSetPayloadInTheClear(1940, 0, ADMIN, { apiCommand: 6018 }, 0)).toBe(true);
+    expect(session.refusedLevel2).toBe(false);
+    expect(resolveCipherKey).toHaveBeenCalledOnce();
+  });
+
+  it("withdraws the refusal when a later reply names a cipher", () => {
+    const { session } = refusedSession();
+    negotiate(session, cipherGatewayInfo(7));
+
+    expect(session.refusedLevel2).toBe(false);
+  });
+
+  it("is not a refused station once it holds the set-payload key", () => {
+    const { session } = refusedSession();
+    (session as unknown as { level2EcbKey: Buffer }).level2EcbKey = Buffer.alloc(16);
+
+    expect(session.refusedLevel2).toBe(false);
+  });
+
+  it("frames a control payload in the clear: signCode 0, header [01 n], the JSON as plaintext", () => {
+    const { session } = refusedSession();
+    const sent = collectSends(session);
+
+    expect(session.sendControlLevel2(1940, 0, ADMIN, { apiCommand: 6018 }, 0)).toBe(true);
+    expect(session.sendControlLevel2(1940, 0, ADMIN, { apiCommand: 6018 }, 0)).toBe(true);
 
     const [first, second] = sent as [Buffer, Buffer];
     expect(first.readUInt16LE(8)).toBe(1350); // CMD_SET_PAYLOAD
@@ -108,9 +155,17 @@ describe("a station that refuses level-2 at gateway info", () => {
     });
   });
 
-  it("refuses to frame anything with nowhere to send it", () => {
+  it("frames nothing with nowhere to send it", () => {
     const { session } = refusedSession();
-    expect(session.sendSetPayloadInTheClear(1940, 0, ADMIN, {}, 0)).toBe(false);
+    expect(session.sendControlLevel2(1940, 0, ADMIN, {}, 0)).toBe(false);
+  });
+
+  it("frames nothing in the clear on a keyless session that was not refused", () => {
+    const session = new P2PSession({ stationSn: LOCK_SN, p2pDid: P2P_DID, resolveCipherKey: async () => undefined });
+    const sent = collectSends(session);
+
+    expect(session.sendControlLevel2(1940, 0, ADMIN, {}, 0)).toBe(false);
+    expect(sent).toHaveLength(0);
   });
 });
 
@@ -118,26 +173,25 @@ describe("an ff09 lock command on a station that refused level-2", () => {
   interface Session extends FakeP2PSession {
     refusedLevel2: boolean;
     sendControlLevel2: ReturnType<typeof vi.fn>;
-    sendSetPayloadInTheClear: ReturnType<typeof vi.fn>;
   }
 
-  const makeRouter = (refused: boolean) => {
+  const makeRouter = (refused: boolean, { model = "T8506", attached = false } = {}) => {
     const session = connectedSession(!refused) as Session;
     session.refusedLevel2 = refused;
     session.sendControlLevel2 = vi.fn(() => true);
-    session.sendSetPayloadInTheClear = vi.fn(() => true);
+    const parentSn = attached ? HOMEBASE_SN : LOCK_SN;
+    const lock = {
+      sn: LOCK_SN,
+      model,
+      stationSn: parentSn,
+      channel: 0,
+      p2pDid: P2P_DID,
+      raw: { device_channel: 0, member: { admin_user_id: ADMIN } },
+    };
+    const homeBase = { sn: HOMEBASE_SN, model: "T8010", stationSn: HOMEBASE_SN, channel: 0, p2pDid: P2P_DID, raw: {} };
     const deps: P2PRouterDeps = {
       mega: {} as P2PRouterDeps["mega"],
-      listDevices: () =>
-        [
-          {
-            sn: LOCK_SN,
-            stationSn: LOCK_SN,
-            channel: 0,
-            p2pDid: P2P_DID,
-            raw: { device_channel: 0, member: { admin_user_id: ADMIN } },
-          },
-        ] as never,
+      listDevices: () => (attached ? [homeBase, lock] : [lock]) as never,
       ensureDevices: async () => {},
       onConnect: () => {},
       onClose: () => {},
@@ -146,7 +200,7 @@ describe("an ff09 lock command on a station that refused level-2", () => {
       onFrame: () => {},
     };
     const router = new P2PCommandRouter(deps);
-    (router as unknown as { manager: { register(sn: string, s: unknown): void } }).manager.register(LOCK_SN, session);
+    (router as unknown as { manager: { register(sn: string, s: unknown): void } }).manager.register(parentSn, session);
     return { router, session };
   };
 
@@ -159,14 +213,13 @@ describe("an ff09 lock command on a station that refused level-2", () => {
     deviceSn: LOCK_SN,
   } as const;
 
-  it("sends the unlock once, in the clear, on the lock's channel", async () => {
+  it("replays the unlock on the lock's channel, as every other unacknowledged command", async () => {
     const { router, session } = makeRouter(true);
 
     await router.dispatchCommand(LOCK_SN, unlock);
 
-    expect(session.sendControlLevel2).not.toHaveBeenCalled();
-    expect(session.sendSetPayloadInTheClear).toHaveBeenCalledTimes(1);
-    const [cmd, channel, , payload, mValue3] = session.sendSetPayloadInTheClear.mock.calls[0]!;
+    expect(session.sendControlLevel2).toHaveBeenCalledTimes(5);
+    const [cmd, channel, , payload, mValue3] = session.sendControlLevel2.mock.calls[0]!;
     expect([cmd, channel, mValue3]).toEqual([1940, 0, 0]);
     expect(payload.apiCommand).toBe(LOCK_API_COMMAND.ON_OFF_LOCK);
     const plain = decryptFf09Frame({
@@ -178,13 +231,15 @@ describe("an ff09 lock command on a station that refused level-2", () => {
     expect(plain.length).toBeGreaterThan(0);
   });
 
-  it("still seals the command level-2 on a station that holds a key", async () => {
-    const { router, session } = makeRouter(false);
+  it.each([
+    ["another model", { model: "T8531" }],
+    ["a HomeBase-attached lock", { attached: true }],
+  ])("still refuses on %s", async (_name, scope) => {
+    const { router, session } = makeRouter(true, scope);
 
-    await router.dispatchCommand(LOCK_SN, unlock);
+    await expect(router.dispatchCommand(LOCK_SN, unlock)).rejects.toBeInstanceOf(StationKeyUnavailableError);
 
-    expect(session.sendSetPayloadInTheClear).not.toHaveBeenCalled();
-    expect(session.sendControlLevel2).toHaveBeenCalled();
+    expect(session.sendControlLevel2).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -198,6 +253,6 @@ describe("an ff09 lock command on a station that refused level-2", () => {
 
     await expect(router.dispatchCommand(LOCK_SN, command)).rejects.toBeInstanceOf(StationKeyUnavailableError);
 
-    expect(session.sendSetPayloadInTheClear).not.toHaveBeenCalled();
+    expect(session.sendControlLevel2).not.toHaveBeenCalled();
   });
 });

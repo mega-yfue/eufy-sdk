@@ -171,18 +171,16 @@ export function gatewayInfoCipherId(gwPayload: Buffer): number {
   return gwPayload.length >= 2 ? gwPayload.readUInt16LE(0) : 0;
 }
 
+/** The int32 result a `CMD_GATEWAYINFO` reply opens with when the device refuses level-2. */
+const GATEWAY_LEVEL2_REFUSED = -103;
+
 /**
- * The negative result code a device answers `CMD_GATEWAYINFO` (1100) with in place of a cipher, or
- * `undefined` when the reply names one.
- *
- * Measured on a Smart Lock C220 (T8506): a 36-byte reply in the clear opening `99 ff ff ff`, int32 LE
- * `-103`, which {@link gatewayInfoCipherId} would otherwise read as `cipher_id` 65433 and look up in vain.
- * A real cipher reply keeps a `cipher_id` in its low two bytes and never sets the int32's sign bit.
+ * Whether a `CMD_GATEWAYINFO` (1100) reply is a level-2 refusal: int32 LE {@link GATEWAY_LEVEL2_REFUSED} (`99 ff
+ * ff ff`) in place of a cipher. {@link gatewayInfoCipherId} reads those bytes as `cipher_id` 65433. Any other
+ * opening is not a refusal.
  */
-export function gatewayInfoRefusal(gwPayload: Buffer): number | undefined {
-  if (gwPayload.length < 4) return undefined;
-  const code = gwPayload.readInt32LE(0);
-  return code < 0 ? code : undefined;
+export function gatewayInfoRefused(gwPayload: Buffer): boolean {
+  return gwPayload.length >= 4 && gwPayload.readInt32LE(0) === GATEWAY_LEVEL2_REFUSED;
 }
 
 /**

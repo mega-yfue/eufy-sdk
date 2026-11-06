@@ -142,6 +142,9 @@ const OWN_LIVE_SESSION_MODELS: ReadonlySet<string> = new Set(["T8030"]);
 /** Models whose speaker plays `aac-eld` talkback; every other model talks `aac-lc`. */
 const ELD_TALKBACK_MODELS: ReadonlySet<string> = new Set(["T8410C"]);
 
+/** Models whose own-session `ff09` frames go in the clear once the station refuses level-2. */
+const CLEAR_FF09_MODELS: ReadonlySet<string> = new Set(["T8506"]);
+
 /**
  * The codec a camera's speaker plays: `aac-eld` when the first audio frame `consumer` delivers is `aac-eld`, otherwise
  * `aac-lc`. The `timeoutMs` wait starts at the consumer's first frame of either kind, so a cold source's warm-up is not
@@ -1695,8 +1698,8 @@ export class P2PCommandRouter {
    * Replaced at most once per resolution, so a station whose replacement is silent too is returned rather
    * than closed again.
    *
-   * `clearFallback` hands over a session whose station {@link P2PSession.refusedLevel2} instead of throwing —
-   * see {@link sendFf09Envelope}.
+   * `clearFallback` hands over a session whose station {@link P2PSession.refusedLevel2} instead of throwing, for
+   * a standalone device of a model in {@link CLEAR_FF09_MODELS}.
    */
   private async resolveSession(
     sn: string,
@@ -1769,7 +1772,12 @@ export class P2PCommandRouter {
       if (!ready && session.repromptLevel2Key()) {
         ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call", sender), opts.signal);
       }
-      if (!ready && !(opts.clearFallback && session.refusedLevel2)) throw new StationKeyUnavailableError(parentSn);
+      const sendsClear =
+        opts.clearFallback &&
+        !homeBaseAttached &&
+        CLEAR_FF09_MODELS.has(this.recordFor(sn)?.model ?? "") &&
+        session.refusedLevel2;
+      if (!ready && !sendsClear) throw new StationKeyUnavailableError(parentSn);
     }
     return { session, parentSn, channel, accountId, homeBaseAttached };
   }
@@ -2087,28 +2095,6 @@ export class P2PCommandRouter {
   private static readonly KEYED_REFUSAL_TWIN_MS = 500;
 
   /**
-   * Send one `ff09` frame's `1940` TRANSFER_PAYLOAD envelope as a `set-payload` (1350), `mValue3=0`, on the
-   * lock's resolved channel: level-2 through {@link sendSetPayloadEnvelope}, or once in the clear on a session
-   * whose station {@link P2PSession.refusedLevel2} — the Smart Lock C220 (T8506), which has no level-2 key to
-   * offer and answers its `ff09` commands only in the clear. One send there, not the level-2 replay: the
-   * frame's `seq_num` is spent by the first copy, so the lock refuses a repeat as out of sequence.
-   */
-  private async sendFf09Envelope(
-    sn: string,
-    payload: Record<string, unknown>,
-    resolved: ResolvedSession,
-  ): Promise<void> {
-    const { session, channel, accountId } = resolved;
-    if (session.refusedLevel2) {
-      if (!session.sendSetPayloadInTheClear(CMD_TRANSFER_PAYLOAD, channel, accountId, payload, 0)) {
-        throw new Error(`set-payload cmd ${CMD_TRANSFER_PAYLOAD} for ${sn} was never sent (session not connected)`);
-      }
-      return;
-    }
-    await this.sendSetPayloadEnvelope(sn, CMD_TRANSFER_PAYLOAD, payload, channel, 0, resolved);
-  }
-
-  /**
    * **`ff09-actuate` intent** — build the `ff09` AES-128-CBC frame ({@link buildFf09Frame}, shared with the
    * MQTT transport — see `transport/ff09.ts`) and dispatch it in the `1940` TRANSFER_PAYLOAD envelope
    * (`{apiCommand, lock_payload, seq_num, time}`) as a `set-payload` (1350), `mValue3=0`, on the lock's
@@ -2124,7 +2110,14 @@ export class P2PCommandRouter {
       shortUserId: cmd.shortUserId,
       deviceSn: cmd.deviceSn,
     });
-    await this.sendFf09Envelope(sn, ff09TransferPayload(frame), resolved);
+    await this.sendSetPayloadEnvelope(
+      sn,
+      CMD_TRANSFER_PAYLOAD,
+      ff09TransferPayload(frame),
+      resolved.channel,
+      0,
+      resolved,
+    );
   }
 
   /**
@@ -2243,7 +2236,14 @@ export class P2PCommandRouter {
       session.on("data", onData);
     });
     try {
-      await this.sendFf09Envelope(sn, ff09TransferPayload(query), resolved);
+      await this.sendSetPayloadEnvelope(
+        sn,
+        CMD_TRANSFER_PAYLOAD,
+        ff09TransferPayload(query),
+        resolved.channel,
+        0,
+        resolved,
+      );
     } catch (e) {
       cleanup();
       throw e;

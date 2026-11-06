@@ -56,7 +56,7 @@ import {
   deriveLevel2KeyFromRsaGatewayInfo,
   frameMessage,
   gatewayInfoCipherId,
-  gatewayInfoRefusal,
+  gatewayInfoRefused,
   hasHeader,
   p2pCommandEncryptionKey,
   parseDataFrameHeader,
@@ -572,8 +572,8 @@ export class P2PSession extends EventEmitter {
   private readonly liveStartedChannels = new Map<number, "l1" | "l2" | "clear">();
   /** The `cipher_id` this connection's `CMD_GATEWAYINFO` reply named, once its negotiation has read it. */
   private gatewayCipherId?: number;
-  /** The negative result this connection's `CMD_GATEWAYINFO` reply carried instead of a cipher — see {@link gatewayInfoRefusal}. */
-  private gatewayRefusal?: number;
+  /** Whether this connection's latest `CMD_GATEWAYINFO` reply was a refusal — see {@link gatewayInfoRefused}. */
+  private gatewayRefused = false;
   /** The `n` of the last `[0x01, n]` header this connection sent in the clear — see {@link nextClearCommandBytes}. */
   private clearCommandCount = 0;
   private readonly unackedLiveStarts = new Map<number, RetainedDatagram & { channel: number }>();
@@ -746,13 +746,11 @@ export class P2PSession extends EventEmitter {
    *
    * Bounded to one extra ask per connection, so a burst of such operations cannot turn a silent station into a
    * flood, and answers whether it asked — `false` when a key is already held, when nothing can negotiate one,
-   * when the ask was already spent, when the station refused level-2 outright and so answers a second ask the
-   * same way, or when there is nowhere to send it. Callers with a level-1 path must not use this: re-prompting
-   * on their behalf would be noise for an answer they do not need.
+   * when the ask was already spent, or when there is nowhere to send it. Callers with a level-1 path must not
+   * use this: re-prompting on their behalf would be noise for an answer they do not need.
    */
   repromptLevel2Key(): boolean {
     if (this.closed || this.level2KeyServes("set-payload") || this.level2Reprompted) return false;
-    if (this.gatewayRefusal !== undefined) return false;
     if (!this.cfg.resolveCipherKey || !this.connectAddress) return false;
     this.level2Reprompted = true;
     this.level2Pending = true;
@@ -781,14 +779,13 @@ export class P2PSession extends EventEmitter {
    * Every outcome settles the wait in {@link awaitLevel2Key}, so a later command is told at once rather than
    * left to time out against a key that is not coming. Settling also re-opens the negotiation, so a later
    * GATEWAYINFO reply in the same connection generation runs it again; a lookup that completes after its
-   * generation ended settles nothing. A reply carrying a {@link gatewayInfoRefusal} names no cipher, so it
-   * settles at once with no cloud lookup.
+   * generation ended settles nothing. A {@link gatewayInfoRefused} reply names no cipher, so it settles at once
+   * with no cloud lookup, and a later reply naming a cipher withdraws the refusal.
    */
   private negotiateLevel2Key(gwPayload: Buffer): void {
-    const refusal = gatewayInfoRefusal(gwPayload);
-    if (refusal !== undefined) {
-      this.gatewayRefusal = refusal;
-      this.logger.debug(`[p2p] ${this.cfg.stationSn} gateway info refused level-2 (result ${refusal})`);
+    this.gatewayRefused = gatewayInfoRefused(gwPayload);
+    if (this.gatewayRefused) {
+      this.logger.debug(`[p2p] ${this.cfg.stationSn} gateway info refused level-2`);
       this.trace({ phase: "level2-unavailable", reason: "gateway-refused" });
       this.settleLevel2();
       return;
@@ -922,7 +919,7 @@ export class P2PSession extends EventEmitter {
       this.level2Negotiating = false;
       this.level2Reprompted = false;
       this.gatewayCipherId = undefined;
-      this.gatewayRefusal = undefined;
+      this.gatewayRefused = false;
       this.clearCommandCount = 0;
     }
 
@@ -1579,36 +1576,11 @@ export class P2PSession extends EventEmitter {
   }
 
   /**
-   * Whether this connection's station refused level-2 at `CMD_GATEWAYINFO` (a negative result in place of a
-   * cipher — see {@link gatewayInfoRefusal}) and holds no key. Measured on a Smart Lock C220 (T8506): an `ff09`
-   * settings GET, lock and unlock sent in the clear were each answered with status 0, and the same GET sealed
-   * level-1 was ignored.
+   * Whether this connection's station answered `CMD_GATEWAYINFO` with a refusal ({@link gatewayInfoRefused}) and
+   * no key that frames a set-payload is held.
    */
   get refusedLevel2(): boolean {
-    return !this.level2Key && this.gatewayRefusal !== undefined;
-  }
-
-  /**
-   * Send a `CMD_SET_PAYLOAD` (1350) JSON command in the clear: signCode 0, header bytes from
-   * {@link nextClearCommandBytes}, the same envelope {@link sendControlLevel2} seals. For a station that
-   * {@link refusedLevel2}. Returns `false` when there is nowhere to send it.
-   */
-  sendSetPayloadInTheClear(
-    cmd: number,
-    channel: number,
-    accountId: string,
-    payload: Record<string, unknown>,
-    mValue3: number = cmd,
-  ): boolean {
-    if (!this.connectAddress) return false;
-    const json = JSON.stringify({ account_id: accountId, cmd, mChannel: channel, mValue3, payload });
-    const data = Buffer.concat([
-      buildCommandHeader(this.seqNumber, CMD_SET_PAYLOAD),
-      buildRawCommandPayload(Buffer.from(json, "utf-8"), channel, 0, this.nextClearCommandBytes(), 0),
-    ]);
-    this.seqNumber = (this.seqNumber + 1) & 0xffff;
-    this.send(this.connectAddress, RequestMessageType.DATA, data);
-    return true;
+    return this.gatewayRefused && !this.level2KeyServes("set-payload");
   }
 
   /**
@@ -1621,6 +1593,8 @@ export class P2PSession extends EventEmitter {
    * On a session holding only the AES-128-ECB level-2 key of an RSA cipher, the frame is the level-1
    * layout ({@link sendRawLevel1Bytes}) sealed under that key at encryption type 2: the encryption-type
    * byte names the key the body is sealed with (1 = level-1 key, 2 = the negotiated key).
+   *
+   * On a session that {@link refusedLevel2}, the same envelope goes in the clear ({@link clearCommandPayload}).
    */
   sendControlLevel2(
     cmd: number,
@@ -1629,7 +1603,7 @@ export class P2PSession extends EventEmitter {
     payload: Record<string, unknown>,
     mValue3: number = cmd,
   ): boolean {
-    if (!this.connectAddress || !this.level2KeyServes("set-payload")) return false;
+    if (!this.connectAddress || !(this.level2KeyServes("set-payload") || this.refusedLevel2)) return false;
     const value = Buffer.from(
       JSON.stringify({ account_id: accountId, cmd, mChannel: channel, mValue3, payload }),
       "utf-8",
@@ -1639,8 +1613,10 @@ export class P2PSession extends EventEmitter {
       const body = this.encryptLevel2(value);
       if (!body) return false;
       sealed = buildRawCommandPayload(body, channel, 8, [0x08, 0x00], 0);
+    } else if (this.level2EcbKey) {
+      sealed = buildRawCommandPayload(encryptP2PData(paddingP2PData(value), this.level2EcbKey), channel, 2);
     } else {
-      sealed = buildRawCommandPayload(encryptP2PData(paddingP2PData(value), this.level2EcbKey!), channel, 2);
+      sealed = this.clearCommandPayload(value, channel);
     }
     const data = Buffer.concat([buildCommandHeader(this.seqNumber, CMD_SET_PAYLOAD), sealed]);
     this.seqNumber = (this.seqNumber + 1) & 0xffff;
@@ -2194,8 +2170,13 @@ export class P2PSession extends EventEmitter {
    */
   private databasePayload(value: string, channel: number): Buffer {
     return !this.level2Key && this.sendsInTheClear()
-      ? buildRawCommandPayload(Buffer.from(value, "utf-8"), channel, 0, this.nextClearCommandBytes(), 0)
+      ? this.clearCommandPayload(Buffer.from(value, "utf-8"), channel)
       : buildStringCommandPayload(value, channel, this.level1Key, 1);
+  }
+
+  /** A command payload in the clear: signCode 0, encryption type 0, header bytes from {@link nextClearCommandBytes}. */
+  private clearCommandPayload(value: Buffer, channel: number): Buffer {
+    return buildRawCommandPayload(value, channel, 0, this.nextClearCommandBytes(), 0);
   }
 
   /**
