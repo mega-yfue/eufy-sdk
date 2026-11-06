@@ -648,8 +648,10 @@ The native NVR route reports `["1080p"]`. An omitted selection preserves the def
 output; it does not promise a particular maximum resolution.
 
 ```ts
-const stream = await cam.live({ view: 0, outputResolution: "1080p" });
-stream.stop();
+if (cam.live && cam.outputResolutions?.().includes("1080p")) {
+  const stream = await cam.live({ view: 0, outputResolution: "1080p" });
+  stream.stop();
+}
 ```
 
 The NVR start request carries `stitch_resolution: {width: 1920, height: 1080}`.
