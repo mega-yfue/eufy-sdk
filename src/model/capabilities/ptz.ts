@@ -1,7 +1,7 @@
 import { DeviceType } from "../device-types.js";
 import { setJson, setPayload } from "./access.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
-import type { CapabilityModule, InboundSignal, CapabilityEvent, CommandContext } from "./types.js";
+import type { CapabilityModule, InboundSignal, CapabilityEvent, CommandContext, AvailabilityContext } from "./types.js";
 import type { Command } from "../../core/contracts.js";
 
 /**
@@ -47,6 +47,8 @@ export const PTZ_CMD = {
    * inside the smart lock's `601x` block, so the shared param dictionary labels it `lockParam` — an id
    * reused across product lines, and the camera's meaning is the observed one. */
   PTZ_ROTATE_SPEED: 6015,
+  /** Indoor pan/tilt motion tracking; reported by the T8410. */
+  MOTION_TRACKING: 6016,
 } as const;
 
 /**
@@ -342,8 +344,8 @@ function isDirection(v: unknown): v is PtzDirection {
  *
  * Movement is command-driven, so almost every entry is a `method`: `rotate` takes a direction plus an
  * optional speed, the four compass verbs take nothing, `preset()` returns a whole sub-API, and `zoom`
- * is gated on the device having a second lens. `rotationSpeed` is the one value member — the camera's
- * own step speed, which it stores. There is no position member: no device reports where it is pointed
+ * is gated on the device having a second lens. `motionTracking` and `rotationSpeed` are value members — the camera's
+ * stored tracking toggle and step speed. There is no position member: no device reports where it is pointed
  * as a parameter. Position arrives only while the camera moves, as the `ptzNotify` event {@link PTZ}
  * decodes from a live frame.
  *
@@ -352,6 +354,37 @@ function isDirection(v: unknown): v is PtzDirection {
  * @internal
  */
 export const PTZ_MEMBERS = {
+  /** Automatic motion tracking on the T8410, independent of motion detection. */
+  motionTracking: {
+    param: PTZ_CMD.MOTION_TRACKING,
+    type: "bool",
+    kind: "boolean",
+    provenance: "verified",
+    description:
+      "Automatic motion tracking, independent of motion detection. Verified on a standalone T8410: " +
+      "the 1700 control wrapper changes reported param 6016 to 1 when enabled and back to 0 when disabled. " +
+      "Readback can lag the command; a sent frame is not immediate device acknowledgement.",
+    available: (ctx: AvailabilityContext) => ctx.model === "T8410",
+    requiresRead: true,
+    write: (value, ctx) => {
+      if (typeof value !== "boolean") return undefined;
+      return setJson(
+        PTZ_CMD.MOTION_TRACKING,
+        {
+          enable: 0,
+          index: 0,
+          status: 0,
+          type: 0,
+          value: value ? 1 : 0,
+          voiceID: 0,
+          zonecount: 0,
+          transaction: String(Date.now()),
+        },
+        ctx,
+      );
+    },
+  },
+
   /**
    * How fast a rotate STEP travels, on the app's own three-position control: `1` slow, `3` mid, `5`
    * fast. A `scalar` rather than an enum — the endpoints and the midpoint are observed, so 2 and 4 are
