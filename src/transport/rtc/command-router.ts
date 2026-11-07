@@ -673,7 +673,8 @@ export class RtcCommandRouter {
   /**
    * One bounded bring-up: the session is up when its command channel opens, and it fails, with the
    * session closed and every listener gone, when `connect()` throws, the session closes first (rejecting
-   * with the failure that closed it, when it carries one), or {@link CONNECT_TIMEOUT_MS} passes. A single
+   * with the failure that closed it, when it carries one), or {@link CONNECT_TIMEOUT_MS} passes, naming the
+   * stage the session reached and its peer's last state. A single
    * promise, so an early failure cannot leave a second one rejecting unheard.
    */
   private bringUp(sn: string, session: RtcSession): Promise<void> {
@@ -701,7 +702,13 @@ export class RtcCommandRouter {
       const onClose = (err?: Error) =>
         finish(err ?? new Error(`rtc: ${sn} session closed before the command channel opened`));
       const timer = setTimeout(
-        () => finish(new Error(`rtc: ${sn} did not come up within ${CONNECT_TIMEOUT_MS}ms`)),
+        () =>
+          finish(
+            new Error(
+              `rtc: ${sn} did not come up within ${CONNECT_TIMEOUT_MS}ms ` +
+                `(stage ${session.stage}, peer ${session.peerState ?? "not started"})`,
+            ),
+          ),
         CONNECT_TIMEOUT_MS,
       );
       session.once("connected", onConnected);
