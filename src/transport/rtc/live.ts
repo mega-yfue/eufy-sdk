@@ -6,6 +6,11 @@
  *  - Start is inner `cmd 1003` in a `1350` SET_PAYLOAD on the station channel `255`. The header byte the
  *    codec names `isResponse` carries the portal's `streamId`, `1` for a live view, and `chn_list` is an
  *    array of `{index, chn, sensor, isUps, isClicked}` objects. Stop is inner `cmd 1004`, the same way.
+ *  - The portal's cloud NVR start includes `stitch_resolution: {width, height}` when the live grid
+ *    resolution is set to 1920×1080 or 3840×2160. Auto omits the field in the normal path. The portal
+ *    also sends 1920×1080 when its decoder reports unsupported resolution (`streamClipPlayId === 1`).
+ *    See the {@link https://security.eufy.com/js/player-tools-WmjL7uOP.js | portal start builder `sS`}
+ *    and {@link https://security.eufy.com/js/HomeBlock-vX9zg3Dc.js | live-grid resolution selector}.
  *  - Video arrives on the live link as portal packets `1300` on channel `100 + play id`; a single-camera
  *    view is play id `1`, whatever the camera's own channel. Each body is a fixed 22-byte media header,
  *    then the Annex B video it declares. See {@link parseMediaBody}.
@@ -17,7 +22,7 @@
  * shared live source's.
  */
 import { EventEmitter } from "node:events";
-import type { LiveAudioFrame, LiveStreamHandle, LiveVideoFrame } from "../../core/contracts.js";
+import type { LiveAudioFrame, LiveStreamHandle, LiveVideoFrame, MediaOutputResolution } from "../../core/contracts.js";
 import type { Logger } from "../../core/logger.js";
 import { AUDIO_CODECS, AUDIO_HEADER_LEN, AUDIO_TYPE_OFFSET, CMD_AUDIO_FRAME } from "../p2p/audio-frame.js";
 import { hasIdr } from "../p2p/annexb.js";
@@ -79,6 +84,8 @@ export interface RtcLiveOptions {
   nvr?: boolean;
   /** Optical view carried by the NVR start request; defaults to 0. */
   view?: number;
+  /** NVR live-start output geometry; absence sends no size override. */
+  outputResolution?: MediaOutputResolution;
 }
 
 /**
@@ -143,6 +150,9 @@ export class RtcLiveStream extends EventEmitter implements LiveStreamHandle {
             audio_chn: nvr ? this.opts.channel : -1,
             streamtype: 2,
             stitch_mode: 1,
+            ...(nvr && this.opts.outputResolution === "1080p"
+              ? { stitch_resolution: { width: 1920, height: 1080 } }
+              : {}),
             chn_list: [{ index: 0, chn: this.opts.channel, sensor: this.opts.view ?? 0, isUps: 0, isClicked: true }],
             pip_cord: { x1: 0, y1: 0, x2: 0, y2: 0 },
             station_video_type: 6,
