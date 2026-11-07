@@ -21,6 +21,7 @@
  * capture. The frame layout is the block comment above.
  */
 import { createDecipheriv } from "node:crypto";
+import { hasIdr, sniffAnnexbCodec } from "./annexb.js";
 import { eciesUnwrap } from "./codec.js";
 
 /** AAD used for the AES-256-GCM body cipher of every video frame, and of a recording's audio. */
@@ -174,7 +175,7 @@ export class VideoFrameDecoder {
 export interface AssembledAccessUnit {
   /** Unsigned 32-bit header timestamp from the first frame of this access unit. */
   sourceTimestamp: number;
-  /** True when the unit's own header flagged it a keyframe — a point a consumer may begin decoding at. */
+  /** True when header bit 0 is set, or (bit 0 clear) the payload contains an IDR — a point to begin decoding at. */
   keyframe: boolean;
   /** Frame width the unit's header declared. */
   width: number;
@@ -309,11 +310,12 @@ export function beginsAccessUnit(body: Buffer): boolean {
   return body[2] === 1 || (body[2] === 0 && body[3] === 1);
 }
 
-/** The delivered shape of a unit: its header's flags and geometry, and the payload as assembled. */
+/** Assemble the delivered unit; `keyframe` is resolved per {@link AssembledAccessUnit.keyframe}. */
 function unitOf(header: VideoFrameHeader, data: Buffer): AssembledAccessUnit {
+  const codec = header.keyframe ? undefined : sniffAnnexbCodec(data);
   return {
     sourceTimestamp: header.timestamp,
-    keyframe: header.keyframe,
+    keyframe: header.keyframe || (codec !== undefined && hasIdr(data, codec)),
     width: header.width,
     height: header.height,
     data,
