@@ -6,6 +6,11 @@
  *  - Start is inner `cmd 1003` in a `1350` SET_PAYLOAD on the station channel `255`. The header byte the
  *    codec names `isResponse` carries the portal's `streamId`, `1` for a live view, and `chn_list` is an
  *    array of `{index, chn, sensor, isUps, isClicked}` objects. Stop is inner `cmd 1004`, the same way.
+ *  - The portal's cloud NVR start includes `stitch_resolution: {width, height}` when the live grid
+ *    resolution is set to 1920×1080 or 3840×2160. Auto omits the field in the normal path. The portal
+ *    also sends 1920×1080 when its decoder reports unsupported resolution (`streamClipPlayId === 1`).
+ *    See the {@link https://security.eufy.com/js/player-tools-WmjL7uOP.js | portal start builder `sS`}
+ *    and {@link https://security.eufy.com/js/HomeBlock-vX9zg3Dc.js | live-grid resolution selector}.
  *  - Video arrives on the live link as portal packets `1300` on channel `100 + play id`; a single-camera
  *    view is play id `1`, whatever the camera's own channel. Each body is a fixed 22-byte media header,
  *    then the Annex B video it declares. See {@link parseMediaBody}.

@@ -142,11 +142,10 @@ ladder (`640x360`, `960x540`, `1280x720`, `1600x1200`, `1920x1080`, `2304x1296`,
 rather than only climbing it; the other four held one geometry throughout. The ladder is not fixed per
 model.
 
-Two things this does NOT establish. Whether the number of consumers influences it: a single-consumer
-session produced more changes than a two-consumer one, but on a different camera, so nothing here is a
-controlled comparison. And whether it can be pinned: no capability the SDK models sets a per-session cap —
-the camera's video-quality member is a persistent recording tier — but that is read off the modelled
-surface rather than measured against a device.
+The measurements do not isolate the effect of consumer count. A single-consumer session produced more
+changes than a two-consumer one on a different camera. The native NVR route can request 1080p for an
+individual pull, as described under [NVR output resolution](#nvr-output-resolution). Other routes retain
+their own geometry selection. The camera's video-quality member controls a persistent recording tier.
 
 An encoder cannot change input geometry mid-stream, so a caller adapting this source to a fixed output
 has to tear down and rebuild on every change. `video-config` is how it learns:
