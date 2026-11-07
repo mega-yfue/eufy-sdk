@@ -801,24 +801,7 @@ export class P2PCommandRouter {
    * control here is.
    */
   async rebootStation(sn: string): Promise<void> {
-    await this.sendBySessionLevel(sn, {
-      l2: (resolved) =>
-        this.replayLevel2Send(
-          sn,
-          `reboot ${sn}`,
-          ({ session, accountId }) =>
-            session.sendRawLevel2Bytes(buildDirectBinaryBody(0, accountId), 255, P2P_ENVELOPE.RESTART_HUB, 8),
-          resolved,
-        ),
-      l1: (resolved) =>
-        this.replayLevel2Send(
-          sn,
-          `reboot ${sn}`,
-          ({ session, accountId }) =>
-            session.sendRawLevel1Bytes(buildDirectBinaryBody(0, accountId), 255, P2P_ENVELOPE.RESTART_HUB),
-          resolved,
-        ),
-    });
+    return this.sendStationScalar(sn, P2P_ENVELOPE.RESTART_HUB, 0, 255, "auto");
   }
 
   /**
@@ -1820,8 +1803,8 @@ export class P2PCommandRouter {
    * ({@link buildDirectBinaryBody} with no `channel`) on an EXPLICIT channel, signCode 8. The
    * HomeBase's own controls ride the station broadcast channel 255 (alarm/speaker volume 1235).
    *
-   * `form` `"auto"` seals it as {@link rebootStation} does: level-2 on a keyed session, the same body
-   * sealed level-1 on a keyless one. Absent, the send waits for the level-2 key.
+   * `form` `"auto"` seals it at the session's level, as {@link sendBySessionLevel} defines it: level-2 on a
+   * keyed session, the same body sealed level-1 on a keyless one. Absent, the send waits for the level-2 key.
    */
   private async sendStationScalar(
     sn: string,

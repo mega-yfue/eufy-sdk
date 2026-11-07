@@ -156,10 +156,7 @@ export type PtzDirection = (typeof PtzDirection)[keyof typeof PtzDirection];
 
 /** Pan-tilt rotate motion → `rotate_type` (the on-wire code). Not re-exported by the barrel —
  * stays internal to the capability. Confirmed on hardware (T8425): 1=left, 2=right, 3=up, 4=down.
- * `sweep` (0) is a full 360° pan, the camera's room scan: captured from the app's 360 button on a
- * T8410, a T8170 and a T8E00, identical on all three as
- * `{"commandType":6030,"data":{"cmd_type":1,"rotate_type":0,"zoom":1.0}}`; a dispatch of that frame
- * panned the T8410 through a full circle. */
+ * `sweep` (0) is a full 360° pan (room scan), from the app's 360 button. */
 export const PTZ_ROTATE = { sweep: 0, left: 1, right: 2, up: 3, down: 4 } as const;
 
 /** Reported params that prove a second (telephoto) lens — the digital zoom (a dual-camera command)
@@ -189,6 +186,9 @@ const PRESET_EVIDENCE_PARAMS = [1029, 6090, 6091, 6092, 6210];
  * preset params prove nothing.
  */
 const FIXED_LENS_MODELS: ReadonlySet<string> = new Set(["T8134"]);
+
+/** Models whose app 360 button was captured sending `rotate_type` 0; `rotate360` binds on these alone. */
+const ROTATE360_MODELS: ReadonlySet<string> = new Set(["T8410", "T8170", "T8E00"]);
 
 /**
  * Pan-tilt rotate as a transport-neutral {@link Command}. CONFIRMED wire command (captured on
@@ -423,6 +423,7 @@ export const PTZ_MEMBERS = {
       (): Promise<void> =>
         sink.dispatch(rotateCommand("sweep", ctx)),
     "Pan a full 360° (room scan).",
+    (ctx) => ROTATE360_MODELS.has(ctx.model ?? ""),
   ),
 
   /**
