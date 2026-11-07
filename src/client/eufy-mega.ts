@@ -928,13 +928,14 @@ export class EufyMega extends EventEmitter {
    * receives nothing until a command dials it again. The first reopen runs at once; one that fails is
    * retried after {@link STATION_REOPEN_MIN_MS}, doubling up to {@link STATION_REOPEN_MAX_MS}, until the
    * session connects or the generation ends. One reopen is pending per station at a time, and each failure
-   * is reported once, by {@link P2PCommandRouter.ensureStation}.
+   * is reported once, by {@link P2PCommandRouter.ensureStation}. A HomeBase S1 Pro (T9000) answers no P2P
+   * lookup, so it is never reopened.
    */
   private reopenWiredStation(sn: string): void {
     const generation = this.realtimeGeneration;
     if (generation?.epoch !== this.realtimeEpoch) return;
     if (this.p2p.stationKeyOf(sn) !== sn || !this.registry.p2pDevices().some((d) => d.sn === sn)) return;
-    if (this.stationPower(sn) !== "wired") return;
+    if (this.stationPower(sn) !== "wired" || this.stationOf(sn).t9000) return;
     const reopen = this.stationReopens.get(sn) ?? { timer: new Timer(), delayMs: 0 };
     this.stationReopens.set(sn, reopen);
     if (reopen.timer.pending) return;
@@ -1930,8 +1931,9 @@ export class EufyMega extends EventEmitter {
   }
 
   /** Eagerly open P2P sessions for WIRED stations only (persistent — they don't drain). Battery
-   *  stations stay closed until an on-demand open. Best-effort per station: one that fails is handed to
-   *  {@link reopenWiredStation}. */
+   *  stations stay closed until an on-demand open, and a HomeBase S1 Pro (T9000), which answers no P2P
+   *  lookup and is driven over RTC, is never opened here. Best-effort per station: one that fails is
+   *  handed to {@link reopenWiredStation}. */
   private async warmWiredP2P(
     readiness = createPlaneReadiness(),
     signal?: AbortSignal,
@@ -1939,7 +1941,7 @@ export class EufyMega extends EventEmitter {
     const wired = new Set<string>();
     for (const d of this.registry.p2pDevices()) {
       const key = this.p2p.stationKeyOf(d.sn);
-      if (this.stationPower(key) === "wired") wired.add(key);
+      if (this.stationPower(key) === "wired" && !this.stationOf(key).t9000) wired.add(key);
     }
     readiness.required = wired.size;
     readiness.pending = wired.size;

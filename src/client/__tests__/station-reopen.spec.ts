@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EufyMega } from "../eufy-mega.js";
 import type { EufyDevice } from "../../core/types.js";
+import { DeviceType } from "../../model/device-types.js";
 
 /**
  * A wired station's session is the persistent one realtime start opened. When it closes on its own, or its
@@ -19,9 +20,26 @@ function fleet(): EufyDevice[] {
   ] as unknown as EufyDevice[];
 }
 
-function makeClient() {
+const S1_PRO_SN = "T9000P0000000000";
+
+/** The {@link fleet} station beside a HomeBase S1 Pro (T9000), classified by its vendor DeviceType. */
+function fleetWithS1Pro(): EufyDevice[] {
+  const s1Pro = {
+    category: "eufy_security",
+    api: "mega",
+    realtime: "p2p",
+    p2pDid: "XXXXXXX-000000-XXXXX",
+    sn: S1_PRO_SN,
+    model: "T9000",
+    deviceClass: "homebase",
+    stationSn: S1_PRO_SN,
+    raw: { device_type: DeviceType.STATION_9000 },
+  };
+  return [...fleet(), s1Pro] as unknown as EufyDevice[];
+}
+
+function makeClient(devices: EufyDevice[] = fleet()) {
   const eufy = new EufyMega({ email: "t@example.com", password: "x" });
-  const devices = fleet();
   vi.spyOn((eufy as any).registry, "list").mockReturnValue(devices);
   vi.spyOn((eufy as any).registry, "p2pDevices").mockReturnValue(devices);
   vi.spyOn(eufy as any, "startRealtimeGeneration").mockResolvedValue(undefined);
@@ -142,5 +160,24 @@ describe("wired station reopen", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(open).toHaveBeenCalledTimes(2);
+  });
+
+  it("never warms a HomeBase S1 Pro over P2P, while warming the other wired station", async () => {
+    const { eufy, open } = makeClient(fleetWithS1Pro());
+
+    const readiness = await (eufy as any).warmWiredP2P();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(open.mock.calls.map((c) => c[0])).toEqual([STATION_SN]);
+    expect(readiness.required).toBe(1);
+  });
+
+  it("does not reopen a HomeBase S1 Pro, which answers no P2P lookup", async () => {
+    const { open, deps } = makeClient(fleetWithS1Pro());
+
+    deps.onClose(S1_PRO_SN);
+    await vi.advanceTimersByTimeAsync(600_000);
+
+    expect(open).not.toHaveBeenCalled();
   });
 });
