@@ -64,7 +64,7 @@ describe("v2 reconstruction cost", () => {
         const at = (y * width + x) * 4;
         pixels[at] = Math.round((x * 255) / (width - 1));
         pixels[at + 1] = Math.round(((x + y) * 255) / (width + height - 2));
-        pixels[at + 2] = Math.round((((x * 7 + y * 3) % 256) * 255) / 255);
+        pixels[at + 2] = (x * 7 + y * 3) % 256;
         pixels[at + 3] = 255;
       }
     }
