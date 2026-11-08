@@ -62,9 +62,10 @@ import { P2P_ENVELOPE } from "./envelope.js";
 import { freshestLanIp } from "./lan-ip.js";
 import { captureSnapshotFromShared, recordClip } from "./media.js";
 import {
+  RECORDING_STATIONS,
   decodeRecording,
-  homeBase2RecordingPath,
   receiveRecording,
+  type RecordingStation,
   type RecordingTransfer,
 } from "./recording-download.js";
 import type { FfmpegLevel } from "../ffmpeg.js";
@@ -816,8 +817,9 @@ export class P2PCommandRouter {
    * start has no level-1 form for.
    */
   mediaProviderFor(sn: string): MediaProvider {
-    const recordings = this.downloadsRecordings(sn)
-      ? { downloadRecording: (opts: RecordingDownloadOpts) => this.downloadRecording(sn, opts) }
+    const station = this.recordingStationFor(sn);
+    const recordings = station
+      ? { downloadRecording: (opts: RecordingDownloadOpts) => this.downloadRecording(sn, station, opts) }
       : {};
     return {
       ...recordings,
@@ -861,29 +863,35 @@ export class P2PCommandRouter {
   }
 
   /**
-   * Whether `sn` is a camera attached to a HomeBase 2 (T8010), the one station whose recording path layout
-   * and frame formats are confirmed.
+   * The {@link RecordingStation} of the station `sn` is attached to, when `sn` is a camera attached to a
+   * station with an entry in {@link RECORDING_STATIONS}. A standalone device, or a camera on any other
+   * station, answers `undefined`.
    */
-  private downloadsRecordings(sn: string): boolean {
+  private recordingStationFor(sn: string): RecordingStation | undefined {
     const dev = this.recordFor(sn);
-    if (!dev) return false;
+    if (!dev) return undefined;
     const parentSn = stationOf(dev);
-    return parentSn !== sn && this.recordFor(parentSn)?.model === "T8010";
+    if (parentSn === sn) return undefined;
+    return RECORDING_STATIONS.get(this.recordFor(parentSn)?.model ?? "");
   }
 
   /**
-   * Download one recording a HomeBase 2 holds for an attached camera, then decode it
-   * ({@link decodeRecording}). Downloads queue per station: the station streams one recording at a time
-   * on the camera's channel, so a download starts only once the previous one has drained
-   * ({@link RecordingTransfer.drained}), even when that one's caller already has its answer. An abort
-   * while waiting rejects without sending anything; an abort mid-transfer rejects at once and the station's
-   * turn is held until the transfer drains.
+   * Download one recording `station` holds for the attached camera `sn`, then decode it
+   * ({@link decodeRecording}). `station` is the entry {@link mediaProviderFor} bound. Downloads queue per
+   * station: the station streams one recording at a time on the camera's channel, so a download starts only
+   * once the previous one has drained ({@link RecordingTransfer.drained}), even when that one's caller already
+   * has its answer. An abort while waiting rejects without sending anything; an abort mid-transfer rejects at
+   * once and the station's turn is held until the transfer drains.
    */
-  private async downloadRecording(sn: string, opts: RecordingDownloadOpts): Promise<RecordingDownload> {
+  private async downloadRecording(
+    sn: string,
+    station: RecordingStation,
+    opts: RecordingDownloadOpts,
+  ): Promise<RecordingDownload> {
     opts.signal?.throwIfAborted();
     const parentSn = this.stationKeyOf(sn);
     const previous = this.recordingDownloads.get(parentSn) ?? Promise.resolve();
-    const started = this.waitTurn(previous, opts.signal).then(() => this.startRecordingDownload(sn, opts));
+    const started = this.waitTurn(previous, opts.signal).then(() => this.startRecordingDownload(sn, station, opts));
     const turn: Promise<unknown> = Promise.allSettled([previous, started.then((t) => t.drained)]).then(() => {
       if (this.recordingDownloads.get(parentSn) === turn) this.recordingDownloads.delete(parentSn);
     });
@@ -904,27 +912,37 @@ export class P2PCommandRouter {
 
   /**
    * Start one recording download, once the station's previous download has drained: the decoded recording,
-   * and when the station is done sending it.
+   * and when the station is done sending it. The path is `station.path(channel, opts.recording)`, and a name
+   * it refuses rejects `invalid-recording` before anything is sent. On a sealed station the cipher's ECC key
+   * is looked up, and its absence rejects `key-unavailable` before anything is sent. A station in the clear
+   * reads no cipher, and `opts.cipherId` is not read.
    */
   private async startRecordingDownload(
     sn: string,
+    station: RecordingStation,
     opts: RecordingDownloadOpts,
   ): Promise<{ recording: Promise<RecordingDownload>; drained: Promise<void> }> {
     const { session, parentSn, channel, accountId } = await this.resolveSession(sn, { signal: opts.signal });
-    const path = homeBase2RecordingPath(channel, opts.recording);
+    const path = station.path(channel, opts.recording);
     if (!path) throw new RecordingDownloadError("invalid-recording", `no recording named ${opts.recording}`);
-    const eccKey = (await this.cipherKeysFor(session, opts.cipherId, accountId, parentSn))?.ecc;
-    if (!eccKey) {
+    const eccKey = station.sealed
+      ? (await this.cipherKeysFor(session, opts.cipherId, accountId, parentSn))?.ecc
+      : undefined;
+    if (station.sealed && !eccKey) {
       throw new RecordingDownloadError("key-unavailable", `cipher ${opts.cipherId} could not be obtained`);
     }
     const transfer = receiveRecording(session, {
       path,
       accountId,
       channel,
+      finishChannel: station.finishChannel,
       timeoutMs: opts.timeoutMs,
       signal: opts.signal,
     });
-    return { recording: transfer.frames.then((frames) => decodeRecording(frames, eccKey)), drained: transfer.drained };
+    return {
+      recording: transfer.frames.then((frames) => decodeRecording(frames, station, eccKey)),
+      drained: transfer.drained,
+    };
   }
 
   /**

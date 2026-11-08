@@ -192,8 +192,9 @@ export class DeviceChannelUnresolvedError extends Error {
 /**
  * Why {@link MediaProvider.downloadRecording} returned no recording.
  *
- * - `invalid-recording` — the recording name is not one the station could hold.
- * - `key-unavailable` — the key the recording was stored under could not be obtained.
+ * - `invalid-recording` — the recording name is not one the camera's station could hold.
+ * - `key-unavailable` — the station stores the recording sealed and the key it was sealed under could not be
+ *   obtained.
  * - `no-data` — the station sent nothing within the wait.
  * - `incomplete` — the transfer ended before the station's finish frame.
  * - `undecodable` — data arrived but no video frame could be decoded from it.
@@ -216,10 +217,10 @@ export class RecordingDownloadError extends Error {
 /**
  * A recording downloaded from the station, as elementary streams.
  *
- * `video` is Annex-B H.264 in decode order, `audio` AAC-LC 16 kHz mono in ADTS framing (absent when the
- * recording carried none that could be decoded). `frames` counts the distinct video sequences emitted.
- * `missingFrames` counts gaps between received sequences and received sequences that yielded no usable
- * picture, including at either end. `durationMs` spans the first to the last emitted picture by the
+ * `video` is Annex-B H.264 or H.265 in decode order, `audio` AAC-LC 16 kHz mono in ADTS framing (absent
+ * when the recording carried none that could be decoded). `frames` counts the distinct video sequences
+ * emitted. `missingFrames` counts gaps between received sequences and received sequences that yielded no
+ * usable picture, including at either end. `durationMs` spans the first to the last emitted picture by the
  * camera's own timestamps; `fps` is derived from those stamps.
  */
 export interface RecordingDownload {
@@ -949,9 +950,12 @@ export interface MediaProvider {
    */
   talkback?(opts?: { encoder?: AacEncoder } & SharedSourceHints): Promise<TalkbackHandle>;
   /**
-   * Download one recording the camera's station stored, identified by the recording name and cipher id of
-   * the event. One download runs at a time per station. Rejects with {@link RecordingDownloadError}.
-   * Optional, and absent on a camera whose station's recording download is unverified.
+   * Download one recording the camera's station stored. `recording` names it: the file name the station stores
+   * it under, without the folder or the extension (`yyyyMMddHHmmss`, or on a HomeBase 2 also
+   * `h265_yyyyMMddHHmmss`). `cipherId` is the cipher the station names for it, and is not read on a station
+   * that stores its recordings in the clear. One download runs at a time per station. Rejects with
+   * {@link RecordingDownloadError}. Optional, and absent on a camera whose station's recording download is
+   * unverified.
    */
   downloadRecording?(
     opts: { recording: string; cipherId: number; timeoutMs?: number } & AbortableCall,
