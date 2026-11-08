@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, type Mock } from "vitest";
 
 import { MemorySessionStore } from "../../../core/store.js";
 import { MegaHttpClient } from "../mega-client.js";
@@ -51,5 +51,49 @@ describe("rtcShard", () => {
     const restored = client(store).mega;
 
     expect(restored.rtcShard).toBe("ie-pr");
+  });
+});
+
+/**
+ * The shard the RTC signalling actually signs on, asked with the portal's WEB identity — which can
+ * name a different shard than the PHONE identity does for the same account, so it is a separate
+ * `estimate_domain` call from {@link rtcShard}'s. Synthetic throughout; no network and no account.
+ */
+describe("portalShard", () => {
+  it("resolves the shard from estimate_domain asked with the portal's WEB identity", async () => {
+    const { mega, internals } = client(new MemorySessionStore());
+    const post = internals.httpPost as unknown as Mock;
+
+    expect(await mega.portalShard()).toBe("ie-pr");
+
+    const [url, body, headers] = post.mock.calls.at(-1)!;
+    expect(url).toContain("/passport/estimate_domain");
+    expect(headers).toMatchObject({ "Model-Type": "WEB", "App-Name": "eufy_mega" });
+    expect(body).toMatchObject({ mode: 1 });
+  });
+
+  it("shares one request between concurrent first callers, then caches the result", async () => {
+    const { mega, internals } = client(new MemorySessionStore());
+    const post = internals.httpPost as unknown as Mock;
+
+    const [a, b] = await Promise.all([mega.portalShard(), mega.portalShard()]);
+    expect(a).toBe("ie-pr");
+    expect(b).toBe("ie-pr");
+    expect(post).toHaveBeenCalledTimes(1);
+
+    expect(await mega.portalShard()).toBe("ie-pr");
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to rtcShard when the estimate names no shard, and asks again next time", async () => {
+    const { mega, internals } = client(new MemorySessionStore());
+    const post = internals.httpPost as unknown as Mock;
+    post.mockResolvedValueOnce({ data: { code: 0, data: {} } });
+
+    expect(await mega.portalShard()).toBe(mega.rtcShard);
+    expect(post).toHaveBeenCalledTimes(1);
+
+    expect(await mega.portalShard()).toBe("ie-pr");
+    expect(post).toHaveBeenCalledTimes(2);
   });
 });

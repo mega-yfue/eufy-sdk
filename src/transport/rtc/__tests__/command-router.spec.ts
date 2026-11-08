@@ -169,6 +169,13 @@ describe("RtcCommandRouter", () => {
     expect(sessions).toHaveLength(0);
   });
 
+  it("opens the station session on a shard the provider resolves asynchronously", async () => {
+    const { router, sessions } = makeRouter({ shard: async () => "ie-pr" });
+    await router.dispatchCommand(ST, arming(1));
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]!.opts.shard).toBe("ie-pr");
+  });
+
   it("sends the app's 1350 envelope on the station channel and resolves on the ACK", async () => {
     const { router, sessions } = makeRouter();
     await router.dispatchCommand(ST, arming(1));
@@ -462,6 +469,54 @@ describe("RtcCommandRouter live view", () => {
     return Buffer.concat([buildPortalHeader(1300, body.length, 101, 0, 0), body]);
   };
   const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
+
+  it("opens a portal `call` media session on a shard resolved asynchronously (T8223 path)", async () => {
+    const { router, sessions } = makeRouter({ shard: async () => "ie-pr" });
+    try {
+      const handle = await router.trackMediaProviderFor({ ...CAM, signalingMode: "call" }).live();
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0]!.opts.shard).toBe("ie-pr");
+      handle.stop();
+    } finally {
+      router.close();
+    }
+  });
+
+  it("opens NVR camera media on the shard resolved asynchronously", async () => {
+    const { router, sessions } = makeRouter({ shard: async () => "ie-pr" });
+    try {
+      const media = router.nvrMediaProviderFor(
+        { ...CAM, cameraSn: "T8000P0000000003", channel: 3, signalingMode: "call" },
+        [0, 1],
+      );
+      const handle = await media.live({ view: 1 });
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0]!.opts.shard).toBe("ie-pr");
+      handle.stop();
+    } finally {
+      router.close();
+    }
+  });
+
+  it("a later call warm-up signs on the latest shard, not the one the first resolved", async () => {
+    let n = 0;
+    const { router, sessions } = makeRouter({ shard: async () => (n++ === 0 ? "eu-pr" : "ie-pr") });
+    await onFakeTimers(async () => {
+      try {
+        const media = router.trackMediaProviderFor({ ...CAM, signalingMode: "call" });
+        const first = await media.live();
+        expect(sessions[0]!.opts.shard).toBe("eu-pr");
+        first.stop();
+        await vi.advanceTimersByTimeAsync(8_000);
+        const second = await media.live();
+        expect(sessions).toHaveLength(2);
+        expect(sessions[1]!.opts.shard).toBe("ie-pr");
+        second.stop();
+      } finally {
+        router.close();
+      }
+    });
+  });
 
   it("shares one pull between concurrent viewers of the same camera", async () => {
     const { router, sessions } = makeRouter();
@@ -937,17 +992,17 @@ describe("RtcCommandRouter database reads", () => {
   /** The unrelated station report the notify link carries between replies. */
   const codecReport = () => notify(1351, { cmd: 1366, payload: { codec: 1, channel: 2 } }, true);
   /** A read's request as sent, once the session carried it. */
-  const request = async (s: FakeSession) => {
-    await vi.waitFor(() => expect(s.sent).toHaveLength(1));
-    return sent(s.sent[0]!);
+  const request = async (sessions: FakeSession[]) => {
+    await vi.waitFor(() => expect(sessions[0]?.sent).toHaveLength(1));
+    return sent(sessions[0]!.sent[0]!);
   };
 
   it("reads a table: the 1306 query on the station channel, answered by the compressed notify frame", async () => {
     const { router, sessions } = makeRouter();
     try {
       const read = router.readTable(ST, TABLE);
+      const p = await request(sessions);
       const s = sessions[0]!;
-      const p = await request(s);
       expect(p.commandId).toBe(PORTAL_CMD_SET_PAYLOAD);
       expect(p.channel).toBe(PORTAL_STATION_CHANNEL);
       const inner = p.body.payload as Record<string, unknown>;
@@ -976,8 +1031,8 @@ describe("RtcCommandRouter database reads", () => {
     const { router, sessions } = makeRouter();
     try {
       const read = router.readTable(ST, TABLE);
+      const inner = (await request(sessions)).body.payload as Record<string, unknown>;
       const s = sessions[0]!;
-      const inner = (await request(s)).body.payload as Record<string, unknown>;
       const refused = {
         cmd: 10000,
         mIntRet: -6001,
@@ -998,7 +1053,7 @@ describe("RtcCommandRouter database reads", () => {
       try {
         const read = router.readTable(ST, TABLE);
         const assertion = expect(read).rejects.toThrow(new RegExp(`reply timed out after ${DB_TABLE_TIMEOUT_MS}ms`));
-        await request(sessions[0]!);
+        await request(sessions);
         await vi.advanceTimersByTimeAsync(DB_TABLE_TIMEOUT_MS);
         await assertion;
         expect(sessions[0]!.listenerCount("commandData")).toBe(0);
@@ -1020,8 +1075,8 @@ describe("RtcCommandRouter database reads", () => {
     const { router, sessions } = makeRouter();
     try {
       const read = router.readImage(ST, THUMB);
+      const p = await request(sessions);
       const s = sessions[0]!;
-      const p = await request(s);
       expect(p.commandId).toBe(PORTAL_CMD_SET_PAYLOAD);
       expect(p.channel).toBe(PORTAL_STATION_CHANNEL);
       expect(p.body).toEqual({ account_id: "adminid", cmd: 1308, mValue3: 0, payload: [{ file: THUMB }] });
@@ -1069,8 +1124,8 @@ describe("RtcCommandRouter database reads", () => {
     try {
       const control = new AbortController();
       const first = router.readTable(ST, TABLE, { signal: control.signal });
+      const firstInner = (await request(sessions)).body.payload as Record<string, unknown>;
       const s = sessions[0]!;
-      const firstInner = (await request(s)).body.payload as Record<string, unknown>;
       control.abort(new Error("caller left"));
       await expect(first).rejects.toThrow("caller left");
       const second = router.readTable(ST, TABLE);
