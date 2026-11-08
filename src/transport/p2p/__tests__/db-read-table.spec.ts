@@ -188,4 +188,23 @@ describe("P2PSession.readDatabase", () => {
     expect(await read).toEqual([]);
     expect(s.listenerCount("dbChunk")).toBe(0);
   });
+
+  /** A HomeBase 3 answers a query that matches no rows with an empty string for `data`. */
+  it("answers no rows when the station's data is an empty string", async () => {
+    const s = session();
+    const read = s.readDatabase("history_record_info", { timeoutMs: 20 });
+    const reply = JSON.stringify({
+      cmd: 10000,
+      count: 0,
+      data: "",
+      mIntRet: 0,
+      msg: "SUCCESSFUL",
+      table: "history_record_info",
+      transaction: "1700000000000",
+      version: "1.2.0.1",
+    });
+    chunk(s, `${reply}\u0000\u0000padding`);
+    expect(await read).toEqual([]);
+    expect(s.listenerCount("dbChunk")).toBe(0);
+  });
 });

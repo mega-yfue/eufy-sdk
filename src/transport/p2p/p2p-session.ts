@@ -433,8 +433,8 @@ let traceSequence = 0;
  * signal: the frames carry no index, no total and no terminator, and the last one is padded past the
  * closing brace so the accumulation is never valid JSON in its entirety.
  *
- * A non-zero numeric `mIntRet` answers a refusal code; a `data` array answers rows, and `data: "[]"`
- * answers an empty page. A closed object carrying neither rows nor a refusal is skipped. The
+ * A non-zero numeric `mIntRet` answers a refusal code; a `data` array answers rows, and `data: "[]"` or
+ * `data: ""` answers an empty page. A closed object carrying neither rows nor a refusal is skipped. The
  * case is a tail left by an earlier reply that timed out: it begins mid-row, closes into a valid
  * object carrying no rows, and reporting it would answer an empty table for a full one.
  *
@@ -454,7 +454,7 @@ function firstTableRows(text: string): { rows?: unknown[]; error?: number } | un
     }
     const reply = parsed as { data?: unknown; mIntRet?: unknown } | null;
     if (typeof reply?.mIntRet === "number" && reply.mIntRet !== 0) return { error: reply.mIntRet };
-    if (reply?.data === "[]") return { rows: [] };
+    if (reply?.data === "[]" || reply?.data === "") return { rows: [] };
     if (Array.isArray(reply?.data)) return { rows: reply.data };
   }
   return undefined;
