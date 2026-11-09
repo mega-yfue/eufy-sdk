@@ -73,8 +73,7 @@ export interface RecordingFrame {
 /**
  * How one station model stores its attached cameras' recordings and serves them over `CMD_DOWNLOAD_VIDEO`
  * (1024): where a recording lives, whether it is sealed, which channel the finish frame is tagged with, and
- * where a split picture continues. Every field is a fact measured on that model. A model without an entry in
- * {@link RECORDING_STATIONS} offers no download.
+ * where a split picture continues. A model without an entry in {@link RECORDING_STATIONS} offers no download.
  */
 export interface RecordingStation {
   /**
@@ -84,10 +83,9 @@ export interface RecordingStation {
    */
   readonly path: (channel: number, recording: string) => string | undefined;
   /**
-   * Whether the station stores a recording sealed under its event's cipher. Sealed, a keyframe carries the
-   * ECIES layout of {@link VideoFrameDecoder}, audio carries the GCM layout of {@link openSealedAudio}, and
-   * both open with that cipher's ECC private key. In the clear, every video payload is Annex-B straight after
-   * the 22-byte header and every audio payload is ADTS straight after the 16-byte header, and no key is read.
+   * Whether the station stores a recording sealed under its event's cipher, which opens with that cipher's ECC
+   * private key, or in the clear, which reads no key. The frame layouts of each are in this module's
+   * documentation.
    */
   readonly sealed: boolean;
   /** The channel the station tags `CMD_DOWNLOAD_FINISH` (1304) with. The camera's own channel is taken too. */
@@ -139,10 +137,8 @@ export function homeBase3RecordingPath(channel: number, recording: string): stri
  * `T8010`, HomeBase 2: `/media/mmcblk0p1/CameraNN/<name>.dat`, sealed under the event's cipher, finish tagged
  * with channel 0, split pictures filled to {@link STATION_CHUNK_BYTES}.
  *
- * `T8030`, HomeBase 3: `/zx/emmcdata/CameraNN/<yyyyMM>/<name>/<name>.zxvideo`, in the clear (every archive row
- * names `cipher_id` 0, and every keyframe payload begins with a start code), finish tagged with
- * {@link STATION_CHANNEL}, a keyframe over 400000 bytes split at exactly 400000. Measured on firmware 1.2.0.1
- * across five camera channels, on both H.264 and H.265 recordings.
+ * `T8030`, HomeBase 3: `/zx/emmcdata/CameraNN/<yyyyMM>/<name>/<name>.zxvideo`, in the clear, finish tagged
+ * with {@link STATION_CHANNEL}, a keyframe over 400000 bytes split at exactly 400000.
  */
 export const RECORDING_STATIONS: ReadonlyMap<string, RecordingStation> = new Map<string, RecordingStation>([
   ["T8010", { path: homeBase2RecordingPath, sealed: true, finishChannel: 0, chunkBytes: STATION_CHUNK_BYTES }],
@@ -270,20 +266,8 @@ export function receiveRecording(
 }
 
 /**
- * How one station's recording frames yield their payloads. A sealed station reads them with the cipher's key,
- * a station in the clear reads them as they are. Built once per decode by {@link readerFor}.
- */
-interface FrameReader {
-  /** The Annex-B bytes `raw` carries, which may be a continuation's share of a unit, or `undefined`. */
-  video(raw: Buffer, header: VideoFrameHeader): Buffer | undefined;
-  /** The ADTS bytes an AAC-LC audio frame carries, or `undefined` when they cannot be read. */
-  audio(raw: Buffer): Buffer | undefined;
-}
-
-/**
  * The bytes a video frame carries in the clear: `header.payloadLength` bytes after the 22-byte header, or
- * `undefined` for a frame shorter than its header declares. A HomeBase 2 pads such a frame to four bytes, and
- * a HomeBase 3 frame is exactly `22 + payloadLength` long.
+ * `undefined` for a frame shorter than its header declares.
  */
 function clearVideoPayload(raw: Buffer, header: VideoFrameHeader): Buffer | undefined {
   const end = VIDEO_HEADER_LEN + header.payloadLength;
@@ -291,51 +275,15 @@ function clearVideoPayload(raw: Buffer, header: VideoFrameHeader): Buffer | unde
 }
 
 /**
- * Reads a sealed station's frames: a keyframe through one {@link VideoFrameDecoder}, every other video frame
- * with {@link clearVideoPayload}, and audio with {@link openSealedAudio} under the decoder's current media key.
- * Audio before the first media key, and a keyframe that does not open under the key, answer `undefined`.
- *
- * Throws {@link RecordingDownloadError} `undecodable` when `eccPrivateKeyHex` is absent or is not a 32-byte
- * P-256 scalar.
- */
-function sealedReader(eccPrivateKeyHex: string | undefined): FrameReader {
-  const eccPrivateKey = Buffer.from(eccPrivateKeyHex ?? "", "hex");
-  if (eccPrivateKey.length !== 32) throw new RecordingDownloadError("undecodable", "the cipher key is not a P-256 key");
-  const decoder = new VideoFrameDecoder(eccPrivateKey);
-  return {
-    video: (raw, header) => (header.keyframe ? decoder.decodeFrame(raw)?.h264 : clearVideoPayload(raw, header)),
-    audio: (raw) => {
-      const mediaKey = decoder.currentMediaKey;
-      return mediaKey && openSealedAudio(raw, mediaKey);
-    },
-  };
-}
-
-/**
- * Reads a station's frames in the clear. Every video frame, keyframe or not, goes through
- * {@link clearVideoPayload}. Audio is the `u32@0` bytes after the 16-byte header, or `undefined` when the frame
- * is shorter. A keyframe that is in fact sealed yields bytes that begin with an ECIES point (`02` or `03`)
- * rather than a start code, so {@link AccessUnitAssembler} cannot open a unit with it and the frame is
- * dropped, never emitted as video.
- */
-const clearReader: FrameReader = {
-  video: clearVideoPayload,
-  audio: (raw) => {
-    const end = AUDIO_HEADER_LEN + raw.readUInt32LE(0);
-    return raw.length >= end ? raw.subarray(AUDIO_HEADER_LEN, end) : undefined;
-  },
-};
-
-function readerFor(station: Pick<RecordingStation, "sealed">, eccPrivateKeyHex: string | undefined): FrameReader {
-  return station.sealed ? sealedReader(eccPrivateKeyHex) : clearReader;
-}
-
-/**
- * Decode a recording's frames, in arrival order, into elementary streams. `station` sets how the frames are
- * read ({@link RecordingStation.sealed}, through {@link readerFor}) and where a split picture continues
- * ({@link RecordingStation.chunkBytes}). `eccPrivateKeyHex` is read only on a sealed station. Split pictures
- * are assembled before they enter the output, and an orphan continuation cannot become its own picture. Audio
- * frames whose codec byte is not AAC-LC are dropped, on either kind of station.
+ * Decode a recording's frames, in arrival order, into elementary streams. `station` sets where a split
+ * picture continues ({@link RecordingStation.chunkBytes}) and whether the frames are sealed
+ * ({@link RecordingStation.sealed}). On a sealed station a keyframe goes through one {@link VideoFrameDecoder}
+ * under `eccPrivateKeyHex`, and audio opens under that decoder's current media key; a keyframe that does not
+ * open, and audio before the first media key, are dropped. On a station in the clear every video payload is read
+ * as it is, and audio is everything after its 16-byte header; a keyframe that is in fact sealed begins with an
+ * ECIES point rather than a start code, so the assembler drops it. Split pictures are assembled before they
+ * enter the output, and an orphan continuation cannot become its own picture. Audio frames whose codec byte is
+ * not AAC-LC are dropped.
  *
  * Rejects with {@link RecordingDownloadError} `undecodable` when no video frame decodes, and on a sealed
  * station whose key is absent or not a P-256 key.
@@ -345,7 +293,11 @@ export function decodeRecording(
   station: Pick<RecordingStation, "sealed" | "chunkBytes">,
   eccPrivateKeyHex?: string,
 ): RecordingDownload {
-  const reader = readerFor(station, eccPrivateKeyHex);
+  const eccPrivateKey = station.sealed ? Buffer.from(eccPrivateKeyHex ?? "", "hex") : undefined;
+  if (eccPrivateKey && eccPrivateKey.length !== 32) {
+    throw new RecordingDownloadError("undecodable", "the cipher key is not a P-256 key");
+  }
+  const decoder = eccPrivateKey && new VideoFrameDecoder(eccPrivateKey);
   const assembler = new AccessUnitAssembler(undefined, station.chunkBytes);
   const video: Buffer[] = [];
   const audio: Buffer[] = [];
@@ -358,7 +310,9 @@ export function decodeRecording(
       const header = parseVideoFrameHeader(raw);
       if (!header) continue;
       receivedNumbers.add(header.sequence);
-      const units = assembler.push(raw, (payload) => reader.video(payload, header));
+      const units = assembler.push(raw, (payload) =>
+        decoder && header.keyframe ? decoder.decodeFrame(payload)?.h264 : clearVideoPayload(payload, header),
+      );
       for (const unit of units) {
         video.push(unit.data);
         numbers.add(header.sequence);
@@ -368,7 +322,8 @@ export function decodeRecording(
       }
     } else if (commandId === CommandType.CMD_AUDIO_FRAME) {
       if (raw[5] !== AUDIO_CODEC_AAC_LC) continue;
-      const aac = reader.audio(raw);
+      const mediaKey = decoder?.currentMediaKey;
+      const aac = decoder ? mediaKey && openSealedAudio(raw, mediaKey) : raw.subarray(AUDIO_HEADER_LEN);
       if (aac?.length) audio.push(aac);
     }
   }

@@ -951,9 +951,8 @@ export interface MediaProvider {
   talkback?(opts?: { encoder?: AacEncoder } & SharedSourceHints): Promise<TalkbackHandle>;
   /**
    * Download one recording the camera's station stored. `recording` names it: the file name the station stores
-   * it under, without the folder or the extension (`yyyyMMddHHmmss`, or on a HomeBase 2 also
-   * `h265_yyyyMMddHHmmss`). `cipherId` is the cipher the station names for it, and is not read on a station
-   * that stores its recordings in the clear. One download runs at a time per station. Rejects with
+   * it under, without the folder or the extension. `cipherId` is the cipher the station names for it, and is not
+   * read on a station that stores its recordings in the clear. One download runs at a time per station. Rejects with
    * {@link RecordingDownloadError}. Optional, and absent on a camera whose station's recording download is
    * unverified.
    */
