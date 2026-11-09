@@ -405,10 +405,12 @@ elapsed since the push. On a HomeBase 2 a recording is named either as the push 
 (`h265_yyyyMMddHHmmss`); both reach the same file. Downloads queue one at a time per station, and the
 transfer runs faster than real time: a 12.8 s recording took about 6 s on a HomeBase 2.
 
-A row of the station's recording archive (`history_record_info`, as `session.queryRecordPage` answers it)
-names the recording on either station by its `storage_path` and `cipher_id`. A HomeBase 3 row's
-`storage_path` looks like `/zx/emmcdata/Camera02/202601/20260101120000/20260101120000.zxvideo`, and its
-`cipher_id` is 0. The same derivation gives the recording name on both stations:
+A row of the station's recording archive (`history_record_info`, as `session.queryRecordPage` answers it on a
+HomeBase 2 and `eufy.readStationTable` on a HomeBase 3) names the recording by its `storage_path` and
+`cipher_id`. A HomeBase 3 row's `storage_path` looks like
+`/zx/emmcdata/Camera02/202601/20260101120000/20260101120000.zxvideo`, and its `cipher_id` is 0. A HomeBase 2
+archive row can name a cipher id above 24 bits, which resolves through its low byte. The same derivation gives
+the recording name and cipher id on both stations:
 
 <!-- typecheck: host rows -->
 
@@ -419,7 +421,7 @@ for (const row of rows) {
   const cam = (await eufy.getDevice(row.device_sn)).camera?.();
   const clip = await cam?.downloadRecording?.({
     recording: path.posix.parse(row.storage_path).name,
-    cipherId: row.cipher_id,
+    cipherId: row.cipher_id > 0xffffff ? row.cipher_id & 0xff : row.cipher_id,
   });
 }
 ```
