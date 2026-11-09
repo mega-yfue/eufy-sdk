@@ -10,6 +10,7 @@ import {
   homeBase2RecordingPath,
   homeBase3RecordingPath,
   receiveRecording,
+  type RecordingFrame,
 } from "../recording-download.js";
 import type { P2PSession } from "../p2p-session.js";
 import {
@@ -179,6 +180,41 @@ describe("recording download", () => {
     );
 
     expect(out).toMatchObject({ frames: 3, missingFrames: 2 });
+  });
+
+  it("counts frame numbers on from the frame before a keyframe that changes the frame size", () => {
+    const sized = (frame: RecordingFrame, width: number, height: number) => {
+      frame.raw.writeInt16LE(width, 0x0a);
+      frame.raw.writeInt16LE(height, 0x0c);
+      return frame;
+    };
+    const frames = [
+      sized(clearVideoFrame(IDR, true, 30, 0), 1280, 720),
+      sized(clearVideoFrame(slice(1), false, 31, 100), 1280, 720),
+      sized(clearVideoFrame(IDR, true, 0, 200), 1920, 1080),
+      sized(clearVideoFrame(slice(2), false, 1, 300), 1920, 1080),
+      sized(clearVideoFrame(IDR, true, 0, 400), 1280, 720),
+      sized(clearVideoFrame(slice(3), false, 1, 500), 1280, 720),
+      sized(clearVideoFrame(IDR, true, 4, 800), 1280, 720),
+    ];
+
+    expect(decodeRecording(frames, HB3)).toMatchObject({ frames: 7, missingFrames: 2, durationMs: 800, fps: 10 });
+  });
+
+  it("counts on across a size change at the first keyframe, after leading frames of another size", () => {
+    const sized = (frame: RecordingFrame, width: number, height: number) => {
+      frame.raw.writeInt16LE(width, 0x0a);
+      frame.raw.writeInt16LE(height, 0x0c);
+      return frame;
+    };
+    const frames = [
+      sized(clearVideoFrame(slice(1), false, 40, 0), 1280, 720),
+      sized(clearVideoFrame(slice(2), false, 41, 67), 1280, 720),
+      sized(clearVideoFrame(IDR, true, 0, 133), 1920, 1080),
+      sized(clearVideoFrame(slice(3), false, 1, 200), 1920, 1080),
+    ];
+
+    expect(decodeRecording(frames, HB3)).toMatchObject({ frames: 4, missingFrames: 0, durationMs: 200, fps: 15 });
   });
 
   it("joins split pictures and omits a continuation whose opening frame was lost", () => {

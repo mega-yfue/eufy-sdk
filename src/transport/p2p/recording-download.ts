@@ -310,6 +310,10 @@ function clearVideoPayload(raw: Buffer, header: VideoFrameHeader): Buffer | unde
  * enter the output, and an orphan continuation cannot become its own picture. Audio frames whose codec byte is
  * not AAC-LC are dropped.
  *
+ * Frame numbers are compared only within one frame size: a keyframe whose width or height differs from the last
+ * frame that states a size is counted as the frame after the one before it, and the frames after it follow on
+ * from there. A frame whose header states no size is passed over.
+ *
  * Rejects with {@link RecordingDownloadError} `undecodable` when no video frame decodes, and on a sealed
  * station whose key is absent or not a P-256 key.
  */
@@ -331,18 +335,27 @@ export function decodeRecording(
   const receivedNumbers = new Set<number>();
   let firstStamp: number | undefined;
   let lastStamp: number | undefined;
+  let frameSize: string | undefined;
+  let shift = 0;
+  let sequence = 0;
   for (const { commandId, raw } of frames) {
     if (commandId === CommandType.CMD_VIDEO_FRAME) {
       const header = parseVideoFrameHeader(raw);
       if (!header) continue;
-      receivedNumbers.add(header.sequence);
+      const size = header.width && header.height ? `${header.width}x${header.height}` : undefined;
+      if (header.keyframe && size && frameSize !== undefined && size !== frameSize) {
+        shift = (sequence + 1 - header.sequence) & 0xffff;
+      }
+      if (size) frameSize = size;
+      sequence = (header.sequence + shift) & 0xffff;
+      receivedNumbers.add(sequence);
       const units = assembler.push(raw, (payload) =>
         decoder && header.keyframe ? decoder.decodeFrame(payload)?.h264 : clearVideoPayload(payload, header),
       );
       for (const unit of units) {
         video.push(unit.data);
         if (unit.keyframe) codec ??= sniffAnnexbCodec(unit.data);
-        numbers.add(header.sequence);
+        numbers.add(sequence);
         const stamp = raw.readUIntLE(0x0e, 6);
         firstStamp ??= stamp;
         lastStamp = stamp;
