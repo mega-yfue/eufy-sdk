@@ -295,16 +295,25 @@ describe("public NVR optical view selection", () => {
   });
 
   it.each([
-    ["T8E00", "Synthetic PoE Bullet PTZ Cam S4", [0, 1]],
-    ["T8P00", "Synthetic PoE Cam E40", [0]],
-    ["T8P10", "Synthetic PoE Cam E41", [0]],
-    ["T8162", "Synthetic eufyCam paired to an NVR", [0]],
-    ["T8214", "Synthetic Video Doorbell paired to an NVR", [0]],
-  ] as const)("reports the supported views for %s", async (model, name, views) => {
+    ["T8E00", "Synthetic PoE Bullet PTZ Cam S4", [0, 1], true],
+    ["T8P00", "Synthetic PoE Cam E40", [0], true],
+    ["T8P10", "Synthetic PoE Cam E41", [0], false],
+    ["T8162", "Synthetic eufyCam paired to an NVR", [0], false],
+    ["T8410", "Synthetic Indoor Cam paired to an NVR", [0], false],
+    ["T8214", "Synthetic Video Doorbell paired to an NVR", [0], false],
+  ] as const)("reports supported views and output resolutions for %s", async (model, name, views, fullHd) => {
+    const connect = vi.spyOn(RtcSession.prototype, "connect");
     const { client, internals } = fixture(model, name);
     try {
       const camera = (await client.getDevice(CAMERA)).camera!()!;
       expect(camera.views?.()).toEqual(views);
+      if (fullHd) {
+        expect(camera.outputResolutions?.()).toEqual(["1080p"]);
+      } else {
+        expect(camera.outputResolutions).toBeUndefined();
+        await expect(camera.live!({ outputResolution: "1080p" })).rejects.toThrow("unsupported output resolution");
+        expect(connect).not.toHaveBeenCalled();
+      }
     } finally {
       internals.rtc.close();
     }

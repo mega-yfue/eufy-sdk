@@ -1373,6 +1373,7 @@ export class EufyMega extends EventEmitter {
       return this.rtc.nvrMediaProviderFor(
         { ...route, cameraSn: sn, channel },
         isNvrDualLensCamera(camera) ? [0, 1] : [0],
+        camera.model === "T8E00" || camera.model === "T8P00" ? ["1080p"] : undefined,
       );
     }
     return this.rtc.mediaProviderFor({ ...route, cameraSn: sn, channel });

@@ -142,10 +142,10 @@ ladder (`640x360`, `960x540`, `1280x720`, `1600x1200`, `1920x1080`, `2304x1296`,
 rather than only climbing it; the other four held one geometry throughout. The ladder is not fixed per
 model.
 
-The measurements do not isolate the effect of consumer count. A single-consumer session produced more
-changes than a two-consumer one on a different camera. The native NVR route can request 1080p for an
-individual pull, as described under [NVR output resolution](#nvr-output-resolution). Other routes retain
-their own geometry selection. The camera's video-quality member controls a persistent recording tier.
+Two things this does NOT establish. Whether the number of consumers influences it: a single-consumer
+session produced more changes than a two-consumer one, but on a different camera, so nothing here is a
+controlled comparison. And whether it can be pinned: see [NVR output resolution](#nvr-output-resolution)
+for the per-pull 1080p request available on supported NVR routes.
 
 An encoder cannot change input geometry mid-stream, so a caller adapting this source to a fixed output
 has to tear down and rebuild on every change. `video-config` is how it learns:
@@ -643,7 +643,7 @@ caller extends a shared battery budget without control notices mixing into media
 ### NVR output resolution
 
 `cam.outputResolutions?.()` reports the output sizes supported by the bound media route.
-The native NVR route reports `["1080p"]`. An omitted selection preserves the default
+The native NVR route reports `["1080p"]` for T8E00 and T8P00 cameras. An omitted selection preserves the default
 output; it does not promise a particular maximum resolution.
 
 ```ts

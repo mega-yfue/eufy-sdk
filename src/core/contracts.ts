@@ -813,7 +813,7 @@ export interface AbortableCall {
 /** NVR output size requested when a live pull starts. */
 export type MediaOutputResolution = "1080p";
 
-/** Select an optical view and output size; absence preserves the route's default output. */
+/** Select an optical view and output size; absence selects view 0 at the route's default output. */
 export interface MediaSourceSelection {
   view?: number;
   outputResolution?: MediaOutputResolution;
