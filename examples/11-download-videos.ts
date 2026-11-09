@@ -1,8 +1,8 @@
 /**
- * Example 11 — page a HomeBase 2 archive and download elementary video/audio streams.
+ * Example 11 — page a HomeBase 2 or HomeBase 3 archive and download elementary video/audio streams.
  * Build first, then run: node examples/11-download-videos.ts <stationSn> [flags]
  * --list; --count N (default 20); --from YYYYMMDD; --to YYYYMMDD; --out DIR.
- * The end date is exclusive. Muxing the saved H.264 and ADTS AAC is the caller's job.
+ * The end date is exclusive. Muxing the saved H.264 or H.265 and ADTS AAC is the caller's job.
  * Observed HomeBase 2 archive cipher IDs above 24 bits resolve through their low byte.
  */
 import { mkdir, writeFile } from "node:fs/promises";
@@ -68,7 +68,7 @@ async function main(): Promise<void> {
       if (args.includes("--list")) continue;
       const camera = (await eufy.getDevice(row.device_sn)).camera?.();
       if (!camera?.downloadRecording) throw new Error("camera recording download unavailable");
-      const recording = path.posix.basename(row.storage_path, ".dat");
+      const recording = path.posix.parse(row.storage_path).name;
       const cipherId = row.cipher_id > 0xffffff ? row.cipher_id & 0xff : row.cipher_id;
       const clip = await camera.downloadRecording({ recording, cipherId });
       const name = path.join(outDir, `${row.record_id}_${recording}`);

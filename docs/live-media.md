@@ -371,11 +371,16 @@ collects its decode burst, and detaches before decoding. The JPEG decode uses ff
 convenience sink, resolved on `PATH` or configured with `ffmpegPath`. Raw frames remain available
 through `openReadable` and the event stream.
 
-## Recordings stored on a HomeBase 2
+## Recordings stored on a HomeBase
 
-A HomeBase 2 (T8010) keeps each event recording of its attached cameras, and names it in the event push:
-`payload.p` is the recording name and `cipher` the key id it was stored under. `downloadRecording`
-fetches that recording over the station's P2P session and decodes it; it does not wake the camera.
+A HomeBase 2 (T8010) or HomeBase 3 (T8030) keeps each event recording of its attached cameras.
+`downloadRecording` fetches one over the station's P2P session and decodes it; it does not wake the camera.
+`recording` is the file name the station stores the recording under, without its folder or extension, and
+`cipherId` is the cipher the station names for it. A HomeBase 3 stores its recordings in the clear and does
+not read `cipherId`.
+
+A HomeBase 2 names the recording in the event push: `payload.p` is the recording name and `cipher` the key
+id it was stored under.
 
 ```ts
 import { RecordingDownloadError } from "@mega-yfue/eufy-sdk";
@@ -395,20 +400,44 @@ eufy.on("push", async (ev) => {
 
 The download is confirmed on recordings that had finished. How the station answers for a recording it is
 still writing is not established, so issue the download once the camera's configured clip length has
-elapsed since the push. A recording is named either as the push carries it (`yyyyMMddHHmmss`) or as a row of
-the station's own recording archive names it, with the codec prefixed (`h265_yyyyMMddHHmmss`); both reach the
-same file. Downloads queue one at a time per station, and the transfer runs faster than real time: a 12.8 s
-recording took about 6 s.
+elapsed since the push. On a HomeBase 2 a recording is named either as the push carries it
+(`yyyyMMddHHmmss`) or as a row of the station's own recording archive names it, with the codec prefixed
+(`h265_yyyyMMddHHmmss`); both reach the same file. Downloads queue one at a time per station, and the
+transfer runs faster than real time: a 12.8 s recording took about 6 s on a HomeBase 2.
 
-The result is elementary streams, not a container: `video` is Annex-B H.264 and `audio` (when present) is
-AAC-LC in ADTS framing. `fps` and `durationMs` come from the camera's own frame stamps, and `missingFrames`
-counts frames the camera numbered that never arrived. Muxing is the caller's; for example with ffmpeg,
-`-framerate <fps> -f h264 -i video.h264 -f aac -i audio.aac -c copy clip.mp4`.
+A row of the station's recording archive (`history_record_info`, as `session.queryRecordPage` answers it on a
+HomeBase 2 and `eufy.readStationTable` on a HomeBase 3) names the recording by its `storage_path` and
+`cipher_id`. A HomeBase 3 row's `storage_path` looks like
+`/zx/emmcdata/Camera02/202601/20260101120000/20260101120000.zxvideo`, and its `cipher_id` is 0. A HomeBase 2
+archive row can name a cipher id above 24 bits, which resolves through its low byte. The same derivation gives
+the recording name and cipher id on both stations:
 
-The download is confirmed on a HomeBase 2 only, so `downloadRecording` is absent on a camera attached to
-any other station. A transfer that ends without the station's finish frame (it went quiet, ran past
-`timeoutMs`, or reached the size ceiling) rejects with reason `incomplete` rather than returning a partial
-recording.
+<!-- typecheck: host rows -->
+
+```ts
+import path from "node:path";
+
+for (const row of rows) {
+  const cam = (await eufy.getDevice(row.device_sn)).camera?.();
+  const clip = await cam?.downloadRecording?.({
+    recording: path.posix.parse(row.storage_path).name,
+    cipherId: row.cipher_id > 0xffffff ? row.cipher_id & 0xff : row.cipher_id,
+  });
+}
+```
+
+A HomeBase 3 recording name is the bare `yyyyMMddHHmmss` stamp; a codec prefix, an extension or a full path
+rejects with reason `invalid-recording` before anything is sent.
+
+The result is elementary streams, not a container: `video` is Annex-B H.264 or H.265 and `audio` (when
+present) is AAC-LC in ADTS framing. `fps` and `durationMs` come from the camera's own frame stamps, and
+`missingFrames` counts frames the camera numbered that never arrived. Muxing is the caller's; for example with
+ffmpeg, `-framerate <fps> -f h264 -i video.h264 -f aac -i audio.aac -c copy clip.mp4`.
+
+The download is confirmed on a HomeBase 2 and a HomeBase 3 only, so `downloadRecording` is absent on a camera
+attached to any other station. A transfer that ends without the station's finish frame (it went quiet, ran
+past `timeoutMs`, or reached the size ceiling) rejects with reason `incomplete` rather than returning a
+partial recording.
 
 ## Talkback — audio the other way
 
