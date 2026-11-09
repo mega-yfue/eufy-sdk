@@ -936,6 +936,7 @@ export class P2PCommandRouter {
       accountId,
       channel,
       finishChannel: station.finishChannel,
+      missingCode: station.missingCode,
       timeoutMs: opts.timeoutMs,
       signal: opts.signal,
     });

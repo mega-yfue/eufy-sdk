@@ -95,6 +95,11 @@ export interface RecordingStation {
    * ({@link AccessUnitAssembler}).
    */
   readonly chunkBytes: number;
+  /**
+   * The result code that opens the station's `CMD_DOWNLOAD_VIDEO` reply on the camera's channel when it holds no
+   * recording at the path, after which it sends nothing. Absent on a station whose reply is unconfirmed.
+   */
+  readonly missingCode?: number;
 }
 
 /**
@@ -138,11 +143,21 @@ export function homeBase3RecordingPath(channel: number, recording: string): stri
  * with channel 0, split pictures filled to {@link STATION_CHUNK_BYTES}.
  *
  * `T8030`, HomeBase 3: `/zx/emmcdata/CameraNN/<yyyyMM>/<name>/<name>.zxvideo`, in the clear, finish tagged
- * with {@link STATION_CHANNEL}, a keyframe over 400000 bytes split at exactly 400000.
+ * with {@link STATION_CHANNEL}, a keyframe over 400000 bytes split at exactly 400000, a missing recording
+ * answered with -111.
  */
 export const RECORDING_STATIONS: ReadonlyMap<string, RecordingStation> = new Map<string, RecordingStation>([
   ["T8010", { path: homeBase2RecordingPath, sealed: true, finishChannel: 0, chunkBytes: STATION_CHUNK_BYTES }],
-  ["T8030", { path: homeBase3RecordingPath, sealed: false, finishChannel: STATION_CHANNEL, chunkBytes: 400_000 }],
+  [
+    "T8030",
+    {
+      path: homeBase3RecordingPath,
+      sealed: false,
+      finishChannel: STATION_CHANNEL,
+      chunkBytes: 400_000,
+      missingCode: -111,
+    },
+  ],
 ]);
 
 /** One recording transfer on a station session. */
@@ -159,7 +174,9 @@ export interface RecordingTransfer {
  * station is never mixed in. The finish frame is taken on the camera's channel or on `finishChannel`
  * ({@link RecordingStation.finishChannel}).
  *
- * `frames` rejects with {@link RecordingDownloadError}: `no-data` when nothing arrives within
+ * `frames` rejects with {@link RecordingDownloadError}: `no-data` when the station's reply on the camera's
+ * channel carries `missingCode` ({@link RecordingStation.missingCode}) before any of the recording's frames, which
+ * also ends the transfer, or when nothing arrives within
  * {@link FIRST_FRAME_WAIT_MS}, and `incomplete` when the transfer ends without its finish frame, on a
  * {@link IDLE_END_MS} silence, on `timeoutMs` or on {@link MAX_TRANSFER_BYTES}. An abort rejects it at once
  * with the signal's reason. After a time bound, the byte ceiling or an abort, the transfer stops collecting
@@ -172,6 +189,7 @@ export function receiveRecording(
     accountId: string;
     channel: number;
     finishChannel: number;
+    missingCode?: number;
     timeoutMs?: number;
     signal?: AbortSignal;
   },
@@ -214,6 +232,12 @@ export function receiveRecording(
     collected = [];
   };
   const onData = (frame: P2PFrame) => {
+    if (frame.commandId === CommandType.CMD_DOWNLOAD_VIDEO) {
+      if (frame.channel !== request.channel || frame.dataType !== 0 || received || draining) return;
+      if (frame.data.length < 4 || frame.data.readInt32LE(0) !== request.missingCode) return;
+      deliver(new RecordingDownloadError("no-data", `the station holds no recording at ${request.path}`));
+      return stop();
+    }
     if (frame.commandId === CommandType.CMD_DOWNLOAD_FINISH) {
       if (frame.channel !== request.channel && frame.channel !== request.finishChannel) return;
       if (draining) incomplete(draining);

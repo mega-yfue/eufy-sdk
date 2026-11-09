@@ -350,6 +350,48 @@ describe("recording download", () => {
       await settled;
     });
 
+    it("answers no-data at once when the station replies that it holds no such recording, and stops listening", async () => {
+      vi.useFakeTimers();
+      const reply = (data: Buffer) => ({ commandId: 1024, dataType: 0, channel: 0, signCode: 0, raw: data, data });
+      const missing = Buffer.alloc(132);
+      missing.writeInt32LE(-111);
+      const session = station((s) => {
+        s.emit("data", reply(Buffer.alloc(2)));
+        s.emit("data", reply(missing));
+      });
+
+      const transfer = receiveRecording(session as unknown as P2PSession, { ...request, missingCode: -111 });
+      const settled = expect(transfer.frames).rejects.toMatchObject({
+        reason: "no-data",
+        message: "the station holds no recording at /p",
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      await settled;
+      await transfer.drained;
+      expect(session.listenerCount("data")).toBe(0);
+    });
+
+    it("ignores a no-such-recording reply on another channel or after the recording's frames began", async () => {
+      vi.useFakeTimers();
+      const reply = (channel: number) => {
+        const data = Buffer.alloc(132);
+        data.writeInt32LE(-111);
+        return { commandId: 1024, dataType: 0, channel, signCode: 0, raw: data, data };
+      };
+      const session = station((s) => {
+        s.emit("data", reply(1));
+        s.emit("data", frame(1300));
+        s.emit("data", reply(0));
+        s.emit("data", frame(1301));
+        s.emit("data", frame(1304, { dataType: 2 }));
+      });
+
+      const transfer = receiveRecording(session as unknown as P2PSession, { ...request, missingCode: -111 });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect((await transfer.frames).map((f) => f.commandId)).toEqual([1300, 1301]);
+    });
+
     it("answers incomplete at the byte ceiling, and keeps listening until the station finishes", async () => {
       const half = Buffer.alloc(MAX_TRANSFER_BYTES / 2);
       let rest: (() => void) | undefined;
