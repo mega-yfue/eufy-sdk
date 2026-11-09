@@ -989,7 +989,7 @@ export const CAMERA_MEMBERS = {
       isCameraCodec(ctx) &&
       m.downloadRecording &&
       ((opts: Parameters<NonNullable<MediaProvider["downloadRecording"]>>[0]) => m.downloadRecording!(opts)),
-    "Download a recording the station holds → H.264 and AAC elementary streams.",
+    "Download a recording the station holds → H.264 or H.265 and AAC elementary streams.",
   ),
   /**
    * Push audio from the host to this camera's speaker. Gated on the **speaker** param specifically —
