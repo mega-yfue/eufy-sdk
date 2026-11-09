@@ -336,7 +336,6 @@ describe("doorbell — confirmed against real T8214", () => {
     ["T8224", 95],
     ["T8223", 96],
   ])("types the Video Doorbell C30/C31 (%s) as a doorbell", (model, deviceType) => {
-    // Their ring push is PRESS_DOORBELL, but without the doorbell capability it reached no host.
     expect(resolveDevice({ model, deviceType }).capabilities).toContain("doorbell");
   });
 
