@@ -225,8 +225,9 @@ export const STATION_CHUNK_BYTES = 64000;
  *
  * Two consequences worth stating. A unit that is exactly the threshold long, or an exact multiple of it,
  * ends on a full frame and is dropped as truncated — one frame in ~64000, reported, and the alternative is
- * handing a decoder bytes that may genuinely be short. And a station that fills to some OTHER size is not
- * recognised: its units stay exactly as they arrive rather than being mis-joined.
+ * handing a decoder bytes that may genuinely be short. And a station that fills to some OTHER size is
+ * recognised only by an assembler constructed with that size: elsewhere its units stay exactly as they arrive
+ * rather than being mis-joined.
  */
 export class AccessUnitAssembler {
   private open?: { header: VideoFrameHeader; chunks: Buffer[]; carried: number };
@@ -236,8 +237,13 @@ export class AccessUnitAssembler {
    * @param onDropped called for each incomplete unit discarded, with what had arrived, how many frames it
    * arrived in, and how many this assembler has dropped in total — a running count, so no caller keeps
    * its own.
+   * @param chunkBytes the payload size the station fills a frame to before continuing a unit in the next. A
+   * unit is held while its latest frame declares exactly this. {@link STATION_CHUNK_BYTES} when omitted.
    */
-  constructor(private readonly onDropped?: (drop: { carried: number; chunks: number; count: number }) => void) {}
+  constructor(
+    private readonly onDropped?: (drop: { carried: number; chunks: number; count: number }) => void,
+    private readonly chunkBytes = STATION_CHUNK_BYTES,
+  ) {}
 
   /**
    * Feed one raw `CMD_VIDEO_FRAME` payload; returns the access units it completed — none while a unit is
@@ -256,7 +262,7 @@ export class AccessUnitAssembler {
       this.discard();
       return [];
     }
-    const full = header.payloadLength === STATION_CHUNK_BYTES;
+    const full = header.payloadLength === this.chunkBytes;
     const open = this.open;
     if (open && sameUnit(open.header, header) && !beginsAccessUnit(body)) {
       open.chunks.push(body);

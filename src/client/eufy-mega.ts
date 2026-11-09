@@ -1991,10 +1991,11 @@ export class EufyMega extends EventEmitter {
    * semantic event in — so a stream or talkback opened right after a doorbell ring or a detection starts
    * warm instead of paying a cold open.
    *
-   * Four gates. `autoRealtime: false` means the SDK opens nothing on its own initiative at all;
+   * Five gates. `autoRealtime: false` means the SDK opens nothing on its own initiative at all;
    * {@link EufyMegaOptions.prewarmEvents} must name the event, and it names none by default, which is
-   * what makes pre-warm opt-in; the station must be one the account actually reports; and its power tier
-   * must be one {@link EufyMegaOptions.prewarmTiers} allows.
+   * what makes pre-warm opt-in; the station must be one the account actually reports; it must not be a
+   * HomeBase S1 Pro (T9000), which answers no P2P lookup and is driven over RTC; and its power tier must
+   * be one {@link EufyMegaOptions.prewarmTiers} allows.
    *
    * The tier is resolved for the STATION whose session would open, which is why an attached camera is
    * judged by its base — {@link P2PCommandRouter.stationKeyOf} is the single source of that mapping, and
@@ -2011,6 +2012,7 @@ export class EufyMega extends EventEmitter {
     if (!this.prewarmEvents.has(event)) return;
     const station = this.p2p.stationKeyOf(deviceSn);
     if (!this.registry.list().some((device) => device.sn === station)) return;
+    if (this.stationOf(station).t9000) return;
     if (!this.prewarmTiers.has(this.stationPower(station))) return;
     void this.p2p.prewarm(station, this.opts.prewarmMs);
   }

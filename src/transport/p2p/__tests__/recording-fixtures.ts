@@ -62,3 +62,29 @@ export function audioFrame(mediaKey: Buffer, aac: Buffer, codec = 0): RecordingF
 
 export const IDR = Buffer.from("0000000167640028aced0000000168ee3c800000000165b800", "hex");
 export const slice = (n: number) => Buffer.concat([Buffer.from("0000000121", "hex"), Buffer.alloc(40, n)]);
+
+/** A video frame from a station that stores in the clear: the header, then `annexb`, `22 + length` bytes. */
+export function clearVideoFrame(annexb: Buffer, key: boolean, frameNumber: number, stampMs: number): RecordingFrame {
+  return {
+    commandId: 1300,
+    signCode: 0,
+    raw: Buffer.concat([videoHeader(annexb.length, key, frameNumber, stampMs), annexb]),
+  };
+}
+
+/** An audio frame from a station that stores in the clear: the 16-byte header, then `aac`. */
+export function clearAudioFrame(aac: Buffer, codec = 0): RecordingFrame {
+  const header = Buffer.alloc(16);
+  header.writeUInt32LE(aac.length, 0);
+  header.writeUInt8(codec, 5);
+  return { commandId: 1301, signCode: 0, raw: Buffer.concat([header, aac]) };
+}
+
+/** The 7-byte ADTS header of one AAC-LC 16 kHz mono frame of `n` payload bytes, as the camera sends it. */
+export const adtsHeader = (n: number) => {
+  const l = n + 7;
+  return Buffer.from([0xff, 0xf1, 0x60, 0x40 | (l >> 11), (l >> 3) & 0xff, ((l & 7) << 5) | 0x1f, 0xfc]);
+};
+
+/** One whole ADTS frame of `n` payload bytes of `fill`. */
+export const adts = (n: number, fill: number) => Buffer.concat([adtsHeader(n), Buffer.alloc(n, fill)]);

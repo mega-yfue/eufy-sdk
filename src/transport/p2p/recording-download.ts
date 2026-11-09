@@ -1,13 +1,14 @@
 /**
- * Download of a recording held on a HomeBase 2 (T8010), over the station's P2P session.
+ * Download of a recording held on a HomeBase, over the station's P2P session. {@link RECORDING_STATIONS}
+ * holds every way the station models differ; the rest is shared.
  *
  * The request is `CMD_DOWNLOAD_VIDEO` (1024) in the string-pair shape
  * ({@link buildStringPairCommandPayload}) on the camera's channel. The station answers on
  * {@link RECORDING_DATA_TYPE}, tagged with that channel, with the recording's `CMD_VIDEO_FRAME` (1300) and
  * `CMD_AUDIO_FRAME` (1301) frames, faster than real time, then `CMD_DOWNLOAD_FINISH` (1304) on the control
- * data type, tagged with channel 0 whatever the camera's channel.
+ * data type, tagged with the station's {@link RecordingStation.finishChannel} whatever the camera's channel.
  *
- * Frame layouts:
+ * Frame layouts on a station that seals its recordings (HomeBase 2):
  *
  * ```
  * video, keyframe: the live E2E layout ({@link VideoFrameDecoder}), length = 179 + len exactly
@@ -18,22 +19,33 @@
  *   plaintext is a whole ADTS frame, header included
  * ```
  *
+ * Frame layouts on a station that stores them in the clear (HomeBase 3):
+ *
+ * ```
+ * video, every frame: the same 22B header, then len bytes of Annex-B H.264 or H.265, length = 22 + len
+ * audio: the same 16B header, then len bytes of ADTS AAC
+ * ```
+ *
  * @module p2p/recording-download
  */
 import { RecordingDownloadError, type RecordingDownload } from "../../core/contracts.js";
 import { CommandType } from "./commands.js";
-import type { P2PFrame, P2PSession } from "./p2p-session.js";
-import { AccessUnitAssembler, VideoFrameDecoder, parseVideoFrameHeader } from "./video.js";
-import { openSealedAudio } from "./audio-frame.js";
+import { STATION_CHANNEL, type P2PFrame, type P2PSession } from "./p2p-session.js";
+import {
+  AccessUnitAssembler,
+  STATION_CHUNK_BYTES,
+  VideoFrameDecoder,
+  parseVideoFrameHeader,
+  type VideoFrameHeader,
+} from "./video.js";
+import { AUDIO_HEADER_LEN, openSealedAudio } from "./audio-frame.js";
 
 /** Data type a station sends a recording's frames on: the binary channel (`0xd1 0x03`), not live video's. */
 export const RECORDING_DATA_TYPE = 3;
-/** Bytes of video frame header; a plaintext frame's H.264 starts here. */
+/** Bytes of video frame header; a plaintext frame's payload starts here. */
 const VIDEO_HEADER_LEN = 0x16;
 /** Audio codec id for AAC-LC in the audio frame header. */
 const AUDIO_CODEC_AAC_LC = 0;
-/** Channel 0, the one a HomeBase tags `CMD_DOWNLOAD_FINISH` with whatever the camera's channel. */
-const FINISH_CHANNEL = 0;
 /** How long the station may take to send the first frame of a recording. */
 const FIRST_FRAME_WAIT_MS = 20_000;
 /**
@@ -59,16 +71,79 @@ export interface RecordingFrame {
 }
 
 /**
- * The path a HomeBase 2 stores a camera's recording under: the channel as two digits, then the recording's
- * name as `yyyyMMddHHmmss` or `h265_yyyyMMddHHmmss`. Answers `undefined` for any other name, and for a channel
- * outside `0`–`99`. Both forms are digits behind one fixed prefix, so the anchored test lets no `..`, slash or
- * other character that could reach another path on the station through.
+ * How one station model stores its attached cameras' recordings and serves them over `CMD_DOWNLOAD_VIDEO`
+ * (1024): where a recording lives, whether it is sealed, which channel the finish frame is tagged with, and
+ * where a split picture continues. A model without an entry in {@link RECORDING_STATIONS} offers no download.
+ */
+export interface RecordingStation {
+  /**
+   * The path the station stores the recording named `recording` of the camera on station channel `channel`
+   * under. Answers `undefined` for a name the station could not hold. The SDK builds every path from these two
+   * values, so a request never reaches outside the camera's own folder.
+   */
+  readonly path: (channel: number, recording: string) => string | undefined;
+  /**
+   * Whether the station stores a recording sealed under its event's cipher, which opens with that cipher's ECC
+   * private key, or in the clear, which reads no key. The frame layouts of each are in this module's
+   * documentation.
+   */
+  readonly sealed: boolean;
+  /** The channel the station tags `CMD_DOWNLOAD_FINISH` (1304) with. The camera's own channel is taken too. */
+  readonly finishChannel: number;
+  /**
+   * The payload size the station fills a `CMD_VIDEO_FRAME` to when an access unit continues in the next frame
+   * ({@link AccessUnitAssembler}).
+   */
+  readonly chunkBytes: number;
+}
+
+/**
+ * The folder a HomeBase names after a camera's station channel: `Camera` and the channel as two digits.
+ * Answers `undefined` for a channel outside `0`–`99` or one that is not an integer.
+ */
+function cameraFolder(channel: number): string | undefined {
+  if (!Number.isInteger(channel) || channel < 0 || channel > 99) return undefined;
+  return `Camera${String(channel).padStart(2, "0")}`;
+}
+
+/**
+ * The path a HomeBase 2 stores a camera's recording under: its {@link cameraFolder}, then the recording's name
+ * as `yyyyMMddHHmmss` or `h265_yyyyMMddHHmmss`. Answers `undefined` for any other name, and for a channel
+ * {@link cameraFolder} refuses. Both forms are digits behind one fixed prefix, so the anchored test lets no
+ * `..`, slash or other character that could reach another path on the station through.
  */
 export function homeBase2RecordingPath(channel: number, recording: string): string | undefined {
-  if (!/^(?:h265_)?\d{14}$/.test(recording) || !Number.isInteger(channel) || channel < 0 || channel > 99)
-    return undefined;
-  return `/media/mmcblk0p1/Camera${String(channel).padStart(2, "0")}/${recording}.dat`;
+  const folder = cameraFolder(channel);
+  if (!folder || !/^(?:h265_)?\d{14}$/.test(recording)) return undefined;
+  return `/media/mmcblk0p1/${folder}/${recording}.dat`;
 }
+
+/**
+ * The path a HomeBase 3 stores a camera's recording under:
+ * `/zx/emmcdata/<cameraFolder>/<yyyyMM>/<name>/<name>.zxvideo`, where the name is the recording's start as
+ * `yyyyMMddHHmmss`, whatever the codec, and `<yyyyMM>` is its first six digits. Answers `undefined` for any
+ * other name (a codec prefix, an extension or a path included), and for a channel {@link cameraFolder}
+ * refuses. The anchored test lets no character but digits through.
+ */
+export function homeBase3RecordingPath(channel: number, recording: string): string | undefined {
+  const folder = cameraFolder(channel);
+  if (!folder || !/^\d{14}$/.test(recording)) return undefined;
+  return `/zx/emmcdata/${folder}/${recording.slice(0, 6)}/${recording}/${recording}.zxvideo`;
+}
+
+/**
+ * The stations whose recording download is confirmed, by station model.
+ *
+ * `T8010`, HomeBase 2: `/media/mmcblk0p1/CameraNN/<name>.dat`, sealed under the event's cipher, finish tagged
+ * with channel 0, split pictures filled to {@link STATION_CHUNK_BYTES}.
+ *
+ * `T8030`, HomeBase 3: `/zx/emmcdata/CameraNN/<yyyyMM>/<name>/<name>.zxvideo`, in the clear, finish tagged
+ * with {@link STATION_CHANNEL}, a keyframe over 400000 bytes split at exactly 400000.
+ */
+export const RECORDING_STATIONS: ReadonlyMap<string, RecordingStation> = new Map<string, RecordingStation>([
+  ["T8010", { path: homeBase2RecordingPath, sealed: true, finishChannel: 0, chunkBytes: STATION_CHUNK_BYTES }],
+  ["T8030", { path: homeBase3RecordingPath, sealed: false, finishChannel: STATION_CHANNEL, chunkBytes: 400_000 }],
+]);
 
 /** One recording transfer on a station session. */
 export interface RecordingTransfer {
@@ -81,7 +156,8 @@ export interface RecordingTransfer {
 /**
  * Request one recording and collect its frames until `CMD_DOWNLOAD_FINISH`. Only frames on
  * {@link RECORDING_DATA_TYPE} tagged with the camera's channel belong to it, so a live stream open on the same
- * station is never mixed in. The finish frame is taken on the camera's channel or channel 0.
+ * station is never mixed in. The finish frame is taken on the camera's channel or on `finishChannel`
+ * ({@link RecordingStation.finishChannel}).
  *
  * `frames` rejects with {@link RecordingDownloadError}: `no-data` when nothing arrives within
  * {@link FIRST_FRAME_WAIT_MS}, and `incomplete` when the transfer ends without its finish frame, on a
@@ -91,7 +167,14 @@ export interface RecordingTransfer {
  */
 export function receiveRecording(
   session: P2PSession,
-  request: { path: string; accountId: string; channel: number; timeoutMs?: number; signal?: AbortSignal },
+  request: {
+    path: string;
+    accountId: string;
+    channel: number;
+    finishChannel: number;
+    timeoutMs?: number;
+    signal?: AbortSignal;
+  },
 ): RecordingTransfer {
   let resolveFrames!: (frames: RecordingFrame[]) => void;
   let rejectFrames!: (error: Error) => void;
@@ -132,7 +215,7 @@ export function receiveRecording(
   };
   const onData = (frame: P2PFrame) => {
     if (frame.commandId === CommandType.CMD_DOWNLOAD_FINISH) {
-      if (frame.channel !== request.channel && frame.channel !== FINISH_CHANNEL) return;
+      if (frame.channel !== request.channel && frame.channel !== request.finishChannel) return;
       if (draining) incomplete(draining);
       else deliver();
       return stop();
@@ -183,17 +266,39 @@ export function receiveRecording(
 }
 
 /**
- * Decode a recording's frames, in arrival order, into elementary streams. Split pictures are assembled
- * before they enter the output; an orphan continuation cannot become its own picture. Keyframes go
- * through one {@link VideoFrameDecoder}, whose media key then opens the audio; a keyframe that does not
- * open under `eccPrivateKeyHex`, and every audio frame before the first media key, are dropped. Rejects with
- * {@link RecordingDownloadError} `undecodable` when no video frame decodes.
+ * The bytes a video frame carries in the clear: `header.payloadLength` bytes after the 22-byte header, or
+ * `undefined` for a frame shorter than its header declares.
  */
-export function decodeRecording(frames: readonly RecordingFrame[], eccPrivateKeyHex: string): RecordingDownload {
-  const eccPrivateKey = Buffer.from(eccPrivateKeyHex, "hex");
-  if (eccPrivateKey.length !== 32) throw new RecordingDownloadError("undecodable", "the cipher key is not a P-256 key");
-  const decoder = new VideoFrameDecoder(eccPrivateKey);
-  const assembler = new AccessUnitAssembler();
+function clearVideoPayload(raw: Buffer, header: VideoFrameHeader): Buffer | undefined {
+  const end = VIDEO_HEADER_LEN + header.payloadLength;
+  return raw.length >= end ? raw.subarray(VIDEO_HEADER_LEN, end) : undefined;
+}
+
+/**
+ * Decode a recording's frames, in arrival order, into elementary streams. `station` sets where a split
+ * picture continues ({@link RecordingStation.chunkBytes}) and whether the frames are sealed
+ * ({@link RecordingStation.sealed}). On a sealed station a keyframe goes through one {@link VideoFrameDecoder}
+ * under `eccPrivateKeyHex`, and audio opens under that decoder's current media key; a keyframe that does not
+ * open, and audio before the first media key, are dropped. On a station in the clear every video payload is read
+ * as it is, and audio is everything after its 16-byte header; a keyframe that is in fact sealed begins with an
+ * ECIES point rather than a start code, so the assembler drops it. Split pictures are assembled before they
+ * enter the output, and an orphan continuation cannot become its own picture. Audio frames whose codec byte is
+ * not AAC-LC are dropped.
+ *
+ * Rejects with {@link RecordingDownloadError} `undecodable` when no video frame decodes, and on a sealed
+ * station whose key is absent or not a P-256 key.
+ */
+export function decodeRecording(
+  frames: readonly RecordingFrame[],
+  station: Pick<RecordingStation, "sealed" | "chunkBytes">,
+  eccPrivateKeyHex?: string,
+): RecordingDownload {
+  const eccPrivateKey = station.sealed ? Buffer.from(eccPrivateKeyHex ?? "", "hex") : undefined;
+  if (eccPrivateKey && eccPrivateKey.length !== 32) {
+    throw new RecordingDownloadError("undecodable", "the cipher key is not a P-256 key");
+  }
+  const decoder = eccPrivateKey && new VideoFrameDecoder(eccPrivateKey);
+  const assembler = new AccessUnitAssembler(undefined, station.chunkBytes);
   const video: Buffer[] = [];
   const audio: Buffer[] = [];
   const numbers = new Set<number>();
@@ -206,11 +311,7 @@ export function decodeRecording(frames: readonly RecordingFrame[], eccPrivateKey
       if (!header) continue;
       receivedNumbers.add(header.sequence);
       const units = assembler.push(raw, (payload) =>
-        header.keyframe
-          ? decoder.decodeFrame(payload)?.h264
-          : payload.length >= VIDEO_HEADER_LEN + header.payloadLength
-            ? payload.subarray(VIDEO_HEADER_LEN, VIDEO_HEADER_LEN + header.payloadLength)
-            : undefined,
+        decoder && header.keyframe ? decoder.decodeFrame(payload)?.h264 : clearVideoPayload(payload, header),
       );
       for (const unit of units) {
         video.push(unit.data);
@@ -220,9 +321,9 @@ export function decodeRecording(frames: readonly RecordingFrame[], eccPrivateKey
         lastStamp = stamp;
       }
     } else if (commandId === CommandType.CMD_AUDIO_FRAME) {
-      const mediaKey = decoder.currentMediaKey;
-      if (!mediaKey || raw[5] !== AUDIO_CODEC_AAC_LC) continue;
-      const aac = openSealedAudio(raw, mediaKey);
+      if (raw[5] !== AUDIO_CODEC_AAC_LC) continue;
+      const mediaKey = decoder?.currentMediaKey;
+      const aac = decoder ? mediaKey && openSealedAudio(raw, mediaKey) : raw.subarray(AUDIO_HEADER_LEN);
       if (aac?.length) audio.push(aac);
     }
   }
