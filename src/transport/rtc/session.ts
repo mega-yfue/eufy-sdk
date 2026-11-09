@@ -18,8 +18,9 @@
  * nominally up. A dropped signalling socket closes the peer with it: a hub that still sees the peer
  * answers every later `scall` with 486 until that peer's ICE gives up. A peer that cannot be built when
  * the hub grants the relay ends the session there: the failure is emitted as `error` and `close` fires
- * carrying it. Before the command channel opens, a hub `hangup` or a peer that fails or closes also ends
- * the session, with `close` carrying that failure; {@link RtcSession.stage} names how far it got.
+ * carrying it. Before the command channel opens, a peer that fails or closes also ends the session, and so
+ * does a hub `hangup` on a `scall` session, the exchange above; {@link RtcSession.stage} names how far
+ * the bring-up got. A `call` session's pre-open hangup is not evidenced as terminal and stays logged only.
  *
  * A session whose peer is a {@link RtcPeerOptions.mediaTrack} peer has no command channel: `close` fires
  * when the peer fails or closes, and the video track's packets are emitted as `rtp`.
@@ -62,7 +63,7 @@ export interface RtcSessionEvents {
  * How far a session's bring-up got, in order: the sign fetch, the signalling socket, its auth, the placed
  * call, the hub's relay grant, our answer to its offer, and the open command channel.
  */
-export type RtcBringUpStage =
+type RtcBringUpStage =
   "signing" | "connecting" | "authenticating" | "calling" | "relay-granted" | "answered" | "connected";
 
 interface CallPayload {
@@ -97,7 +98,6 @@ export class RtcSession extends EventEmitter<RtcSessionEvents> {
     this.logger = opts.logger ?? noopLogger;
     this.signaling = (opts.createSignaling ?? ((o) => new RtcSignalingClient(o)))(opts);
     this.peer = (opts.createPeer ?? ((o) => new RtcPeer(o)))({ logger: this.logger, ...opts.peer });
-    const mediaTrack = this.mediaTrack;
 
     this.signaling.on("message", (inner) => {
       this.chain = this.chain
@@ -127,7 +127,7 @@ export class RtcSession extends EventEmitter<RtcSessionEvents> {
     this.peer.on("connectionState", (state) => {
       this.lastPeerState = state;
       if (state !== "failed" && state !== "closed") return;
-      if (this.connected || mediaTrack) {
+      if (this.connected || this.mediaTrack) {
         this.connected = false;
         this.announceClose();
       } else {
@@ -272,7 +272,7 @@ export class RtcSession extends EventEmitter<RtcSessionEvents> {
         return;
       case "hangup":
         this.logger.debug(`[rtc] ${this.opts.stationSn} hub hung up`);
-        if (!this.connected && !this.mediaTrack) {
+        if (!this.connected && this.opts.signalingMode !== "call") {
           this.shutdown(new Error(`RTC ${this.opts.stationSn} hub hung up before the command channel opened`));
         }
         return;
@@ -339,7 +339,7 @@ export class RtcSession extends EventEmitter<RtcSessionEvents> {
     }
     const answer = await this.peer.handleRemoteOffer(offer);
     this.signaling.sendInfoSdp(this.opts.signalingMode === "call" ? answer : JSON.stringify(sdpToScallJson(answer)));
-    if (!this.connected) this.stageReached = "answered";
+    this.stageReached = "answered";
     this.logger.debug(`[rtc] ${this.opts.stationSn} answered the hub's offer`);
   }
 }
