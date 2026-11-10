@@ -270,7 +270,7 @@ timezone (`time_zone`). Auto-lock settings
 and Rain Mode are absent on this family; PIN management, schedules, calibration, and other settings
 are unverified.
 
-Its camera serves live view only: `live()` and `openReadable()`. Stills, recordings, talkback and
-camera settings are absent on this family.
+Its camera serves live view, `live()` and `openReadable()`, and behind a HomeBase 3 the recordings the
+station holds, `downloadRecording()`. Stills, talkback and camera settings are absent on this family.
 
 Next: [Events](/events) · [Live media](/live-media).
