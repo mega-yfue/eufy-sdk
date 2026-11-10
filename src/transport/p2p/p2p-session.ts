@@ -133,6 +133,11 @@ const CMD_GATEWAYINFO = 1100;
 const CMD_START_REALTIME_MEDIA = 1003;
 const CMD_STOP_REALTIME_MEDIA = 1004;
 /**
+ * The gateway-info `cipher_id` (`0xff99`) whose own-session camera answers no `1700` start: with no key for it,
+ * the session starts live with the `1350`/`1003` start in the clear (see `sendStartLiveOwnSession`).
+ */
+const CLEAR_SET_PAYLOAD_CIPHER_ID = 65433;
+/**
  * Own-session cameras (the P2P session IS the camera, not a HomeBase serving child channels) start
  * live media with a `CMD_CONTROL_PAYLOAD` (1700) wrapping inner `commandType/cmd = 1000` (START_LIVE)
  * carrying the client RSA modulus as `encryptkey`, then hold it open with a `1139` keepalive —
@@ -604,7 +609,7 @@ export class P2PSession extends EventEmitter {
    * last sent (`"l2"` GCM / `"l1"` ECB). A keepalive tick re-issues the start if the variant should
    * change (the level-2 key arrived after an initial level-1 start), otherwise sends the 1139 nudge.
    */
-  private readonly liveStartedChannels = new Map<number, "l1" | "l2" | "clear">();
+  private readonly liveStartedChannels = new Map<number, "l1" | "l2" | "clear" | "set-payload">();
   /** The `cipher_id` this connection's `CMD_GATEWAYINFO` reply named, once its negotiation has read it. */
   private gatewayCipherId?: number;
   /** The `n` of the last `[0x01, n]` header this connection sent in the clear — see {@link nextClearCommandBytes}. */
@@ -1376,7 +1381,13 @@ export class P2PSession extends EventEmitter {
       this.sendMediaPayloadLevel2(CMD_START_REALTIME_MEDIA, channel, accountId, {}, key);
       return;
     }
-    const want = this.level2Key ? "l2" : this.sendsInTheClear() ? "clear" : "l1";
+    const want = this.level2Key
+      ? "l2"
+      : this.sendsInTheClear()
+        ? "clear"
+        : this.gatewayCipherId === CLEAR_SET_PAYLOAD_CIPHER_ID
+          ? "set-payload"
+          : "l1";
     if (opts?.force) {
       for (const pending of this.unackedLiveStarts.values()) if (pending.channel === channel) return;
       this.liveStartedChannels.delete(channel);
@@ -1455,6 +1466,11 @@ export class P2PSession extends EventEmitter {
    * each keyframe's AES media key with the `encryptkey` modulus (unwrapped by {@link decodeVideoFrame}).
    * A session that {@link sendsInTheClear} sends it unencrypted instead: signCode 0, frame type 0, header
    * bytes `[0x01, n]` from {@link nextClearCommandBytes}, and `n` as the body's `msg_id`.
+   *
+   * A keyless session whose gateway-info reply named {@link CLEAR_SET_PAYLOAD_CIPHER_ID} sends instead the
+   * app's start for it: outer `CMD_SET_PAYLOAD` (1350) wrapping `{cmd: 1003, payload: {ClientOS, key,
+   * entrytype, timestamp, msg_id: 2, streamtype: 2}, account_id}` in the clear, signCode 0, header bytes
+   * `[0x01, 0x00]`, frame type 11, `key` being the modulus each keyframe's media key is wrapped with.
    */
   private sendStartLiveOwnSession(channel: number, accountId: string): void {
     if (!this.connectAddress) return;
@@ -1462,6 +1478,7 @@ export class P2PSession extends EventEmitter {
     let signCode: number;
     let magic: [number, number];
     let frameType: number;
+    let command = CMD_CONTROL_PAYLOAD;
     if (this.level2Key) {
       const enc = this.encryptLevel2(this.startLiveJson(channel, accountId));
       if (!enc) return;
@@ -1474,6 +1491,24 @@ export class P2PSession extends EventEmitter {
       payload = this.startLiveJson(channel, accountId, magic[1]);
       signCode = 0;
       frameType = 0;
+    } else if (this.gatewayCipherId === CLEAR_SET_PAYLOAD_CIPHER_ID) {
+      const payloadJson = {
+        cmd: CMD_START_REALTIME_MEDIA,
+        payload: {
+          ClientOS: "IOS",
+          key: this.rsaModulus(),
+          entrytype: 0,
+          timestamp: Date.now(),
+          msg_id: 2,
+          streamtype: 2,
+        },
+        account_id: accountId,
+      };
+      payload = Buffer.from(JSON.stringify(payloadJson), "utf-8");
+      command = CMD_SET_PAYLOAD;
+      signCode = 0;
+      magic = [0x01, 0x00];
+      frameType = START_LIVE_FRAME_TYPE_L1;
     } else {
       payload = encryptP2PData(paddingP2PData(this.startLiveJson(channel, accountId)), this.level1Key);
       signCode = 1;
@@ -1482,7 +1517,7 @@ export class P2PSession extends EventEmitter {
     }
     const sequence = this.seqNumber;
     const data = Buffer.concat([
-      buildCommandHeader(sequence, CMD_CONTROL_PAYLOAD),
+      buildCommandHeader(sequence, command),
       buildRawCommandPayload(payload, channel, signCode, magic, frameType),
     ]);
     this.seqNumber = (this.seqNumber + 1) & 0xffff;
@@ -1691,7 +1726,8 @@ export class P2PSession extends EventEmitter {
    *    an own-session camera's live view; the camera stops streaming on it within a second, and keeps
    *    streaming through the 1350-wrapped form.
    *  - own-session on a session that {@link sendsInTheClear}: the same 4-byte body unencrypted, signCode 0,
-   *    header bytes from {@link nextClearCommandBytes}.
+   *    header bytes from {@link nextClearCommandBytes}; on a keyless {@link CLEAR_SET_PAYLOAD_CIPHER_ID}
+   *    session the same frame with header bytes `[0x01, 0x00]`.
    *  - without a level-2 key: the bare 1004 command.
    */
   stopLiveMedia(channel: number = STATION_CHANNEL, accountId = "", homeBaseAttached = false): void {
@@ -1709,10 +1745,15 @@ export class P2PSession extends EventEmitter {
       this.sendRawLevel2Bytes(body, channel, CMD_STOP_REALTIME_MEDIA, 8);
     } else if (this.level2Key) {
       this.sendMediaPayloadLevel2(CMD_STOP_REALTIME_MEDIA, channel, accountId, {});
-    } else if (!homeBaseAttached && this.sendsInTheClear() && this.connectAddress) {
+    } else if (
+      !homeBaseAttached &&
+      (this.sendsInTheClear() || this.gatewayCipherId === CLEAR_SET_PAYLOAD_CIPHER_ID) &&
+      this.connectAddress
+    ) {
+      const magic: [number, number] = this.sendsInTheClear() ? this.nextClearCommandBytes() : [0x01, 0x00];
       const data = Buffer.concat([
         buildCommandHeader(this.seqNumber, CMD_STOP_REALTIME_MEDIA),
-        buildRawCommandPayload(body, channel, 0, this.nextClearCommandBytes(), 0),
+        buildRawCommandPayload(body, channel, 0, magic, 0),
       ]);
       this.seqNumber = (this.seqNumber + 1) & 0xffff;
       this.send(this.connectAddress, RequestMessageType.DATA, data);

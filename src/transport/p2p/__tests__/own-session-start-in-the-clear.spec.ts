@@ -117,6 +117,34 @@ describe("own-session start and stop on a cipher-0 session", () => {
   });
 });
 
+/**
+ * A keyless own-session camera whose gateway-info reply names `cipher_id` 65433 acks the `1700` start and
+ * sends no video. The app starts it with `1350` wrapping `cmd: 1003` in the clear at frame type 11, and stops
+ * it with the direct `1004` carrying the channel as an unencrypted `uint32`, both with header bytes `01 00`.
+ */
+describe("own-session start and stop on a keyless cipher-65433 session", () => {
+  beforeEach(() => void vi.useFakeTimers());
+  afterEach(() => void vi.useRealTimers());
+
+  it("starts with the 1350/1003 start in the clear and stops with the 4-byte 1004", () => {
+    const { session: s, sent } = session();
+    negotiate(s, 65433);
+    s.startLiveMedia(0, ACCOUNT_ID, false);
+    s.stopLiveMedia(0, ACCOUNT_ID, false);
+
+    const start = commandOf(sent[0]);
+    expect(start).toMatchObject({ command: 1350, counter: [0x01, 0x00], channel: 0, signCode: 0, frameType: 11 });
+    const json = JSON.parse(start.body.toString("utf-8"));
+    expect(Object.keys(json)).toEqual(["cmd", "payload", "account_id"]);
+    expect(Object.keys(json.payload)).toEqual(["ClientOS", "key", "entrytype", "timestamp", "msg_id", "streamtype"]);
+    expect(json).toMatchObject({ cmd: 1003, account_id: ACCOUNT_ID, payload: { msg_id: 2, streamtype: 2 } });
+    expect(json.payload.key).toMatch(/^[0-9a-f]{256}$/);
+
+    expect(commandOf(sent[1])).toMatchObject({ command: 1004, counter: [0x01, 0x00], signCode: 0, frameType: 0 });
+    expect(commandOf(sent[1]).body).toEqual(Buffer.from([0x00, 0x00, 0x00, 0x00]));
+  });
+});
+
 describe("database reads on a cipher-0 session", () => {
   beforeEach(() => void vi.useFakeTimers());
   afterEach(() => void vi.useRealTimers());
