@@ -1,6 +1,12 @@
 import { asBool, coerceEnumValue } from "../../core/util.js";
 import { DeviceType } from "../device-types.js";
-import { isIndoorCamera, isIndoorCamMini, isIndoorPanTiltS350, isVideoSmartLock } from "../device-family.js";
+import {
+  isCallDoorbell,
+  isIndoorCamera,
+  isIndoorCamMini,
+  isIndoorPanTiltS350,
+  isVideoSmartLock,
+} from "../device-family.js";
 import { setScalar, setPayload, setJson, isCameraCodec, hasCapability } from "./access.js";
 import { AUDIO_CMD } from "./audio.js";
 import { DOORBELL_CMD } from "./doorbell.js";
@@ -464,6 +470,9 @@ function privacyCommand(enabled: boolean, channel: number): Command {
   return { kind: "p2p-privacy-burst", enabled, channel };
 }
 
+/** A C30/C31 has reported no 1716 and no doorbell LED write was tried on it, so it keeps 1045. */
+const doorbellLed = (ctx: AvailabilityContext): boolean => hasCapability(ctx, "doorbell") && !isCallDoorbell(ctx);
+
 /**
  * Status LED — family-variant, like camera power above. A **Video Doorbell**'s user-facing LED (the
  * button ring) is `DOORBELL_LED` (1716) carried in the `SET_PAYLOAD` (1350) envelope
@@ -477,7 +486,7 @@ function privacyCommand(enabled: boolean, channel: number): Command {
  * same one under a different seal. See `setPayload`'s two conditions.
  */
 function statusLedCommand(on: boolean, ctx: CommandContext): Command {
-  if (hasCapability(ctx, "doorbell")) return setPayload(CAMERA_CMD.DOORBELL_LED, { light_enable: on ? 1 : 0 }, ctx);
+  if (doorbellLed(ctx)) return setPayload(CAMERA_CMD.DOORBELL_LED, { light_enable: on ? 1 : 0 }, ctx);
   return setScalar(CAMERA_CMD.DEV_LED_SWITCH, on ? 1 : 0, ctx, "int-string");
 }
 
@@ -892,8 +901,8 @@ export const CAMERA_MEMBERS = {
     kind: "boolean",
     provenance: "verified",
     available: isCameraCodec,
-    readAvailable: (ctx) => !hasCapability(ctx, "doorbell"),
-    readAliases: [{ paramType: CAMERA_CMD.DOORBELL_LED, available: (ctx) => hasCapability(ctx, "doorbell") }],
+    readAvailable: (ctx) => !doorbellLed(ctx),
+    readAliases: [{ paramType: CAMERA_CMD.DOORBELL_LED, available: doorbellLed }],
     requiresRead: true,
     description: "Camera status LED. Video doorbells report the same state under their button-ring LED parameter.",
     write: (v, ctx) => statusLedCommand(asBool(v), ctx),

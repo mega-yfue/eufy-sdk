@@ -1,5 +1,5 @@
 import { asBool } from "../../core/util.js";
-import { isHomeBase, HOMEBASE_TYPES } from "../device-family.js";
+import { isCallDoorbell, isHomeBase, HOMEBASE_TYPES } from "../device-family.js";
 import { setScalar, setPayload, isCameraCodec, hasCapability } from "./access.js";
 import { propertiesOf, type Members, type Surface } from "./members.js";
 import type { AvailabilityContext, CapabilityModule, CommandContext } from "./types.js";
@@ -151,7 +151,7 @@ export const AUDIO_MEMBERS = {
     kind: "percent",
     writeOnly: true,
     provenance: "verified",
-    available: (ctx: AvailabilityContext) => hasCapability(ctx, "doorbell"),
+    available: (ctx: AvailabilityContext) => hasCapability(ctx, "doorbell") && !isCallDoorbell(ctx),
     min: 0,
     max: 100,
     description: "Doorbell ring/chime volume 0..100 (1708 DOORBELL_RINGTONE_VOLUME). Wire verified live on T8214.",
