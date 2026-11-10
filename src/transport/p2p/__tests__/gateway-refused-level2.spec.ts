@@ -134,7 +134,7 @@ describe("a station that refuses level-2 at gateway info", () => {
     expect(session.refusedLevel2).toBe(false);
   });
 
-  it("frames a control payload in the clear: signCode 0, header [01 n], the JSON as plaintext", () => {
+  it("frames a control payload in the app's clear form: signCode 0, header [01 00], only {cmd, payload}", () => {
     const { session } = refusedSession();
     const sent = collectSends(session);
 
@@ -143,16 +143,10 @@ describe("a station that refuses level-2 at gateway info", () => {
 
     const [first, second] = sent as [Buffer, Buffer];
     expect(first.readUInt16LE(8)).toBe(1350); // CMD_SET_PAYLOAD
-    expect([first[14], first[15]]).toEqual([0x01, 0x01]); // first command in the clear on this connection
-    expect([second[14], second[15]]).toEqual([0x01, 0x02]); // counted per command
+    expect([first[14], first[15]]).toEqual([0x01, 0x00]);
+    expect([second[14], second[15]]).toEqual([0x01, 0x00]); // not counted per command
     expect([first[16], first[17]]).toEqual([0, 0]); // channel 0, signCode 0
-    expect(JSON.parse(first.subarray(20).toString("utf-8"))).toEqual({
-      account_id: ADMIN,
-      cmd: 1940,
-      mChannel: 0,
-      mValue3: 0,
-      payload: { apiCommand: 6018 },
-    });
+    expect(JSON.parse(first.subarray(20).toString("utf-8"))).toEqual({ cmd: 1940, payload: { apiCommand: 6018 } });
   });
 
   it("frames nothing with nowhere to send it", () => {

@@ -1594,8 +1594,9 @@ export class P2PSession extends EventEmitter {
    * layout ({@link sendRawLevel1Bytes}) sealed under that key at encryption type 2: the encryption-type
    * byte names the key the body is sealed with (1 = level-1 key, 2 = the negotiated key).
    *
-   * With `clearOnRefusal` on a session that {@link refusedLevel2}, the same envelope goes in the clear
-   * ({@link clearCommandPayload}). Without it, a refused session answers `false` and sends nothing.
+   * With `clearOnRefusal` on a session that {@link refusedLevel2}, the frame goes in the clear in the vendor
+   * app's form for such a device: header bytes `[01 00]`, signCode 0, and a body of `{cmd, payload}` alone.
+   * Without it, a refused session answers `false` and sends nothing.
    */
   sendControlLevel2(
     cmd: number,
@@ -1620,7 +1621,7 @@ export class P2PSession extends EventEmitter {
     } else if (this.level2EcbKey) {
       sealed = buildRawCommandPayload(encryptP2PData(paddingP2PData(value), this.level2EcbKey), channel, 2);
     } else {
-      sealed = this.clearCommandPayload(value, channel);
+      sealed = buildRawCommandPayload(Buffer.from(JSON.stringify({ cmd, payload }), "utf-8"), channel);
     }
     const data = Buffer.concat([buildCommandHeader(this.seqNumber, CMD_SET_PAYLOAD), sealed]);
     this.seqNumber = (this.seqNumber + 1) & 0xffff;
