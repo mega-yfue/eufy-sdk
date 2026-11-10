@@ -87,6 +87,7 @@ import {
 } from "../model/device-family.js";
 import { cameraPowerTier } from "../model/capabilities/battery.js";
 import { DeviceRegistry, type DeviceRecord, type ParamChange } from "./device-registry.js";
+import { PushRepeats } from "./push-repeats.js";
 import type {
   EufyMegaOptions,
   EufyMegaEvent,
@@ -286,6 +287,8 @@ export class EufyMega extends EventEmitter {
   /** Device list/record/capability resolution + the frame→caps cache. */
   private readonly registry: DeviceRegistry;
   private pushClient?: PushClient;
+  /** Second FCM deliveries of one detection, held back from the semantic events. */
+  private readonly pushRepeats = new PushRepeats();
   /** Push-fed passive image store; absent when the caller disables acquisition. */
   private readonly storedImages?: StoredImageCache;
   /** Account whose retained images are currently held. */
@@ -2519,6 +2522,10 @@ export class EufyMega extends EventEmitter {
    * camera's P2P session, so a following stream or talkback starts warm; {@link prewarmForEvent} owns that
    * decision, and the router stays event-agnostic.
    *
+   * A push that repeats an earlier one for the same detection ({@link PushRepeats}) is still emitted as
+   * `push`, and its thumbnail still reaches the retained still, but it is not announced as a semantic
+   * event a second time.
+   *
    * Returns the connected client rather than installing it. Registration can outlive a `disconnect()`,
    * and {@link ensureRealtime} owns the decision of whether a finished bring-up is still the current
    * one — so this never overwrites a channel a later login already brought up.
@@ -2567,9 +2574,10 @@ export class EufyMega extends EventEmitter {
         payload: ev.payload as Record<string, unknown>,
       };
       const caps = this.capsForEvent(ev.deviceSn);
-      const decoded = decodeCapabilityEvent(signal, caps);
+      const repeat = this.pushRepeats.repeat(ev);
+      const decoded = repeat ? [] : decodeCapabilityEvent(signal, caps);
       this.opts.logger?.debug(
-        `[push] in: eventType=${ev.eventType} device=${caps ? "known" : ev.deviceSn ? "unknown" : "none"} events=${decoded.length}`,
+        `[push] in: eventType=${ev.eventType} device=${caps ? "known" : ev.deviceSn ? "unknown" : "none"} events=${decoded.length}${repeat ? " (repeat)" : ""}`,
       );
       for (const out of decoded) {
         this.emitSemantic(out.event, out.payload, { edge: true, refresh: out.refresh });
