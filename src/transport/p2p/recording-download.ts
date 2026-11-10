@@ -28,7 +28,8 @@
  *
  * @module p2p/recording-download
  */
-import { RecordingDownloadError, type RecordingDownload } from "../../core/contracts.js";
+import { RecordingDownloadError, type RecordingDownload, type VideoCodec } from "../../core/contracts.js";
+import { sniffAnnexbCodec } from "./annexb.js";
 import { CommandType } from "./commands.js";
 import { STATION_CHANNEL, type P2PFrame, type P2PSession } from "./p2p-session.js";
 import {
@@ -324,6 +325,7 @@ export function decodeRecording(
   const decoder = eccPrivateKey && new VideoFrameDecoder(eccPrivateKey);
   const assembler = new AccessUnitAssembler(undefined, station.chunkBytes);
   const video: Buffer[] = [];
+  let codec: VideoCodec | undefined;
   const audio: Buffer[] = [];
   const numbers = new Set<number>();
   const receivedNumbers = new Set<number>();
@@ -339,6 +341,7 @@ export function decodeRecording(
       );
       for (const unit of units) {
         video.push(unit.data);
+        if (unit.keyframe) codec ??= sniffAnnexbCodec(unit.data);
         numbers.add(header.sequence);
         const stamp = raw.readUIntLE(0x0e, 6);
         firstStamp ??= stamp;
@@ -363,6 +366,7 @@ export function decodeRecording(
   const durationMs = (lastStamp ?? 0) - (firstStamp ?? 0);
   return {
     video: Buffer.concat(video),
+    ...(codec ? { codec } : {}),
     ...(audio.length ? { audio: Buffer.concat(audio) } : {}),
     frames: ordered.length,
     missingFrames,
