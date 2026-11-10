@@ -843,6 +843,20 @@ export class P2PSession extends EventEmitter {
         const key = eccPrivHex
           ? deriveLevel2KeyFromGatewayInfo(gwPayload, eccPrivHex)
           : deriveLevel2KeyFromRsaGatewayInfo(gwPayload, rsaPrivKey!);
+        // ponytail: temporary #398 probe, both decoders forced on the same payload; drop with the trace above.
+        const probe = (f: () => Buffer | undefined) => {
+          try {
+            const k = f();
+            return k ? `ok/${k.length}B` : "fail";
+          } catch (e) {
+            return `throw/${(e as Error).message.slice(0, 40)}`;
+          }
+        };
+        this.logger.debug(
+          `[p2p] ${this.cfg.stationSn} level-2 probe cipher_id=${cipherId} ` +
+            `ecc=${keys?.ecc ? probe(() => deriveLevel2KeyFromGatewayInfo(gwPayload, keys.ecc!)) : "-"} ` +
+            `rsa=${keys?.rsa ? probe(() => deriveLevel2KeyFromRsaGatewayInfo(gwPayload, keys.rsa!)) : "-"}`,
+        );
         if (!key) {
           this.logger.debug(
             `[p2p] ${this.cfg.stationSn} level-2 derivation failed via ${eccPrivHex ? "ecc" : "rsa"} (cipher_id ${cipherId})`,
