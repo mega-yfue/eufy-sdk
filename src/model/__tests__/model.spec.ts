@@ -332,6 +332,13 @@ describe("doorbell — confirmed against real T8214", () => {
     expect(r.name).toBe("Video Doorbell Dual");
   });
 
+  it.each([
+    ["T8224", 95],
+    ["T8223", 96],
+  ])("types the Video Doorbell C30/C31 (%s) as a doorbell", (model, deviceType) => {
+    expect(resolveDevice({ model, deviceType }).capabilities).toContain("doorbell");
+  });
+
   it("marks each manifest property with whether the device has reported it", () => {
     const r = resolveDevice({ model: "T8113", deviceType: 1, params: { 1101: "80" } });
     const spec = (name: string) => r.properties.find((p) => p.name === name);

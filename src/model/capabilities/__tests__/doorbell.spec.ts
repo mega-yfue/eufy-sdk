@@ -226,11 +226,11 @@ describe("doorbell capability module", () => {
 
     it("one setter carries both halves — the wire has no way to send one", async () => {
       const { acts, sent } = bind<DoorbellActions>("doorbell", ctx(2));
-      await acts.setVideoQuality(DoorbellVideoQuality.Low, true);
+      await acts.setVideoQuality!(DoorbellVideoQuality.Low, true);
       expect(sent[0]).toMatchObject({ param: DOORBELL_CMD.VIDEO_QUALITY, value: 6, channel: 2 });
-      await acts.setVideoQuality(DoorbellVideoQuality.High, false);
+      await acts.setVideoQuality!(DoorbellVideoQuality.High, false);
       expect(sent[1]).toMatchObject({ value: 3 });
-      await acts.setVideoQuality(DoorbellVideoQuality.Auto, true);
+      await acts.setVideoQuality!(DoorbellVideoQuality.Auto, true);
       expect(sent[2]).toMatchObject({ value: 5 });
     });
 
@@ -243,13 +243,13 @@ describe("doorbell capability module", () => {
       const { acts, sent } = bind<DoorbellActions>("doorbell", ctx(2), {
         read: (n) => (n === "videoQuality" ? { value: 8 } : undefined),
       });
-      await acts.setVideoQuality(DoorbellVideoQuality.Low, false);
+      await acts.setVideoQuality!(DoorbellVideoQuality.Low, false);
       expect(sent[0]).toMatchObject({ value: 1 });
     });
 
     it("refuses a quality outside the enum", async () => {
       const { acts, sent } = bind<DoorbellActions>("doorbell", ctx(2));
-      await expect(acts.setVideoQuality(9 as never, true)).rejects.toThrow(/videoQuality/);
+      await expect(acts.setVideoQuality!(9 as never, true)).rejects.toThrow(/videoQuality/);
       expect(sent).toHaveLength(0);
     });
   });
