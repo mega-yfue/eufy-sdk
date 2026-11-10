@@ -195,7 +195,7 @@ export class DeviceChannelUnresolvedError extends Error {
  * - `invalid-recording` — the recording name is not one the camera's station could hold.
  * - `key-unavailable` — the station stores the recording sealed and the key it was sealed under could not be
  *   obtained.
- * - `no-data` — the station sent nothing within the wait.
+ * - `no-data` — the station sent no recording: it answered that it holds none, or sent nothing within the wait.
  * - `incomplete` — the transfer ended before the station's finish frame.
  * - `undecodable` — data arrived but no video frame could be decoded from it.
  */
