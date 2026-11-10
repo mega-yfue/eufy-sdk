@@ -968,7 +968,7 @@ export const CAMERA_MEMBERS = {
       }),
     "Record N seconds → an mp4/h264 buffer.",
   ),
-  /** The T8530 serves its live feed as a Readable too; its other media pulls stay withheld. */
+  /** The T8530 serves its live feed as a Readable too. */
   openReadable: provided(
     "media",
     (m, { ctx, read }) =>
@@ -992,13 +992,14 @@ export const CAMERA_MEMBERS = {
       }),
     "Continuous fragmented-MP4 (CMAF) recording.",
   ),
+  /** A T8530 is offered the download behind a HomeBase 3 alone. */
   downloadRecording: provided(
     "media",
     (m, { ctx }) =>
-      isCameraCodec(ctx) &&
+      (isCameraCodec(ctx) || (isVideoSmartLock(ctx) && ctx.stationSerial?.startsWith("T8030") === true)) &&
       m.downloadRecording &&
       ((opts: Parameters<NonNullable<MediaProvider["downloadRecording"]>>[0]) => m.downloadRecording!(opts)),
-    "Download a recording the station holds → H.264 and AAC elementary streams.",
+    "Download a recording the station holds → H.264 or H.265 and AAC elementary streams.",
   ),
   /**
    * Push audio from the host to this camera's speaker. Gated on the **speaker** param specifically —

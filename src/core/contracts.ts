@@ -195,7 +195,7 @@ export class DeviceChannelUnresolvedError extends Error {
  * - `invalid-recording` — the recording name is not one the camera's station could hold.
  * - `key-unavailable` — the station stores the recording sealed and the key it was sealed under could not be
  *   obtained.
- * - `no-data` — the station sent nothing within the wait.
+ * - `no-data` — the station sent no recording: it answered that it holds none, or sent nothing within the wait.
  * - `incomplete` — the transfer ended before the station's finish frame.
  * - `undecodable` — data arrived but no video frame could be decoded from it.
  */
@@ -218,13 +218,15 @@ export class RecordingDownloadError extends Error {
  * A recording downloaded from the station, as elementary streams.
  *
  * `video` is Annex-B H.264 or H.265 in decode order, `audio` AAC-LC 16 kHz mono in ADTS framing (absent
- * when the recording carried none that could be decoded). `frames` counts the distinct video sequences
- * emitted. `missingFrames` counts gaps between received sequences and received sequences that yielded no
+ * when the recording carried none that could be decoded). `codec` is the codec of `video`, read off the parameter
+ * sets of its first keyframe that carries them, and is absent when no keyframe does. `frames` counts the distinct
+ * video sequences emitted. `missingFrames` counts gaps between received sequences and received sequences that yielded no
  * usable picture, including at either end. `durationMs` spans the first to the last emitted picture by the
  * camera's own timestamps; `fps` is derived from those stamps.
  */
 export interface RecordingDownload {
   video: Buffer;
+  codec?: VideoCodec;
   audio?: Buffer;
   frames: number;
   missingFrames: number;
@@ -543,7 +545,7 @@ export interface TuyaDpInbound {
   onDps(sn: string, dps: Record<number, boolean | number | string>): void;
 }
 
-/** Elementary-stream video codec of a {@link LiveVideoFrame} — eufy cameras stream H.264 or H.265. */
+/** Elementary-stream video codec — eufy cameras stream H.264 or H.265. */
 export type VideoCodec = "h264" | "h265" | "av1";
 
 /**

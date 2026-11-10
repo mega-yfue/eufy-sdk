@@ -72,7 +72,7 @@ async function main(): Promise<void> {
       const cipherId = row.cipher_id > 0xffffff ? row.cipher_id & 0xff : row.cipher_id;
       const clip = await camera.downloadRecording({ recording, cipherId });
       const name = path.join(outDir, `${row.record_id}_${recording}`);
-      await writeFile(`${name}.h264`, clip.video);
+      await writeFile(`${name}.${clip.codec ?? "video"}`, clip.video);
       if (clip.audio) await writeFile(`${name}.aac`, clip.audio);
       console.log(`${clip.frames} pictures, ${clip.missingFrames} missing, ${clip.fps} fps`);
       if (clip.frames !== row.frame_num) {

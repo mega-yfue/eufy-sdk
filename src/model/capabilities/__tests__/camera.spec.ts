@@ -819,6 +819,22 @@ describe("camera capability module", () => {
       expect(videoLockOffered.sort()).toEqual(["live", "openReadable"]);
     });
 
+    it("the T8530 is offered a recording download behind a HomeBase 3 alone", () => {
+      const media: MediaProvider = {
+        snapshotLive: async () => ({ jpeg: Buffer.alloc(0), width: 1, height: 1 }),
+        live: async () => ({}) as never,
+        record: async () => Buffer.alloc(0),
+        downloadRecording: async () => ({}) as never,
+      };
+      const videoLock = (stationSerial?: string) =>
+        camera(ctx(4, { codec: "lock", deviceType: DeviceType.LOCK_8530, stationSerial }), media).acts;
+      expect(videoLock("T8030P0000000000").downloadRecording).toBeTypeOf("function");
+      expect("downloadRecording" in videoLock("T8010P0000000000")).toBe(false);
+      expect("downloadRecording" in videoLock()).toBe(false);
+      const otherLock = camera(ctx(4, { codec: "lock", stationSerial: "T8030P0000000000" }), media).acts;
+      expect("downloadRecording" in otherLock).toBe(false);
+    });
+
     it("a stored-recording download passes the pushed recording name and cipher id through unchanged", async () => {
       const seen: unknown[] = [];
       const recording = { video: Buffer.from([1]), frames: 1, missingFrames: 0, durationMs: 0, fps: 0 };
