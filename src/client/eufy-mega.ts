@@ -2567,6 +2567,13 @@ export class EufyMega extends EventEmitter {
         payload: ev.payload as Record<string, unknown>,
       };
       const caps = this.capsForEvent(ev.deviceSn);
+      const sn = ev.deviceSn;
+      if (sn && caps)
+        for (const { params } of decodeCapabilityState(signal, caps)) {
+          this.registry.applyPushedParams(sn, params);
+          const device = this.liveDeviceToAnnounce(sn);
+          if (device) this.applyAndAnnounce(device, params);
+        }
       const decoded = decodeCapabilityEvent(signal, caps);
       this.opts.logger?.debug(
         `[push] in: eventType=${ev.eventType} device=${caps ? "known" : ev.deviceSn ? "unknown" : "none"} events=${decoded.length}`,
