@@ -403,6 +403,19 @@ describe("RtcSession", () => {
     expect(s.session.peerState).toBe("failed");
   });
 
+  it("leaves a pre-open hangup on a call session logged only, its terminality unevidenced", async () => {
+    const s = await authenticated(setup("call"));
+    s.sig.hub({ action: 3, dataType: "call", data: { status: 100, turn: TURN } });
+    await flush();
+    const closed = vi.fn();
+    s.session.on("close", closed);
+    s.sig.hub({ action: 3, dataType: "hangup", data: {} });
+    await flush();
+    expect(closed).not.toHaveBeenCalled();
+    expect(s.peer.close).not.toHaveBeenCalled();
+    s.session.close();
+  });
+
   it("leaves a hangup after the command channel opened to the channel's own close", async () => {
     const s = await authenticated(setup());
     s.peer.emit("commandChannelOpen");
