@@ -827,6 +827,13 @@ export class P2PSession extends EventEmitter {
         const keys = typeof resolved === "string" ? { ecc: resolved } : resolved;
         const eccPrivHex = keys?.ecc;
         const rsaPrivKey = eccPrivHex ? undefined : keys?.rsa;
+        // ponytail: temporary shape trace for #398 (lengths and one framing byte, never key bytes); drop once it is decided.
+        this.logger.debug(
+          `[p2p] ${this.cfg.stationSn} level-2 inputs cipher_id=${cipherId} payload=${gwPayload.length}B ` +
+            `byte4=0x${(gwPayload[4] ?? 0).toString(16).padStart(2, "0")} ` +
+            `ecc=${eccPrivHex ? `${eccPrivHex.length}hex/${/^[0-9a-f]+$/i.test(eccPrivHex) ? "hex" : "not-hex"}` : "none"} ` +
+            `rsa=${keys?.rsa ? `${keys.rsa.length}ch/${keys.rsa.startsWith("-----BEGIN") ? "pem" : "raw"}` : "none"}`,
+        );
         if (!eccPrivHex && !rsaPrivKey) {
           this.logger.debug(`[p2p] ${this.cfg.stationSn} no ECC or RSA key for cipher_id ${cipherId}`);
           this.trace({ phase: "level2-unavailable", reason: "no-cipher-key", cipherId });
@@ -837,6 +844,9 @@ export class P2PSession extends EventEmitter {
           ? deriveLevel2KeyFromGatewayInfo(gwPayload, eccPrivHex)
           : deriveLevel2KeyFromRsaGatewayInfo(gwPayload, rsaPrivKey!);
         if (!key) {
+          this.logger.debug(
+            `[p2p] ${this.cfg.stationSn} level-2 derivation failed via ${eccPrivHex ? "ecc" : "rsa"} (cipher_id ${cipherId})`,
+          );
           this.trace({ phase: "level2-unavailable", reason: "derivation-failed", cipherId });
           this.settleLevel2();
           if (eccPrivHex) this.emit("error", new Error(`level-2 key derivation failed (cipher_id ${cipherId})`));
