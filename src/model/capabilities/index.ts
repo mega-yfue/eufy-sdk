@@ -15,7 +15,7 @@ import {
   propertiesOf,
   type MemberDeps,
 } from "./members.js";
-import { camelCase } from "./access.js";
+import { camelCase, describeDevice } from "./access.js";
 import { describeBound, type CapabilityDescriptor } from "./manifest.js";
 import type {
   CapabilityModule,
@@ -937,8 +937,10 @@ function memberCommand(
     const aliased = member.aliases?.[action];
     const claims = action === property || member.intentNames?.includes(action) === true;
     if (!claims && aliased === undefined) continue;
-    if (member.unverified) {
-      throw new Error(`${m.capability}: ${name} write wire unverified — confirm it on a device before sending`);
+    if (member.unverified || member.unverifiedFor?.(ctx)) {
+      throw new Error(
+        `${m.capability}: ${name} write wire unverified — confirm it on a device before sending [${describeDevice(ctx)}]`,
+      );
     }
     if (!member.write || !installs(member, ctx)) continue;
     return memberWrite(name, member, claims ? value : (aliased as boolean | number | string), ctx);

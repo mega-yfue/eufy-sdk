@@ -201,12 +201,16 @@ describe("described actions — what a stateful one reflects", () => {
    * The same guarantee for the member table — a write-only member has no state to reflect.
    *
    * `available`-gated members are excluded: the gates are MUTUALLY EXCLUSIVE (audio's camera half and
-   * its HomeBase half), so no single ctx installs both and `built()` can only ever be one device.
+   * its HomeBase half), so no single ctx installs both and `built()` can only ever be one device. So are
+   * `unverifiedFor` members, whose setter exists only for the families their own spec binds.
    */
   it.each(
     MODULES.flatMap((mod) =>
       Object.entries(mod.members ?? {})
-        .filter(([, m]) => "write" in m && m.write && !m.writeOnly && !m.unverified && !("available" in m))
+        .filter(
+          ([, m]) =>
+            "write" in m && m.write && !m.writeOnly && !m.unverified && !("available" in m) && !("unverifiedFor" in m),
+        )
         .map(([name, m]) => ({ mod, name, member: m as { writeAs?: string } })),
     ),
   )("$mod.capability.$name derives a setter that reflects itself", ({ mod, name, member }) => {
