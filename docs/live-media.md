@@ -429,12 +429,13 @@ A HomeBase 3 recording name is the bare `yyyyMMddHHmmss` stamp; a codec prefix, 
 rejects with reason `invalid-recording` before anything is sent.
 
 The result is elementary streams, not a container: `video` is Annex-B H.264 or H.265, as `codec` names it
-(`"h264"` or `"h265"`, absent when no picture carries a parameter set), and `audio` (when present) is AAC-LC in
+(`"h264"` or `"h265"`, absent when no keyframe carries a readable parameter set), and `audio` (when present) is AAC-LC in
 ADTS framing. `fps` and `durationMs` come from the camera's own frame stamps, and
 `missingFrames` counts frames the camera numbered that never arrived, with the numbering counted on across a
 change of frame size partway through a recording. Muxing is the caller's; for example with
-ffmpeg, `-framerate <fps> -f h264 -i video.h264 -f aac -i audio.aac -c copy clip.mp4`, with `-f hevc` for an
-H.265 recording.
+ffmpeg, `-r <fps> -f h264 -i video.h264 -f aac -i audio.aac -c copy clip.mp4`, with `-f hevc` and `-tag:v hev1`
+for an H.265 recording. The rate goes in `-r` before the `-i`, since ffmpeg ignores `-framerate` for this input,
+and an H.265 recording muxed this way with `-tag:v hvc1` decodes with errors.
 
 The download is confirmed on a HomeBase 2 and a HomeBase 3 only, so `downloadRecording` is absent on a camera
 attached to any other station. A transfer that ends without the station's finish frame (it went quiet, ran
