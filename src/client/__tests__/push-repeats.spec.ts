@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EufyMega } from "../eufy-mega.js";
-import { PushRepeats, PUSH_REPEAT_WINDOW_MS } from "../push-repeats.js";
+import { PushRepeats } from "../push-repeats.js";
 import { PushClient } from "../../transport/push/push-client.js";
 import type { PushEvent } from "../../transport/push/types.js";
 
@@ -8,6 +8,7 @@ const DOORBELL_SN = "T8000P0000000000";
 const OTHER_SN = "T8000P0000000001";
 const PRESS_DOORBELL = 3103;
 const MOTION = 3101;
+const DOOR_SENSOR = 3;
 
 function push(over: Partial<PushEvent> & { uniqueId?: string } = {}): PushEvent {
   const { uniqueId = "0000000000000000", ...rest } = over;
@@ -49,11 +50,16 @@ describe("PushRepeats", () => {
   });
 
   it("forgets a detection once the window has passed", () => {
-    let now = 0;
-    const repeats = new PushRepeats(PUSH_REPEAT_WINDOW_MS, () => now);
-    expect(repeats.repeat(push())).toBe(false);
-    now = PUSH_REPEAT_WINDOW_MS + 1;
-    expect(repeats.repeat(push())).toBe(false);
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(0);
+      const repeats = new PushRepeats();
+      expect(repeats.repeat(push())).toBe(false);
+      vi.setSystemTime(30_001);
+      expect(repeats.repeat(push())).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -66,7 +72,7 @@ describe("PushRepeats", () => {
 describe("push handler announces one detection once", () => {
   beforeEach(() => vi.restoreAllMocks());
 
-  async function startedPush() {
+  async function startedPush(capabilities = ["doorbell"]) {
     const eufy = new EufyMega({
       email: "t@example.com",
       password: "x",
@@ -84,7 +90,7 @@ describe("push handler announces one detection once", () => {
       get: () => ({ userId: "u", authToken: "t" }),
     });
     vi.spyOn((eufy as any).mega, "registerPushToken").mockResolvedValue(undefined);
-    vi.spyOn((eufy as any).registry, "capabilitiesForDevice").mockReturnValue(new Set(["doorbell"]) as never);
+    vi.spyOn((eufy as any).registry, "capabilitiesForDevice").mockReturnValue(new Set(capabilities) as never);
     vi.spyOn(PushClient.prototype, "connect").mockImplementation(function (this: PushClient) {
       this.emit("connect");
     });
@@ -104,6 +110,21 @@ describe("push handler announces one detection once", () => {
 
     expect(presses).toHaveBeenCalledTimes(1);
     expect(raws).toHaveBeenCalledTimes(2);
+  });
+
+  /**
+   * State-carrying events are edge-triggered on their value already, so the filter never applies to
+   * them: a contact change is announced even when its push shares a `unique_id` with an earlier one.
+   */
+  it("leaves state-carrying events to the edge trigger", async () => {
+    const { eufy, client } = await startedPush(["contact"]);
+    const states = vi.fn();
+    eufy.on("contactState", states);
+
+    client.emit("push", push({ eventType: DOOR_SENSOR, payload: { unique_id: "0000000000000000", e: "1" } }));
+    client.emit("push", push({ eventType: DOOR_SENSOR, payload: { unique_id: "0000000000000000", e: "0" } }));
+
+    expect(states).toHaveBeenCalledTimes(2);
   });
 
   it("emits doorbellPress for each of two presses", async () => {

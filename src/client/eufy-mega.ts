@@ -288,7 +288,10 @@ export class EufyMega extends EventEmitter {
   /** Device list/record/capability resolution + the frame→caps cache. */
   private readonly registry: DeviceRegistry;
   private pushClient?: PushClient;
-  /** Second FCM deliveries of one detection, held back from the semantic events. */
+  /**
+   * Second FCM deliveries of one detection. Only pulse events (no {@link STATE_EVENT_FIELDS} entry) are
+   * held back on a repeat; state-carrying events are already edge-triggered by {@link noteState}.
+   */
   private readonly pushRepeats = new PushRepeats();
   /** Push-fed passive image store; absent when the caller disables acquisition. */
   private readonly storedImages?: StoredImageCache;
@@ -2576,8 +2579,9 @@ export class EufyMega extends EventEmitter {
         payload: ev.payload as Record<string, unknown>,
       };
       const caps = this.capsForEvent(ev.deviceSn);
-      const repeat = this.pushRepeats.repeat(ev);
-      const decoded = repeat ? [] : decodeCapabilityEvent(signal, caps);
+      const all = decodeCapabilityEvent(signal, caps);
+      const repeat = all.some((out) => !STATE_EVENT_FIELDS[out.event]) && this.pushRepeats.repeat(ev);
+      const decoded = repeat ? all.filter((out) => STATE_EVENT_FIELDS[out.event]) : all;
       this.opts.logger?.debug(
         `[push] in: eventType=${ev.eventType} device=${caps ? "known" : ev.deviceSn ? "unknown" : "none"} events=${decoded.length}${repeat ? " (repeat)" : ""}`,
       );
