@@ -2175,13 +2175,8 @@ export class P2PSession extends EventEmitter {
    */
   private databasePayload(value: string, channel: number): Buffer {
     return !this.level2Key && this.sendsInTheClear()
-      ? this.clearCommandPayload(Buffer.from(value, "utf-8"), channel)
+      ? buildRawCommandPayload(Buffer.from(value, "utf-8"), channel, 0, this.nextClearCommandBytes(), 0)
       : buildStringCommandPayload(value, channel, this.level1Key, 1);
-  }
-
-  /** A command payload in the clear: signCode 0, encryption type 0, header bytes from {@link nextClearCommandBytes}. */
-  private clearCommandPayload(value: Buffer, channel: number): Buffer {
-    return buildRawCommandPayload(value, channel, 0, this.nextClearCommandBytes(), 0);
   }
 
   /**
