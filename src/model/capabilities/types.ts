@@ -259,6 +259,19 @@ export interface AvailabilityContext {
    * cannot do what its name promises there.
    */
   homeBaseAttached?: boolean;
+  /**
+   * The subset of **portal** command kinds ({@link Command} kinds in `PORTAL_COMMAND_KINDS`) this
+   * device's PRIMARY transport can actually carry. `undefined` = unrestricted — a P2P-primary device,
+   * which is the default and the whole fleet bar the RTC portal, so its absence changes nothing.
+   *
+   * A device routed over the RTC portal carries only a narrow slice: an RTC-control station (an NVR,
+   * the S1 Pro) carries `set-payload`/`set-json` and nothing else, and a media-only route (a standalone
+   * call doorbell) carries no portal command at all (the empty set). A setter whose command kind is a
+   * portal kind this set does not list would throw at dispatch, so it is not installed — the READ
+   * getter still is. Self-routed kinds (`mqtt-dp*`, `aiot-dp`, `ff09-*`, `keyed-payload-actuate`) are
+   * never gated by this, since they do not ride the portal.
+   */
+  portalCommandKinds?: ReadonlySet<Command["kind"]>;
   /** Serial of the covering station, when the device record names one. */
   stationSerial?: string;
   /**

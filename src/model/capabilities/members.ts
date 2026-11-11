@@ -17,6 +17,7 @@
  */
 import {
   observeCommand,
+  PORTAL_COMMAND_KINDS,
   type Command,
   type CommandSink,
   type Ff09SettingsReader,
@@ -894,6 +895,48 @@ export function installs(
 }
 
 /**
+ * A safe, in-domain probe value for a member's write — the write builders are pure, so emitting one
+ * command to read back its `kind` costs nothing and touches no transport. In-domain matters: a builder
+ * that validates its argument (an enum, a clamped scalar) returns `undefined` for an out-of-domain
+ * value, which would make the probe indistinguishable from an unroutable one. A bool probes `false`, an
+ * enum its first declared option, and a scalar its own minimum (else `0`).
+ */
+function probeValue(m: ValueMember, ctx: CommandContext): boolean | number | string {
+  if (m.type === "bool") return false;
+  const { values } = resolvedEnum(m, ctx);
+  const first = values ? Object.keys(values)[0] : undefined;
+  if (m.type === "enum") return first === undefined ? 0 : Number(first);
+  if (m.type === "string") return values && first !== undefined ? values[Number(first)] : "";
+  // number
+  if (values && first !== undefined) return Number(first);
+  return m.min ?? 0;
+}
+
+/**
+ * Whether this device's PRIMARY transport can carry the command this setter would emit.
+ *
+ * `ctx.portalCommandKinds` is the subset of PORTAL kinds the device's primary transport carries, or
+ * `undefined` for a device whose transport carries them all (the P2P default — so this answers `true`
+ * at once, and a P2P device is never probed). A kind OUTSIDE `PORTAL_COMMAND_KINDS` is self-routed and
+ * always routable; only a portal kind the transport does not list is unroutable.
+ *
+ * Fails OPEN: a builder that throws or declines (returns `undefined`) leaves the setter installed as
+ * before, so a write we cannot probe is never silently dropped — the gate only ever withdraws a setter
+ * whose kind it positively knows the transport cannot carry.
+ */
+function writeRoutable(m: ValueMember, ctx: CommandContext): boolean {
+  if (!ctx.portalCommandKinds) return true;
+  let kind: Command["kind"] | undefined;
+  try {
+    kind = m.write?.(probeValue(m, ctx), ctx)?.kind;
+  } catch {
+    return true;
+  }
+  if (kind === undefined || !PORTAL_COMMAND_KINDS.has(kind)) return true;
+  return ctx.portalCommandKinds.has(kind);
+}
+
+/**
  * Bind the table: evidence-gated getters, derived setters, momentary actions.
  *
  * Three rules the loop enforces for every member, so no module restates them:
@@ -956,7 +999,11 @@ export function bindMembers<M extends Members>(members: M, deps: MemberDeps): Su
       const get = decode ? () => decode(raw(), rawDp, ctx) : () => narrow(m.type, read, prop, domain);
       Object.defineProperty(out, name, { get, enumerable: true, configurable: true });
     }
-    if (!m.write || m.unverified || !installs(m, ctx)) continue;
+    // A setter whose command kind this device's transport cannot carry is NOT installed — writing it
+    // would throw at dispatch though the setting advertises itself writable. The READ getter above is
+    // untouched, so a value the device still reports stays readable. A P2P device (the default) and a
+    // self-routed kind both pass this at once (see `writeRoutable`).
+    if (!m.write || m.unverified || !installs(m, ctx) || !writeRoutable(m, ctx)) continue;
     if (m.writeOnly) unobservable.push(name);
     else if (m.readReflectsWrite && !m.readReflectsWrite(ctx)) unreflected.push(name);
     const setter = m.writeAs ?? `set${name[0].toUpperCase()}${name.slice(1)}`;

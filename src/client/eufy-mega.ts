@@ -84,6 +84,7 @@ import {
   isNvrT8N00,
   isStation9000,
   isTuyaVacuum,
+  portalCommandKindsFor,
 } from "../model/device-family.js";
 import { cameraPowerTier } from "../model/capabilities/battery.js";
 import { DeviceRegistry, type DeviceRecord, type ParamChange } from "./device-registry.js";
@@ -2459,6 +2460,15 @@ export class EufyMega extends EventEmitter {
       (resolved.codec === "vacuum" || resolved.codec === "mower") && rec.model
         ? await this.fetchDpCatalog(rec.model)
         : undefined;
+    // The RTC portal carries only a slice of the portal command kinds; a device reached over it must
+    // not advertise a setter whose kind the portal cannot frame. The full route is known here —
+    // media-only (a standalone call doorbell's media track) carries no portal command, an RTC-control
+    // station (an NVR, the S1 Pro, or an attached device whose write the station relays) carries only
+    // set-payload/set-json, and a device with no RTC route is P2P (undefined — unrestricted).
+    const rtcRoute = this.rtcRouteFor(sn);
+    const portalCommandKinds = portalCommandKindsFor(
+      !rtcRoute ? "p2p" : rtcRoute.mediaTrack ? "media-only" : "rtc-control",
+    );
     return {
       channel,
       timezone: recordString(parentRaw ?? {}, "time_zone"),
@@ -2490,6 +2500,7 @@ export class EufyMega extends EventEmitter {
       // Topology as the record states it: a parent that isn't the device itself means HomeBase-attached.
       homeBaseAttached: !!raw.parent_sn && raw.parent_sn !== dev.sn,
       stationDeviceType: this.stationDeviceTypeOf(sn),
+      portalCommandKinds,
       dpCatalog,
     };
   }
