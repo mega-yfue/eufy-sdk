@@ -223,9 +223,8 @@ export const LIGHT_MEMBERS = {
    * So it reads on whenever any client is watching. The setting a user changes and expects to persist
    * is {@link spotlightEnabled}.
    *
-   * The switch frame SHAPE is a per-family fact ({@link lightSwitchWire}), so on a model with no
-   * confirmed shape the write is `unverifiedFor` that device: no setter is installed, the property is
-   * published read-only, and the intent path throws naming the device.
+   * The switch frame SHAPE is per family ({@link lightSwitchWire}), and the write is `unverifiedFor` the
+   * families it has no shape for.
    */
   isOn: {
     param: LIGHT_CMD.FLOODLIGHT_SWITCH,
