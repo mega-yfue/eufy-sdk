@@ -1,8 +1,8 @@
 import { asBool, clamp } from "../../core/util.js";
 import { DeviceType } from "../device-types.js";
 import { WALL_LIGHT_TYPES } from "../device-family.js";
-import { setScalar, setJson, setPayload, describeDevice } from "./access.js";
-import type { CapabilityModule, CapabilityActions, CommandContext } from "./types.js";
+import { setScalar, setJson, setPayload } from "./access.js";
+import type { CapabilityModule, CapabilityActions, CommandContext, AvailabilityContext } from "./types.js";
 import { propertiesOf, type Members, type Surface, type MemberDeps } from "./members.js";
 import type { Command } from "../../core/contracts.js";
 
@@ -61,10 +61,10 @@ export type AutoSpotlightOptions = {
  * is written out below.
  */
 export type LightActions = Surface<typeof LIGHT_MEMBERS> & {
-  /** Turn the light on. Throws if this model's switch wire is unverified. */
-  on(): Promise<void>;
-  /** Turn the light off. Throws if this model's switch wire is unverified. */
-  off(): Promise<void>;
+  /** Turn the light on. Absent on a model whose switch wire is unverified. */
+  on?(): Promise<void>;
+  /** Turn the light off. Absent on a model whose switch wire is unverified. */
+  off?(): Promise<void>;
   /**
    * Enable/disable the **motion-activated light** (auto-spotlight): the spotlight lights up when the
    * camera detects motion.
@@ -125,7 +125,7 @@ function autoSpotlightCommand(on: boolean, ctx: CommandContext, opts: AutoSpotli
 
 /**
  * The floodlight/spotlight **switch** (1400) frame SHAPE for a device family, or `undefined` when the
- * model's wire form is unknown (don't guess — the caller throws). This is a SEMANTIC per-family fact
+ * model's wire form is unknown — the switch write is then unverified for that device, never guessed. This is a SEMANTIC per-family fact
  * of the light switch, so it lives here in the `light` capability (composed off `DeviceType`), not in
  * the shared family classifier. Provisional split, to be confirmed against the decompiled V6 app /
  * a confirmed exchange:
@@ -140,7 +140,7 @@ function autoSpotlightCommand(on: boolean, ctx: CommandContext, opts: AutoSpotli
  * The switch WIRE is a vendor-family trait no reported param distinguishes (a T8425 and a T8442
  * both report 1400 yet send it differently — T8442 confirmed int-string by live capture).
  */
-function lightSwitchWire(ctx: CommandContext): "json" | "int-string" | undefined {
+function lightSwitchWire(ctx: AvailabilityContext): "json" | "int-string" | undefined {
   const t = ctx.deviceType;
   if (t === undefined) return undefined;
   if (LIGHT_SWITCH_JSON_TYPES.has(t)) return "json";
@@ -178,20 +178,13 @@ const LIGHT_SWITCH_INT_STRING_TYPES: ReadonlySet<number> = new Set<number>([
 ]);
 
 /**
- * Resolve the on/off switch command for a device — a JSON control-payload OR a level-1 int+string
- * scalar — or `undefined` if this model's spotlight wire format is unknown (don't guess; let the
- * caller throw). The family→shape mapping is owned by {@link lightSwitchWire}.
+ * The on/off switch command in the frame shape {@link lightSwitchWire} resolved for the device: a JSON
+ * control-payload, or the level-1 int+string scalar these families' firmware pins 1400 to.
  */
-function switchCommand(on: boolean, ctx: CommandContext): Command | undefined {
-  switch (lightSwitchWire(ctx)) {
-    case "json":
-      return setJson(LIGHT_CMD.FLOODLIGHT_SWITCH, { time: 0, type: 2, value: on ? 1 : 0 }, ctx);
-    case "int-string":
-      // Firmware pins these families to the level-1 int+string frame for 1400.
-      return setScalar(LIGHT_CMD.FLOODLIGHT_SWITCH, on ? 1 : 0, ctx, "int-string");
-    default:
-      return undefined; // unknown model wire format — don't guess
-  }
+function switchCommand(on: boolean, wire: "json" | "int-string", ctx: CommandContext): Command {
+  return wire === "json"
+    ? setJson(LIGHT_CMD.FLOODLIGHT_SWITCH, { time: 0, type: 2, value: on ? 1 : 0 }, ctx)
+    : setScalar(LIGHT_CMD.FLOODLIGHT_SWITCH, on ? 1 : 0, ctx, "int-string");
 }
 
 /**
@@ -205,19 +198,6 @@ function switchCommand(on: boolean, ctx: CommandContext): Command | undefined {
  */
 function directBinary(param: number, value: number, ctx: CommandContext): Command {
   return setScalar(param, value, ctx, "direct-binary");
-}
-
-/**
- * The switch frame, or a throw naming the device whose frame shape is unconfirmed.
- *
- * The refusal reason is the model, not the value, and a generated "not a valid value" cannot say that —
- * so the write throws it and `bindMembers` converts it, which keeps the derived `set` and the `on`/`off`
- * verbs beside it refusing with one message instead of two contradictory ones.
- */
-function switchFrame(on: boolean, ctx: CommandContext): Command {
-  const cmd = switchCommand(on, ctx);
-  if (!cmd) throw new Error(`light: unknown spotlight switch wire format — confirm it [${describeDevice(ctx)}]`);
-  return cmd;
 }
 
 /**
@@ -243,9 +223,8 @@ export const LIGHT_MEMBERS = {
    * So it reads on whenever any client is watching. The setting a user changes and expects to persist
    * is {@link spotlightEnabled}.
    *
-   * The switch refuses for a reason a value check cannot give — this model's frame SHAPE is unconfirmed —
-   * so `switchFrame` throws that reason and `bindMembers` turns it into the rejection, rather than
-   * letting the generated "not a valid value" blame a boolean that was never the problem.
+   * The switch frame SHAPE is per family ({@link lightSwitchWire}), and the write is `unverifiedFor` the
+   * families it has no shape for.
    */
   isOn: {
     param: LIGHT_CMD.FLOODLIGHT_SWITCH,
@@ -256,7 +235,11 @@ export const LIGHT_MEMBERS = {
     description:
       "Light on/off (1400) — lit right now, not a setting: it follows whichever client is streaming. " +
       "Verified via P2P state readback (3/3); session-scoped behaviour measured live on a T8170.",
-    write: (v, ctx) => switchFrame(asBool(v), ctx),
+    write: (v, ctx) => {
+      const wire = lightSwitchWire(ctx);
+      return wire && switchCommand(asBool(v), wire, ctx);
+    },
+    unverifiedFor: (ctx) => lightSwitchWire(ctx) === undefined,
     writeAs: "set",
     aliases: { on: true, off: false },
   },
@@ -356,14 +339,15 @@ export const LIGHT: CapabilityModule = {
    * Only what the member table cannot express: `on`/`off` as no-argument verbs over the same wire as the
    * derived `set`, and the write-only auto-spotlight composite. The verbs stay UNDESCRIBED on purpose —
    * `set` is the method that takes the value, and describing all three would offer one state as three
-   * controls. `async` is what turns `switchFrame`'s throw into the rejection a `Promise<void>`
-   * caller expects, the same shape the derived setter gets from `bindMembers`.
+   * controls. Like `set`, the verbs are absent on a model whose switch shape is unverified.
    */
   actions({ ctx, sink }: MemberDeps): CapabilityActions {
-    const dispatchSwitch = async (on: boolean): Promise<void> => sink.dispatch(switchFrame(on, ctx));
+    const wire = lightSwitchWire(ctx);
     return {
-      on: () => dispatchSwitch(true),
-      off: () => dispatchSwitch(false),
+      ...(wire && {
+        on: () => sink.dispatch(switchCommand(true, wire, ctx)),
+        off: () => sink.dispatch(switchCommand(false, wire, ctx)),
+      }),
       setAutoSpotlight: (on: boolean, opts?: AutoSpotlightOptions) =>
         sink.dispatch(autoSpotlightCommand(asBool(on), ctx, opts)),
     };
