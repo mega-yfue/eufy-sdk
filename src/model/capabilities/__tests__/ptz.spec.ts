@@ -92,6 +92,17 @@ describe("ptz capability module", () => {
       expect(resolveDevice({ model: "T8134", deviceType: 63, params: presets }).capabilities).not.toContain("ptz");
       expect(resolveDevice({ model: "T8171", params: presets }).capabilities).toContain("ptz");
     });
+    it("a video smart lock reporting a preset param as a sentinel is not pan-tilt", () => {
+      // E330 (T8531, deviceType 189) is a lock-codec device with a FIXED camera that reports a preset
+      // param like a SoloCam. The preset-param fallback is camera-codec only, so it must not grant PTZ
+      // (pan/tilt/preset) here — the same false-positive class as the fixed-lens SoloCam above, but
+      // across a non-camera codec.
+      const rec = { model: "T8531", deviceType: 189, params: { 6210: "0" } };
+      expect(detectCapabilities(rec, "lock")).not.toContain("ptz");
+      expect(resolveDevice(rec).capabilities).not.toContain("ptz");
+      // The identical param set on a camera-codec device still detects, proving the gate is the codec.
+      expect(detectCapabilities({ model: "T8171", params: { 6210: "0" } }, "camera")).toContain("ptz");
+    });
     it("model-name regex matches PT families but not a fixed cam", () => {
       const re = PTZ.detection!.modelHints![0];
       expect(re.test("pantilt")).toBe(true);

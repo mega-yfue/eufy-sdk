@@ -511,7 +511,15 @@ export const PTZ: CapabilityModule = {
   // a `T81\d\dR` wildcard: the "R = rotating" reading is unverified for other models, and an
   // over-broad hint would false-positive a future non-PT model, the same class of bug as a mislabel.
   detection: {
-    detect: (record) =>
+    // CAMERA-codec only. Pan/tilt is a camera-family trait, and every vendor-typed PT unit in
+    // `deviceTypes` classifies as `camera`; this param path is just the fallback for a camera whose
+    // deviceType isn't listed. A `lock`-codec device never pans/tilts, yet a video smart lock
+    // (E330/T8531, deviceType 189; S330/T8530) carries a FIXED camera that reports a preset param as a
+    // sentinel — the same "reports preset params anyway" shape as a FIXED_LENS_MODELS SoloCam, but
+    // spanning a whole non-camera codec rather than one model code. The codec gate keeps the fallback
+    // from granting PTZ (pan/tilt/preset) to a lock.
+    detect: (record, codec) =>
+      codec === "camera" &&
       !FIXED_LENS_MODELS.has(record.model ?? "") &&
       PRESET_EVIDENCE_PARAMS.some((p) => Object.hasOwn(record.params ?? {}, p)),
     deviceTypes: [
