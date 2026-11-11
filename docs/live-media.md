@@ -16,7 +16,7 @@ also requires snapshot capability evidence and the stored-image cache described 
 
 ## One pull, many consumers
 
-Every consumer of a given camera and optical view shares **one** underlying media session (one live pull), fanned out
+Every consumer of a given camera, optical view and output resolution shares **one** underlying media session (one live pull), fanned out
 to all of them. `cam.live()` twice, a `snapshotLive()` while a `recordFragments()` runs, a
 `openReadable()` alongside a `live()` — all attach to the **same** shared source. There is exactly one
 start on the wire regardless of how many consumers attach.
@@ -144,9 +144,8 @@ model.
 
 Two things this does NOT establish. Whether the number of consumers influences it: a single-consumer
 session produced more changes than a two-consumer one, but on a different camera, so nothing here is a
-controlled comparison. And whether it can be pinned: no capability the SDK models sets a per-session cap —
-the camera's video-quality member is a persistent recording tier — but that is read off the modelled
-surface rather than measured against a device.
+controlled comparison. And whether it can be pinned: see [NVR output resolution](#nvr-output-resolution)
+for the per-pull 1080p request available on supported NVR routes.
 
 An encoder cannot change input geometry mid-stream, so a caller adapting this source to a fixed output
 has to tear down and rebuild on every change. `video-config` is how it learns:
@@ -432,7 +431,8 @@ rejects with reason `invalid-recording` before anything is sent.
 The result is elementary streams, not a container: `video` is Annex-B H.264 or H.265, as `codec` names it
 (`"h264"` or `"h265"`, absent when no picture carries a parameter set), and `audio` (when present) is AAC-LC in
 ADTS framing. `fps` and `durationMs` come from the camera's own frame stamps, and
-`missingFrames` counts frames the camera numbered that never arrived. Muxing is the caller's; for example with
+`missingFrames` counts frames the camera numbered that never arrived, with the numbering counted on across a
+change of frame size partway through a recording. Muxing is the caller's; for example with
 ffmpeg, `-framerate <fps> -f h264 -i video.h264 -f aac -i audio.aac -c copy clip.mp4`, with `-f hevc` for an
 H.265 recording.
 
@@ -642,3 +642,23 @@ So the APIs here do not claim negotiation or timing guarantees the device source
 fragment duration is a keyframe-bounded **minimum**, prebuffer is available only from an already-warm
 retained source, and fragmented recordings are caller-owned evented async iterables — which is how a
 caller extends a shared battery budget without control notices mixing into media output.
+
+### NVR output resolution
+
+`cam.outputResolutions?.()` reports the output sizes supported by the bound media route.
+The native NVR route reports `["1080p"]` for T8E00 and T8P00 cameras. An omitted selection preserves the default
+output; it does not promise a particular maximum resolution.
+
+```ts
+if (cam.live && cam.outputResolutions?.().includes("1080p")) {
+  const stream = await cam.live({ view: 0, outputResolution: "1080p" });
+  stream.stop();
+}
+```
+
+The NVR start request carries `stitch_resolution: {width: 1920, height: 1080}`.
+This selects the NVR's output geometry, not a separately identified camera substream,
+and does not change persistent live-view or recording-quality settings.
+`openReadable()` and `snapshotLive()` accept the same selection. A route that does not
+advertise it refuses the request before opening media. Consumers with different output
+selections use separate sources, including while an earlier source is warm.
