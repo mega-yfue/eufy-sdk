@@ -13,6 +13,7 @@ import {
   installs,
   memberWrite,
   propertiesOf,
+  writeRoutable,
   type MemberDeps,
 } from "./members.js";
 import { camelCase } from "./access.js";
@@ -940,7 +941,9 @@ function memberCommand(
     if (member.unverified) {
       throw new Error(`${m.capability}: ${name} write wire unverified — confirm it on a device before sending`);
     }
-    if (!member.write || !installs(member, ctx)) continue;
+    // Skip a member no in-domain value of which routes over this device's transport, the same gate the
+    // fluent setter applies — the intent path must not build a write that would throw at dispatch.
+    if (!member.write || !installs(member, ctx) || !writeRoutable(member, ctx)) continue;
     return memberWrite(name, member, claims ? value : (aliased as boolean | number | string), ctx);
   }
   return undefined;

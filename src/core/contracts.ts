@@ -457,27 +457,6 @@ export type Command =
     }
   | { kind: "aiot-dp"; dp: number; value: boolean | number | string };
 
-/**
- * The command kinds that follow the device's **PRIMARY** transport — the one RTC-or-P2P portal a
- * standalone or attached device is reached through. Every other kind is **self-routed**: it names its
- * own wire and rides it regardless of the portal (`mqtt-dp*` + `aiot-dp` ride their own broker, the
- * `ff09-*` / `keyed-payload-actuate` frames pick P2P-vs-MQTT from the device's own topology). A gate
- * that asks "can this device's portal carry this command?" applies ONLY to the kinds listed here; a
- * self-routed kind is always routable and is never gated.
- *
- * This is the one piece of routing vocabulary the model layer needs to reason about transport reach
- * without importing a transport — it keys on the kind alone, which both layers already share.
- */
-export const PORTAL_COMMAND_KINDS: ReadonlySet<Command["kind"]> = new Set<Command["kind"]>([
-  "set-payload",
-  "set-json",
-  "set-param",
-  "set-json-raw",
-  "p2p-station-scalar",
-  "p2p-int-string",
-  "p2p-privacy-burst",
-]);
-
 /** Attach non-wire observation policy to a command without changing its enumerable transport intent. @internal */
 export function observeCommand(command: Command, observation: CommandObservation): Command {
   return Object.defineProperty(command, COMMAND_OBSERVATION, { configurable: true, value: observation });

@@ -26,7 +26,7 @@ import { decodeMapFrame } from "./map-channels.js";
 import { VacuumMapStore } from "../model/index.js";
 import { type P2PSession, type P2PFrame } from "../transport/p2p/p2p-session.js";
 import { P2PCommandRouter } from "../transport/p2p/command-router.js";
-import { RtcCommandRouter, type RtcRoute } from "../transport/rtc/command-router.js";
+import { RtcCommandRouter, RTC_CONTROL_COMMAND_KINDS, type RtcRoute } from "../transport/rtc/command-router.js";
 import { jpegGeometry } from "../transport/p2p/media.js";
 import type { PowerTier } from "../transport/p2p/session-manager.js";
 import { MqttCommandRouter } from "../transport/mqtt/command-router.js";
@@ -84,7 +84,6 @@ import {
   isNvrT8N00,
   isStation9000,
   isTuyaVacuum,
-  portalCommandKindsFor,
 } from "../model/device-family.js";
 import { cameraPowerTier } from "../model/capabilities/battery.js";
 import { DeviceRegistry, type DeviceRecord, type ParamChange } from "./device-registry.js";
@@ -2460,15 +2459,12 @@ export class EufyMega extends EventEmitter {
       (resolved.codec === "vacuum" || resolved.codec === "mower") && rec.model
         ? await this.fetchDpCatalog(rec.model)
         : undefined;
-    // The RTC portal carries only a slice of the portal command kinds; a device reached over it must
-    // not advertise a setter whose kind the portal cannot frame. The full route is known here —
-    // media-only (a standalone call doorbell's media track) carries no portal command, an RTC-control
-    // station (an NVR, the S1 Pro, or an attached device whose write the station relays) carries only
-    // set-payload/set-json, and a device with no RTC route is P2P (undefined — unrestricted).
     const rtcRoute = this.rtcRouteFor(sn);
-    const portalCommandKinds = portalCommandKindsFor(
-      !rtcRoute ? "p2p" : rtcRoute.mediaTrack ? "media-only" : "rtc-control",
-    );
+    const portalCommandKinds: ReadonlySet<Command["kind"]> | undefined = !rtcRoute
+      ? undefined
+      : rtcRoute.mediaTrack
+        ? new Set<Command["kind"]>()
+        : RTC_CONTROL_COMMAND_KINDS;
     return {
       channel,
       timezone: recordString(parentRaw ?? {}, "time_zone"),

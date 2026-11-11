@@ -170,6 +170,21 @@ class StationStreamBusyError extends Error {
   }
 }
 
+/**
+ * The portal command kinds the RTC control channel frames — `set-payload` over the `1350` envelope,
+ * `set-json` over the `1700` one, and nothing else. The single source for both {@link
+ * RtcCommandRouter.dispatchCommand}'s guard and the client's portal-reach, so the two cannot disagree
+ * on what the channel carries.
+ */
+export const RTC_CONTROL_COMMAND_KINDS: ReadonlySet<Command["kind"]> = new Set<Command["kind"]>([
+  "set-payload",
+  "set-json",
+]);
+
+/** Narrow a command to the two kinds {@link RTC_CONTROL_COMMAND_KINDS} names, so the body can read their fields. */
+const isRtcControlCommand = (cmd: Command): cmd is Extract<Command, { kind: "set-payload" | "set-json" }> =>
+  RTC_CONTROL_COMMAND_KINDS.has(cmd.kind);
+
 export class RtcCommandRouter {
   private readonly sessions = new Map<string, StationSession>();
   private readonly lives = new Map<string, StationLive>();
@@ -182,7 +197,7 @@ export class RtcCommandRouter {
   constructor(private readonly deps: RtcCommandRouterDeps) {}
 
   async dispatchCommand(route: RtcRoute, cmd: Command): Promise<void> {
-    if (cmd.kind !== "set-payload" && cmd.kind !== "set-json") {
+    if (!isRtcControlCommand(cmd)) {
       throw new Error(`rtc: ${cmd.kind} is not routable over the RTC control channel (only set-payload or set-json)`);
     }
     if (route.mediaTrack) throw new Error(`rtc: ${route.stationSn} serves media only and takes no portal command`);

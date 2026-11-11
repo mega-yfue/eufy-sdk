@@ -22,7 +22,6 @@
  * @module model/device-family
  */
 import { DeviceType } from "./device-types.js";
-import type { Command } from "../core/contracts.js";
 
 /** The evidence a family decision needs — a structural subset of `CommandContext`. */
 export interface FamilyContext {
@@ -190,36 +189,3 @@ export const isClassicWifiLock = (ctx: FamilyContext): boolean =>
   typeof ctx.serial === "string" &&
   ctx.serial.startsWith("T8520") &&
   ctx.serial.charAt(6) === "2";
-
-// ── Portal transport reach ────────────────────────────────────────────────────────────────────────
-
-/**
- * How a device's PRIMARY transport is reached, as the model layer names it — the one fact a portal-reach
- * gate needs, decided without touching the transport layer:
- *  - `"p2p"` — the ordinary device, reached over P2P, which carries every portal command. The default.
- *  - `"rtc-control"` — an RTC-control station (an NVR, the S1 Pro) whose control channel frames only
- *    `set-payload`/`set-json`.
- *  - `"media-only"` — a route that serves media and takes no portal command at all (a standalone call
- *    doorbell streaming on a media track).
- */
-export type PortalRouteClass = "p2p" | "rtc-control" | "media-only";
-
-/** The portal kinds an RTC-control station's control channel frames — the ONLY two it carries. */
-const RTC_CONTROL_PORTAL_KINDS: ReadonlySet<Command["kind"]> = new Set<Command["kind"]>(["set-payload", "set-json"]);
-/** A media-only route carries no portal command. */
-const NO_PORTAL_KINDS: ReadonlySet<Command["kind"]> = new Set<Command["kind"]>();
-
-/**
- * The portal command kinds a device of this route class can carry, or `undefined` when it carries them
- * all (`"p2p"` — the default, so zero regression on the fleet). The shared mapping both the manifest
- * path ({@link Device.describe}) and the live command path (the client's `commandContext`) resolve
- * through, so the two cannot disagree on what a route can reach.
- *
- * The returned sets are a subset of `PORTAL_COMMAND_KINDS`: a self-routed kind is never listed, because
- * the gate never consults this for one.
- */
-export function portalCommandKindsFor(cls: PortalRouteClass): ReadonlySet<Command["kind"]> | undefined {
-  if (cls === "rtc-control") return RTC_CONTROL_PORTAL_KINDS;
-  if (cls === "media-only") return NO_PORTAL_KINDS;
-  return undefined;
-}

@@ -1,5 +1,5 @@
 import { bind } from "./bind.js";
-import { portalCommandKindsFor } from "../../device-family.js";
+import type { Command } from "../../../core/contracts.js";
 import type { CommandContext } from "../types.js";
 
 /**
@@ -13,28 +13,33 @@ import type { CommandContext } from "../types.js";
  */
 const IMAGE_FLIPPED = 1207; // CAMERA_CMD.ROTATE_IMAGE → set-param
 const SOUND_DETECTION = 6043; // CAMERA_CMD.SOUND_DETECTION → set-json
+const SENSOR_WORK_MODE = 1612; // MOTION_CMD.SENSOR_WORK_MODE — the testMode read id
 
-type CameraSurface = Record<string, unknown>;
+/** The two kinds the RTC control channel frames; a media-only route frames none. */
+const RTC_CONTROL = new Set<Command["kind"]>(["set-payload", "set-json"]);
+const MEDIA_ONLY = new Set<Command["kind"]>();
 
-/** A camera context reporting both params, with the portal reach of the given route class. */
-const cameraCtx = (portalCommandKinds: ReadonlySet<string> | undefined): CommandContext => ({
+type Surface = Record<string, unknown>;
+
+/** A camera context reporting both params, with the portal reach of the given route. */
+const cameraCtx = (portalCommandKinds: ReadonlySet<Command["kind"]> | undefined): CommandContext => ({
   channel: 0,
   codec: "camera",
   paramIds: new Set([IMAGE_FLIPPED, SOUND_DETECTION]),
   capabilities: new Set(["camera"]),
-  portalCommandKinds: portalCommandKinds as CommandContext["portalCommandKinds"],
+  portalCommandKinds,
 });
 
-const bindCamera = (portalCommandKinds: ReadonlySet<string> | undefined): CameraSurface =>
-  bind<CameraSurface>("camera", cameraCtx(portalCommandKinds)).acts;
+const bindCamera = (portalCommandKinds: ReadonlySet<Command["kind"]> | undefined): Surface =>
+  bind<Surface>("camera", cameraCtx(portalCommandKinds)).acts;
 
-const hasGetter = (acts: CameraSurface, name: string): boolean =>
+const hasGetter = (acts: Surface, name: string): boolean =>
   typeof Object.getOwnPropertyDescriptor(acts, name)?.get === "function";
 
 describe("a setter whose command kind the device's transport cannot carry", () => {
   it("drops a set-param AND a set-json setter on a media-only route, keeping the reads", () => {
     // A standalone call doorbell streams on a media track and carries no portal command at all.
-    const acts = bindCamera(portalCommandKindsFor("media-only"));
+    const acts = bindCamera(MEDIA_ONLY);
     expect(hasGetter(acts, "imageFlipped")).toBe(true);
     expect(hasGetter(acts, "soundDetection")).toBe(true);
     expect(typeof acts.setImageFlipped).toBe("undefined");
@@ -42,8 +47,7 @@ describe("a setter whose command kind the device's transport cannot carry", () =
   });
 
   it("keeps every setter on a P2P device (undefined = unrestricted — zero regression)", () => {
-    const acts = bindCamera(portalCommandKindsFor("p2p"));
-    expect(portalCommandKindsFor("p2p")).toBeUndefined();
+    const acts = bindCamera(undefined);
     expect(hasGetter(acts, "imageFlipped")).toBe(true);
     expect(typeof acts.setImageFlipped).toBe("function");
     expect(typeof acts.setSoundDetection).toBe("function");
@@ -51,9 +55,28 @@ describe("a setter whose command kind the device's transport cannot carry", () =
 
   it("on an RTC-control station keeps the set-json write but drops the set-param write", () => {
     // The RTC control channel frames set-payload/set-json only.
-    const acts = bindCamera(portalCommandKindsFor("rtc-control"));
+    const acts = bindCamera(RTC_CONTROL);
     expect(hasGetter(acts, "imageFlipped")).toBe(true);
     expect(typeof acts.setImageFlipped).toBe("undefined");
     expect(typeof acts.setSoundDetection).toBe("function");
+  });
+
+  /**
+   * A member whose command KIND depends on the value keeps its setter as long as ONE in-domain value
+   * routes. `testMode` enters over `set-payload` (`true`) and leaves over `set-param` (`false`), so a
+   * sensor behind an RTC-control station can still enter test mode — probing only `false` would wrongly
+   * withdraw the whole setter.
+   */
+  it("keeps a value-dependent setter whose true-branch routes, even when its false-branch does not", () => {
+    const sensorCtx: CommandContext = {
+      channel: 0,
+      codec: "sensor",
+      paramIds: new Set([SENSOR_WORK_MODE]),
+      capabilities: new Set(["motion"]),
+      portalCommandKinds: RTC_CONTROL,
+    };
+    const acts = bind<Surface>("motion", sensorCtx).acts;
+    expect(hasGetter(acts, "testMode")).toBe(true);
+    expect(typeof acts.setTestMode).toBe("function");
   });
 });

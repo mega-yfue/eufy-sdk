@@ -111,8 +111,12 @@ export type RtspActions = Surface<typeof RTSP_MEMBERS>;
 /**
  * Whether the publish switch has a wire to this camera. A HomeBase S1 Pro (`STATION_9000`) carries an
  * attached camera's commands over its WebRTC control channel, which takes only the `1350` and `1700`
- * envelopes; the switch is a plain scalar, and no other frame for it is captured there. Gating the
- * `published` member drops its read with its setter, since one availability decision covers both.
+ * envelopes; the switch is a plain scalar, and no other frame for it is captured there.
+ *
+ * Gates the `publish`/`withdraw` METHOD members only. The derived setter and the write intents are
+ * withheld generically by the portal-reach gate (a `set-param` the control channel cannot frame), but
+ * that gate cannot reach a `method`, whose arbitrary signature it has no command kind to probe — so the
+ * two momentary methods keep this explicit gate.
  */
 function publishable(ctx: AvailabilityContext): boolean {
   return !isStation9000({ deviceType: ctx.stationDeviceType });
@@ -166,7 +170,11 @@ export const RTSP_MEMBERS = {
       "directions (DESCRIBE 404→200 with a real SDP, and back).",
     write: (v, ctx) => publishCommand(asBool(v), ctx),
     aliases: { publish: true, withdraw: false },
-    available: publishable,
+    // No `available` gate: the publish switch is a `set-param` scalar, so on a station whose portal
+    // cannot frame one (an S1 Pro's control channel) the derived setter and the `publish`/`withdraw`
+    // intents are already withheld by the portal-reach gate, which leaves this READ installed — a value
+    // the device still reports stays readable. The `publish`/`withdraw` METHOD members below keep their
+    // own gate, since that gate reaches a `method` the portal-reach check cannot probe.
   },
   /**
    * The device-reported RTSP URL — the full `rtsp://user:pass@host/path`, carrying the credentials the

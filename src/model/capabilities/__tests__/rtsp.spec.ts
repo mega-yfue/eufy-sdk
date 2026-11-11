@@ -88,14 +88,23 @@ describe("rtsp capability module", () => {
     expect(sent).toHaveLength(1);
   });
 
-  it("installs no publish switch, nor its read, on a camera behind a HomeBase S1 Pro, whose control channel cannot carry it", () => {
-    const behindS1Pro = { ...ctx, homeBaseAttached: true, stationDeviceType: 27 } as CommandContext;
+  it("withholds the publish switch and its momentary methods behind a HomeBase S1 Pro, but keeps the read", () => {
+    // The S1 Pro's control channel frames set-payload/set-json only, so the publish scalar (set-param)
+    // cannot route: its derived setter is withdrawn by the portal-reach gate, and `publish`/`withdraw`
+    // — `method` members the portal-reach gate cannot probe — keep their own stationDeviceType gate.
+    // The READ stays installed, so the camera's publish state remains visible.
+    const behindS1Pro = {
+      ...ctx,
+      homeBaseAttached: true,
+      stationDeviceType: 27,
+      portalCommandKinds: new Set(["set-payload", "set-json"]),
+    } as CommandContext;
     const { acts: actions } = bind<RtspActions>("rtsp", behindS1Pro);
 
     expect(actions.publish).toBeUndefined();
     expect(actions.withdraw).toBeUndefined();
     expect((actions as Record<string, unknown>).setPublished).toBeUndefined();
-    expect(actions.published).toBeUndefined();
+    expect(Object.getOwnPropertyDescriptor(actions, "published")?.get).toBeTypeOf("function");
   });
 
   it("toggles authentication through the mode field of the credential payload, sent form:auto", async () => {
