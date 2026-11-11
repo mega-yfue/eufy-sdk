@@ -171,6 +171,18 @@ export function gatewayInfoCipherId(gwPayload: Buffer): number {
   return gwPayload.length >= 2 ? gwPayload.readUInt16LE(0) : 0;
 }
 
+/** The int32 result a `CMD_GATEWAYINFO` reply opens with when the device refuses level-2. */
+const GATEWAY_LEVEL2_REFUSED = -103;
+
+/**
+ * Whether a `CMD_GATEWAYINFO` (1100) reply is a level-2 refusal: int32 LE {@link GATEWAY_LEVEL2_REFUSED} (`99 ff
+ * ff ff`) in place of a cipher. {@link gatewayInfoCipherId} reads those bytes as `cipher_id` 65433. Any other
+ * opening is not a refusal.
+ */
+export function gatewayInfoRefused(gwPayload: Buffer): boolean {
+  return gwPayload.length >= 4 && gwPayload.readInt32LE(0) === GATEWAY_LEVEL2_REFUSED;
+}
+
 /**
  * The eufy ECIES KDF: HMAC-SHA256 feedback chaining under the label "ECIES". Each emitted
  * 32-byte block is `HMAC(shared, t ‖ "ECIES")` where `t` starts at the label and is updated to
