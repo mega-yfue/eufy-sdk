@@ -63,13 +63,23 @@ export function audioFrame(mediaKey: Buffer, aac: Buffer, codec = 0): RecordingF
 export const IDR = Buffer.from("0000000167640028aced0000000168ee3c800000000165b800", "hex");
 export const slice = (n: number) => Buffer.concat([Buffer.from("0000000121", "hex"), Buffer.alloc(40, n)]);
 
-/** A video frame from a station that stores in the clear: the header, then `annexb`, `22 + length` bytes. */
-export function clearVideoFrame(annexb: Buffer, key: boolean, frameNumber: number, stampMs: number): RecordingFrame {
-  return {
-    commandId: 1300,
-    signCode: 0,
-    raw: Buffer.concat([videoHeader(annexb.length, key, frameNumber, stampMs), annexb]),
-  };
+/**
+ * A video frame from a station that stores in the clear: the header, then `annexb`, `22 + length` bytes. The
+ * header states `size` when given and no size otherwise.
+ */
+export function clearVideoFrame(
+  annexb: Buffer,
+  key: boolean,
+  frameNumber: number,
+  stampMs: number,
+  size?: { width: number; height: number },
+): RecordingFrame {
+  const header = videoHeader(annexb.length, key, frameNumber, stampMs);
+  if (size) {
+    header.writeInt16LE(size.width, 0x0a);
+    header.writeInt16LE(size.height, 0x0c);
+  }
+  return { commandId: 1300, signCode: 0, raw: Buffer.concat([header, annexb]) };
 }
 
 /** An audio frame from a station that stores in the clear: the 16-byte header, then `aac`. */
