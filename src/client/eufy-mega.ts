@@ -79,6 +79,7 @@ import {
 import {
   isNvrMediaCamera,
   isNvrDualLensCamera,
+  isNvrFullHdCamera,
   isCallDoorbell,
   isHomeBase,
   isNvrT8N00,
@@ -1373,6 +1374,7 @@ export class EufyMega extends EventEmitter {
       return this.rtc.nvrMediaProviderFor(
         { ...route, cameraSn: sn, channel },
         isNvrDualLensCamera(camera) ? [0, 1] : [0],
+        isNvrFullHdCamera(camera) ? ["1080p"] : undefined,
       );
     }
     return this.rtc.mediaProviderFor({ ...route, cameraSn: sn, channel });
