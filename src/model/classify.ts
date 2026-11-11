@@ -103,6 +103,22 @@ const SENSOR_TYPES: ReadonlySet<number> = new Set([
 /** Keypad — its own tiny codec. */
 const KEYPAD_TYPES: ReadonlySet<number> = new Set([DeviceType.KEYPAD]);
 
+/**
+ * SmartTrack item trackers — their own `tracker` codec (NOT camera).
+ *
+ * These device_types sit INSIDE the dense 0..210 legacy range, so without an explicit group they
+ * fall through `codecForType`'s camera residual and sprout video/snapshot/motion entities on a device
+ * that has no P2P video path at all (#148: eight T87B0-V SmartTrack Link + one T87B2 SmartTrack Card
+ * resolved as cameras). The tracker codec has an empty capability baseline and its own product line,
+ * so a tracker gets only the universal `info` — no camera-line capability can attach to it.
+ */
+const TRACKER_TYPES: ReadonlySet<number> = new Set([
+  DeviceType.SMART_TRACK_LINK,
+  DeviceType.SMART_TRACK_CARD,
+  DeviceType.TRACKER_87B4,
+  DeviceType.TRACKER_87B5,
+]);
+
 /* -------------------------------------------------------------------------- */
 /*  Primary classifier: DeviceType number -> Codec                            */
 /* -------------------------------------------------------------------------- */
@@ -127,6 +143,8 @@ export function codecForType(deviceType: number): Codec | undefined {
   if (LOCK_TYPES.has(deviceType)) return "lock";
   if (SENSOR_TYPES.has(deviceType)) return "sensor";
   if (KEYPAD_TYPES.has(deviceType)) return "keypad";
+  // Trackers sit inside the 0..210 range but are NOT a camera — route them before the residual.
+  if (TRACKER_TYPES.has(deviceType)) return "tracker";
 
   // Residual: any other known security device is a camera-family endpoint.
   // We treat the whole "rest of the eufy_security DeviceType space" as camera, since
@@ -149,11 +167,13 @@ export function codecForType(deviceType: number): Codec | undefined {
  *  - the "v2 / cost-down" high range `10000..~10100` (WALL_LIGHT_CAM_81A0=10005,
  *    INDOOR_PT_CAMERA_C220=10008..C220_V3=10011, CAMERA_C35=10035).
  *
- * Anything outside these ranges is considered unknown. We exclude the SMART_TRACK_*
- * tracker tags (157/159) which are not part of any codec here.
+ * Anything outside these ranges is considered unknown. The SMART_TRACK_* / TRACKER_* tags
+ * (157/159/161/162) sit inside the 0..210 range but are routed to the `tracker` codec by
+ * {@link codecForType} before this function is reached; the guard below is a defensive backstop so
+ * a tracker can never land in the camera residual even if the call order changes.
  */
 function isKnownSecurityType(deviceType: number): boolean {
-  if (deviceType === DeviceType.SMART_TRACK_LINK || deviceType === DeviceType.SMART_TRACK_CARD) return false; // trackers — not a codec target
+  if (TRACKER_TYPES.has(deviceType)) return false; // trackers — not a camera residual target
   if (deviceType >= 0 && deviceType <= 210) return true;
   if (deviceType >= 300 && deviceType <= 301) return true;
   if (deviceType >= 10000 && deviceType <= 10100) return true;
@@ -233,6 +253,12 @@ export function codecFromModel(model: string | undefined): Codec | undefined {
   // Anker-side grouping shared with other, unrelated appliance types this SDK hasn't seen yet.
   if (/^T87A/.test(m)) return "display";
 
+  // SmartTrack item trackers — the T87B model prefix (T87B0 Link, T87B2 Card, T87B4/T87B5). Matched
+  // by prefix so suffixed variants resolve too (e.g. "T87B0-V"), and BEFORE the generic T8 camera
+  // residual below — otherwise a tracker whose cloud record carries no device_type falls through to
+  // "camera" (#148). Must also sit after the T87A display arm so the two T87x lines don't collide.
+  if (/^T87B/.test(m)) return "tracker";
+
   // Any remaining eufy security T-code is a camera/doorbell/floodlight/etc.
   if (/^T8/.test(m)) return "camera";
 
@@ -285,6 +311,12 @@ export function classify(rec: CloudRecord): Codec {
   // otherwise `codecForType`'s camera bucket could swallow either below. Nothing sits between them
   // (unlike mower/vacuum above), so one check covers both.
   if (byModel === "light" || byModel === "display") return byModel;
+
+  // SmartTrack item trackers — decided from the globally-unique T87B model code before the device_type
+  // check below, so a tracker whose cloud device_type is absent or collides with the 0..210 security
+  // residual still resolves to `tracker` rather than `camera` (#148). device_type 157/159/161/162
+  // route to the same codec via `codecForType`, so both paths agree.
+  if (byModel === "tracker") return "tracker";
 
   if (rec.deviceType !== undefined) {
     const byType = codecForType(rec.deviceType);

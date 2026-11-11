@@ -259,6 +259,8 @@ const CODEC_LINE: Record<Codec, ProductLine> = {
   light: "life",
   printer: "print",
   display: "display",
+  // SmartTrack item trackers — their own line so no security-line capability can attach (#148).
+  tracker: "tracker",
 };
 
 /**
