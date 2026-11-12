@@ -1,5 +1,6 @@
 import { asBool, coerceEnumValue } from "../../core/util.js";
 import { DeviceType } from "../device-types.js";
+import { IndoorPushEvent } from "../push-events.js";
 import { isIndoorCamera, isIndoorCamMini, isIndoorPanTiltS350 } from "../device-family.js";
 import { setScalar, setPayload, setJson, isCameraCodec, hasCapability } from "./access.js";
 import { AUDIO_CMD } from "./audio.js";
@@ -1008,6 +1009,21 @@ export const CAMERA: CapabilityModule = {
   properties: propertiesOf(CAMERA_MEMBERS),
   /** Every camera-codec device has the power/privacy surface. */
   detection: { codecs: ["camera"] },
+  /**
+   * Inbound crying push (3104) → `"cryingDetected"`, claimed on the device reporting
+   * SOUND_DETECTION_TYPE (6046). Crying is one value of that setting, so a camera that does not
+   * report it has no crying trigger to arm. The id itself is drawn from the indoor and HB3-paired
+   * vocabularies and absent from the doorbell one, so a camera codec alone is not the population
+   * that issues it.
+   */
+  events: [
+    {
+      source: "push",
+      match: IndoorPushEvent.CRYING_DETECTION,
+      emit: "cryingDetected",
+      claim: { codecs: ["camera"], reads: ["soundDetectionType"] },
+    },
+  ],
   /** Only the no-argument power verbs, which carry no value for a member to hold. */
   actions({ ctx, sink }: MemberDeps): CapabilityActions {
     if (!isCameraCodec(ctx)) return {};
