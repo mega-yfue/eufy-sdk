@@ -5,29 +5,68 @@ import { buildStringPairCommandPayload, decryptP2PData } from "../codec.js";
 import {
   MAX_TRANSFER_BYTES,
   RECORDING_DATA_TYPE,
+  RECORDING_STATIONS,
   decodeRecording,
   homeBase2RecordingPath,
+  homeBase3RecordingPath,
   receiveRecording,
 } from "../recording-download.js";
 import type { P2PSession } from "../p2p-session.js";
-import { IDR, audioFrame, camera, keyframe, plainFrame, slice } from "./recording-fixtures.js";
+import {
+  IDR,
+  adts,
+  adtsHeader,
+  audioFrame,
+  camera,
+  clearAudioFrame,
+  clearVideoFrame,
+  keyframe,
+  plainFrame,
+  slice,
+} from "./recording-fixtures.js";
 
-/** The 7-byte ADTS header of one AAC-LC 16 kHz mono frame of `n` payload bytes, as the camera sends it. */
-const adtsHeader = (n: number) => {
-  const l = n + 7;
-  return Buffer.from([0xff, 0xf1, 0x60, 0x40 | (l >> 11), (l >> 3) & 0xff, ((l & 7) << 5) | 0x1f, 0xfc]);
-};
+const HB2 = RECORDING_STATIONS.get("T8010")!;
+const HB3 = RECORDING_STATIONS.get("T8030")!;
+
+/** An H.265 IDR access unit: VPS, SPS and PPS ahead of an IDR_W_RADL slice. */
+const HEVC_IDR = Buffer.from("00000001400101000000014201010000000144010000000126010000", "hex");
+/** An H.265 TRAIL_R slice numbered `n`. */
+const hevcSlice = (n: number) => Buffer.concat([Buffer.from("000000010201", "hex"), Buffer.alloc(40, n)]);
 
 describe("recording download", () => {
   afterEach(() => {
     vi.useRealTimers();
   });
 
-  it("builds the HomeBase 2 path from the channel and the pushed recording name", () => {
+  it("builds the HomeBase 2 path from the channel and a recording name", () => {
     expect(homeBase2RecordingPath(2, "20260101120000")).toBe("/media/mmcblk0p1/Camera02/20260101120000.dat");
+    expect(homeBase2RecordingPath(0, "h265_20260101120000")).toBe("/media/mmcblk0p1/Camera00/h265_20260101120000.dat");
     expect(homeBase2RecordingPath(0, "../../etc/passwd")).toBeUndefined();
     expect(homeBase2RecordingPath(0, "2026010112000")).toBeUndefined();
     expect(homeBase2RecordingPath(100, "20260101120000")).toBeUndefined();
+  });
+
+  it("builds the HomeBase 3 path from the channel and a recording name", () => {
+    expect(homeBase3RecordingPath(2, "20260101120000")).toBe(
+      "/zx/emmcdata/Camera02/202601/20260101120000/20260101120000.zxvideo",
+    );
+    expect(homeBase3RecordingPath(0, "20261231235959")).toBe(
+      "/zx/emmcdata/Camera00/202612/20261231235959/20261231235959.zxvideo",
+    );
+    expect(homeBase3RecordingPath(12, "20260201000000")).toBe(
+      "/zx/emmcdata/Camera12/202602/20260201000000/20260201000000.zxvideo",
+    );
+    for (const recording of [
+      "h265_20260101120000",
+      "20260101120000.zxvideo",
+      "/zx/emmcdata/Camera02/202601/20260101120000/20260101120000.zxvideo",
+      "../../etc/passwd",
+      "2026010112000",
+      "202601011200000",
+    ]) {
+      expect(homeBase3RecordingPath(2, recording)).toBeUndefined();
+    }
+    expect(homeBase3RecordingPath(100, "20260101120000")).toBeUndefined();
   });
 
   it("frames the request as five zero bytes and two 128-byte strings, level-1 encrypted", () => {
@@ -60,12 +99,74 @@ describe("recording download", () => {
       audioFrame(second, aac[2]!),
     ];
 
-    const out = decodeRecording(frames, eccHex);
+    const out = decodeRecording(frames, HB2, eccHex);
 
     expect(out.video).toEqual(Buffer.concat([IDR, slice(1), slice(2), IDR, slice(4)]));
-    expect(out).toMatchObject({ frames: 5, missingFrames: 0, durationMs: 267 });
+    expect(out).toMatchObject({ codec: "h264", frames: 5, missingFrames: 0, durationMs: 267 });
     expect(out.fps).toBeCloseTo(4 / 0.267, 1);
     expect(out.audio).toEqual(Buffer.concat(aac));
+  });
+
+  it("decodes a recording stored in the clear, keyframes and audio included, without a key", () => {
+    const frames = [
+      clearVideoFrame(IDR, true, 0, 1_000),
+      clearAudioFrame(adts(180, 1)),
+      clearVideoFrame(slice(1), false, 1, 1_067),
+      clearVideoFrame(slice(2), false, 2, 1_133),
+      clearAudioFrame(adts(170, 3), 7),
+      clearVideoFrame(IDR, true, 3, 1_200),
+      clearAudioFrame(adts(190, 2)),
+    ];
+
+    const out = decodeRecording(frames, HB3);
+
+    expect(out.video).toEqual(Buffer.concat([IDR, slice(1), slice(2), IDR]));
+    expect(out).toMatchObject({ codec: "h264", frames: 4, missingFrames: 0, durationMs: 200, fps: 15 });
+    expect(out.audio).toEqual(Buffer.concat([adts(180, 1), adts(190, 2)]));
+  });
+
+  it("decodes an H.265 recording stored in the clear", () => {
+    const out = decodeRecording(
+      [clearVideoFrame(HEVC_IDR, true, 0, 0), clearVideoFrame(hevcSlice(1), false, 1, 67)],
+      HB3,
+    );
+
+    expect(out.video).toEqual(Buffer.concat([HEVC_IDR, hevcSlice(1)]));
+    expect(out).toMatchObject({ codec: "h265", frames: 2, missingFrames: 0, durationMs: 67 });
+  });
+
+  it("names the codec from a keyframe, not from a P-frame whose header byte reads as an H.265 VPS", () => {
+    const delta = Buffer.from([0, 0, 0, 1, 0x41, 0x9a, 0x02]);
+
+    expect(decodeRecording([clearVideoFrame(delta, false, 0, 0)], HB3).codec).toBeUndefined();
+    expect(decodeRecording([clearVideoFrame(delta, false, 0, 0), clearVideoFrame(IDR, true, 1, 67)], HB3).codec).toBe(
+      "h264",
+    );
+  });
+
+  it("joins a HomeBase 3 keyframe split at 400000 bytes", () => {
+    const head = Buffer.concat([IDR, Buffer.alloc(400_000 - IDR.length, 0x11)]);
+    const tail = Buffer.alloc(62_076, 0x22);
+
+    const out = decodeRecording(
+      [clearVideoFrame(head, true, 0, 0), clearVideoFrame(tail, true, 0, 0), clearVideoFrame(slice(1), false, 1, 67)],
+      HB3,
+    );
+
+    expect(out.video).toEqual(Buffer.concat([head, tail, slice(1)]));
+    expect(out).toMatchObject({ frames: 2, missingFrames: 0, durationMs: 67 });
+  });
+
+  it("drops a sealed keyframe from a station that stores in the clear", () => {
+    const { publicKey } = camera();
+    const key = randomBytes(32);
+
+    expect(
+      decodeRecording([keyframe(key, publicKey, IDR, 0, 0), clearVideoFrame(slice(1), false, 1, 67)], HB3).video,
+    ).toEqual(slice(1));
+    expect(() => decodeRecording([keyframe(key, publicKey, IDR, 0, 0)], HB3)).toThrow(
+      expect.objectContaining({ reason: "undecodable" }),
+    );
   });
 
   it("counts the frames the camera numbered but that never arrived", () => {
@@ -73,10 +174,49 @@ describe("recording download", () => {
     const key = randomBytes(32);
     const out = decodeRecording(
       [keyframe(key, publicKey, IDR, 10, 0), plainFrame(slice(1), 11, 67), plainFrame(slice(2), 14, 267)],
+      HB2,
       eccHex,
     );
 
     expect(out).toMatchObject({ frames: 3, missingFrames: 2 });
+  });
+
+  const HD = { width: 1280, height: 720 };
+  const FHD = { width: 1920, height: 1080 };
+
+  it("counts frame numbers on from the frame before a keyframe that changes the frame size", () => {
+    const frames = [
+      clearVideoFrame(IDR, true, 30, 0, HD),
+      clearVideoFrame(slice(1), false, 31, 100, HD),
+      clearVideoFrame(IDR, true, 0, 200, FHD),
+      clearVideoFrame(slice(2), false, 1, 300, FHD),
+      clearVideoFrame(IDR, true, 0, 400, HD),
+      clearVideoFrame(slice(3), false, 1, 500, HD),
+      clearVideoFrame(IDR, true, 4, 800, HD),
+    ];
+
+    expect(decodeRecording(frames, HB3)).toMatchObject({ frames: 7, missingFrames: 2, durationMs: 800, fps: 10 });
+  });
+
+  it("counts on across a size change at the first keyframe, after leading frames of another size", () => {
+    const frames = [
+      clearVideoFrame(slice(1), false, 40, 0, HD),
+      clearVideoFrame(slice(2), false, 41, 67, HD),
+      clearVideoFrame(IDR, true, 0, 133, FHD),
+      clearVideoFrame(slice(3), false, 1, 200, FHD),
+    ];
+
+    expect(decodeRecording(frames, HB3)).toMatchObject({ frames: 4, missingFrames: 0, durationMs: 200, fps: 15 });
+  });
+
+  it("keeps the numbering at a frame that changes size without being a keyframe", () => {
+    const frames = [
+      clearVideoFrame(IDR, true, 0, 0, HD),
+      clearVideoFrame(slice(1), false, 1, 67, HD),
+      clearVideoFrame(slice(2), false, 5, 333, FHD),
+    ];
+
+    expect(decodeRecording(frames, HB3)).toMatchObject({ frames: 3, missingFrames: 3 });
   });
 
   it("joins split pictures and omits a continuation whose opening frame was lost", () => {
@@ -92,7 +232,7 @@ describe("recording download", () => {
       plainFrame(slice(3), 3, 201),
     ];
 
-    const out = decodeRecording(frames, eccHex);
+    const out = decodeRecording(frames, HB2, eccHex);
 
     expect(out.video).toEqual(Buffer.concat([IDR, head, tail, slice(3)]));
     expect(out).toMatchObject({ frames: 3, missingFrames: 1 });
@@ -104,6 +244,7 @@ describe("recording download", () => {
     const head = Buffer.concat([slice(1), Buffer.alloc(64_000 - slice(1).length, 0x11)]);
     const out = decodeRecording(
       [keyframe(key, publicKey, IDR, 0, 0), plainFrame(head, 1, 67), plainFrame(slice(2), 2, 134)],
+      HB2,
       eccHex,
     );
 
@@ -117,10 +258,12 @@ describe("recording download", () => {
     const key = randomBytes(32);
     const out = decodeRecording(
       [keyframe(key, other.publicKey, IDR, 0, 0), audioFrame(key, Buffer.alloc(100, 1)), plainFrame(slice(1), 1, 67)],
+      HB2,
       eccHex,
     );
 
     expect(out.video).toEqual(slice(1));
+    expect(out.codec).toBeUndefined();
     expect(out.audio).toBeUndefined();
   });
 
@@ -141,6 +284,7 @@ describe("recording download", () => {
         keyframe(key, publicKey, IDR, 3, stamp + 201),
         terminal,
       ],
+      HB2,
       eccHex,
     );
 
@@ -152,7 +296,7 @@ describe("recording download", () => {
     const { eccHex } = camera();
     const other = camera();
 
-    expect(() => decodeRecording([keyframe(randomBytes(32), other.publicKey, IDR, 0, 0)], eccHex)).toThrow(
+    expect(() => decodeRecording([keyframe(randomBytes(32), other.publicKey, IDR, 0, 0)], HB2, eccHex)).toThrow(
       expect.objectContaining({ reason: "undecodable" }),
     );
   });
@@ -175,7 +319,7 @@ describe("recording download", () => {
       signCode: 0,
       raw: opts.raw ?? Buffer.alloc(30, commandId & 0xff),
     });
-    const request = { path: "/p", accountId: "", channel: 0 };
+    const request = { path: "/p", accountId: "", channel: 0, finishChannel: 0 };
 
     it("sends the request on the camera channel and keeps only that channel's recording frames", async () => {
       const session = station((s) => {
@@ -193,6 +337,7 @@ describe("recording download", () => {
         path: "/media/mmcblk0p1/Camera01/20260101120000.dat",
         accountId: "0".repeat(40),
         channel: 1,
+        finishChannel: 0,
       });
       const frames = await transfer.frames;
       await transfer.drained;
@@ -221,6 +366,29 @@ describe("recording download", () => {
       expect(session.listenerCount("data")).toBe(0);
     });
 
+    it("ends on the finish frame tagged with the station channel when the station tags it there", async () => {
+      vi.useFakeTimers();
+      const session = station((s) => {
+        s.emit("data", frame(1300, { channel: 1 }));
+        s.emit("data", frame(1301, { channel: 1 }));
+        s.emit("data", frame(1304, { channel: 255, dataType: 2 }));
+      });
+
+      const transfer = receiveRecording(session as unknown as P2PSession, {
+        ...request,
+        channel: 1,
+        finishChannel: 255,
+      });
+      const outcome = transfer.frames.then(
+        (frames) => frames.map((f) => f.commandId),
+        (error: { reason?: string }) => error.reason,
+      );
+      await vi.advanceTimersByTimeAsync(100);
+
+      expect(await outcome).toEqual([1300, 1301]);
+      expect(session.listenerCount("data")).toBe(0);
+    });
+
     it("answers no-data when the station sends nothing", async () => {
       vi.useFakeTimers();
       const session = station(() => undefined);
@@ -228,6 +396,48 @@ describe("recording download", () => {
       const settled = expect(transfer.frames).rejects.toMatchObject({ reason: "no-data" });
       await vi.advanceTimersByTimeAsync(21_000);
       await settled;
+    });
+
+    it("answers no-data at once when the station replies that it holds no such recording, and stops listening", async () => {
+      vi.useFakeTimers();
+      const reply = (data: Buffer) => ({ commandId: 1024, dataType: 0, channel: 0, signCode: 0, raw: data, data });
+      const missing = Buffer.alloc(132);
+      missing.writeInt32LE(-111);
+      const session = station((s) => {
+        s.emit("data", reply(Buffer.alloc(2)));
+        s.emit("data", reply(missing));
+      });
+
+      const transfer = receiveRecording(session as unknown as P2PSession, { ...request, missingCode: -111 });
+      const settled = expect(transfer.frames).rejects.toMatchObject({
+        reason: "no-data",
+        message: "the station holds no recording at /p",
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      await settled;
+      await transfer.drained;
+      expect(session.listenerCount("data")).toBe(0);
+    });
+
+    it("ignores a no-such-recording reply on another channel or after the recording's frames began", async () => {
+      vi.useFakeTimers();
+      const reply = (channel: number) => {
+        const data = Buffer.alloc(132);
+        data.writeInt32LE(-111);
+        return { commandId: 1024, dataType: 0, channel, signCode: 0, raw: data, data };
+      };
+      const session = station((s) => {
+        s.emit("data", reply(1));
+        s.emit("data", frame(1300));
+        s.emit("data", reply(0));
+        s.emit("data", frame(1301));
+        s.emit("data", frame(1304, { dataType: 2 }));
+      });
+
+      const transfer = receiveRecording(session as unknown as P2PSession, { ...request, missingCode: -111 });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect((await transfer.frames).map((f) => f.commandId)).toEqual([1300, 1301]);
     });
 
     it("answers incomplete at the byte ceiling, and keeps listening until the station finishes", async () => {

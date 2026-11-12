@@ -1,6 +1,6 @@
 import { CusPushEvent } from "../push-events.js";
 import { asBool } from "../../core/util.js";
-import { setStationScalar, setPayload, setScalar } from "./access.js";
+import { setStationScalar, setPayload, setScalar, hasCapability } from "./access.js";
 import type { AvailabilityContext, CapabilityModule, CommandContext } from "./types.js";
 import { accepts, propertiesOf, type Members, type Surface } from "./members.js";
 import type { Command } from "../../core/contracts.js";
@@ -154,12 +154,14 @@ function recordSetting(param: number, value: number, ctx: CommandContext): Comma
  * Pro) has no battery and requires constant 110–240 V power according to the vendor's product FAQ;
  * the exact sentinel values it reports are unverified. T8E00 (PoE S4) and T8P00 (PoE E40) are
  * PoE-powered cameras behind a T8N00 with no cell; a hardware run in #437 showed the S4 stream cut
- * 55 s after its first video frame by the inherited battery budget (45 s plus 10 s grace).
+ * 55 s after its first video frame by the inherited battery budget (45 s plus 10 s grace). T8P10 (PoE
+ * E41) is the same, confirmed on owned hardware behind a T8N00: it reported a 100% battery, a cell
+ * temperature and a solar read it cannot have.
  *
  * The same list decides the live-media and P2P-session power tier through {@link cameraPowerTier}: a
  * budget on a mains camera is not cheap once it kills a continuous stream every minute.
  */
-const MAINS_CAMERA_MODELS = ["T8425", "T8419", "T8410", "T84A1", "T8423", "T8E00", "T8P00"] as const;
+const MAINS_CAMERA_MODELS = ["T8425", "T8419", "T8410", "T84A1", "T8423", "T8E00", "T8P00", "T8P10"] as const;
 
 /**
  * Power tier of a camera for its live-media budget and standalone P2P session: `"battery"` only when it
@@ -235,6 +237,34 @@ function cellGated<T extends Members>(members: T): T {
 }
 
 /**
+ * False once the device resolved to the `sensor` codec. A contact / motion / entry sensor proves
+ * `battery` from the level param (1101) just like a camera, but on a sensor 1101 is a NON-CELL sentinel,
+ * not a fuel gauge — the field reports a fixed 0/30/32/33 cluster across every unit, not a varying charge
+ * — and the sensor has none of the rest of this surface (no charge source or solar, no camera
+ * working/recording mode, no cell health/temperature). A sensor's real battery is a BOOLEAN low-power
+ * flag on its own param (`entrySensorBatState` 1552 / `motionSensorBatState` 1601), never a percentage,
+ * so this capability has nothing valid to show on one. Keyed on the CODEC, not a model list: no security
+ * sensor fuel-gauges a cell, so the whole family is covered the moment it resolves. Fails open — a record
+ * with no resolved codec still publishes, the same safe direction as {@link notMainsCamera}.
+ */
+const notSensor = (ctx: AvailabilityContext): boolean => ctx.codec !== "sensor";
+
+/**
+ * Withhold EVERY battery member on the `sensor` codec, composing with any gate a member already carries
+ * (the cell gate's {@link notMainsCamera}, `level`/`powerSource`'s lock check). A sensor then exposes no
+ * battery entity at all — rather than a bogus percentage plus a dozen `unknown` camera-power reads for
+ * params it never speaks.
+ */
+function notOnSensor<T extends Members>(members: T): T {
+  const gated = Object.entries(members).map(([name, m]) => {
+    const own = (m as { available?: (ctx: AvailabilityContext) => boolean }).available;
+    const available = own ? (ctx: AvailabilityContext) => notSensor(ctx) && own(ctx) : notSensor;
+    return [name, { ...(m as object), available }] as const;
+  });
+  return Object.fromEntries(gated) as T;
+}
+
+/**
  * The app's charger-state decode: `charging = value ∉ {0,2}`. The app applies this one rule both to a
  * camera's `BATTERY_STATUS` (2111) and to a keypad's `APP_CMD_KEYPAD_BATTERY_CHARGER_STATE` (1655).
  */
@@ -255,11 +285,14 @@ export function isChargingState(v: string | number | boolean): boolean {
  * which the reference site does not carry.
  * @internal
  */
-export const BATTERY_MEMBERS = cellGated({
+const CAMERA_BATTERY_MEMBERS = cellGated({
   /**
    * The headline percentage, and this capability's detection evidence: reporting 1101 is what proves a
    * device is battery-powered, which is also the fact `MediaProvider` reads to decide a stream needs a
    * power budget. Published flat as `battery` — `level` alone is claimed by `suction` too.
+   *
+   * Withheld on a device that resolved `lock`, whose own `battery` member reads the same param 1101 and
+   * owns the `battery` property there, so the two do not both claim it.
    */
   level: {
     param: BATTERY_PARAM.BATTERY,
@@ -268,6 +301,7 @@ export const BATTERY_MEMBERS = cellGated({
     unit: "%",
     kind: "percent",
     provenance: "verified",
+    available: (ctx: AvailabilityContext) => !hasCapability(ctx, "lock"),
     description: "Battery level 0-100 (verified: param 1101).",
   },
   /**
@@ -288,7 +322,7 @@ export const BATTERY_MEMBERS = cellGated({
   /**
    * 1293 is the READABLE indicator (6445 is write-only/cloud-hidden). Verified live on a T8124R via an
    * app-toggle before/after diff: 0 = Battery, 1 = External Solar Panel. Values beyond 0/1 (some models
-   * report 5) are shown raw — `enumValues` only labels the two that are confirmed.
+   * report 5) read as `undefined` — `enumValues` holds only the two that are confirmed.
    *
    * The write is a `1350` SET_PAYLOAD, inner cmd 1293, `{charge_mode:N}`, `mValue3` 0 (the app uses 0,
    * not the cmd id), and the setter accepts a NAME as well as the index the getter answers.
@@ -306,7 +340,7 @@ export const BATTERY_MEMBERS = cellGated({
     description:
       "Configured power source (1293): 0 = Battery, 1 = External Solar Panel. Verified live on T8124R. " +
       "The richer raw APP_CMD_SET_POWER_SOURCE blob is surfaced separately as `powerSourceInfo` (6445). " +
-      "Format varies by model (plain int or JSON {power_source:N}); values beyond 0/1 shown raw.",
+      "Format varies by model (plain int or JSON {power_source:N}); a value beyond 0/1 reads undefined.",
     write: (v, ctx) =>
       setPayload(
         BATTERY_PARAM.POWER_CHARGE,
@@ -507,6 +541,13 @@ export const BATTERY_MEMBERS = cellGated({
       "92% and a T8171 at 27%, so it is NOT a low-battery flag.",
   },
 } as const satisfies Members);
+
+/**
+ * The published `battery` table: the full camera surface, minus every member on the `sensor` codec —
+ * a sensor's 1101 is a non-cell sentinel and it has none of the camera power reads, so it exposes no
+ * battery entity (see {@link notOnSensor}). Every getter, setter and description derives from this.
+ */
+export const BATTERY_MEMBERS = notOnSensor(CAMERA_BATTERY_MEMBERS);
 
 export const BATTERY: CapabilityModule = {
   capability: "battery",

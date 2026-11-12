@@ -171,6 +171,18 @@ export function gatewayInfoCipherId(gwPayload: Buffer): number {
   return gwPayload.length >= 2 ? gwPayload.readUInt16LE(0) : 0;
 }
 
+/** The int32 result a `CMD_GATEWAYINFO` reply opens with when the device refuses level-2. */
+const GATEWAY_LEVEL2_REFUSED = -103;
+
+/**
+ * Whether a `CMD_GATEWAYINFO` (1100) reply is a level-2 refusal: int32 LE {@link GATEWAY_LEVEL2_REFUSED} (`99 ff
+ * ff ff`) in place of a cipher. {@link gatewayInfoCipherId} reads those bytes as `cipher_id` 65433. Any other
+ * opening is not a refusal.
+ */
+export function gatewayInfoRefused(gwPayload: Buffer): boolean {
+  return gwPayload.length >= 4 && gwPayload.readInt32LE(0) === GATEWAY_LEVEL2_REFUSED;
+}
+
 /**
  * The eufy ECIES KDF: HMAC-SHA256 feedback chaining under the label "ECIES". Each emitted
  * 32-byte block is `HMAC(shared, t ‖ "ECIES")` where `t` starts at the label and is updated to
@@ -564,9 +576,9 @@ function readAddress(buf: Buffer, offset: number): Address {
   };
 }
 
-/** Parse a LOOKUP_ADDR or RLY_TO message's leading address record. */
-export function parseLookupAddr(msg: Buffer): Address {
-  return readAddress(msg, 4);
+/** A LOOKUP_ADDR message's leading address record, or `undefined` for a message too short to carry it. */
+export function parseLookupAddr(msg: Buffer): Address | undefined {
+  return msg.length >= 12 ? readAddress(msg, 4) : undefined;
 }
 
 /** The relay servers a LIST_REQ_ACK names, in the order listed, without the unspecified address; records past the message's end are dropped. */

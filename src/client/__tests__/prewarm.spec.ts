@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EufyMega } from "../eufy-mega.js";
 import { PushClient } from "../../transport/push/push-client.js";
 import type { EufyDevice } from "../../core/types.js";
+import { DeviceType } from "../../model/device-types.js";
 
 /**
  * Speculative pre-warm is **opt-in**, and these specs pin why.
@@ -156,6 +157,31 @@ describe("event pre-warm policy", () => {
     const c = makeClient({ prewarmEvents: ["personDetected"], prewarmTiers: ["wired"] }, orphan);
 
     c.fire("personDetected", CHILD_SN);
+
+    expect(c.prewarm).not.toHaveBeenCalled();
+  });
+
+  /** A HomeBase S1 Pro answers no P2P lookup; a camera behind one is reached over RTC, never P2P. */
+  it("declines a camera behind a HomeBase S1 Pro (T9000)", () => {
+    const s1Pro = "T9000P0000000000";
+    const s1ProChild = "T8000P0000000004";
+    const common = { category: "eufy_security", api: "mega", realtime: "p2p", p2pDid: "XXXXXXX-000000-XXXXX" };
+    const devices = [
+      ...fleet(),
+      {
+        ...common,
+        sn: s1Pro,
+        model: "T9000",
+        deviceClass: "homebase",
+        stationSn: s1Pro,
+        raw: { device_type: DeviceType.STATION_9000 },
+      },
+      { ...common, sn: s1ProChild, model: "T8199", deviceClass: "camera", stationSn: s1Pro, raw: { parent_sn: s1Pro } },
+    ] as unknown as EufyDevice[];
+    const c = makeClient({ prewarmEvents: ["personDetected"], prewarmTiers: ["wired"] }, devices);
+
+    c.fire("personDetected", s1ProChild);
+    c.fire("personDetected", s1Pro);
 
     expect(c.prewarm).not.toHaveBeenCalled();
   });

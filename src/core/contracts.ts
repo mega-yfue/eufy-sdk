@@ -192,9 +192,10 @@ export class DeviceChannelUnresolvedError extends Error {
 /**
  * Why {@link MediaProvider.downloadRecording} returned no recording.
  *
- * - `invalid-recording` — the recording name is not one the station could hold.
- * - `key-unavailable` — the key the recording was stored under could not be obtained.
- * - `no-data` — the station sent nothing within the wait.
+ * - `invalid-recording` — the recording name is not one the camera's station could hold.
+ * - `key-unavailable` — the station stores the recording sealed and the key it was sealed under could not be
+ *   obtained.
+ * - `no-data` — the station sent no recording: it answered that it holds none, or sent nothing within the wait.
  * - `incomplete` — the transfer ended before the station's finish frame.
  * - `undecodable` — data arrived but no video frame could be decoded from it.
  */
@@ -216,14 +217,16 @@ export class RecordingDownloadError extends Error {
 /**
  * A recording downloaded from the station, as elementary streams.
  *
- * `video` is Annex-B H.264 in decode order, `audio` AAC-LC 16 kHz mono in ADTS framing (absent when the
- * recording carried none that could be decoded). `frames` counts the distinct video sequences emitted.
- * `missingFrames` counts gaps between received sequences and received sequences that yielded no usable
- * picture, including at either end. `durationMs` spans the first to the last emitted picture by the
- * camera's own timestamps; `fps` is derived from those stamps.
+ * `video` is Annex-B H.264 or H.265 in decode order, `audio` AAC-LC 16 kHz mono in ADTS framing (absent
+ * when the recording carried none that could be decoded). `codec` is the codec of `video`, read off the parameter
+ * sets of its first keyframe that carries them, and is absent when no keyframe does. `frames` counts the pictures
+ * emitted, numbered by the camera's frame numbers counted on across a change of frame size. `missingFrames` counts
+ * gaps in that numbering and numbered frames that yielded no usable picture, including at either end. `durationMs`
+ * spans the first to the last emitted picture by the camera's own timestamps; `fps` is derived from those stamps.
  */
 export interface RecordingDownload {
   video: Buffer;
+  codec?: VideoCodec;
   audio?: Buffer;
   frames: number;
   missingFrames: number;
@@ -411,7 +414,14 @@ export type Command =
       level2Sender?: "set-payload";
     }
   | { kind: "p2p-privacy-burst"; enabled: boolean; channel: number }
-  | { kind: "p2p-station-scalar"; cmd: number; value: number; channel: number }
+  | {
+      kind: "p2p-station-scalar";
+      cmd: number;
+      value: number;
+      channel: number;
+      /** `"auto"`: the seal follows the session, level-2 with a key and level-1 without. Absent, level-2 only. */
+      form?: Extract<ScalarForm, "auto">;
+    }
   /** P2P int-plus-string frame; the transport injects the authenticated account id string. */
   | { kind: "p2p-int-string"; cmd: number; value: number; valueSub: number; channel: number }
   | ({ kind: "ff09-actuate" } & Ff09Identity)
@@ -535,7 +545,7 @@ export interface TuyaDpInbound {
   onDps(sn: string, dps: Record<number, boolean | number | string>): void;
 }
 
-/** Elementary-stream video codec of a {@link LiveVideoFrame} — eufy cameras stream H.264 or H.265. */
+/** Elementary-stream video codec — eufy cameras stream H.264 or H.265. */
 export type VideoCodec = "h264" | "h265" | "av1";
 
 /**
@@ -802,9 +812,13 @@ export interface AbortableCall {
   signal?: AbortSignal;
 }
 
-/** Select an optical view; absence selects view 0. */
+/** NVR output size requested when a live pull starts. */
+export type MediaOutputResolution = "1080p";
+
+/** Select an optical view and output size; absence selects view 0 at the route's default output. */
 export interface MediaSourceSelection {
   view?: number;
+  outputResolution?: MediaOutputResolution;
 }
 
 export interface SharedSourceHints {
@@ -833,6 +847,8 @@ export interface SharedSourceHints {
  * because an unbound model has no live client (hence `?.` at the call site).
  */
 export interface MediaProvider {
+  /** Output sizes supported by this bound media route. Absence means no size selection. */
+  outputResolutions?: readonly MediaOutputResolution[];
   /** Optical view identifiers supported by this bound media route. */
   views?: readonly number[];
   /**
@@ -917,7 +933,9 @@ export interface MediaProvider {
    * {@link ReceivedVideoFrame} envelopes whose original source-arrival time survives retained replay.
    * Raw mode ignores arrivalTime. Audio is available separately through {@link live} or muxed through
    * {@link recordFragments}; it is never interleaved into raw video. The caller owns the Readable's
-   * lifetime, and destroying it releases the shared pull.
+   * lifetime, and destroying it releases the shared pull. On a battery-budgeted source the Readable
+   * emits a `budget` event with a {@link StreamBudgetNotice}; unless `extend()` is called within its
+   * grace, the Readable ends.
    */
   openReadable?(
     opts?: { objectMode?: boolean; arrivalTime?: boolean } & SharedSourceHints & AbortableCall & MediaSourceSelection,
@@ -940,9 +958,11 @@ export interface MediaProvider {
    */
   talkback?(opts?: { encoder?: AacEncoder } & SharedSourceHints): Promise<TalkbackHandle>;
   /**
-   * Download one recording the camera's station stored, identified by the recording name and cipher id of
-   * the event. One download runs at a time per station. Rejects with {@link RecordingDownloadError}.
-   * Optional, and absent on a camera whose station's recording download is unverified.
+   * Download one recording the camera's station stored. `recording` names it: the file name the station stores
+   * it under, without the folder or the extension. `cipherId` is the cipher the station names for it, and is not
+   * read on a station that stores its recordings in the clear. One download runs at a time per station. Rejects with
+   * {@link RecordingDownloadError}. Optional, and absent on a camera whose station's recording download is
+   * unverified.
    */
   downloadRecording?(
     opts: { recording: string; cipherId: number; timeoutMs?: number } & AbortableCall,

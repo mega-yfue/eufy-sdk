@@ -1,9 +1,16 @@
 import { asBool, coerceEnumValue } from "../../core/util.js";
 import { DeviceType } from "../device-types.js";
 import { IndoorPushEvent } from "../push-events.js";
-import { isIndoorCamera, isIndoorCamMini, isIndoorPanTiltS350 } from "../device-family.js";
+import {
+  isCallDoorbell,
+  isIndoorCamera,
+  isIndoorCamMini,
+  isIndoorPanTiltS350,
+  isVideoSmartLock,
+} from "../device-family.js";
 import { setScalar, setPayload, setJson, isCameraCodec, hasCapability } from "./access.js";
 import { AUDIO_CMD } from "./audio.js";
+import { DOORBELL_CMD } from "./doorbell.js";
 import { cameraPowerTier } from "./battery.js";
 import { accepts, propertiesOf, provided, type Members, type Surface, type MemberDeps } from "./members.js";
 import type { AvailabilityContext, CapabilityModule, CapabilityActions, CommandContext } from "./types.js";
@@ -464,6 +471,9 @@ function privacyCommand(enabled: boolean, channel: number): Command {
   return { kind: "p2p-privacy-burst", enabled, channel };
 }
 
+/** A C30/C31 has reported no 1716 and no doorbell LED write was tried on it, so it keeps 1045. */
+const doorbellLed = (ctx: AvailabilityContext): boolean => hasCapability(ctx, "doorbell") && !isCallDoorbell(ctx);
+
 /**
  * Status LED — family-variant, like camera power above. A **Video Doorbell**'s user-facing LED (the
  * button ring) is `DOORBELL_LED` (1716) carried in the `SET_PAYLOAD` (1350) envelope
@@ -477,7 +487,7 @@ function privacyCommand(enabled: boolean, channel: number): Command {
  * same one under a different seal. See `setPayload`'s two conditions.
  */
 function statusLedCommand(on: boolean, ctx: CommandContext): Command {
-  if (hasCapability(ctx, "doorbell")) return setPayload(CAMERA_CMD.DOORBELL_LED, { light_enable: on ? 1 : 0 }, ctx);
+  if (doorbellLed(ctx)) return setPayload(CAMERA_CMD.DOORBELL_LED, { light_enable: on ? 1 : 0 }, ctx);
   return setScalar(CAMERA_CMD.DEV_LED_SWITCH, on ? 1 : 0, ctx, "int-string");
 }
 
@@ -532,10 +542,12 @@ function refuseWhenDisabled(ctx: CommandContext, read: (name: string) => { value
     throw new CameraDisabledError(ctx.name ?? ctx.serial);
 }
 
-/** Reject an unavailable optical view before a media pull is requested. */
-function refuseUnsupportedView(media: MediaProvider, opts?: MediaSourceSelection): void {
+/** Reject an unavailable optical view or output size before requesting media. */
+function refuseUnsupportedSelection(media: MediaProvider, opts?: MediaSourceSelection): void {
   const view = opts?.view ?? 0;
   if (!(media.views ?? [0]).includes(view)) throw new RangeError(`camera: unsupported optical view ${view}`);
+  if (opts?.outputResolution !== undefined && !media.outputResolutions?.includes(opts.outputResolution))
+    throw new RangeError(`camera: unsupported output resolution ${opts.outputResolution}`);
 }
 
 /**
@@ -729,6 +741,10 @@ export const CAMERA_MEMBERS = {
    * sensor omits it, and the wire accepts the value regardless — the device's own reported set is the
    * only statement of which of the three it has. `coerceEnumValue` rejects a value outside
    * {@link NightVision} rather than coercing it. The payload key on the wire is `night_sion`.
+   *
+   * 1277 carries more than these three on some models: the V6 app's per-model mappings put modes on
+   * 3, 5, 6 and 8 as well, and which model takes which mapping is not in the app bundle. A reported value
+   * outside the published options reads as `undefined` rather than as an unnamed number.
    */
   nightVision: {
     param: CAMERA_CMD.NIGHT_VISION_TYPE,
@@ -767,6 +783,8 @@ export const CAMERA_MEMBERS = {
    *
    * `transaction` is part of the frame that was captured, so it is sent. The recording sibling's own
    * confirmed frame carries no such field; neither is inferred from the other.
+   *
+   * Not offered where the device reports the doorbell's own live-view quality (1705).
    */
   streamingQuality: {
     param: 1020,
@@ -774,7 +792,8 @@ export const CAMERA_MEMBERS = {
     kind: "enum",
     enumValues: STREAMING_QUALITY_TIERS,
     provenance: "verified",
-    available: isCameraCodec,
+    available: (ctx: AvailabilityContext) =>
+      isCameraCodec(ctx) && !(ctx.paramIds?.has(DOORBELL_CMD.VIDEO_QUALITY) ?? false),
     args: [{ name: "quality", kind: "enum", description: "A tier, or the name it maps to. 0 is Auto." }],
     ...accepts<StreamingQualityName>(),
     description:
@@ -885,8 +904,8 @@ export const CAMERA_MEMBERS = {
     kind: "boolean",
     provenance: "verified",
     available: isCameraCodec,
-    readAvailable: (ctx) => !hasCapability(ctx, "doorbell"),
-    readAliases: [{ paramType: CAMERA_CMD.DOORBELL_LED, available: (ctx) => hasCapability(ctx, "doorbell") }],
+    readAvailable: (ctx) => !doorbellLed(ctx),
+    readAliases: [{ paramType: CAMERA_CMD.DOORBELL_LED, available: doorbellLed }],
     requiresRead: true,
     description: "Camera status LED. Video doorbells report the same state under their button-ring LED parameter.",
     write: (v, ctx) => statusLedCommand(asBool(v), ctx),
@@ -896,6 +915,12 @@ export const CAMERA_MEMBERS = {
     "media",
     (m) => m.views && (() => m.views!),
     "Optical view identifiers supported by this camera's media route.",
+  ),
+
+  outputResolutions: provided(
+    "media",
+    (m) => m.outputResolutions && (() => m.outputResolutions!),
+    "Output sizes supported by this camera's live media route; omission preserves its default output.",
   ),
 
   /**
@@ -927,7 +952,7 @@ export const CAMERA_MEMBERS = {
       isCameraCodec(ctx) &&
       (async (opts?: Parameters<MediaProvider["snapshotLive"]>[0]) => {
         refuseWhenDisabled(ctx, read);
-        refuseUnsupportedView(m, opts);
+        refuseUnsupportedSelection(m, opts);
         return m.snapshotLive({ powered: poweredOf(ctx), ...opts });
       }),
     "Fresh still decoded from a short live burst.",
@@ -937,7 +962,7 @@ export const CAMERA_MEMBERS = {
     (m, { ctx, read }) =>
       async (opts?: Parameters<MediaProvider["live"]>[0]) => {
         refuseWhenDisabled(ctx, read);
-        refuseUnsupportedView(m, opts);
+        refuseUnsupportedSelection(m, opts);
         return m.live({ powered: poweredOf(ctx), ...opts });
       },
     "Open a managed live stream.",
@@ -952,14 +977,15 @@ export const CAMERA_MEMBERS = {
       }),
     "Record N seconds → an mp4/h264 buffer.",
   ),
+  /** The T8530 serves its live feed as a Readable too. */
   openReadable: provided(
     "media",
     (m, { ctx, read }) =>
-      isCameraCodec(ctx) &&
+      (isCameraCodec(ctx) || isVideoSmartLock(ctx)) &&
       m.openReadable &&
       (async (opts?: Parameters<NonNullable<MediaProvider["openReadable"]>>[0]) => {
         refuseWhenDisabled(ctx, read);
-        refuseUnsupportedView(m, opts);
+        refuseUnsupportedSelection(m, opts);
         return m.openReadable!({ powered: poweredOf(ctx), ...opts });
       }),
     "Open a node:stream Readable of the live feed.",
@@ -975,13 +1001,14 @@ export const CAMERA_MEMBERS = {
       }),
     "Continuous fragmented-MP4 (CMAF) recording.",
   ),
+  /** A T8530 is offered the download behind a HomeBase 3 alone. */
   downloadRecording: provided(
     "media",
     (m, { ctx }) =>
-      isCameraCodec(ctx) &&
+      (isCameraCodec(ctx) || (isVideoSmartLock(ctx) && ctx.stationSerial?.startsWith("T8030") === true)) &&
       m.downloadRecording &&
       ((opts: Parameters<NonNullable<MediaProvider["downloadRecording"]>>[0]) => m.downloadRecording!(opts)),
-    "Download a recording the station holds → H.264 and AAC elementary streams.",
+    "Download a recording the station holds → H.264 or H.265 and AAC elementary streams.",
   ),
   /**
    * Push audio from the host to this camera's speaker. Gated on the **speaker** param specifically —

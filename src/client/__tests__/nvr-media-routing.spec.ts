@@ -1,11 +1,12 @@
 import { encode as encodeJpeg } from "jpeg-js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EufyDevice } from "../../core/types.js";
+import { DeviceType } from "../../model/device-types.js";
 import { LiveSnapshotUnavailableError } from "../../core/contracts.js";
 import { EufyMega } from "../eufy-mega.js";
 import * as snapshots from "../../transport/p2p/media.js";
 import { buildPortalHeader } from "../../transport/rtc/portal-packet.js";
-import { RtcSession } from "../../transport/rtc/session.js";
+import { RtcSession, type RtcSessionOptions } from "../../transport/rtc/session.js";
 
 const HUB = "T8000P0000000000";
 const CAMERA = "T8000P0000000001";
@@ -46,6 +47,7 @@ function fixture(model: string, name: string) {
     },
   ] as EufyDevice[];
   vi.spyOn(internals.mega, "getDeviceParamList").mockResolvedValue({ params: [] });
+  vi.spyOn(internals.mega, "portalShard").mockResolvedValue("ie-pr");
   vi.spyOn(internals.mega, "rtcIdentity").mockReturnValue({
     authToken: "synthetic",
     userId: "synthetic",
@@ -56,6 +58,38 @@ function fixture(model: string, name: string) {
 }
 
 afterEach(() => vi.restoreAllMocks());
+
+it("keeps a standalone T8223 live call on the PHONE shard on a split account", async () => {
+  const shards: string[] = [];
+  vi.spyOn(RtcSession.prototype, "connect").mockImplementation(async function (this: RtcSession) {
+    shards.push((this as unknown as { opts: RtcSessionOptions }).opts.shard);
+    this.emit("connected");
+  });
+  const { client, internals, p2p } = fixture("T8223", "Synthetic Video Doorbell C31");
+  const records = internals.registry.devices as EufyDevice[];
+  const doorbell = records[1]!;
+  doorbell.stationSn = CAMERA;
+  doorbell.channel = 0;
+  doorbell.raw = {
+    parent_sn: CAMERA,
+    device_channel: 0,
+    device_type: DeviceType.BATTERY_DOORBELL_C31,
+    member: { admin_user_id: "synthetic-admin" },
+  };
+  records.shift();
+  vi.spyOn(internals.mega, "rtcShard", "get").mockReturnValue("eu-pr");
+  try {
+    const device = await client.getDevice(CAMERA);
+    const stream = await device.camera?.()?.live?.();
+    expect(stream).toBeDefined();
+    stream?.stop();
+    expect(shards).toEqual(["eu-pr"]);
+    expect(internals.mega.portalShard).not.toHaveBeenCalled();
+    expect(p2p).not.toHaveBeenCalled();
+  } finally {
+    internals.rtc.close();
+  }
+});
 
 describe("public NVR camera media binding", () => {
   it.each(["unknown-model", "missing-channel", "different-station"])(
@@ -72,6 +106,30 @@ describe("public NVR camera media binding", () => {
       internals.rtc.close();
     },
   );
+  it("resolves the portal WEB shard through the public NVR secondary live caller", async () => {
+    const shards: string[] = [];
+    vi.spyOn(RtcSession.prototype, "connect").mockImplementation(async function (this: RtcSession) {
+      shards.push((this as unknown as { opts: RtcSessionOptions }).opts.shard);
+      this.emit("connected");
+    });
+    const sent = vi.spyOn(RtcSession.prototype, "sendCommand").mockReturnValue(true);
+    const { client, internals, p2p } = fixture("T8E00", "Synthetic garden PoE Cam S4");
+    vi.spyOn(internals.mega, "rtcShard", "get").mockReturnValue("us");
+    try {
+      const device = await client.getDevice(CAMERA);
+      const stream = await device.camera?.()?.live?.({ view: 1 });
+      expect(shards).toEqual(["ie-pr"]);
+      expect(internals.mega.portalShard).toHaveBeenCalledOnce();
+      expect(JSON.parse(sent.mock.calls[0]![0].subarray(16).toString())).toMatchObject({
+        cmd: 1003,
+        payload: { chn_list: [{ chn: 3, sensor: 1 }] },
+      });
+      expect(p2p).not.toHaveBeenCalled();
+      stream?.stop();
+    } finally {
+      internals.rtc.close();
+    }
+  });
   it("preserves cancellation and login failures from the public snapshot caller", async () => {
     const { client, internals } = fixture("T8P00", "Synthetic PoE Cam E40");
     const device = await client.getDevice(CAMERA);
@@ -85,15 +143,16 @@ describe("public NVR camera media binding", () => {
   it.each([
     ["T8E00", 0],
     ["T8P00", 0],
+    ["T8P10", 0],
+    ["T8162", 0],
+    ["T8410", 0],
+    ["T8214", 0],
   ] as const)("starts %s through its public camera capability with sensor %s", async (model, sensor) => {
     vi.spyOn(RtcSession.prototype, "connect").mockImplementation(async function (this: RtcSession) {
       this.emit("connected");
     });
     const sent = vi.spyOn(RtcSession.prototype, "sendCommand").mockReturnValue(true);
-    const { client, internals, p2p } = fixture(
-      model,
-      `Synthetic PoE ${model === "T8E00" ? "Bullet PTZ Cam S4" : "Cam E40"}`,
-    );
+    const { client, internals, p2p } = fixture(model, `Synthetic ${model} behind an NVR`);
     try {
       const device = await client.getDevice(CAMERA);
       const stream = await device.camera?.()?.live?.();
@@ -114,6 +173,10 @@ describe("public NVR camera media binding", () => {
   it.each([
     ["T8E00", "Synthetic PoE Bullet PTZ Cam S4"],
     ["T8P00", "Synthetic PoE Cam E40"],
+    ["T8P10", "Synthetic PoE Cam E41"],
+    ["T8162", "Synthetic eufyCam paired to an NVR"],
+    ["T8410", "Synthetic camera paired to an NVR"],
+    ["T8214", "Synthetic Video Doorbell paired to an NVR"],
   ])("binds %s media without falling through to the unreachable P2P provider", async (model, name) => {
     const { client, p2p } = fixture(model, name);
     const device = await client.getDevice(CAMERA);
@@ -161,6 +224,8 @@ describe("public non-NVR optical view boundary", () => {
     try {
       const camera = (await client.getDevice(CAMERA)).camera!()!;
       expect(camera.views).toBeUndefined();
+      expect(camera.outputResolutions).toBeUndefined();
+      await expect(camera.live!({ outputResolution: "1080p" })).rejects.toThrow("unsupported output resolution");
       for (const method of ["live", "openReadable", "snapshotLive"] as const) {
         await expect(camera[method]!({ view: 1 })).rejects.toThrow("camera: unsupported optical view 1");
       }
@@ -176,13 +241,79 @@ describe("public non-NVR optical view boundary", () => {
 
 describe("public NVR optical view selection", () => {
   it.each([
-    ["T8E00", "Synthetic PoE Bullet PTZ Cam S4", [0, 1]],
-    ["T8P00", "Synthetic PoE Cam E40", [0]],
-  ] as const)("reports the supported views for %s", async (model, name, views) => {
+    [0, true],
+    [0, false],
+    [1, true],
+    [1, false],
+  ] as const)("keeps Full HD separate for view %s with native watched=%s", async (view, watched) => {
+    vi.useFakeTimers();
+    const sessions: RtcSession[] = [];
+    vi.spyOn(RtcSession.prototype, "connect").mockImplementation(async function (this: RtcSession) {
+      sessions.push(this);
+      this.emit("connected");
+    });
+    const sent = vi.spyOn(RtcSession.prototype, "sendCommand").mockReturnValue(true);
+    const { client, internals } = fixture("T8E00", "Synthetic PoE Bullet PTZ Cam S4");
+    try {
+      const camera = (await client.getDevice(CAMERA)).camera!()!;
+      const native = await camera.live!({ view });
+      if (!watched) native.stop();
+      expect(camera.outputResolutions?.()).toEqual(["1080p"]);
+      const hd = await camera.live!({ view, outputResolution: "1080p" });
+      const repeated = await camera.live!({ view, outputResolution: "1080p" });
+      const readable = await camera.openReadable!({ view, outputResolution: "1080p", objectMode: true });
+      const requests = sent.mock.calls
+        .map(([packet]) => JSON.parse(packet.subarray(16).toString()))
+        .filter((p) => p.cmd === 1003);
+      expect(requests).toHaveLength(2);
+      expect(requests[0].payload).not.toHaveProperty("stitch_resolution");
+      expect(requests[1].payload).toMatchObject({
+        stitch_resolution: { width: 1920, height: 1080 },
+        chn_list: [{ chn: 3, sensor: view }],
+      });
+      expect(sessions).toHaveLength(2);
+      native.stop();
+      hd.stop();
+      repeated.stop();
+      readable.destroy();
+    } finally {
+      internals.rtc.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("refuses an unsupported output size before opening a session", async () => {
+    const connect = vi.spyOn(RtcSession.prototype, "connect");
+    const { client, internals } = fixture("T8E00", "Synthetic PoE Bullet PTZ Cam S4");
+    try {
+      const camera = (await client.getDevice(CAMERA)).camera!()!;
+      await expect(camera.live!({ outputResolution: "4K" } as any)).rejects.toThrow("unsupported output resolution");
+      expect(connect).not.toHaveBeenCalled();
+    } finally {
+      internals.rtc.close();
+    }
+  });
+
+  it.each([
+    ["T8E00", "Synthetic PoE Bullet PTZ Cam S4", [0, 1], true],
+    ["T8P00", "Synthetic PoE Cam E40", [0], true],
+    ["T8P10", "Synthetic PoE Cam E41", [0], false],
+    ["T8162", "Synthetic eufyCam paired to an NVR", [0], false],
+    ["T8410", "Synthetic Indoor Cam paired to an NVR", [0], false],
+    ["T8214", "Synthetic Video Doorbell paired to an NVR", [0], false],
+  ] as const)("reports supported views and output resolutions for %s", async (model, name, views, fullHd) => {
+    const connect = vi.spyOn(RtcSession.prototype, "connect");
     const { client, internals } = fixture(model, name);
     try {
       const camera = (await client.getDevice(CAMERA)).camera!()!;
       expect(camera.views?.()).toEqual(views);
+      if (fullHd) {
+        expect(camera.outputResolutions?.()).toEqual(["1080p"]);
+      } else {
+        expect(camera.outputResolutions).toBeUndefined();
+        await expect(camera.live!({ outputResolution: "1080p" })).rejects.toThrow("unsupported output resolution");
+        expect(connect).not.toHaveBeenCalled();
+      }
     } finally {
       internals.rtc.close();
     }

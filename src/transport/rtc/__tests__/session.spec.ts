@@ -160,9 +160,11 @@ describe("RtcSession", () => {
 
   it("runs the whole exchange: grant → offer → answer → trickle → ack → open", async () => {
     const s = await authenticated(setup());
+    expect(s.session.stage).toBe("calling");
     s.sig.hub({ action: 3, dataType: "scall", data: { status: 100, turn: TURN } });
     await flush();
     expect(s.peer.init).toHaveBeenCalledWith(TURN);
+    expect(s.session.stage).toBe("relay-granted");
 
     s.sig.hub({ action: 3, dataType: "info", data: { sdp: JSON.stringify(HUB_SDP) } });
     await flush();
@@ -170,6 +172,7 @@ describe("RtcSession", () => {
     expect(offered).toContain("a=ice-ufrag:a");
     expect(offered).toBe(scallJsonToSdp(HUB_SDP, () => Number(offered.match(/o=- (\d+)/)![1])));
     expect(s.sig.sendInfoSdp).toHaveBeenCalledWith(JSON.stringify(sdpToScallJson(ANSWER)));
+    expect(s.session.stage).toBe("answered");
     // A second offer is ignored.
     s.sig.hub({ action: 3, dataType: "info", data: { sdp: JSON.stringify(HUB_SDP) } });
     await flush();
@@ -202,6 +205,7 @@ describe("RtcSession", () => {
     s.peer.emit("commandChannelOpen");
     expect(connected).toHaveBeenCalledTimes(1);
     expect(s.session.isConnected).toBe(true);
+    expect(s.session.stage).toBe("connected");
 
     const frames: Array<[string, number]> = [];
     s.session.on("commandData", (f, lt) => frames.push([f.toString(), lt]));
@@ -265,6 +269,45 @@ describe("RtcSession", () => {
     expect(closed).toHaveBeenCalledTimes(1);
   });
 
+  it("closes the peer when the signalling socket drops under an up session, and announces close once", async () => {
+    const s = await authenticated(setup());
+    const closed = vi.fn();
+    s.session.on("close", closed);
+    s.peer.emit("commandChannelOpen");
+    expect(s.session.isConnected).toBe(true);
+    s.sig.isOpen = false;
+    s.sig.emit("close", 1006, "");
+    expect(s.session.isConnected).toBe(false);
+    expect(s.peer.close).toHaveBeenCalledTimes(1);
+    expect(closed).toHaveBeenCalledTimes(1);
+    s.peer.emit("connectionState", "closed");
+    s.session.close();
+    expect(closed).toHaveBeenCalledTimes(1);
+    expect(s.peer.close).toHaveBeenCalledTimes(1);
+    expect(s.sig.sendHangup).not.toHaveBeenCalled();
+  });
+
+  it("rejects a connect() waiting for auth at once when the socket closes, and closes the peer", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = setup();
+      const closed = vi.fn();
+      s.session.on("close", closed);
+      const connecting = s.session.connect();
+      const settled = expect(connecting).rejects.toThrow(/closed while waiting for signalling auth/);
+      await vi.waitFor(() => expect(s.sig.connect).toHaveBeenCalled());
+      s.sig.isOpen = false;
+      s.sig.emit("close", 1006, "");
+      await settled;
+      expect(s.peer.close).toHaveBeenCalledTimes(1);
+      expect(closed).toHaveBeenCalledTimes(1);
+      expect(s.sig.sendCall).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("stops reporting connected when the command channel closes under a live peer", async () => {
     const s = await authenticated(setup());
     const closed = vi.fn();
@@ -308,6 +351,81 @@ describe("RtcSession", () => {
     expect(commands).toEqual(["ack"]);
     expect(s.session.sendRaw(Buffer.from("k"))).toBe(true);
     expect(s.peer.sendRaw).toHaveBeenCalledWith(Buffer.from("k"));
+  });
+
+  it("names the stage a bring-up stalls at, from the sign fetch to the socket auth", async () => {
+    const s = setup();
+    let signed!: () => void;
+    s.sig.fetchSign.mockReturnValueOnce(new Promise<string>((r) => (signed = () => r("SIGN"))));
+    const connecting = s.session.connect();
+    expect(s.session.stage).toBe("signing");
+    signed();
+    await vi.waitFor(() => expect(s.session.stage).toBe("authenticating"));
+    expect(s.session.peerState).toBeUndefined();
+    s.sig.hub({ action: 1, code: 200 });
+    await connecting;
+    expect(s.session.stage).toBe("calling");
+    s.session.close();
+  });
+
+  it("ends a session the hub hangs up on before the command channel opens, with that failure", async () => {
+    const s = await authenticated(setup());
+    s.sig.hub({ action: 3, dataType: "scall", data: { status: 100, turn: TURN } });
+    await flush();
+    const closed = vi.fn();
+    s.session.on("close", closed);
+    s.sig.hub({ action: 3, dataType: "hangup", data: {} });
+    await flush();
+    expect(closed).toHaveBeenCalledOnce();
+    expect(closed.mock.calls[0]![0]).toEqual(
+      new Error("RTC T9000P0000000001 hub hung up before the command channel opened"),
+    );
+    expect(s.peer.close).toHaveBeenCalledOnce();
+    expect(s.session.stage).toBe("relay-granted");
+  });
+
+  it("ends a session whose peer fails before the command channel opens, keeping the stage and peer state", async () => {
+    const s = await authenticated(setup());
+    s.sig.hub({ action: 3, dataType: "scall", data: { status: 100, turn: TURN } });
+    s.sig.hub({ action: 3, dataType: "info", data: { sdp: JSON.stringify(HUB_SDP) } });
+    await flush();
+    const closed = vi.fn();
+    s.session.on("close", closed);
+    s.peer.emit("connectionState", "connecting");
+    expect(closed).not.toHaveBeenCalled();
+    s.peer.emit("connectionState", "failed");
+    expect(closed).toHaveBeenCalledOnce();
+    expect(closed.mock.calls[0]![0]).toEqual(
+      new Error("RTC T9000P0000000001 peer failed before the command channel opened"),
+    );
+    expect(s.sig.sendHangup).toHaveBeenCalledOnce();
+    expect(s.session.stage).toBe("answered");
+    expect(s.session.peerState).toBe("failed");
+  });
+
+  it("leaves a pre-open hangup on a call session logged only, its terminality unevidenced", async () => {
+    const s = await authenticated(setup("call"));
+    s.sig.hub({ action: 3, dataType: "call", data: { status: 100, turn: TURN } });
+    await flush();
+    const closed = vi.fn();
+    s.session.on("close", closed);
+    s.sig.hub({ action: 3, dataType: "hangup", data: {} });
+    await flush();
+    expect(closed).not.toHaveBeenCalled();
+    expect(s.peer.close).not.toHaveBeenCalled();
+    s.session.close();
+  });
+
+  it("leaves a hangup after the command channel opened to the channel's own close", async () => {
+    const s = await authenticated(setup());
+    s.peer.emit("commandChannelOpen");
+    const closed = vi.fn();
+    s.session.on("close", closed);
+    s.sig.hub({ action: 3, dataType: "hangup", data: {} });
+    await flush();
+    expect(closed).not.toHaveBeenCalled();
+    expect(s.session.isConnected).toBe(true);
+    s.session.close();
   });
 
   it("forwards the peer's keepalive echo as keepaliveEcho", async () => {

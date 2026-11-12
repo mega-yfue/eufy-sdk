@@ -815,6 +815,8 @@ function reports(requires: readonly number[] | undefined, ctx: CommandContext): 
  * is stored as a decoded object. Handing either through a getter typed `number` is the one lie this
  * table exists to prevent.
  *
+ * A number outside `values`, the options published for this device, answers `undefined`.
+ *
  * Exported so the ONE narrowing the getters use is also the one a property-change announcement carries.
  * A second conversion of the wire value is precisely how a payload comes to disagree with the getter
  * beside it, which would defeat the point of announcing the change at all.
@@ -824,10 +826,12 @@ export function narrow(
   type: PropertyValueType,
   read: CapabilityStateReader,
   prop: string,
+  values?: Record<number, string>,
 ): boolean | number | string | undefined {
   if (type === "bool") return readBool(read, prop);
   if (type === "string") return readStr(read, prop);
-  return readNum(read, prop);
+  const n = readNum(read, prop);
+  return values && n !== undefined && !(n in values) ? undefined : n;
 }
 
 /**
@@ -947,7 +951,9 @@ export function bindMembers<M extends Members>(members: M, deps: MemberDeps): Su
       // The member's own wire wins; the owner's payload is the fallback for a device that does not
       // speak it. One `decode` sees whichever arrived and discriminates on the value's shape.
       const raw = (): unknown => read(prop)?.value ?? (borrowed === undefined ? undefined : read(borrowed)?.value);
-      const get = decode ? () => decode(raw(), rawDp, ctx) : () => narrow(m.type, read, prop);
+      const { values, dynamic } = resolvedEnum(m, ctx);
+      const domain = (dynamic ? "enum" : m.kind) === "enum" ? values : undefined;
+      const get = decode ? () => decode(raw(), rawDp, ctx) : () => narrow(m.type, read, prop, domain);
       Object.defineProperty(out, name, { get, enumerable: true, configurable: true });
     }
     if (!m.write || m.unverified || !installs(m, ctx)) continue;

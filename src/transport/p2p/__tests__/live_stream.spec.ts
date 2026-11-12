@@ -105,6 +105,39 @@ describe("LiveStream", () => {
     ]);
   });
 
+  /**
+   * When header bit 0 is clear, the keyframe is decided from the payload: a unit that sniffs a codec and
+   * contains an IDR is a keyframe, one without an IDR is a delta.
+   */
+  it("detects a bit-0-clear keyframe from an IDR in the payload", () => {
+    const SC = Buffer.from([0, 0, 0, 1]);
+    const keyframeAu = Buffer.concat([
+      Buffer.from([0x40, 0x01, 0x0c]),
+      SC,
+      Buffer.from([0x42, 0x01, 0x01]),
+      SC,
+      Buffer.from([0x44, 0x01, 0xc0]),
+      SC,
+      Buffer.from([0x26, 0x01, 0xaf]),
+    ]);
+    const deltaAu = Buffer.from([0x02, 0x01, 0xd0]);
+
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const { session, live } = mk({ logger });
+    const frames: any[] = [];
+    live.on("video", (f) => frames.push(f));
+    live.start();
+
+    session.push(p2pVideoFrame({ nal: keyframeAu }));
+    session.push(p2pVideoFrame({ nal: deltaAu }));
+
+    expect(frames.map((f) => f.keyframe)).toEqual([true, false]);
+    expect(frames.map((f) => f.codec)).toEqual(["h265", "h265"]);
+    expect(
+      logger.debug.mock.calls.filter(([message]) => message === "[live] start trace").map(([, detail]) => detail),
+    ).toContainEqual({ phase: "first-keyframe" });
+  });
+
   it("sniffs codec on a keyframe and carries it onto following delta frames", () => {
     const { session, live } = mk();
     const frames: any[] = [];
@@ -136,6 +169,16 @@ describe("LiveStream", () => {
     expect(audio).toHaveLength(1);
     expect(audio[0].codec).toBe("aac-lc");
     expect(audio[0].data.equals(payload)).toBe(true);
+  });
+
+  it("emits nothing for an audio frame with no bytes past its header", () => {
+    const { session, live } = mk();
+    const audio: any[] = [];
+    live.on("audio", (f) => audio.push(f));
+    live.start();
+    session.push(p2pAudioFrame(0, Buffer.alloc(0)) as any);
+    session.push({ commandId: 1301, channel: 0, signCode: 0, data: Buffer.alloc(8) } as any);
+    expect(audio).toHaveLength(0);
   });
 
   it("maps each codec id the app accepts, and re-reads it on every frame", () => {
@@ -292,6 +335,45 @@ describe("LiveStream access-unit reassembly", () => {
     session.push(videoChunk(small, { timestamp: 0, sequence: 5 }));
 
     expect(frames.map((frame) => frame.sourceTimestamp)).toEqual([first, second, 0]);
+  });
+
+  /**
+   * A station that stamps each frame with its own send time: the continuation is later than the unit's first
+   * frame, by a few milliseconds and by tens when the unit spans three frames.
+   */
+  it("joins frames of one unit stamped a little later than its first", () => {
+    const { session, frames } = mk();
+    const more = Buffer.alloc(CHUNK, 0x11);
+
+    session.push(videoChunk(filled, { timestamp: 0x1000 }));
+    session.push(videoChunk(tail, { timestamp: 0x1005 }));
+    session.push(videoChunk(filled, { timestamp: 0x2000 }));
+    session.push(videoChunk(more, { timestamp: 0x201e }));
+    session.push(videoChunk(tail, { timestamp: 0x2033 }));
+
+    expect(frames).toHaveLength(2);
+    expect(frames[0].data.equals(Buffer.concat([filled, tail]))).toBe(true);
+    expect(frames[1].data.equals(Buffer.concat([filled, more, tail]))).toBe(true);
+    expect(frames.map((f) => f.sourceTimestamp)).toEqual([0x1000, 0x2000]);
+  });
+
+  it("joins a later-stamped continuation across the 32-bit wrap", () => {
+    const { session, frames } = mk();
+
+    session.push(videoChunk(filled, { timestamp: 0xfffffffa }));
+    session.push(videoChunk(tail, { timestamp: 0x00000004 }));
+
+    expect(frames).toHaveLength(1);
+    expect(frames[0].sourceTimestamp).toBe(0xfffffffa);
+  });
+
+  it("does not join a continuation stamped earlier than the open unit", () => {
+    const { session, frames } = mk();
+
+    session.push(videoChunk(filled, { timestamp: 0x1000 }));
+    session.push(videoChunk(tail, { timestamp: 0x0ffb }));
+
+    expect(frames).toHaveLength(0);
   });
 
   it("emits nothing while the unit's latest frame is still full", () => {

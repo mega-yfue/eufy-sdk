@@ -21,6 +21,7 @@
  * capture. The frame layout is the block comment above.
  */
 import { createDecipheriv } from "node:crypto";
+import { hasIdr, sniffAnnexbCodec } from "./annexb.js";
 import { eciesUnwrap } from "./codec.js";
 
 /** AAD used for the AES-256-GCM body cipher of every video frame, and of a recording's audio. */
@@ -174,7 +175,7 @@ export class VideoFrameDecoder {
 export interface AssembledAccessUnit {
   /** Unsigned 32-bit header timestamp from the first frame of this access unit. */
   sourceTimestamp: number;
-  /** True when the unit's own header flagged it a keyframe — a point a consumer may begin decoding at. */
+  /** True when header bit 0 is set, or (bit 0 clear) the payload contains an IDR — a point to begin decoding at. */
   keyframe: boolean;
   /** Frame width the unit's header declared. */
   width: number;
@@ -205,8 +206,8 @@ export const STATION_CHUNK_BYTES = 64000;
  * total length is nowhere on the wire and cannot be waited for. What the wire does carry, verified on two
  * models:
  *
- *  - the frames of one unit **repeat its header** — same timestamp, same {@link VideoFrameHeader.sequence} —
- *    while consecutive units differ in both;
+ *  - the frames of one unit **repeat its {@link VideoFrameHeader.sequence}**, and carry the unit's timestamp
+ *    or one stamped up to `SPLIT_UNIT_STAMP_SPREAD_MS` later;
  *  - every frame of a split unit is filled to {@link STATION_CHUNK_BYTES} except the last;
  *  - a frame that STARTS a unit begins with an Annex-B start code once decoded, and a continuation begins
  *    mid-NAL, so it does not.
@@ -225,8 +226,9 @@ export const STATION_CHUNK_BYTES = 64000;
  *
  * Two consequences worth stating. A unit that is exactly the threshold long, or an exact multiple of it,
  * ends on a full frame and is dropped as truncated — one frame in ~64000, reported, and the alternative is
- * handing a decoder bytes that may genuinely be short. And a station that fills to some OTHER size is not
- * recognised: its units stay exactly as they arrive rather than being mis-joined.
+ * handing a decoder bytes that may genuinely be short. And a station that fills to some OTHER size is
+ * recognised only by an assembler constructed with that size: elsewhere its units stay exactly as they arrive
+ * rather than being mis-joined.
  */
 export class AccessUnitAssembler {
   private open?: { header: VideoFrameHeader; chunks: Buffer[]; carried: number };
@@ -236,8 +238,13 @@ export class AccessUnitAssembler {
    * @param onDropped called for each incomplete unit discarded, with what had arrived, how many frames it
    * arrived in, and how many this assembler has dropped in total — a running count, so no caller keeps
    * its own.
+   * @param chunkBytes the payload size the station fills a frame to before continuing a unit in the next. A
+   * unit is held while its latest frame declares exactly this. {@link STATION_CHUNK_BYTES} when omitted.
    */
-  constructor(private readonly onDropped?: (drop: { carried: number; chunks: number; count: number }) => void) {}
+  constructor(
+    private readonly onDropped?: (drop: { carried: number; chunks: number; count: number }) => void,
+    private readonly chunkBytes = STATION_CHUNK_BYTES,
+  ) {}
 
   /**
    * Feed one raw `CMD_VIDEO_FRAME` payload; returns the access units it completed — none while a unit is
@@ -256,7 +263,7 @@ export class AccessUnitAssembler {
       this.discard();
       return [];
     }
-    const full = header.payloadLength === STATION_CHUNK_BYTES;
+    const full = header.payloadLength === this.chunkBytes;
     const open = this.open;
     if (open && sameUnit(open.header, header) && !beginsAccessUnit(body)) {
       open.chunks.push(body);
@@ -284,22 +291,37 @@ export class AccessUnitAssembler {
   }
 }
 
-/** Whether two frames describe the same access unit: one unit's frames repeat its header. */
+/**
+ * How much later than a split unit's first frame its other frames may be stamped, in milliseconds.
+ *
+ * Some stations repeat the first frame's timestamp on every frame of the unit; others stamp each frame with
+ * its own send time, measured at up to 51 ms after the first on one model and 22 ms on another, both with a
+ * {@link VideoFrameHeader.sequence} of 0 on every frame. The bound is about twice the widest measured spread,
+ * and keeps a continuation stamped later than that from joining. A continuation of the NEXT unit, its first
+ * frame lost, never meets an open unit: a lost video datagram reaches the assembler as a discard.
+ */
+const SPLIT_UNIT_STAMP_SPREAD_MS = 100;
+
+/**
+ * Whether a frame continues the open unit: the same sequence, stamped no earlier than the unit and within
+ * {@link SPLIT_UNIT_STAMP_SPREAD_MS} of it, modulo the 32-bit wrap.
+ */
 function sameUnit(open: VideoFrameHeader, next: VideoFrameHeader): boolean {
-  return next.timestamp === open.timestamp && next.sequence === open.sequence;
+  return next.sequence === open.sequence && (next.timestamp - open.timestamp) >>> 0 <= SPLIT_UNIT_STAMP_SPREAD_MS;
 }
 
 /** Whether a decoded payload OPENS an access unit — a continuation begins mid-NAL, with no start code. */
-function beginsAccessUnit(body: Buffer): boolean {
+export function beginsAccessUnit(body: Buffer): boolean {
   if (body.length < 4 || body[0] !== 0 || body[1] !== 0) return false;
   return body[2] === 1 || (body[2] === 0 && body[3] === 1);
 }
 
-/** The delivered shape of a unit: its header's flags and geometry, and the payload as assembled. */
+/** Assemble the delivered unit; `keyframe` is resolved per {@link AssembledAccessUnit.keyframe}. */
 function unitOf(header: VideoFrameHeader, data: Buffer): AssembledAccessUnit {
+  const codec = header.keyframe ? undefined : sniffAnnexbCodec(data);
   return {
     sourceTimestamp: header.timestamp,
-    keyframe: header.keyframe,
+    keyframe: header.keyframe || (codec !== undefined && hasIdr(data, codec)),
     width: header.width,
     height: header.height,
     data,

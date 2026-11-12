@@ -110,6 +110,21 @@ describe("light capability module", () => {
       });
     });
 
+    it("on/off on a Wall Light Cam S4 / T86C1 (deviceType 298) → set-json floodlight switch (1400)", () => {
+      const t86c1 = { ...ctx(5), deviceType: DeviceType.WALL_LIGHT_CAM_T86C1 };
+      expect(intent("on", true, t86c1)).toEqual({
+        kind: "set-json",
+        param: LIGHT_CMD.FLOODLIGHT_SWITCH,
+        data: { time: 0, type: 2, value: 1 },
+        channel: 5,
+      });
+      expect((intent("off", false, t86c1) as Extract<Command, { kind: "set-json" }>).data).toEqual({
+        time: 0,
+        type: 2,
+        value: 0,
+      });
+    });
+
     it("does not assign a spotlight switch wire to SoloCam E30", () => {
       expect(() => intent("on", true, { ...ctx(), deviceType: DeviceType.SOLO_CAMERA_E30 })).toThrow(
         /light: unknown spotlight switch wire format/,

@@ -1,10 +1,11 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { asBool, coerceEnumValue, enumLabels } from "../../core/util.js";
 import { DeviceType } from "../device-types.js";
+import { isCallDoorbell } from "../device-family.js";
 import { DoorbellPushEvent } from "../push-events.js";
 import { setPayload, setScalar } from "./access.js";
 import { method, propertiesOf, provided, type Members, type Surface } from "./members.js";
-import type { CapabilityModule } from "./types.js";
+import type { AvailabilityContext, CapabilityModule } from "./types.js";
 import type { MediaProvider } from "../../core/contracts.js";
 
 /**
@@ -29,7 +30,8 @@ const DOORBELL_MODELS: ReadonlySet<string> = new Set([
 /**
  * The app's doorbell device types (`TYPE_DEVICE_DOORBELL` 5, `TYPE_DEVICE_BATTERY_DOORBELL` 7,
  * `TYPE_DEVICE_BATTERY_DOORBELL_SMALL` 16, `TYPE_DEVICE_BATTERY_DOORBELL_DUAL_8213` 91,
- * `TYPE_DEVICE_DOORBELL_DUAL_8203` 93, `TYPE_DEVICE_BATTERY_DOORBELL_DUAL_8214` 94).
+ * `TYPE_DEVICE_DOORBELL_DUAL_8203` 93, `TYPE_DEVICE_BATTERY_DOORBELL_DUAL_8214` 94, and the C30/C31
+ * `BATTERY_DOORBELL_C30` 95 / `BATTERY_DOORBELL_C31` 96, whose ring arrives as `PRESS_DOORBELL`).
  */
 const DOORBELL_TYPES: number[] = [
   DeviceType.DOORBELL,
@@ -38,7 +40,12 @@ const DOORBELL_TYPES: number[] = [
   DeviceType.BATTERY_DOORBELL_PLUS,
   DeviceType.DOORBELL_SOLO,
   DeviceType.BATTERY_DOORBELL_PLUS_E340,
+  DeviceType.BATTERY_DOORBELL_C30,
+  DeviceType.BATTERY_DOORBELL_C31,
 ];
+
+/** No doorbell write has been tried on a C30/C31, so only their ring event binds. */
+const writable = (ctx: AvailabilityContext): boolean => !isCallDoorbell(ctx);
 
 /**
  * The P2P **feature-command ids** this doorbell capability drives. Capability-owned wire vocabulary
@@ -263,6 +270,7 @@ export const DOORBELL_MEMBERS = {
    */
   chimeSwitch: {
     param: DOORBELL_CMD.CHIME_SWITCH,
+    available: writable,
     type: "bool",
     kind: "boolean",
     provenance: "verified",
@@ -277,6 +285,7 @@ export const DOORBELL_MEMBERS = {
    */
   mechanicalChimeSwitch: {
     param: DOORBELL_CMD.MECHANICAL_CHIME_SWITCH,
+    available: writable,
     type: "bool",
     kind: "boolean",
     provenance: "verified",
@@ -288,6 +297,7 @@ export const DOORBELL_MEMBERS = {
   /** Same reasoning and the same capture session as {@link DOORBELL_MEMBERS.mechanicalChimeSwitch}. */
   wdrSwitch: {
     param: DOORBELL_CMD.WDR_SWITCH,
+    available: writable,
     type: "bool",
     kind: "boolean",
     provenance: "verified",
@@ -321,6 +331,7 @@ export const DOORBELL_MEMBERS = {
    */
   dingdongVolume: {
     param: DOORBELL_CMD.DINGDONG_VOLUME,
+    available: writable,
     type: "number",
     unit: "%",
     kind: "percent",
@@ -342,6 +353,7 @@ export const DOORBELL_MEMBERS = {
    */
   dingdongRingtone: {
     param: DOORBELL_CMD.DINGDONG_RINGTONE,
+    available: writable,
     type: "number",
     kind: "enum",
     enumValues: enumLabels(DoorbellRingtone),
@@ -428,6 +440,7 @@ export const DOORBELL_MEMBERS = {
         );
       },
     "Set the live-view quality and the video encoding format, which share one wire.",
+    writable,
   ),
   /**
    * A config blob the device reports WHOLE, so it is typed `string` and handed back unparsed — three
@@ -489,6 +502,7 @@ export const DOORBELL_MEMBERS = {
         }
       },
     "Play a quick response at the visitor.",
+    writable,
   ),
 
   /**
