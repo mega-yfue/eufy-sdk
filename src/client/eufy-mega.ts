@@ -83,6 +83,7 @@ import {
   isNvrFullHdCamera,
   isCallDoorbell,
   isHomeBase,
+  isLock85V0,
   isNvrT8N00,
   isStation9000,
   isTuyaVacuum,
@@ -1350,6 +1351,7 @@ export class EufyMega extends EventEmitter {
       cmd.kind === "keyed-payload-actuate"
     ) {
       const dev = this.registry.require(sn);
+      if (this.ff09OverMqtt(sn)) return this.mqtt.dispatchCommand(sn, cmd);
       if (P2PCommandRouter.claimsDevice(dev)) return this.p2p.dispatchCommand(sn, cmd);
       if (MqttCommandRouter.claimsDevice(dev)) return this.mqtt.dispatchCommand(sn, cmd);
       throw new Error(`no transport stack claims device ${sn} for a ${cmd.kind} command`);
@@ -1556,6 +1558,13 @@ export class EufyMega extends EventEmitter {
     return dev;
   }
 
+  /** A standalone T85V0 takes its `ff09` frames over secure MQTT although it has a P2P endpoint. */
+  private ff09OverMqtt(sn: string): boolean {
+    const dev = this.registry.require(sn);
+    const deviceType = (dev.raw as { device_type?: number } | undefined)?.device_type;
+    return isLock85V0({ deviceType }) && dev.stationSn === sn;
+  }
+
   /**
    * The {@link Ff09SettingsReader} behind `dev.lock()?.getAutoLockState()` — picks P2P vs MQTT the same
    * way {@link commandSinkFor} does for writes, so `lock.ts` never has to know which transport this
@@ -1573,7 +1582,7 @@ export class EufyMega extends EventEmitter {
     const deviceSn = ctx.serial ?? "";
     return {
       getAutoLockState: () =>
-        ctx.hasP2p
+        ctx.hasP2p && !this.ff09OverMqtt(sn)
           ? this.p2p.getAutoLockState(sn, { adminUserId, deviceSn })
           : this.mqtt.getAutoLockState(sn, { adminUserId, deviceSn }),
     };

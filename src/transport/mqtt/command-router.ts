@@ -457,7 +457,7 @@ export class MqttCommandRouter {
   }
 
   /**
-   * The `ff09-actuate` intent handler over MQTT — a standalone lock/garage door (T85D0) with no P2P endpoint.
+   * The `ff09-actuate` intent handler over MQTT, for a lock the facade routes here.
    * Builds the same `ff09` frame the P2P lock uses (`transport/ff09.ts`), wraps it in the MQTT `trans`
    * envelope (`buildFf09Trans`/`buildFf09MqttEnvelope`, this module), discovers which broker instance holds the device's
    * live session (see {@link ensureSecurityMqttFor}), and publishes to `cmd/eufy_security/{pn}/{sn}/req`.
