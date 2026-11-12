@@ -59,6 +59,7 @@ await dev.arming?.()?.setMode(ArmingMode.home); // guard mode
 await dev.lock?.()?.lock?.();
 await dev.lock?.()?.setAutoLock?.(true, 60); // enable, 60s delay
 await dev.lock?.()?.setRainMode?.(true); // P2P video lock only — optional accessor
+await dev.lock?.()?.addPasscode?.("Guest", "13572468"); // Smart Lock C33 — a permanent keypad code
 ```
 
 Argument constants (`PtzDirection`, `ArmingMode`, …) are exported from the package — pass the named
@@ -71,8 +72,9 @@ permanent-outdoor-light line: on/off/brightness/custom colour/effect — see the
 `ptz` (rotate + left/right/up/down, zoom, and a `preset()` sub-API — see the [PTZ guide](/ptz)), plus
 `arming`, `lock` (lock/unlock/setAutoLock on both the P2P video lock and the MQTT garage door; lock/unlock
 also on the classic Wi-Fi lock over its own keyed envelope, both directions hardware-confirmed, where
-`setAutoLock` is absent — optional accessor, `?.()`; plus setRainMode on the video lock only; `unlock()` alone
-opens a standalone SmartDrop lid), and `siren` (volume, alarm duration, and test/stop triggers — see below).
+`setAutoLock` is absent — optional accessor, `?.()`; plus setRainMode on the video lock only; addPasscode on the
+Smart Lock C33; `unlock()` alone opens a standalone SmartDrop lid), and `siren` (volume, alarm duration, and
+test/stop triggers — see below).
 
 > **Unverified writes are absent, they don't guess.** A write method present on a `dev.<cap>()` object
 > means its wire is verified — so you know at compile time what's settable. Where a write isn't yet

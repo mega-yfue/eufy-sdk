@@ -1175,6 +1175,12 @@ export interface AutoLockSnapshot {
   scheduleEndTime: [number, number];
 }
 
+/** A decrypted `ff09` reply: the device's status byte (`0` accepts) and its TLV fields by tag, numbered from `0xa1`. */
+export interface Ff09Reply {
+  status: number;
+  fields: ReadonlyMap<number, Buffer>;
+}
+
 /**
  * The **`ff09` settings read boundary** — `GET_SETTINGS` is a request/reply query (like a
  * `MediaProvider` media op), not a passive property the device broadcasts, so it needs its own
@@ -1187,10 +1193,22 @@ export interface AutoLockSnapshot {
  * methods take no identity args. Optional because an unbound model has no live client, and because only
  * `ff09`-family devices have one at all.
  *
- * One method today. A further `ff09` setting that needs a live read is another method here — not
- * another injected provider.
+ * A further `ff09` request/reply is another method here — not another injected provider.
  */
 export interface Ff09SettingsReader {
   /** Read the device's current auto-lock settings via a live `GET_SETTINGS` round-trip. */
   getAutoLockState(): Promise<AutoLockSnapshot>;
+  /**
+   * Send one `ff09` command, `[A1 time][A2 account id]` then `fields` from `A3`, and answer its decrypted reply;
+   * a refusal resolves with its status. Over secure MQTT, so absent on a device whose `ff09` frames ride P2P.
+   */
+  exchange?(commandCode: number, apiCommand: number, fields: readonly Buffer[]): Promise<Ff09Reply>;
+}
+
+/** The cloud's record of one device's local users: the people it admits by its own credentials, such as a code. */
+export interface DeviceUserDirectory {
+  /** Create a local user named `nickName`; answers the 4-hex-digit short id the cloud assigns it. */
+  addUser(nickName: string): Promise<string>;
+  /** Record the keypad code the device stored as `passwordId` under `shortUserId`, with the cloud's `schedule` JSON. */
+  savePassword(shortUserId: string, passwordId: string, schedule: string): Promise<void>;
 }

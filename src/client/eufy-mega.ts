@@ -57,6 +57,7 @@ import {
   type Command,
   type CommandObservation,
   type CommandSink,
+  type DeviceUserDirectory,
   type Ff09SettingsReader,
   type MediaProvider,
   type TuyaDpInbound,
@@ -740,6 +741,7 @@ export class EufyMega extends EventEmitter {
         this.mediaProviderFor(sn),
         this.ff09SettingsReaderFor(sn, ctx),
         rawDpCodec,
+        this.deviceUsersFor(sn, ctx),
       );
       this.boundParamIds.set(sn, new Set([...(this.boundParamIds.get(sn) ?? []), ...ctx.paramIds]));
       this.emit("deviceState", this.deviceState(sn));
@@ -1548,6 +1550,7 @@ export class EufyMega extends EventEmitter {
       this.mediaProviderFor(sn),
       this.ff09SettingsReaderFor(sn, ctx),
       rawDpCodec,
+      this.deviceUsersFor(sn, ctx),
     );
     this.boundParamIds.set(sn, ctx.paramIds);
     if (this.opts.autoRealtime !== false) {
@@ -1583,17 +1586,33 @@ export class EufyMega extends EventEmitter {
    * It earns its own boundary because `GET_SETTINGS` is a request/reply query that neither
    * `CommandSink` (write-only) nor `MediaProvider.p2pQuery` (P2P-only, no decrypt) fits. Named for the
    * frame family rather than the capability, so this facade stays capability-neutral like the layers
-   * below it — see `CapabilityModule.actions`'s doc before adding another.
+   * below it — see `CapabilityModule.actions`'s doc before adding another. `exchange` is bound only where
+   * the device's `ff09` frames ride MQTT.
    */
   private ff09SettingsReaderFor(sn: string, ctx: CommandContext): Ff09SettingsReader | undefined {
     if (!ctx.adminUserId) return undefined;
     const adminUserId = ctx.adminUserId;
     const deviceSn = ctx.serial ?? "";
+    const overMqtt = !ctx.hasP2p || this.ff09OverMqtt(this.registry.require(sn));
     return {
       getAutoLockState: () =>
-        ctx.hasP2p && !this.ff09OverMqtt(this.registry.require(sn))
-          ? this.p2p.getAutoLockState(sn, { adminUserId, deviceSn })
-          : this.mqtt.getAutoLockState(sn, { adminUserId, deviceSn }),
+        overMqtt
+          ? this.mqtt.getAutoLockState(sn, { adminUserId, deviceSn })
+          : this.p2p.getAutoLockState(sn, { adminUserId, deviceSn }),
+      ...(overMqtt && {
+        exchange: (commandCode: number, apiCommand: number, fields: readonly Buffer[]) =>
+          this.mqtt.exchangeFf09(sn, { adminUserId, deviceSn, commandCode, apiCommand, fields }),
+      }),
+    };
+  }
+
+  /** The {@link DeviceUserDirectory} of one device, kept under its serial and its parent station's, empty for none. */
+  private deviceUsersFor(sn: string, ctx: CommandContext): DeviceUserDirectory {
+    const stationSn = ctx.stationSerial ?? "";
+    return {
+      addUser: (nickName) => this.mega.addDeviceLocalUser(sn, stationSn, nickName),
+      savePassword: (shortUserId, passwordId, schedule) =>
+        this.mega.saveDevicePassword(sn, stationSn, shortUserId, passwordId, schedule),
     };
   }
 
@@ -1945,6 +1964,7 @@ export class EufyMega extends EventEmitter {
         this.mediaProviderFor(sn),
         this.ff09SettingsReaderFor(sn, ctx),
         rawDpCodec,
+        this.deviceUsersFor(sn, ctx),
       );
       this.boundParamIds.set(sn, ctx.paramIds);
       this.emit("deviceCapabilities", { deviceSn: sn, gained, capabilities: [...dev.capabilities] });

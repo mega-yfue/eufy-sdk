@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { MqttCommandRouter } from "../command-router.js";
 import type { EufyDevice } from "../../../core/types.js";
-import { LOCK_API_COMMAND, CMD_TRANSFER_PAYLOAD } from "../../ff09.js";
+import { LOCK_API_COMMAND, CMD_TRANSFER_PAYLOAD, decryptFf09Frame, walkFf09Tlv } from "../../ff09.js";
 import { buildFf09ResponseFrame } from "../../__tests__/ff09-test-fixtures.js";
 
 /**
@@ -72,7 +72,7 @@ function makeRouter(plain: Buffer, opts: { noReply?: boolean } = {}) {
   fakeMqtt.publish = vi.fn().mockImplementation(async (_topic: string, body: string) => {
     if (opts.noReply) return;
     const { apiCommand, time } = decodeEnvelope(body);
-    if (apiCommand === LOCK_API_COMMAND.GET_SETTINGS) {
+    if (apiCommand === LOCK_API_COMMAND.GET_SETTINGS || apiCommand === 6012) {
       const lockPayload = buildResponseFrame(plain, time);
       // Mirror SecureMqtt's REAL "message" event shape (a JSON payload STRING wrapping
       // {trans: base64(innerTransObject)}) so parseFf09SettingsResponseTrans's real unwrap runs.
@@ -122,6 +122,37 @@ describe("MqttCommandRouter.getAutoLockState (ff09-mqtt read-only GET)", () => {
     const assertion = expect(p).rejects.toThrow(/no settings GET reply/);
     await vi.advanceTimersByTimeAsync(5000);
     await assertion;
+    expect(fakeMqtt.disconnect).toHaveBeenCalledOnce();
+  });
+});
+
+describe("MqttCommandRouter.exchangeFf09", () => {
+  it("publishes the opcode with its fields after time and account id, and answers the decrypted reply", async () => {
+    const { router, fakeMqtt } = makeRouter(Buffer.from("00a1020007", "hex"));
+    const req = {
+      adminUserId: ADMIN,
+      deviceSn: SN,
+      commandCode: 0x24,
+      apiCommand: 6012,
+      fields: [Buffer.from("1357")],
+    };
+
+    const reply = await router.exchangeFf09(SN, req);
+
+    expect(reply.status).toBe(0);
+    expect(reply.fields.get(0xa1)?.toString("hex")).toBe("0007");
+    const { apiCommand, time, trans } = decodeEnvelope(vi.mocked(fakeMqtt.publish).mock.calls[0]![1]);
+    expect(apiCommand).toBe(6012);
+    expect(trans.payload.lock_payload.slice(14, 18)).toBe("4024");
+    const plain = decryptFf09Frame({
+      lockPayload: trans.payload.lock_payload,
+      keyTime: time,
+      adminUserId: ADMIN,
+      deviceSn: SN,
+    });
+    const tlv = walkFf09Tlv(plain, 0, plain.length);
+    expect(tlv.get(0xa2)?.toString("ascii")).toBe(ADMIN);
+    expect(tlv.get(0xa3)?.toString("ascii")).toBe("1357");
     expect(fakeMqtt.disconnect).toHaveBeenCalledOnce();
   });
 });

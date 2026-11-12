@@ -24,19 +24,21 @@
  */
 import { randomBytes } from "node:crypto";
 import type { EufyDevice } from "../../core/types.js";
-import type { Command, AutoLockSnapshot } from "../../core/contracts.js";
+import type { Command, AutoLockSnapshot, Ff09Reply } from "../../core/contracts.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import type { MegaHttpClient } from "../http/mega-client.js";
 import {
   buildFf09Frame,
   buildFf09QueryFrame,
   buildFf09AutolockSetFrame,
+  buildFf09CommandFrame,
   decryptFf09Frame,
   parseFf09SettingsResponse,
   decodeFf09AutoLockSnapshot,
   ff09ReplyKeyTime,
   ff09TransferPayload,
   CMD_TRANSFER_PAYLOAD,
+  type Ff09CommandFrameInput,
   type Ff09Frame,
   type Ff09FrameInput,
   type Ff09TransferPayload,
@@ -586,7 +588,7 @@ export class MqttCommandRouter {
       const topic = ff09MqttTopic(dev.model, sn);
 
       // ── 1. GET current settings, matched back by keyTime (shared with getAutoLockState — see helper). ──
-      const getReply = await this.fetchFf09SettingsGetReply(mqtt, topic, sn, cmd, instanceIp);
+      const getReply = await this.awaitFf09Reply(mqtt, topic, sn, cmd, instanceIp);
 
       // ── 2+3. Decrypt the reply, preserve A7/A8 + delay, build the SET frame (shared with the P2P
       //         sibling — see buildFf09AutolockSetFrame), then wrap it in the MQTT trans envelope. ──
@@ -625,21 +627,23 @@ export class MqttCommandRouter {
   }
 
   /**
-   * Shared GET-and-wait step behind both {@link dispatchFf09Autolock} (which reads to preserve A7/A8
-   * across a write) and {@link getAutoLockState} (which reads for its own sake) — extracted so the two
-   * don't drift on the query/keyTime-matching machinery. Takes an already-connected+subscribed
+   * Shared publish-and-wait step behind {@link dispatchFf09Autolock} (which reads to preserve A7/A8
+   * across a write), {@link getAutoLockState} (which reads for its own sake) and {@link exchangeFf09} —
+   * extracted so they don't drift on the keyTime matching. Publishes `queryTrans`, the settings GET unless
+   * given another frame, named `what` in the timeout error. Takes an already-connected+subscribed
    * `mqtt`/`topic`; connection lifecycle stays the caller's concern (the write path keeps the
    * connection open for a following SET, the read path closes right after). Throws if no matching
    * reply arrives within {@link FF09_ACK_TIMEOUT_MS}.
    */
-  private async fetchFf09SettingsGetReply(
+  private async awaitFf09Reply(
     mqtt: SecureMqtt,
     topic: string,
     sn: string,
     cmd: { adminUserId: string; deviceSn: string },
     instanceIp: string,
+    queryTrans = buildFf09QueryTrans({ adminUserId: cmd.adminUserId, deviceSn: cmd.deviceSn }),
+    what = "settings GET",
   ): Promise<{ lockPayload: string; keyTime: number }> {
-    const queryTrans = buildFf09QueryTrans({ adminUserId: cmd.adminUserId, deviceSn: cmd.deviceSn });
     const getReplyPromise = this.waitForMqttMessage(
       mqtt,
       (m) => {
@@ -659,7 +663,7 @@ export class MqttCommandRouter {
     const getReply = await getReplyPromise;
     if (!getReply) {
       throw new Error(
-        `fetchFf09SettingsGetReply(${sn}): no settings GET reply within ${MqttCommandRouter.FF09_ACK_TIMEOUT_MS}ms on ` +
+        `awaitFf09Reply(${sn}): no ${what} reply within ${MqttCommandRouter.FF09_ACK_TIMEOUT_MS}ms on ` +
           `${instanceIp}.`,
       );
     }
@@ -669,7 +673,7 @@ export class MqttCommandRouter {
   /**
    * **Read the T85D0's current auto-lock settings over MQTT** — the `Ff09SettingsReader` implementation.
    * A pure GET, no SET: opens its own one-shot MQTT connection (same
-   * lifecycle as {@link dispatchFf09Autolock}), reuses {@link fetchFf09SettingsGetReply}, then decrypts
+   * lifecycle as {@link dispatchFf09Autolock}), reuses {@link awaitFf09Reply}, then decrypts
    * + decodes fields `a1`-`a5` per `transport/ff09.ts`'s response tag map. Live-verified only insofar
    * as the underlying GET step already is (`setAutoLock`'s own read) — the standalone read path itself
    * has not been independently exercised against a real device yet.
@@ -680,7 +684,7 @@ export class MqttCommandRouter {
     try {
       await mqtt.subscribeDevice(dev);
       const topic = ff09MqttTopic(dev.model, sn);
-      const getReply = await this.fetchFf09SettingsGetReply(mqtt, topic, sn, cmd, instanceIp);
+      const getReply = await this.awaitFf09Reply(mqtt, topic, sn, cmd, instanceIp);
       return decodeFf09AutoLockSnapshot(
         parseFf09SettingsResponse(
           decryptFf09Frame({
@@ -690,6 +694,26 @@ export class MqttCommandRouter {
             deviceSn: cmd.deviceSn,
           }),
         ),
+      );
+    } finally {
+      await mqtt.disconnect();
+    }
+  }
+
+  /**
+   * The `Ff09SettingsReader.exchange` implementation: one {@link buildFf09CommandFrame} frame on its own
+   * one-shot connection, its reply matched by keyTime ({@link awaitFf09Reply}) and answered decrypted.
+   */
+  async exchangeFf09(sn: string, req: Ff09CommandFrameInput): Promise<Ff09Reply> {
+    const dev = await this.ff09DeviceFor(sn);
+    const { mqtt, instanceIp } = await this.ensureSecurityMqttFor(dev);
+    try {
+      await mqtt.subscribeDevice(dev);
+      const trans = toFf09Trans(buildFf09CommandFrame(req));
+      const what = `ff09 0x${req.commandCode.toString(16)}`;
+      const reply = await this.awaitFf09Reply(mqtt, ff09MqttTopic(dev.model, sn), sn, req, instanceIp, trans, what);
+      return parseFf09SettingsResponse(
+        decryptFf09Frame({ ...reply, adminUserId: req.adminUserId, deviceSn: req.deviceSn }),
       );
     } finally {
       await mqtt.disconnect();
