@@ -141,13 +141,18 @@ export const MOTION_CMD = {
    */
   INDOOR_SENSITIVITY_INDEX: 6041,
   /**
-   * Motion detection on-off on a standalone T8410 (app `CMD_INDOOR_DET_SET_MOTION_DETECT_ENABLE`), which
-   * reports its switch here and never reports {@link CAMERA_PIR}.
+   * Motion detection on-off on a T8410 (app `CMD_INDOOR_DET_SET_MOTION_DETECT_ENABLE`): the switch the app
+   * shows and moves, standalone or HomeBase-attached.
    *
-   * ✅ Read and write confirmed live on a standalone T8410 (firmware 2.3.2.6): the app's toggle moved the
-   * cloud param both ways, and a `1700` control payload `{"commandType":6040,"data":{"enable":0,"quality":0,
-   * "status":0|1,"value":0}}` read back on the same param in 4–18 s, both directions. The frame is
-   * confirmed accepted and persisted, NOT byte-compared to the app's.
+   * ✅ Read confirmed live both ways on a standalone T8410 (firmware 2.3.2.6), which never reports
+   * {@link CAMERA_PIR}, and on a HomeBase 3-attached T8410 (firmware 2.3.2.4), which reports both: there
+   * the app's toggle moved 6040 off and on while 1011 stayed `1`, and a 1011 write moved 1011 while 6040
+   * stayed put.
+   *
+   * ✅ Write confirmed live on the standalone T8410 only: a `1700` control payload
+   * `{"commandType":6040,"data":{"enable":0,"quality":0,"status":0|1,"value":0}}` read back on the same
+   * param in 4–18 s, both directions. The frame is confirmed accepted and persisted, NOT byte-compared to
+   * the app's.
    */
   INDOOR_MOTION_ENABLE: 6040,
   /**
@@ -452,13 +457,9 @@ function sensitivityCommand(step: unknown, scale: SensitivityScale, ctx: Command
  */
 const EXIT_TEST_MODE_VALUE = 0x30303000;
 
-/**
- * A T8410 standing alone, the one population whose motion switch is confirmed on
- * {@link MOTION_CMD.INDOOR_MOTION_ENABLE}. No HomeBase-attached T8410 is evidenced on
- * it, so one keeps {@link MOTION_CMD.CAMERA_PIR}.
- */
-function isStandaloneT8410(ctx: AvailabilityContext): boolean {
-  return ctx.model === "T8410" && ctx.homeBaseAttached !== true;
+/** A T8410, whose motion switch is {@link MOTION_CMD.INDOOR_MOTION_ENABLE} rather than {@link MOTION_CMD.CAMERA_PIR}. */
+function isT8410(ctx: AvailabilityContext): boolean {
+  return ctx.model === "T8410";
 }
 
 /**
@@ -526,8 +527,9 @@ export const MOTION_MEMBERS = {
    * this frame is captured on cameras only and a P2P write is fire-and-forget — sent to a sensor it
    * would be dropped silently while the call reported success, so it throws instead.
    *
-   * A standalone T8410 reports the switch on {@link MOTION_CMD.INDOOR_MOTION_ENABLE} and never on 1011,
-   * so there the read promotes that alias and the write takes its control payload.
+   * A T8410 carries the switch on {@link MOTION_CMD.INDOOR_MOTION_ENABLE}, so there the read promotes
+   * that alias. A standalone one takes its control payload; on a HomeBase-attached one the 6040 write is
+   * unverified and 1011 does not move the switch, so the write throws.
    */
   detectionEnabled: {
     param: 1011,
@@ -535,17 +537,20 @@ export const MOTION_MEMBERS = {
     type: "bool",
     kind: "boolean",
     provenance: "verified",
-    readAvailable: (ctx) => !isStandaloneT8410(ctx),
-    readAliases: [{ paramType: MOTION_CMD.INDOOR_MOTION_ENABLE, available: isStandaloneT8410 }],
+    readAvailable: (ctx) => !isT8410(ctx),
+    readAliases: [{ paramType: MOTION_CMD.INDOOR_MOTION_ENABLE, available: isT8410 }],
     description:
-      "Motion/PIR detection enabled (verified: param 1011 = CAMERA_PIR; a standalone T8410 reads and " +
-      "writes INDOOR_MOTION_ENABLE 6040 instead).",
+      "Motion/PIR detection enabled (verified: param 1011 = CAMERA_PIR; a T8410 reads " +
+      "INDOOR_MOTION_ENABLE 6040 instead, and writes it only when standalone).",
     write: (v, ctx) => {
       requireFamily("motionDetection", ctx, "camera");
       const on = asBool(v) ? 1 : 0;
-      if (isStandaloneT8410(ctx))
-        return setJson(MOTION_CMD.INDOOR_MOTION_ENABLE, { enable: 0, quality: 0, status: on, value: 0 }, ctx);
-      return setScalar(MOTION_CMD.CAMERA_PIR, on, ctx, "direct-binary");
+      if (!isT8410(ctx)) return setScalar(MOTION_CMD.CAMERA_PIR, on, ctx, "direct-binary");
+      if (ctx.homeBaseAttached === true)
+        throw new Error(
+          `motionDetection: write wire is unverified on a HomeBase-attached T8410 [${describeDevice(ctx)}]`,
+        );
+      return setJson(MOTION_CMD.INDOOR_MOTION_ENABLE, { enable: 0, quality: 0, status: on, value: 0 }, ctx);
     },
     writeAs: "setDetection",
   },

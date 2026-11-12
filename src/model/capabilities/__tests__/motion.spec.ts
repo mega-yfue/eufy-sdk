@@ -143,7 +143,7 @@ describe("motion capability module", () => {
     });
   });
 
-  describe("motionDetection on a standalone T8410 (6040)", () => {
+  describe("motionDetection on a T8410 (6040)", () => {
     const t8410 = (extra: Partial<CommandContext> = {}): CommandContext => ({
       ...ctx([MOTION_CMD.INDOOR_MOTION_ENABLE], 0),
       model: "T8410",
@@ -184,13 +184,26 @@ describe("motion capability module", () => {
       ]);
     });
 
-    it("a HomeBase-attached T8410 keeps the 1011 direct-binary switch", () => {
-      expect(intent("motionDetection", true, t8410({ homeBaseAttached: true, paramIds: new Set([1011]) }))).toEqual({
+    it("reads 6040 on a HomeBase-attached T8410 that also reports 1011", () => {
+      const dev = Device.fromRecord("T8410P0000000000", {
+        model: "T8410",
+        parentSn: "T8030P0000000000",
+        params: { 1011: "1", 6040: "0" },
+      });
+      expect(dev.properties.find((p) => p.name === "motionDetection")?.paramType).toBe(MOTION_CMD.INDOOR_MOTION_ENABLE);
+      expect(dev.getProperty("motionDetection")?.value).toBe(false);
+    });
+
+    it("refuses the write on a HomeBase-attached T8410, where no wire is confirmed", () => {
+      const attached = t8410({ homeBaseAttached: true, paramIds: new Set([1011, MOTION_CMD.INDOOR_MOTION_ENABLE]) });
+      expect(() => intent("motionDetection", true, attached)).toThrow(/unverified on a HomeBase-attached T8410/);
+    });
+
+    it("every other camera keeps the 1011 direct-binary switch", () => {
+      expect(intent("motionDetection", true, { ...ctx([1011, 6040], 3), model: "T8425" })).toMatchObject({
         kind: "set-param",
         param: MOTION_CMD.CAMERA_PIR,
-        value: 1,
         form: "direct-binary",
-        channel: 0,
       });
     });
   });
