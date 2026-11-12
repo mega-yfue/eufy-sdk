@@ -1,4 +1,3 @@
-import type { Logger } from "../../../core/logger.js";
 import type { PersistedSession, SessionStore } from "../../../core/store.js";
 import { downloadMediaResource } from "../media-download.js";
 import { MegaHttpClient, SessionExpiredError } from "../mega-client.js";
@@ -32,12 +31,11 @@ function sessionStore(): SessionStore {
   };
 }
 
-function client(authenticated = true, logger?: Logger): MegaHttpClient {
+function client(authenticated = true): MegaHttpClient {
   return new MegaHttpClient({
     email: "user@example.invalid",
     password: "unused",
     store: authenticated ? sessionStore() : undefined,
-    logger,
   });
 }
 
@@ -353,33 +351,5 @@ describe("MegaHttpClient.downloadMedia", () => {
     vi.stubGlobal("fetch", fetchMock(new Response(jpeg, { status: 200 })));
 
     await expect(client().downloadImage("https://security-app.eufylife.com/media")).resolves.toEqual(jpeg);
-  });
-
-  it("records each push image's wrapper and geometry without touching what it returns", async () => {
-    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x02, 0xd0, 0x05, 0x00, 0xff, 0xd9]);
-    vi.stubGlobal("fetch", fetchMock(new Response(jpeg, { status: 200 })));
-    const info = vi.fn();
-    const logger = { debug: () => {}, info, warn: () => {}, error: () => {} };
-
-    await expect(client(true, logger).downloadImage("https://security-app.eufylife.com/media")).resolves.toEqual(jpeg);
-    expect(info).toHaveBeenCalledWith(
-      "[media] push image",
-      expect.objectContaining({ wrapper: "jpeg", bytesIn: jpeg.length, jpeg: true, width: 1280, height: 720 }),
-    );
-  });
-
-  it("returns the image when recording it throws", async () => {
-    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0xff, 0xd9]);
-    vi.stubGlobal("fetch", fetchMock(new Response(jpeg, { status: 200 })));
-    const logger = {
-      debug: () => {},
-      info: () => {
-        throw new Error("logger down");
-      },
-      warn: () => {},
-      error: () => {},
-    };
-
-    await expect(client(true, logger).downloadImage("https://security-app.eufylife.com/media")).resolves.toEqual(jpeg);
   });
 });

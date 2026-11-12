@@ -28,9 +28,7 @@ import type { SecureMqttCredentials } from "../mqtt/secure-mqtt.js";
 import { withoutTokenEcho } from "../token-echo.js";
 import { downloadMediaResource, mediaFailureError, MediaDownloadAuthenticationError } from "./media-download.js";
 import { randomPhoneModel, randomUserAgent } from "./phone-model.js";
-import { isV1Image, normalizePushImage } from "./decodeImageV1.js";
-import { isV2Image } from "./decodeImageV2.js";
-import { jpegGeometry } from "../p2p/media.js";
+import { normalizePushImage } from "./decodeImageV1.js";
 import { loginCredentials, readLoginReply, signedHeaders } from "./passport.js";
 
 export type RegionShard = "eu-pr" | "us-pr";
@@ -323,43 +321,6 @@ export interface SignedRetry {
   identity?: boolean;
   /** The token has already been replaced by a fresh login for this call. */
   reauth?: boolean;
-}
-
-/** The message every push-image decode record is logged under. */
-const PUSH_IMAGE_TRACE_MESSAGE = "[media] push image";
-
-/**
- * One push-image decode, redacted: the wrapper the bytes arrived in, the sizes in and out, whether the
- * output is a JPEG and the geometry its frame header declares, and the decode time. Reads only the
- * bytes already in hand, so it costs nothing a host measures. An unrecognized wrapper is identified by
- * its first three bytes in hex; nothing else of the image, and no URL, is kept.
- */
-function pushImageTrace(data: Buffer, image: Buffer | undefined, decodeMs: number): Record<string, unknown> {
-  const jpeg = image !== undefined && isJpeg(image);
-  const geometry = jpeg ? jpegGeometry(image) : undefined;
-  return {
-    wrapper: pushImageWrapper(data),
-    bytesIn: data.length,
-    bytesOut: image?.length,
-    jpeg,
-    width: geometry?.width,
-    height: geometry?.height,
-    decodeMs,
-  };
-}
-
-/** The wrapper a push image arrived in: `v1`, `v2`, `v8`, a bare `jpeg`, or the first three bytes in hex. */
-function pushImageWrapper(data: Buffer): string {
-  if (isV2Image(data)) return "v2";
-  if (isV1Image(data)) return "v1";
-  if (data.subarray(0, 3).toString("latin1") === "v8_") return "v8";
-  if (isJpeg(data)) return "jpeg";
-  return `0x${data.subarray(0, 3).toString("hex")}`;
-}
-
-/** True when the bytes open with a JPEG SOI followed by a marker. */
-function isJpeg(data: Buffer): boolean {
-  return data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff;
 }
 
 /**
@@ -1069,19 +1030,10 @@ export class MegaHttpClient {
    */
   async downloadImage(url: string, p2pDid?: string): Promise<Buffer> {
     const data = await this.downloadMedia(url);
-    const started = Date.now();
-    let image: Buffer | undefined;
     try {
-      image = normalizePushImage(data, p2pDid);
-      return image;
+      return normalizePushImage(data, p2pDid);
     } catch (error) {
       throw mediaFailureError("Push image could not be decoded", "decode-failed", error);
-    } finally {
-      try {
-        this.logger.info(PUSH_IMAGE_TRACE_MESSAGE, pushImageTrace(data, image, Date.now() - started));
-      } catch {
-        /* a diagnostic never fails the download it describes */
-      }
     }
   }
 
