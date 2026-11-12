@@ -15,8 +15,8 @@
  * invariant.
  *
  * Two connection strategies live here, matched to what each wire was verified over:
- *  - **ff09** opens its OWN one-shot, explicitly non-reconnecting `SecureMqtt` pinned to the broker
- *    instance that holds the device's session (see {@link ensureSecurityMqttFor}) and tears it down
+ *  - **ff09** opens its OWN one-shot, explicitly non-reconnecting `SecureMqtt` pinned to a broker
+ *    instance that grants the device's topic (see {@link ensureSecurityMqttFor}) and tears it down
  *    right after — the lock/garage path needs the SUBSCRIBE-and-wait ack machinery.
  *  - **eufy_life DP** (lights) publishes fire-and-forget over the facade's persistent account-wide
  *    `this.transport` via the injected {@link MqttRouterDeps.publishSecure} — that persistent connection
@@ -41,7 +41,7 @@ import {
   type Ff09FrameInput,
   type Ff09TransferPayload,
 } from "../ff09.js";
-import { SecureMqtt, type SecureMqttCredentials } from "./secure-mqtt.js";
+import { SecureMqtt, isSubackFailure, type SecureMqttCredentials } from "./secure-mqtt.js";
 import { secureTopic } from "./topics.js";
 import { buildAppShapedClientId, mqttUuidFrom } from "./app-client-id.js";
 import { discoverReachableInstance } from "./broker-discovery.js";
@@ -209,6 +209,18 @@ export function buildFf09MqttEnvelope(input: {
 }
 
 /**
+ * The security broker cluster for the region an `aiot-mqtt-{region}.anker.com` endpoint names —
+ * `security-mqtt-{region}.anker.com`, where `eufy_security` lock sessions live (see
+ * `MqttCommandRouter.ensureSecurityMqttFor`). Throws on an endpoint of any other shape rather than
+ * dialling a host derived from a guess.
+ */
+function securityBrokerHost(aiotEndpoint: string): string {
+  const region = /^aiot-mqtt-([a-z]+)\.anker\.com$/.exec(aiotEndpoint)?.[1];
+  if (!region) throw new Error(`no security broker known for MQTT endpoint "${aiotEndpoint}"`);
+  return `security-mqtt-${region}.anker.com`;
+}
+
+/**
  * The facade-side dependencies the router needs. It owns the one-shot MQTT connection lifecycle + all
  * command wire logic, but defers device-list access + lifecycle event fan-out to the client (which owns
  * the typed EventEmitter).
@@ -337,24 +349,31 @@ export class MqttCommandRouter {
   ];
 
   /**
-   * Connect a fresh **security-scoped** (`eufy_security`) MQTT client PINNED to whichever broker
-   * instance currently holds `dev`'s live session. `aiot-mqtt-{region}.anker.com` fronts multiple
-   * independent backend instances (an AWS NLB, one target per AZ) that do NOT share subscribe/publish
-   * routing — a plain DNS connect can silently land on an instance that will accept the TLS CONNECT but
-   * never route to this device (looks exactly like an authorization wall, isn't one). This probes every
-   * candidate with a SUBSCRIBE-only connection (never publishes during discovery — see
-   * `transport/mqtt/broker-discovery.ts`), then opens one real connection pinned to the first instance
-   * that granted the SUBSCRIBE, for the caller to actually publish on.
+   * Connect a fresh **security-scoped** (`eufy_security`) MQTT client to the broker cluster `dev`'s
+   * session lives on, pinned to one of its instances that grants the device's `/res` SUBSCRIBE (probed
+   * SUBSCRIBE-only, never publishing — see `transport/mqtt/broker-discovery.ts`), for the caller to
+   * publish on.
+   *
+   * That cluster is `security-mqtt-{region}.anker.com` ({@link securityBrokerHost}) for a lock whose
+   * session lives there, not the `aiot-mqtt-{region}.anker.com` endpoint `get_user_mqtt_info` names: the
+   * two are separate clusters that share no routing, and the `aiot` one grants such a lock's topics too.
+   * Verified on US-region Smart Lock C33, C30 and FamiLock S3 units: the vendor app's commands and the
+   * lock's replies cross the security cluster; a frame published on any of its instances is answered,
+   * and the same frame published on any `aiot` instance is not. Both serve the same `*.anker.com`
+   * certificate, so the account's credentials and TLS checks carry over unchanged.
+   *
+   * The security cluster refuses the topic of a device whose session is not there (every instance
+   * answers a C220's with a SUBACK deny). Such a device is probed on the `aiot` endpoint instead, with
+   * {@link KNOWN_AIOT_BROKER_IPS}, where an unlock of a T85D0 has been answered, as is any device when the
+   * security host resolves to no instance.
    *
    * Which cert is used does NOT change the outcome — the account's own `get_user_mqtt_info` cert and a
    * cert extracted from a real phone's keystore produce the identical grant/deny pattern across every
-   * candidate IP. Only the instance matters, which is why this probes instances and not credentials.
-   * One exception is known: a single garage unit whose own-cert SUBSCRIBE was denied on every candidate
-   * while a phone-extracted cert granted on the same one, with a sibling of the same model on the same
-   * account granting fine. That is a per-device authorization gap on the vendor's backend, not a
-   * broker-instance problem and not something this SDK works around — the throw below names each
-   * candidate's outcome (its SUBACK deny code, a timeout or a connection error) until the backend grants
-   * the account's own credentials.
+   * candidate IP. One exception is known: a single garage unit whose own-cert SUBSCRIBE was denied on
+   * every candidate while a phone-extracted cert granted on the same one, with a sibling of the same
+   * model on the same account granting fine. That is a per-device authorization gap on the vendor's
+   * backend, not something this SDK works around — the throw below names each candidate's outcome (its
+   * SUBACK deny code, a timeout or a connection error).
    *
    * One fresh, explicitly non-reconnecting (`reconnectPeriod: 0`) connection per call — it repays the
    * full mTLS handshake every command and tears the socket down right after (see
@@ -365,30 +384,37 @@ export class MqttCommandRouter {
    * with a scope-bounded wildcard (`cmd/{app}/+/+/res`) instead of per-call subscribe/unsubscribe.
    */
   private async ensureSecurityMqttFor(dev: EufyDevice): Promise<{ mqtt: SecureMqtt; instanceIp: string }> {
-    const creds: SecureMqttCredentials = await this.deps.mega.getUserMqttInfo("eufy_security");
+    const account: SecureMqttCredentials = await this.deps.mega.getUserMqttInfo("eufy_security");
+    let creds: SecureMqttCredentials = { ...account, endpoint_addr: securityBrokerHost(account.endpoint_addr) };
     const mqttUuid = mqttUuidFrom(this.deps.mega.openudid);
     const clientIdFor = () => buildAppShapedClientId({ appName: "eufy_security", uid: creds.user_id ?? "", mqttUuid });
-    const results = await discoverReachableInstance(
-      {
-        hostname: creds.endpoint_addr,
-        port: creds.endpoint_port,
-        certificate_pem: creds.certificate_pem,
-        private_key: creds.private_key,
-        aws_root_ca1_pem: creds.aws_root_ca1_pem,
-      },
-      {
-        clientIdFor,
-        topic: secureTopic(dev, "res"),
-        candidateIps: MqttCommandRouter.KNOWN_AIOT_BROKER_IPS,
-        stopOnFirstGrant: true,
-        perAttemptTimeoutMs: 8000,
-      },
-    );
+    const probe = (on: SecureMqttCredentials, candidateIps?: string[]) =>
+      discoverReachableInstance(
+        {
+          hostname: on.endpoint_addr,
+          port: on.endpoint_port,
+          certificate_pem: on.certificate_pem,
+          private_key: on.private_key,
+          aws_root_ca1_pem: on.aws_root_ca1_pem,
+        },
+        {
+          clientIdFor,
+          topic: secureTopic(dev, "res"),
+          candidateIps,
+          stopOnFirstGrant: true,
+          perAttemptTimeoutMs: 8000,
+        },
+      );
+    let results = await probe(creds);
+    const refused = results.length > 0 && results.every((r) => isSubackFailure(r.grantedQos));
+    if (refused || results.length === 0) {
+      creds = account;
+      results = await probe(account, MqttCommandRouter.KNOWN_AIOT_BROKER_IPS);
+    }
     const winner = results.find((res) => res.granted);
-
     if (!winner) {
       throw new Error(
-        `ensureSecurityMqttFor(${dev.sn}): no broker instance currently holds this device's session ` +
+        `ensureSecurityMqttFor(${dev.sn}): no broker instance grants this device's topic ` +
           `(probed ${results.length} candidate IPs: ` +
           results
             .map(
