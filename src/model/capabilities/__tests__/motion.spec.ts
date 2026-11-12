@@ -143,6 +143,58 @@ describe("motion capability module", () => {
     });
   });
 
+  describe("motionDetection on a standalone T8410 (6040)", () => {
+    const t8410 = (extra: Partial<CommandContext> = {}): CommandContext => ({
+      ...ctx([MOTION_CMD.INDOOR_MOTION_ENABLE], 0),
+      model: "T8410",
+      ...extra,
+    });
+
+    it("reads 6040 into motionDetection and follows it both ways", () => {
+      const dev = Device.fromRecord("T8410P0000000000", { model: "T8410", params: { 6040: "0" } });
+      expect(dev.properties.find((p) => p.name === "motionDetection")).toMatchObject({
+        paramType: MOTION_CMD.INDOOR_MOTION_ENABLE,
+        writable: true,
+      });
+      expect(dev.getProperty("motionDetection")?.value).toBe(false);
+      dev.applyParams({ 6040: "1" });
+      expect(dev.getProperty("motionDetection")?.value).toBe(true);
+    });
+
+    it("writes the 1700 control payload on 6040, on and off", () => {
+      expect(intent("motionDetection", true, t8410())).toEqual({
+        kind: "set-json",
+        param: MOTION_CMD.INDOOR_MOTION_ENABLE,
+        data: { enable: 0, quality: 0, status: 1, value: 0 },
+        channel: 0,
+      });
+      expect(intent("motionDetection", false, t8410())).toMatchObject({ data: { status: 0 } });
+    });
+
+    it("actions.setDetection dispatches the same 6040 payload", async () => {
+      const sent: Command[] = [];
+      await bindMotion(t8410(), sent).setDetection(true);
+      expect(sent).toEqual([
+        {
+          kind: "set-json",
+          param: MOTION_CMD.INDOOR_MOTION_ENABLE,
+          data: { enable: 0, quality: 0, status: 1, value: 0 },
+          channel: 0,
+        },
+      ]);
+    });
+
+    it("a HomeBase-attached T8410 keeps the 1011 direct-binary switch", () => {
+      expect(intent("motionDetection", true, t8410({ homeBaseAttached: true, paramIds: new Set([1011]) }))).toEqual({
+        kind: "set-param",
+        param: MOTION_CMD.CAMERA_PIR,
+        value: 1,
+        form: "direct-binary",
+        channel: 0,
+      });
+    });
+  });
+
   describe("aiDetectType buildCommand", () => {
     it("emits the 1350 SET_PAYLOAD envelope on cmd 1298 (mChannel 0, mValue3 0, channel in payload)", () => {
       // Live-observed: 1298 is the detailed bitmask; the value passes through raw (here 0x3000f).

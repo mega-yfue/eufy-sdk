@@ -4,6 +4,7 @@ import { describeDevice, setJson, setJsonRaw, setPayload, setScalar } from "./ac
 import { propertiesOf, type Members, type Surface, type MemberDeps } from "./members.js";
 import { DeviceType } from "../device-types.js";
 import type {
+  AvailabilityContext,
   CapabilityActions,
   CapabilityModule,
   CapabilityStateReader,
@@ -139,6 +140,16 @@ export const MOTION_CMD = {
    * as a `1700` control payload carrying an index rather than the `1350` envelope its siblings take.
    */
   INDOOR_SENSITIVITY_INDEX: 6041,
+  /**
+   * Motion detection on-off on a standalone T8410 (app `CMD_INDOOR_DET_SET_MOTION_DETECT_ENABLE`), which
+   * reports its switch here and never reports {@link CAMERA_PIR}.
+   *
+   * ✅ Read and write confirmed live on a standalone T8410 (firmware 2.3.2.6): the app's toggle moved the
+   * cloud param both ways, and a `1700` control payload `{"commandType":6040,"data":{"enable":0,"quality":0,
+   * "status":0|1,"value":0}}` read back on the same param in 4–18 s, both directions. The frame is
+   * confirmed accepted and persisted, NOT byte-compared to the app's.
+   */
+  INDOOR_MOTION_ENABLE: 6040,
   /**
    * Detection sensitivity a solo camera REPORTS (app `SET_MOTION_DETECTION_SENSITIVITY_SOLO`). It does
    * not accept writes on this id — the write goes to {@link MOTION_SENSITIVITY}, which is why a scale
@@ -442,6 +453,15 @@ function sensitivityCommand(step: unknown, scale: SensitivityScale, ctx: Command
 const EXIT_TEST_MODE_VALUE = 0x30303000;
 
 /**
+ * A T8410 standing alone, the one population whose motion switch is confirmed on
+ * {@link MOTION_CMD.INDOOR_MOTION_ENABLE}. No HomeBase-attached T8410 is evidenced on
+ * it, so one keeps {@link MOTION_CMD.CAMERA_PIR}.
+ */
+function isStandaloneT8410(ctx: AvailabilityContext): boolean {
+  return ctx.model === "T8410" && ctx.homeBaseAttached !== true;
+}
+
+/**
  * Reject a write on a device family its wire was never captured on.
  *
  * The two families do not share this capability's wire vocabulary: the one setting captured on both
@@ -505,6 +525,9 @@ export const MOTION_MEMBERS = {
    * `setDetectionEnabled` the key would derive. The write calls `requireFamily` first, because
    * this frame is captured on cameras only and a P2P write is fire-and-forget — sent to a sensor it
    * would be dropped silently while the call reported success, so it throws instead.
+   *
+   * A standalone T8410 reports the switch on {@link MOTION_CMD.INDOOR_MOTION_ENABLE} and never on 1011,
+   * so there the read promotes that alias and the write takes its control payload.
    */
   detectionEnabled: {
     param: 1011,
@@ -512,10 +535,17 @@ export const MOTION_MEMBERS = {
     type: "bool",
     kind: "boolean",
     provenance: "verified",
-    description: "Motion/PIR detection enabled (verified: param 1011 = CAMERA_PIR).",
+    readAvailable: (ctx) => !isStandaloneT8410(ctx),
+    readAliases: [{ paramType: MOTION_CMD.INDOOR_MOTION_ENABLE, available: isStandaloneT8410 }],
+    description:
+      "Motion/PIR detection enabled (verified: param 1011 = CAMERA_PIR; a standalone T8410 reads and " +
+      "writes INDOOR_MOTION_ENABLE 6040 instead).",
     write: (v, ctx) => {
       requireFamily("motionDetection", ctx, "camera");
-      return setScalar(MOTION_CMD.CAMERA_PIR, asBool(v) ? 1 : 0, ctx, "direct-binary");
+      const on = asBool(v) ? 1 : 0;
+      if (isStandaloneT8410(ctx))
+        return setJson(MOTION_CMD.INDOOR_MOTION_ENABLE, { enable: 0, quality: 0, status: on, value: 0 }, ctx);
+      return setScalar(MOTION_CMD.CAMERA_PIR, on, ctx, "direct-binary");
     },
     writeAs: "setDetection",
   },
