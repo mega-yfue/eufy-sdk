@@ -1010,13 +1010,18 @@ export const CAMERA: CapabilityModule = {
   /** Every camera-codec device has the power/privacy surface. */
   detection: { codecs: ["camera"] },
   /**
-   * Inbound crying push (3104) → `"cryingDetected"`, claimed on the device reporting
-   * SOUND_DETECTION_TYPE (6046). Crying is one value of that setting, so a camera that does not
-   * report it has no crying trigger to arm. The id itself is drawn from the indoor and HB3-paired
-   * vocabularies and absent from the doorbell one, so a camera codec alone is not the population
-   * that issues it.
+   * Inbound sound pushes, each claimed on the member that arms it: 3105 → `"soundDetected"` on
+   * SOUND_DETECTION (6043), 3104 → `"cryingDetected"` on SOUND_DETECTION_TYPE (6046), whose `Crying`
+   * value is the crying trigger. Both ids are drawn from the indoor and HB3-paired vocabularies and
+   * absent from the doorbell one, so a camera codec alone is not the population that issues them.
    */
   events: [
+    {
+      source: "push",
+      match: IndoorPushEvent.SOUND_DETECTION,
+      emit: "soundDetected",
+      claim: { codecs: ["camera"], reads: ["soundDetection"] },
+    },
     {
       source: "push",
       match: IndoorPushEvent.CRYING_DETECTION,
