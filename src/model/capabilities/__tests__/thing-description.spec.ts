@@ -1,4 +1,5 @@
 import { conditionsPass, parseThingsList, resolveThing } from "../thing-description.js";
+import { resolvedEnum } from "../members.js";
 
 /**
  * A synthetic `get_things_list` reply shaped like the service's: one product with a property of every
@@ -317,5 +318,44 @@ describe("resolveThing", () => {
     expect(standalone("2.3.0.0").properties.hidden).toBeUndefined();
     expect(standalone("2.3.0.0").properties.locked?.accessMode).toBe("R");
     expect(Object.keys(standalone("2.3.0.0").actions)).toEqual(["always"]);
+  });
+});
+
+describe("a member's thing gives its enum options on the device", () => {
+  const member = {
+    param: 1,
+    type: "number" as const,
+    kind: "enum" as const,
+    enumValues: { 0: "Off", 1: "Low", 2: "High" },
+    thing: ["mode_new", "mode"],
+    description: "synthetic",
+  };
+  const things = (properties: Record<string, unknown>[]) =>
+    parseThingsList({ things_list: [{ profile: { product_code: "T0000" }, properties }] }).T0000!;
+  const enumOf = (properties: Record<string, unknown>[]) =>
+    resolvedEnum(member, { codec: "camera", things: things(properties) });
+  const listed = (identifier: string, wire: string[]) => ({
+    identifier,
+    data_type: { type: "enum", specs: { eunmList: wire.map((associatedValue) => ({ associatedValue })) } },
+  });
+
+  it("takes the first listed identifier the device has, keeping the values the member names", () => {
+    expect(enumOf([listed("mode", ["0", "1", "2"]), listed("mode_new", ["2", "0", "7"])])).toEqual({
+      values: { 0: "Off", 2: "High" },
+      dynamic: true,
+    });
+    expect(enumOf([{ identifier: "mode", data_type: { type: "bool" } }]).values, "a bool is 0 and 1").toEqual({
+      0: "Off",
+      1: "Low",
+    });
+  });
+
+  it("keeps the static domain without a listed property, a named value or an enum", () => {
+    expect(enumOf([listed("other", ["1"])])).toEqual({ values: member.enumValues, dynamic: false });
+    expect(enumOf([listed("mode", ["9"])]).dynamic).toBe(false);
+    expect(resolvedEnum(member, { codec: "camera" }).dynamic).toBe(false);
+    expect(
+      resolvedEnum({ ...member, enumValues: undefined }, { codec: "camera", things: things([listed("mode", ["1"])]) }),
+    ).toEqual({ values: undefined, dynamic: false });
   });
 });

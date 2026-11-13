@@ -365,6 +365,7 @@ export const PTZ_MEMBERS = {
    * configured", never "unsupported".
    */
   rotationSpeed: {
+    thing: ["ptz_turn_speed"],
     param: PTZ_CMD.PTZ_ROTATE_SPEED,
     type: "number",
     kind: "scalar",

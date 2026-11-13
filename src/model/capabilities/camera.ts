@@ -587,6 +587,7 @@ export const CAMERA_MEMBERS = {
    * aliasing a second param could only fold two possible states into one getter for no gain.
    */
   enabled: {
+    thing: ["camera_on_off", "device_on_off"],
     param: CAMERA_CMD.CAMERA_ENABLE,
     type: "bool",
     kind: "boolean",
@@ -615,6 +616,7 @@ export const CAMERA_MEMBERS = {
    * confirm by re-reading rather than by trusting the dispatch.
    */
   imageFlipped: {
+    thing: ["rotate_image_180_on_off"],
     param: CAMERA_CMD.ROTATE_IMAGE,
     type: "bool",
     kind: "boolean",
@@ -652,6 +654,7 @@ export const CAMERA_MEMBERS = {
    * switching this off and on again restores the previous configuration rather than resetting it.
    */
   soundDetection: {
+    thing: ["sound_detection_status"],
     param: CAMERA_CMD.SOUND_DETECTION,
     type: "bool",
     kind: "boolean",
@@ -671,6 +674,7 @@ export const CAMERA_MEMBERS = {
    * detection is on or off.
    */
   soundDetectionSensitivity: {
+    thing: ["sound_detection_sensitivity"],
     param: CAMERA_CMD.SOUND_DETECTION_SENSITIVITY,
     type: "number",
     kind: "scalar",
@@ -898,6 +902,7 @@ export const CAMERA_MEMBERS = {
    * family is sufficient evidence to install both the getter and family-aware setter.
    */
   statusLed: {
+    thing: ["led_on_off"],
     param: CAMERA_CMD.DEV_LED_SWITCH,
     type: "bool",
     kind: "boolean",

@@ -155,6 +155,7 @@ export const RTSP_MEMBERS = {
    * is "apk". The verified live WRITE — both directions, HomeBase and standalone — is in the description.
    */
   published: {
+    thing: ["nas_stream_switch"],
     param: RTSP_PARAM.STREAM_SWITCH,
     property: "rtspStream",
     type: "bool",

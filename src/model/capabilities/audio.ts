@@ -76,6 +76,7 @@ export const AUDIO_MEMBERS = {
    * setter are both absent there and a caller must check.
    */
   microphone: {
+    thing: ["microphone_on_off"],
     param: AUDIO_CMD.AUDIO_MICROPHONE,
     type: "bool",
     kind: "boolean",
@@ -90,6 +91,7 @@ export const AUDIO_MEMBERS = {
    * says. Camera-family only, like `microphone` above; HomeBase voice prompts use `promptVolume`.
    */
   speaker: {
+    thing: ["speaker_on_off"],
     param: AUDIO_CMD.AUDIO_SPEAKER,
     type: "bool",
     kind: "boolean",
@@ -103,6 +105,7 @@ export const AUDIO_MEMBERS = {
    * capabilities claim `volume`. Both names reach the same write through the intent path.
    */
   volume: {
+    thing: ["speaker_volume"],
     param: AUDIO_CMD.SPEAKER_VOLUME,
     property: "speakerVolume",
     type: "number",
@@ -145,6 +148,7 @@ export const AUDIO_MEMBERS = {
    * property (which spans all cameras) without over-surfacing junk. Audio owns the write.
    */
   ringtoneVolume: {
+    thing: ["device_audio_ringtone_volume"],
     param: AUDIO_CMD.DOORBELL_RINGTONE_VOLUME,
     type: "number",
     unit: "%",
