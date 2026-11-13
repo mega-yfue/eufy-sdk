@@ -19,8 +19,6 @@ import { parseAiotDpReport } from "../transport/mqtt/dp-codec.js";
 import { classifyDevice, type DeviceClass, type EufyDevice, type RealtimeKind } from "../core/types.js";
 import { inspectParams, resolveDevice, type Capability, type Codec, type DeviceInspection } from "../model/index.js";
 import { parseThingsList, resolveThing, type ThingDescription } from "../model/capabilities/thing-description.js";
-import { MemorySessionStore, type SessionStore } from "../core/store.js";
-import type { PersistedThings } from "./types.js";
 
 /** The device-record shape {@link EufyMega.getDevice}/`commandContext` resolve a serial to. */
 export interface DeviceRecord {
@@ -190,8 +188,6 @@ export interface DeviceRegistryDeps {
   onError: (e: unknown) => void;
   /** Diagnostics sink for facts that are NOT errors — see the owner-gated overlay note on {@link DeviceRegistry.record}. */
   logger?: Logger;
-  /** Where the products' thing descriptions persist (default: in-memory) — see {@link DeviceRegistry.loadThings}. */
-  thingStore?: SessionStore<PersistedThings>;
 }
 
 /**
@@ -239,12 +235,6 @@ export class DeviceRegistry {
   private readonly cloudDps = new Map<string, Record<number, string>>();
   /** Per-product-code thing description — see {@link loadThings}; `undefined` for a code the cloud returned none for. */
   private readonly things = new Map<string, ThingDescription | undefined>();
-  /** Each held description's raw entry, the shape {@link thingStore} persists. */
-  private readonly thingEntries = new Map<string, unknown>();
-  /** Product codes asked about since this registry started. */
-  private readonly thingsChecked = new Set<string>();
-  private readonly thingStore: SessionStore<PersistedThings>;
-  private thingsHydrated = false;
   /** Per-serial realtime state, keyed by param id in the device's own namespace (see {@link DeviceRecord.dpParams}). */
   private readonly dpParams = new Map<string, Record<number, string>>();
   /** Callers blocked in {@link awaitRealtimeState}, released by the device's first report. */
@@ -280,7 +270,6 @@ export class DeviceRegistry {
     this.mega = deps.mega;
     this.onError = deps.onError;
     this.logger = deps.logger ?? noopLogger;
-    this.thingStore = deps.thingStore ?? new MemorySessionStore();
   }
 
   /** The current device cache (last {@link getDevices} result). */
@@ -517,68 +506,21 @@ export class DeviceRegistry {
   }
 
   /**
-   * Hold the thing description of every product code the account has — product data, the same for every
-   * account — the way the app keeps its own: persisted in {@link thingStore}, and checked once per start.
-   *
-   * The first refresh restores what the store holds. Each refresh then asks, in one `get_things_list`
-   * call, about the codes not yet asked since start, naming the `update_time` of any description held: an
-   * unchanged one comes back with no properties and is kept, a changed or new one replaces it, and the
-   * store is saved. A failed call keeps what is held and asks again on the next refresh; a code the reply
-   * omits is not asked again until the next start. A store that fails to load or save is logged, never thrown.
+   * Fetch, once per start, the thing description of each product code the account has, in one
+   * `get_things_list` call. A failed call is logged and asked again on the next refresh.
    */
   private async loadThings(seen: Map<string, EufyDevice>): Promise<void> {
-    this.hydrateThings();
-    const codes = [...new Set([...seen.values()].map((d) => d.model ?? ""))].filter(
-      (c) => c && !this.thingsChecked.has(c),
-    );
+    const codes = [...new Set([...seen.values()].map((d) => d.model ?? ""))].filter((c) => c && !this.things.has(c));
     if (!codes.length) return;
-    const held: Record<string, number> = {};
-    for (const code of codes) {
-      const t = this.things.get(code);
-      if (t) held[code] = t.updateTime;
-    }
-    let raw: { things_list?: unknown };
+    let parsed: Readonly<Record<string, ThingDescription>>;
     try {
-      raw = await this.mega.getThingsList(codes, held);
+      parsed = parseThingsList(await this.mega.getThingsList(codes));
     } catch (e) {
       if (e instanceof SessionExpiredError) throw e;
       this.logger.debug(`[registry] thing descriptions unavailable: ${(e as Error)?.message ?? e}`);
       return;
     }
-    for (const entry of Array.isArray(raw?.things_list) ? raw.things_list : []) {
-      const code = entry?.profile?.product_code;
-      if (typeof code !== "string" || !codes.includes(code)) continue;
-      if (held[code] === entry.update_time && !entry.properties?.length) continue;
-      this.holdThing(code, entry);
-    }
-    for (const code of codes) {
-      this.thingsChecked.add(code);
-      if (!this.things.has(code)) this.things.set(code, undefined);
-    }
-    try {
-      this.thingStore.save({ things: Object.fromEntries(this.thingEntries) });
-    } catch (e) {
-      this.logger.debug(`[registry] thing descriptions not saved: ${(e as Error)?.message ?? e}`);
-    }
-  }
-
-  /** Restore the descriptions {@link thingStore} holds, once. */
-  private hydrateThings(): void {
-    if (this.thingsHydrated) return;
-    this.thingsHydrated = true;
-    try {
-      for (const [code, entry] of Object.entries(this.thingStore.load()?.things ?? {})) this.holdThing(code, entry);
-    } catch (e) {
-      this.logger.debug(`[registry] thing descriptions not restored: ${(e as Error)?.message ?? e}`);
-    }
-  }
-
-  /** Hold one product's raw entry and its parsed description, when it parses. */
-  private holdThing(code: string, entry: unknown): void {
-    const td = parseThingsList({ things_list: [entry] })[code];
-    if (!td) return;
-    this.thingEntries.set(code, entry);
-    this.things.set(code, td);
+    for (const code of codes) this.things.set(code, parsed[code]);
   }
 
   /**

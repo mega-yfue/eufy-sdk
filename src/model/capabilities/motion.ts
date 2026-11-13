@@ -507,7 +507,6 @@ export const MOTION_MEMBERS = {
    * would be dropped silently while the call reported success, so it throws instead.
    */
   detectionEnabled: {
-    thing: ["motion_detection_status"],
     param: 1011,
     property: "motionDetection",
     type: "bool",
@@ -528,7 +527,6 @@ export const MOTION_MEMBERS = {
    * `actions()`. This id is both the read and the write for the five-step rising scale.
    */
   motionSensitivity: {
-    thing: ["detection_sensitivity"],
     param: MOTION_CMD.MOTION_SENSITIVITY,
     type: "number",
     kind: "scalar",
@@ -588,7 +586,6 @@ export const MOTION_MEMBERS = {
    * and this getter answers `undefined` for it: only the scalar form is confirmed to be this step.
    */
   indoorSensitivity: {
-    thing: ["detection_sensitivity"],
     param: MOTION_CMD.INDOOR_SENSITIVITY_INDEX,
     type: "number",
     kind: "scalar",
@@ -618,7 +615,6 @@ export const MOTION_MEMBERS = {
    * `MOTION_CMD.SENSOR_PIR_SENSITIVITY`), which is exactly why it is `unexposed`.
    */
   sensorPirSensitivity: {
-    thing: ["sensor_motion_detection_sensitivity_level"],
     param: MOTION_CMD.SENSOR_PIR_SENSITIVITY,
     type: "number",
     kind: "scalar",
@@ -662,7 +658,6 @@ export const MOTION_MEMBERS = {
    * (`snoozePayload`); writing 0 sends the bare clear shape. Camera-family only.
    */
   snoozeTime: {
-    thing: ["device_snooze_time"],
     param: MOTION_CMD.SNOOZE_TIME,
     type: "string",
     provenance: "verified",
@@ -700,7 +695,6 @@ export const MOTION_MEMBERS = {
    * JSON object OR a bare scalar — a plain bool coercion reports `false` for the object form.
    */
   loiteringDetection: {
-    thing: ["detection_loitering_detection_switch"],
     param: MOTION_CMD.LOITERING_DETECTION,
     type: "bool",
     kind: "boolean",

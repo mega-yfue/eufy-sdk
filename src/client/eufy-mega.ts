@@ -88,7 +88,6 @@ import {
 } from "../model/device-family.js";
 import { cameraPowerTier } from "../model/capabilities/battery.js";
 import { DeviceRegistry, type DeviceRecord, type ParamChange } from "./device-registry.js";
-import type { ThingDescription } from "../model/capabilities/thing-description.js";
 import { PushRepeats } from "./push-repeats.js";
 import type {
   EufyMegaOptions,
@@ -104,7 +103,6 @@ import type {
 
 export type {
   EufyMegaOptions,
-  PersistedThings,
   EufyMegaEvent,
   EufyMegaEventMap,
   AnyDeviceEvent,
@@ -410,7 +408,6 @@ export class EufyMega extends EventEmitter {
       mega: this.mega,
       onError: (e) => this.reportError(e),
       logger: opts.logger,
-      thingStore: opts.thingStore,
     });
     this.p2p = new P2PCommandRouter({
       mega: this.mega,
@@ -1448,15 +1445,6 @@ export class EufyMega extends EventEmitter {
    */
   async inspectDevice(sn: string): Promise<DeviceInspection> {
     return this.registry.inspectDevice(sn);
-  }
-
-  /**
-   * The device's product thing description as this device sees it — variants chosen and unavailable
-   * entries left out for its firmware, station, serial and the account's country — or `undefined` when
-   * the cloud returned none for its product code. Loads the device list if needed.
-   */
-  async getThingDescription(sn: string): Promise<ThingDescription | undefined> {
-    return (await this.registry.record(sn)).things;
   }
 
   /**

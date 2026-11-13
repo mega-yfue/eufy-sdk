@@ -7,7 +7,6 @@
  */
 import type { MegaClientConfig, SessionExpiredError } from "../transport/http/mega-client.js";
 import type { FcmStore } from "../transport/push/store.js";
-import type { SessionStore } from "../core/store.js";
 import type { FfmpegLevel } from "../transport/ffmpeg.js";
 import type { DeviceEventMap } from "../model/capabilities/index.js";
 import type { Capability } from "../model/index.js";
@@ -56,19 +55,9 @@ export interface WaitForRealtimeOptions {
   timeoutMs?: number;
 }
 
-/** The persisted thing descriptions: each product's raw `get_things_list` entry, keyed by product code. */
-export interface PersistedThings {
-  readonly things: Readonly<Record<string, unknown>>;
-}
-
 export interface EufyMegaOptions extends MegaClientConfig {
   /** Persist FCM push credentials + seen ids across runs (default: in-memory). */
   pushStore?: FcmStore;
-  /**
-   * Persist the products' thing descriptions across runs (default: in-memory). With a held copy, a start
-   * asks the cloud only whether each description changed, and keeps the held one when that call fails.
-   */
-  thingStore?: SessionStore<PersistedThings>;
   /** Eagerly retain validated push thumbnails in memory for `camera.snapshotStored()` (default `true`). */
   storedSnapshotCache?: boolean;
   /**

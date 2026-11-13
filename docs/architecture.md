@@ -46,14 +46,7 @@ login()                      // on success, realtime starts automatically (push 
 disconnect()                 // tear the channels down; the login session stays valid
 ```
 
-`getDevices()` also loads each product's **thing description**, the per-product model the vendor's
-app builds its settings from: which properties a product has, their types, and for each setting the
-values it offers. The SDK resolves it for each device the way the app does — the variant its firmware
-uses, what its station allows — and its capabilities read their per-product options from it, so a new
-product works from the cloud's description rather than from a list of model codes. `getThingDescription(sn)`
-returns a device's resolved description. Descriptions are product data, not account data; pass a
-`thingStore` (e.g. a `FileSessionStore`) to keep them across runs, so a start only asks whether each one
-changed.
+`getDevices()` also loads each product's **thing description**, resolved per device as the app does; `inspectDevice(sn).things` returns it.
 
 A restored session (via a `store`) skips straight past login. Connectivity is SDK-managed: the event
 channels come up on login and a camera's P2P session opens only when a command / stream / doorbell ring

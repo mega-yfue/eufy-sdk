@@ -168,7 +168,6 @@ export const CONTACT_MEMBERS = {
    * of the first.
    */
   alarmVolume: {
-    thing: ["alarm_volume_value"],
     param: CONTACT_CMD.ALARM_VOLUME,
     type: "number",
     kind: "scalar",

@@ -311,7 +311,6 @@ export const SIREN_MEMBERS = {
    * `bool` on the app's own naming; do not add a setter until a toggle is captured.
    */
   doNotDisturb: {
-    thing: ["sensor_not_disturb_switch"],
     param: SIREN_PARAM.NOT_DISTURB,
     type: "bool",
     kind: "boolean",

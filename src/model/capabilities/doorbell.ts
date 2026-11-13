@@ -269,7 +269,6 @@ export const DOORBELL_MEMBERS = {
    * inferred from the shared param range.
    */
   chimeSwitch: {
-    thing: ["device_chime_hb_alert_switch"],
     param: DOORBELL_CMD.CHIME_SWITCH,
     available: writable,
     type: "bool",
@@ -285,7 +284,6 @@ export const DOORBELL_MEMBERS = {
    * `[ch][value][acct]`, 1=on/0=off, verified live on a T8214 (ON then OFF).
    */
   mechanicalChimeSwitch: {
-    thing: ["device_indoor_chime_switch"],
     param: DOORBELL_CMD.MECHANICAL_CHIME_SWITCH,
     available: writable,
     type: "bool",
@@ -315,7 +313,6 @@ export const DOORBELL_MEMBERS = {
    * from `dingdongVolume` (1717), which is a different control on a different wire.
    */
   ringtoneVolume: {
-    thing: ["device_audio_ringtone_volume"],
     param: 1708,
     type: "number",
     unit: "%",
@@ -333,7 +330,6 @@ export const DOORBELL_MEMBERS = {
    * "verified" on our own capture, not merely an observed param id.
    */
   dingdongVolume: {
-    thing: ["device_chime_hb_ring_volume"],
     param: DOORBELL_CMD.DINGDONG_VOLUME,
     available: writable,
     type: "number",

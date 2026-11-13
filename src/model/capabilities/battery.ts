@@ -397,7 +397,6 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
    * on the device reporting 1249, since "has a battery" does not mean "speaks this setting".
    */
   recordDuration: {
-    thing: ["video_clip_length"],
     param: BATTERY_PARAM.RECORD_DURATION,
     type: "number",
     unit: "s",
@@ -416,7 +415,6 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
    * scope and same per-param gate as `recordDuration`; the two are usually tuned together.
    */
   recordInterval: {
-    thing: ["trigger_interval_time"],
     param: BATTERY_PARAM.RECORD_INTERVAL,
     type: "number",
     unit: "s",
@@ -435,7 +433,6 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
    * `motion_stop_end_early = asBooleanToIntString("0" === value)`), so raw 0 means the feature is ON.
    */
   recordAutoStop: {
-    thing: ["motion_stop_end_early"],
     param: BATTERY_PARAM.RECORD_AUTO_STOP,
     type: "bool",
     kind: "boolean",

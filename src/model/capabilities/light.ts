@@ -248,7 +248,6 @@ export const LIGHT_MEMBERS = {
    * letting the generated "not a valid value" blame a boolean that was never the problem.
    */
   isOn: {
-    thing: ["spotlight_switch"],
     param: LIGHT_CMD.FLOODLIGHT_SWITCH,
     property: "light",
     type: "bool",
@@ -268,7 +267,6 @@ export const LIGHT_MEMBERS = {
    * set it even though the getter reads fine.
    */
   brightness: {
-    thing: ["spotlight_brightness_level"],
     param: LIGHT_CMD.SPOTLIGHT_BRIGHTNESS,
     type: "number",
     unit: "%",
