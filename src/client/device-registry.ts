@@ -151,7 +151,6 @@ const CLASS_BY_CODEC: Record<Codec, DeviceClass> = {
   light: "light",
   printer: "printer",
   display: "other",
-  // SmartTrack item trackers — not a camera; the coarse class is `other` (#148).
   tracker: "other",
 };
 

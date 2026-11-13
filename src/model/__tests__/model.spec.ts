@@ -102,7 +102,7 @@ describe("classify (device_type → codec)", () => {
     expect(r.capabilities).toEqual(["display", "info"]);
   });
 
-  it("maps SmartTrack item trackers to the tracker codec, NOT camera (#148)", () => {
+  it("maps SmartTrack item trackers to the tracker codec, NOT camera", () => {
     // device_type path: SMART_TRACK_LINK (157) / SMART_TRACK_CARD (159) and the two newer tags sit
     // inside the 0..210 security residual, so before the fix they fell through to the camera bucket.
     expect(codecForType(DeviceType.SMART_TRACK_LINK)).toBe("tracker");
@@ -115,7 +115,7 @@ describe("classify (device_type → codec)", () => {
     expect(classify({ model: "T87B2" })).toBe("tracker");
     // model wins over a colliding/absent security device_type, same guarantee as the display line.
     expect(classify({ model: "T87B0-V", deviceType: 9 })).toBe("tracker");
-    // A tracker gets ONLY the universal `info` — no video/snapshot/motion/camera entities (#148).
+    // A tracker gets ONLY the universal `info` — no video/snapshot/motion/camera entities.
     expect(resolveDevice({ model: "T87B0-V", deviceType: DeviceType.SMART_TRACK_LINK }).capabilities).toEqual(["info"]);
     // Regression guard: a real camera (CAMERA2, device_type 9) still classifies as camera.
     expect(classify({ model: "T8114", deviceType: 9 })).toBe("camera");

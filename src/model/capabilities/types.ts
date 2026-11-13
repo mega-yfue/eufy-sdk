@@ -60,7 +60,7 @@ export interface DetectionSpec {
  *
  * `tracker` is the SmartTrack item-tracker line (T87B0 Link / T87B2 Card / T87B4 / T87B5). Like
  * `display`, it is a line of its own so no security capability detected by a NAME regex can attach to
- * a device that has no P2P video path — a tracker carries only the universal `info` (#148).
+ * a device that has no P2P video path — a tracker carries only the universal `info`.
  *
  * `any` is for the handful of capabilities that are genuinely line-independent (device identity).
  */

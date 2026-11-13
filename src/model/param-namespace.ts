@@ -33,7 +33,7 @@ const TABLES: Record<ParamNamespace, Record<number, ParamDef>> = {
   display: DISPLAY_PARAMS,
   // SmartTrack item trackers — empty until a live capture confirms the param↔semantic map. Present so
   // the tracker codec resolves to its OWN namespace rather than decoding a tracker's ids against
-  // SECURITY_PARAMS (#148).
+  // SECURITY_PARAMS.
   tracker: {},
 };
 
