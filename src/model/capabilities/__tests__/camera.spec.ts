@@ -160,6 +160,8 @@ describe("camera capability module", () => {
       expect(dev.getProperty("nightVision")?.value).toBe(NightVision.Infrared);
       dev.applyParams({ 2002: "0" });
       expect(dev.getProperty("nightVision")?.value).toBe(NightVision.Off);
+      dev.applyParams({ 2002: "true" });
+      expect(dev.getProperty("nightVision")?.value, "Auto Night Vision on").toBe(NightVision.Infrared);
       // Even if 1277 appears, the model-specific 2002 alias remains the source of truth.
       const both = Device.fromRecord("TEST-SN", { model: "T8442", params: { 1277: "2", 2002: "1" } });
       expect(both.properties.find((p) => p.name === "nightVision")?.paramType).toBe(2002);

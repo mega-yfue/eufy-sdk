@@ -755,10 +755,12 @@ export const CAMERA_MEMBERS = {
     available: isCameraCodec,
     readAvailable: (ctx) => !isT8442(ctx),
     readAliases: [{ paramType: 2002, available: isT8442 }],
+    coerce: (raw) => (raw === true || raw === "true" ? 1 : raw === false || raw === "false" ? 0 : Number(raw)),
     description:
       "Night-vision mode: 0 = off, 1 = infrared (B&W), 2 = full colour where supported. " +
       "T8425 uses NIGHT_VISION_TYPE 1277 (1350 SET_PAYLOAD, night_sion); T8442 reports 2002 " +
-      "and writes direct IC_NIGHT_VISION_TYPE 1013 (int-string, 0/1). Both wires verified live.",
+      '("0"/"1", and "true" while the app\'s Auto Night Vision is on) and writes direct ' +
+      "IC_NIGHT_VISION_TYPE 1013 (int-string, 0/1). Both wires verified live.",
     write: (v, ctx) => {
       const nv = coerceEnumValue(NightVision, v);
       if (nv == null) return undefined;
