@@ -175,7 +175,7 @@ export function gatewayInfoCipherId(gwPayload: Buffer): number {
 const GATEWAY_LEVEL2_REFUSED = -103;
 
 /**
- * Whether a `CMD_GATEWAYINFO` (1100) reply is a level-2 refusal: int32 LE {@link GATEWAY_LEVEL2_REFUSED} (`99 ff
+ * Whether a `CMD_GATEWAYINFO` (1100) reply is a level-2 refusal: int32 LE `GATEWAY_LEVEL2_REFUSED` (`99 ff
  * ff ff`) in place of a cipher. {@link gatewayInfoCipherId} reads those bytes as `cipher_id` 65433. Any other
  * opening is not a refusal.
  */
