@@ -144,7 +144,7 @@ export const MOTION_CMD = {
    * Motion detection on-off on a T8410 (app `CMD_INDOOR_DET_SET_MOTION_DETECT_ENABLE`). `1700` control
    * payload `{"commandType":6040,"data":{"enable":0,"quality":0,"status":0|1,"value":0}}`.
    *
-   * ⚠️ Replay + readback confirmed on a standalone T8410, NOT byte-captured.
+   * ⚠️ Replay + readback confirmed on a standalone and a HomeBase 3-attached T8410, NOT byte-captured.
    */
   INDOOR_MOTION_ENABLE: 6040,
   /**
@@ -528,16 +528,12 @@ export const MOTION_MEMBERS = {
     readAvailable: (ctx) => !isT8410(ctx),
     readAliases: [{ paramType: MOTION_CMD.INDOOR_MOTION_ENABLE, available: isT8410 }],
     description:
-      "Motion/PIR detection enabled (verified: param 1011 = CAMERA_PIR; a T8410 reads " +
-      "INDOOR_MOTION_ENABLE 6040 instead, and writes it only when standalone).",
+      "Motion/PIR detection enabled (verified: param 1011 = CAMERA_PIR; a T8410 reads and writes " +
+      "INDOOR_MOTION_ENABLE 6040 instead).",
     write: (v, ctx) => {
       requireFamily("motionDetection", ctx, "camera");
       const on = asBool(v) ? 1 : 0;
       if (!isT8410(ctx)) return setScalar(MOTION_CMD.CAMERA_PIR, on, ctx, "direct-binary");
-      if (ctx.homeBaseAttached === true)
-        throw new Error(
-          `motionDetection: write wire is unverified on a HomeBase-attached T8410 [${describeDevice(ctx)}]`,
-        );
       return setJson(MOTION_CMD.INDOOR_MOTION_ENABLE, { enable: 0, quality: 0, status: on, value: 0 }, ctx);
     },
     writeAs: "setDetection",

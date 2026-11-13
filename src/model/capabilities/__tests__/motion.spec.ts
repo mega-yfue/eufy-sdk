@@ -194,9 +194,13 @@ describe("motion capability module", () => {
       expect(dev.getProperty("motionDetection")?.value).toBe(false);
     });
 
-    it("refuses the write on a HomeBase-attached T8410, where no wire is confirmed", () => {
+    it("writes the same 6040 payload on a HomeBase-attached T8410", () => {
       const attached = t8410({ homeBaseAttached: true, paramIds: new Set([1011, MOTION_CMD.INDOOR_MOTION_ENABLE]) });
-      expect(() => intent("motionDetection", true, attached)).toThrow(/unverified on a HomeBase-attached T8410/);
+      expect(intent("motionDetection", false, attached)).toMatchObject({
+        kind: "set-json",
+        param: MOTION_CMD.INDOOR_MOTION_ENABLE,
+        data: { enable: 0, quality: 0, status: 0, value: 0 },
+      });
     });
 
     it("every other camera keeps the 1011 direct-binary switch", () => {
