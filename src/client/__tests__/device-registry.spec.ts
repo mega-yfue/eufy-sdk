@@ -199,6 +199,11 @@ describe("DeviceRegistry", () => {
         values: ["1", "0"],
       });
       expect(things?.size, "a property without an identifier is skipped").toBe(2);
+      const dumped = JSON.parse(JSON.stringify(await reg.inspectDevice("A")));
+      expect(dumped.things?.nightvision_type_new, "inspectDevice carries it, serialisable").toEqual({
+        type: "enum",
+        values: ["1", "0"],
+      });
     });
 
     it("leaves the record without one when the call fails, and asks again on the next refresh", async () => {
