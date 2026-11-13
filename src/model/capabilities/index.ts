@@ -11,6 +11,7 @@ import {
   bindMembers,
   hasRequiredCapabilities,
   installs,
+  kindRoutable,
   memberWrite,
   propertiesOf,
   type MemberDeps,
@@ -941,7 +942,9 @@ function memberCommand(
       throw new Error(`${m.capability}: ${name} write wire unverified — confirm it on a device before sending`);
     }
     if (!member.write || !installs(member, ctx)) continue;
-    return memberWrite(name, member, claims ? value : (aliased as boolean | number | string), ctx);
+    const cmd = memberWrite(name, member, claims ? value : (aliased as boolean | number | string), ctx);
+    if (!kindRoutable(cmd.kind, ctx)) continue;
+    return cmd;
   }
   return undefined;
 }
