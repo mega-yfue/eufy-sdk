@@ -88,6 +88,7 @@ import {
 } from "../model/device-family.js";
 import { cameraPowerTier } from "../model/capabilities/battery.js";
 import { DeviceRegistry, type DeviceRecord, type ParamChange } from "./device-registry.js";
+import { PushRepeats } from "./push-repeats.js";
 import type {
   EufyMegaOptions,
   EufyMegaEvent,
@@ -287,6 +288,11 @@ export class EufyMega extends EventEmitter {
   /** Device list/record/capability resolution + the frame→caps cache. */
   private readonly registry: DeviceRegistry;
   private pushClient?: PushClient;
+  /**
+   * Second FCM deliveries of one detection. Only pulse events (no {@link STATE_EVENT_FIELDS} entry) are
+   * held back on a repeat; state-carrying events are already edge-triggered by {@link noteState}.
+   */
+  private readonly pushRepeats = new PushRepeats();
   /** Push-fed passive image store; absent when the caller disables acquisition. */
   private readonly storedImages?: StoredImageCache;
   /** Account whose retained images are currently held. */
@@ -2569,9 +2575,11 @@ export class EufyMega extends EventEmitter {
         payload: ev.payload as Record<string, unknown>,
       };
       const caps = this.capsForEvent(ev.deviceSn);
-      const decoded = decodeCapabilityEvent(signal, caps);
+      const all = decodeCapabilityEvent(signal, caps);
+      const repeat = all.some((out) => !STATE_EVENT_FIELDS[out.event]) && this.pushRepeats.repeat(ev);
+      const decoded = repeat ? all.filter((out) => STATE_EVENT_FIELDS[out.event]) : all;
       this.opts.logger?.debug(
-        `[push] in: eventType=${ev.eventType} device=${caps ? "known" : ev.deviceSn ? "unknown" : "none"} events=${decoded.length}`,
+        `[push] in: eventType=${ev.eventType} device=${caps ? "known" : ev.deviceSn ? "unknown" : "none"} events=${decoded.length}${repeat ? " (repeat)" : ""}`,
       );
       for (const out of decoded) {
         this.emitSemantic(out.event, out.payload, { edge: true, refresh: out.refresh });
