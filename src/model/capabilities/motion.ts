@@ -141,18 +141,10 @@ export const MOTION_CMD = {
    */
   INDOOR_SENSITIVITY_INDEX: 6041,
   /**
-   * Motion detection on-off on a T8410 (app `CMD_INDOOR_DET_SET_MOTION_DETECT_ENABLE`): the switch the app
-   * shows and moves, standalone or HomeBase-attached.
+   * Motion detection on-off on a T8410 (app `CMD_INDOOR_DET_SET_MOTION_DETECT_ENABLE`). `1700` control
+   * payload `{"commandType":6040,"data":{"enable":0,"quality":0,"status":0|1,"value":0}}`.
    *
-   * ✅ Read confirmed live both ways on a standalone T8410 (firmware 2.3.2.6), which never reports
-   * {@link CAMERA_PIR}, and on a HomeBase 3-attached T8410 (firmware 2.3.2.4), which reports both: there
-   * the app's toggle moved 6040 off and on while 1011 stayed `1`, and a 1011 write moved 1011 while 6040
-   * stayed put.
-   *
-   * ✅ Write confirmed live on the standalone T8410 only: a `1700` control payload
-   * `{"commandType":6040,"data":{"enable":0,"quality":0,"status":0|1,"value":0}}` read back on the same
-   * param in 4–18 s, both directions. The frame is confirmed accepted and persisted, NOT byte-compared to
-   * the app's.
+   * ⚠️ Replay + readback confirmed on a standalone T8410, NOT byte-captured.
    */
   INDOOR_MOTION_ENABLE: 6040,
   /**
@@ -526,10 +518,6 @@ export const MOTION_MEMBERS = {
    * `setDetectionEnabled` the key would derive. The write calls `requireFamily` first, because
    * this frame is captured on cameras only and a P2P write is fire-and-forget — sent to a sensor it
    * would be dropped silently while the call reported success, so it throws instead.
-   *
-   * A T8410 carries the switch on {@link MOTION_CMD.INDOOR_MOTION_ENABLE}, so there the read promotes
-   * that alias. A standalone one takes its control payload; on a HomeBase-attached one the 6040 write is
-   * unverified and 1011 does not move the switch, so the write throws.
    */
   detectionEnabled: {
     param: 1011,
