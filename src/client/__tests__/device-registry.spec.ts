@@ -10,11 +10,14 @@ function fakeMega(opts: {
   post: PostFn;
   getDeviceParamList?: (sn: string) => Promise<any>;
   getDeviceRelationList?: () => Promise<any>;
+  getThingsList?: (codes: readonly string[]) => Promise<any>;
 }): MegaHttpClient {
   return {
     post: (service: string, path: string, body?: unknown) => opts.post(service, path, body),
     getDeviceParamList: (sn: string) => (opts.getDeviceParamList ?? (async () => ({})))(sn),
     getDeviceRelationList: () => (opts.getDeviceRelationList ?? (async () => Promise.reject(new Error("not faked"))))(),
+    getThingsList: (codes: readonly string[]) =>
+      (opts.getThingsList ?? (async () => Promise.reject(new Error("not faked"))))(codes),
   } as unknown as MegaHttpClient;
 }
 
@@ -145,6 +148,76 @@ describe("DeviceRegistry", () => {
       alive = false;
       await expect(reg.getDevices()).rejects.toBeInstanceOf(SessionExpiredError);
       expect(reg.list().map((d) => d.sn)).toEqual(["A"]);
+    });
+  });
+
+  describe("record — thing descriptions", () => {
+    const thingsReply = (code: string) => ({
+      things_list: [
+        {
+          profile: { product_code: code },
+          properties: [
+            { identifier: "nightvision_type", data_type: { type: "bool", specs: { defaultValue: "true" } } },
+            {
+              identifier: "nightvision_type_new",
+              data_type: {
+                type: "enum",
+                specs: {
+                  eunmList: [
+                    { associatedValue: "1", value: "102" },
+                    { associatedValue: "0", value: "100" },
+                  ],
+                },
+              },
+            },
+            { data_type: { type: "bool" } },
+          ],
+        },
+      ],
+    });
+    const listOf =
+      (...devices: unknown[]) =>
+      async (_s: string, path: string) =>
+        path.endsWith("get_house_list") ? { house_infos: [] } : { devices };
+
+    it("fetches each product code once and attaches its description to the record", async () => {
+      const asked: (readonly string[])[] = [];
+      const reg = new DeviceRegistry({
+        mega: fakeMega({
+          post: listOf(rawDevice("A"), rawDevice("B")),
+          getThingsList: async (codes) => (asked.push(codes), thingsReply("T8410")),
+        }),
+        onError: () => {},
+      });
+      await reg.getDevices();
+      await reg.getDevices();
+      expect(asked).toEqual([["T8410"]]);
+      const things = (await reg.record("A")).things;
+      expect(things?.get("nightvision_type")).toEqual({ type: "bool", values: [] });
+      expect(things?.get("nightvision_type_new"), "wire values, not UI values").toEqual({
+        type: "enum",
+        values: ["1", "0"],
+      });
+      expect(things?.size, "a property without an identifier is skipped").toBe(2);
+    });
+
+    it("leaves the record without one when the call fails, and asks again on the next refresh", async () => {
+      let calls = 0;
+      const reg = new DeviceRegistry({
+        mega: fakeMega({
+          post: listOf(rawDevice("A")),
+          getThingsList: async () => {
+            if (++calls === 1) throw new Error("things boom");
+            return thingsReply("T8410");
+          },
+        }),
+        onError: () => {},
+      });
+      await reg.getDevices();
+      expect((await reg.record("A")).things).toBeUndefined();
+      await reg.getDevices();
+      expect(calls).toBe(2);
+      expect((await reg.record("A")).things?.has("nightvision_type")).toBe(true);
     });
   });
 

@@ -270,6 +270,7 @@ export function resolveProperties(rec: CloudRecord, codec: Codec, capabilities: 
     category: rec.category,
     capabilities: new Set(capabilities),
     paramIds,
+    things: rec.things,
     stationSerial: rec.parentSn,
   });
 }

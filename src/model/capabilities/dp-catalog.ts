@@ -10,6 +10,9 @@
  * Still defensive at every step: a missing key or a mismatched shape yields an empty catalog and
  * capabilities fall back to their safe defaults, because a wrong range is worse than none.
  *
+ * A product's thing description (`app/things/get_things_list`) is the other per-SKU catalog: properties
+ * keyed by name rather than by DP id, read here on the same defensive terms.
+ *
  * @module model/capabilities/dp-catalog
  */
 
@@ -95,6 +98,46 @@ function parseEnumRange(values: unknown): readonly string[] {
     }
   }
   return [];
+}
+
+/**
+ * One property of a product's thing description: its declared `data_type.type` (`bool`, `enum`, `tenum`,
+ * `ienum`, `string`, …) and, for an enum, the wire value of each listed member — its `associatedValue`,
+ * as a string, in the listed order. `values` is empty for a non-enum type.
+ */
+export interface ThingProperty {
+  readonly type: string;
+  readonly values: readonly string[];
+}
+
+/** A product's thing description, its properties keyed by `identifier` (`nightvision_type`, …). */
+export type ThingProperties = ReadonlyMap<string, ThingProperty>;
+
+/**
+ * Parse an `app/things/get_things_list` reply into each listed product's {@link ThingProperties}, keyed by
+ * `profile.product_code`. `raw` is the reply's `data` object, holding `things_list`. An enum's members sit
+ * under `data_type.specs.eunmList` (the vendor's spelling). An entry missing a product code or a property
+ * missing an identifier is skipped; any other shape mismatch yields an empty map — never throws.
+ */
+export function parseThingsList(raw: unknown): ReadonlyMap<string, ThingProperties> {
+  const out = new Map<string, ThingProperties>();
+  const list = (raw as { things_list?: unknown } | null)?.things_list;
+  if (!Array.isArray(list)) return out;
+  for (const thing of list) {
+    const code = thing?.profile?.product_code;
+    if (typeof code !== "string" || !Array.isArray(thing.properties)) continue;
+    const properties = new Map<string, ThingProperty>();
+    for (const p of thing.properties) {
+      if (typeof p?.identifier !== "string") continue;
+      const members: unknown = p.data_type?.specs?.eunmList;
+      const values = Array.isArray(members)
+        ? members.map((m) => m?.associatedValue).filter((v): v is string => typeof v === "string")
+        : [];
+      properties.set(p.identifier, { type: String(p.data_type?.type ?? ""), values });
+    }
+    out.set(code, properties);
+  }
+  return out;
 }
 
 function toMemberArray(arr: unknown[]): readonly string[] {

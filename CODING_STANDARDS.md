@@ -148,6 +148,11 @@ those layers. CI-enforced by `guard:capability-ownership`.
 - A capability owns its **semantics** (parameter polarity, frame shape); family classification owns
   only **pure classification** — no parameter ids, no wire forms. Compose family predicates in the
   capability rather than duplicating device-type sets.
+- **What a product offers comes from its thing description, not a model list.** The cloud's
+  `get_things_list` gives each product code its named properties and, for an enum, the wire value of
+  every member it offers; the context carries it as `things`. A per-product option set reads it in
+  `enumValuesFor` and falls back to the static domain when it is absent. A set of model codes is the
+  last resort, for a fact neither the description nor a reported parameter states.
 - Transport **encryption level** is a runtime topology fact, resolved once in the transport — never a
   family trait.
 - **Every property declares what its value MEANS (`kind`)**, not just how it is stored.
@@ -166,7 +171,9 @@ those layers. CI-enforced by `guard:capability-ownership`.
   device reports it. Runtime gating hides an unreported one, but don't advertise a guess in the typed
   surface either.
 - **Ground every wire claim in evidence you can point at.** A parameter id, a polarity or a frame shape
-  is valid only when it comes from the current app's own behaviour. Older third-party eufy clients are
+  is valid only when it comes from the current app's own behaviour: a capture, a run on a real device, or
+  the app's own code — including the per-product plugin whose URL the thing description's `profile`
+  gives, which maps each property to its command, payload and topology. Older third-party eufy clients are
   **wrong** for this protocol, and a model will confidently reproduce them — a borrowed _name_ may be
   credited to a third-party project, but that is provenance for a label only, never authority for
   behaviour. If the evidence isn't there, the wire is unverified and the write must throw, not ship.

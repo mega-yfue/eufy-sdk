@@ -90,7 +90,7 @@ import { VACUUM_CLEAN } from "./vacuum-clean.js";
 import { VACUUM_DOCK } from "./vacuum-dock.js";
 import { SUCTION } from "./suction.js";
 import { MOWER } from "./mower.js";
-export { type DpCatalog, EMPTY_DP_CATALOG } from "./dp-catalog.js";
+export { type DpCatalog, EMPTY_DP_CATALOG, type ThingProperties, type ThingProperty } from "./dp-catalog.js";
 import { DISPLAY } from "./display.js";
 import { LOCATE } from "./locate.js";
 import { SMART_DROP } from "./smart-drop.js";

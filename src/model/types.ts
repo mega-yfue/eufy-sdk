@@ -14,6 +14,8 @@
  * This file is the integration contract: every other `src/model/*` module imports from here.
  */
 
+import type { ThingProperties } from "./capabilities/dp-catalog.js";
+
 /**
  * Command-codec families (axis B2). One per genuinely-different wire protocol.
  *
@@ -381,6 +383,8 @@ export interface CloudRecord {
    * evidence an availability gate on such a param is decided from.
    */
   dpParams?: Record<number, string>;
+  /** The product's thing description, when the cloud returned one for {@link model}. */
+  things?: ThingProperties;
 }
 
 /** The fully-resolved device shape produced by the 3-tier resolver. */
