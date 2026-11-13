@@ -503,6 +503,7 @@ export const PTZ: CapabilityModule = {
       PRESET_EVIDENCE_PARAMS.some((p) => Object.hasOwn(record.params ?? {}, p)),
     deviceTypes: [
       DeviceType.OUTDOOR_PT_CAMERA,
+      DeviceType.SOLO_CAMERA_E30,
       DeviceType.INDOOR_PT_CAMERA,
       DeviceType.INDOOR_PT_CAMERA_1080,
       DeviceType.CAMERA_4G_S330,
