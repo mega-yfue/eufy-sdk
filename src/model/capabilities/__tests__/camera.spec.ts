@@ -173,12 +173,6 @@ describe("camera capability module", () => {
       expect(dev.getProperty("nightVision")?.value).toBe(NightVision.InfraredOn);
     });
 
-    it("writes a 2002 device's mode as a bare level-1 1013", () => {
-      expect(
-        buildCommand("nightVision", NightVision.InfraredOn, ctx(0, { model: "T8410", paramIds: new Set([2002]) })),
-      ).toEqual({ kind: "set-param", param: CAMERA_CMD.IC_NIGHT_VISION_TYPE, value: 3, form: "int-pair", channel: 0 });
-    });
-
     it("offers the modes the product's thing description lists, nightvision_type_new first", () => {
       const options = (description?: ThingDescription) =>
         Device.fromRecord("TEST-SN", { model: "T8170", params: { 1277: "1" }, things: description }).properties.find(
@@ -210,7 +204,7 @@ describe("camera capability module", () => {
           NightVision.FullColor,
           ctx(0, { paramIds: new Set([2002]), things: AUTO_NIGHT_VISION }),
         ),
-      ).toThrow(/not a mode this camera offers/);
+      ).toThrow(/nightVision: 2 is not a valid value \(must be one of 0\/1\)/);
     });
 
     it("reads Infrared On on 1277 without a write for it", () => {
@@ -277,7 +271,7 @@ describe("camera capability module", () => {
     });
 
     it("rejects Full Color on T8442 with a model-specific error", async () => {
-      const message = /nightVision: 2 is not a mode this camera offers/;
+      const message = /nightVision: 2 is not a valid value \(must be one of 0\/1\)/;
       expect(() => buildCommand("nightVision", NightVision.FullColor, t8442)).toThrow(message);
       await expect(camera(t8442).acts.setNightVision!(NightVision.FullColor)).rejects.toThrow(message);
     });

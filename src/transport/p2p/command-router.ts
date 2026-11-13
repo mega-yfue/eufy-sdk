@@ -1562,7 +1562,7 @@ export class P2PCommandRouter {
    */
   private async resolveScalarParam(sn: string, param: number, value: number, form: ScalarForm): Promise<void> {
     if (form === "int-string" || form === "int-pair") {
-      await this.sendIntStringCommand(sn, param, value, form === "int-string");
+      await this.sendIntStringCommand(sn, param, value, form);
       return;
     }
     if (form === "direct-binary") {
@@ -2358,10 +2358,10 @@ export class P2PCommandRouter {
    * SoloCam-spotlight / Cam2C-3). No level-2 key needed (standalone level-1 ECB). Fire-and-forget,
    * repeated for RF resilience.
    */
-  private async sendIntStringCommand(sn: string, outerCmd: number, value: number, withAccount = true): Promise<void> {
+  private async sendIntStringCommand(sn: string, outerCmd: number, value: number, form?: ScalarForm): Promise<void> {
     const { session, channel, accountId } = await this.resolveSession(sn);
     for (let i = 0; i < DIRECT_CMD_SENDS; i++) {
-      session.sendIntStringCommand(outerCmd, value, channel, withAccount ? accountId : "", channel);
+      session.sendIntStringCommand(outerCmd, value, channel, form === "int-pair" ? "" : accountId, channel);
       await sleep(200);
     }
   }

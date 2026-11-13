@@ -11,15 +11,7 @@ import { setScalar, setPayload, setJson, isCameraCodec, hasCapability } from "./
 import { AUDIO_CMD } from "./audio.js";
 import { DOORBELL_CMD } from "./doorbell.js";
 import { cameraPowerTier } from "./battery.js";
-import {
-  accepts,
-  propertiesOf,
-  provided,
-  resolvedEnum,
-  type Members,
-  type Surface,
-  type MemberDeps,
-} from "./members.js";
+import { accepts, propertiesOf, provided, type Members, type Surface, type MemberDeps } from "./members.js";
 import type { AvailabilityContext, CapabilityModule, CapabilityActions, CommandContext } from "./types.js";
 import {
   CameraDisabledError,
@@ -431,9 +423,6 @@ function isT8410HomeBase3(ctx: AvailabilityContext): boolean {
   return ctx.model === "T8410" && ctx.stationSerial?.startsWith("T8030") === true;
 }
 
-/** The night-vision modes, by wire value. */
-const NIGHT_VISION_MODES: Record<number, string> = { 0: "Off", 1: "Infrared", 2: "Full Color", 3: "Infrared On" };
-
 /** A device that reports its night vision on 2002 and not on 1277. */
 function readsNightVisionOn2002(ctx: AvailabilityContext): boolean {
   return ctx.paramIds?.has(2002) === true && !ctx.paramIds.has(CAMERA_CMD.NIGHT_VISION_TYPE);
@@ -748,38 +737,24 @@ export const CAMERA_MEMBERS = {
         : setJson(CAMERA_CMD.PUSH_NOTIFY_TYPE, { value: style, transaction: String(Date.now()) }, ctx);
     },
   },
-  /**
-   * Four modes, each product offering two or three of them, as its thing description lists them (`thing`): the members of `nightvision_type_new` when the product has it, else of `nightvision_type`, a `bool` there being the app's Auto Night Vision switch, Off and Infrared. Every model read so far gives the four values
-   * the same meaning on 1277 and on 2002. `coerceEnumValue` rejects a value outside {@link NightVision}
-   * rather than coercing it. The payload key on the 1277 wire is `night_sion`.
-   *
-   * The V6 app also maps modes onto 5, 6 and 8, which no product read so far lists; a listed or reported
-   * value outside {@link NIGHT_VISION_MODES} is not offered and reads as `undefined` rather than as an
-   * unnamed number.
-   */
+  /** Modes come from the thing description (`thing`); unlisted values read as `undefined`. */
   nightVision: {
     param: CAMERA_CMD.NIGHT_VISION_TYPE,
     type: "enum",
     kind: "enum",
-    enumValues: NIGHT_VISION_MODES,
+    enumValues: { 0: "Off", 1: "Infrared", 2: "Full Color", 3: "Infrared On" },
     thing: ["nightvision_type_new", "nightvision_type"],
     provenance: "verified",
     available: isCameraCodec,
     readAvailable: (ctx) => !readsNightVisionOn2002(ctx),
     readAliases: [{ paramType: 2002, available: readsNightVisionOn2002 }],
-    coerce: (raw) => (raw === true || raw === "true" ? 1 : raw === false || raw === "false" ? 0 : Number(raw)),
+    coerce: (raw) => (raw === "true" ? 1 : raw === "false" ? 0 : Number(raw)),
     description:
-      "Night-vision mode: 0 = off, 1 = infrared switched by the light level (B&W), 2 = full colour, " +
-      "3 = infrared held on; the modes a product offers are the ones its cloud thing description lists. A device reporting 1277 writes NIGHT_VISION_TYPE " +
-      "(1350 SET_PAYLOAD, night_sion); one reporting 2002 instead writes IC_NIGHT_VISION_TYPE 1013 as a bare " +
-      'level-1 [channel][value]; a T8442 reports 2002 as "true" while the app\'s Auto Night Vision is on. ' +
-      "Reads verified live on T8170, T8171, T8400, T8410 and T8442; the 2002 write is the app's own frame, " +
-      "and 3 on 1277 has none.",
+      "Night-vision mode: 0 = off, 1 = infrared by light level, 2 = full colour, 3 = infrared held on. " +
+      "Written on 1277 (1350 SET_PAYLOAD, night_sion), or on 1013 as a bare [channel][value] when the device reports 2002.",
     write: (v, ctx) => {
       const nv = coerceEnumValue(NightVision, v);
       if (nv == null) return undefined;
-      if (!(nv in (resolvedEnum(CAMERA_MEMBERS.nightVision, ctx).values ?? NIGHT_VISION_MODES)))
-        throw new Error(`nightVision: ${nv} is not a mode this camera offers`);
       if (readsNightVisionOn2002(ctx)) return setScalar(CAMERA_CMD.IC_NIGHT_VISION_TYPE, nv, ctx, "int-pair");
       if (nv === NightVision.InfraredOn)
         throw new Error("nightVision: Infrared On has no verified write on this model");
