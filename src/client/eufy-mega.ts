@@ -103,6 +103,7 @@ import type {
 
 export type {
   EufyMegaOptions,
+  PersistedThings,
   EufyMegaEvent,
   EufyMegaEventMap,
   AnyDeviceEvent,
@@ -408,6 +409,7 @@ export class EufyMega extends EventEmitter {
       mega: this.mega,
       onError: (e) => this.reportError(e),
       logger: opts.logger,
+      thingStore: opts.thingStore,
     });
     this.p2p = new P2PCommandRouter({
       mega: this.mega,

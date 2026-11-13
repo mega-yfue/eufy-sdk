@@ -10,14 +10,14 @@ function fakeMega(opts: {
   post: PostFn;
   getDeviceParamList?: (sn: string) => Promise<any>;
   getDeviceRelationList?: () => Promise<any>;
-  getThingsList?: (codes: readonly string[]) => Promise<any>;
+  getThingsList?: (codes: readonly string[], codeTimeMap: Record<string, number>) => Promise<any>;
 }): MegaHttpClient {
   return {
     post: (service: string, path: string, body?: unknown) => opts.post(service, path, body),
     getDeviceParamList: (sn: string) => (opts.getDeviceParamList ?? (async () => ({})))(sn),
     getDeviceRelationList: () => (opts.getDeviceRelationList ?? (async () => Promise.reject(new Error("not faked"))))(),
-    getThingsList: (codes: readonly string[]) =>
-      (opts.getThingsList ?? (async () => Promise.reject(new Error("not faked"))))(codes),
+    getThingsList: (codes: readonly string[], codeTimeMap: Record<string, number> = {}) =>
+      (opts.getThingsList ?? (async () => Promise.reject(new Error("not faked"))))(codes, codeTimeMap),
   } as unknown as MegaHttpClient;
 }
 
@@ -210,6 +210,51 @@ describe("DeviceRegistry", () => {
       await reg.getDevices();
       expect((await reg.record("A")).things?.properties.nightvision_type?.identifier).toBe("nightvision_type__v1");
       expect((await reg.record("B")).things?.properties.nightvision_type?.identifier).toBe("nightvision_type");
+    });
+
+    it("restores held descriptions, asks with their update_time, and keeps one the cloud says is unchanged", async () => {
+      const held = { ...thingsReply("T8410").things_list[0], update_time: 100 };
+      const saved: unknown[] = [];
+      const asked: Record<string, number>[] = [];
+      const reg = new DeviceRegistry({
+        mega: fakeMega({
+          post: listOf(rawDevice("A")),
+          getThingsList: async (_codes, codeTimeMap) => (
+            asked.push(codeTimeMap),
+            { things_list: [{ profile: { product_code: "T8410" }, update_time: 100, properties: [] }] }
+          ),
+        }),
+        onError: () => {},
+        thingStore: { load: () => ({ things: { T8410: held } }), save: (s) => saved.push(s), clear: () => {} },
+      });
+      await reg.getDevices();
+      await reg.getDevices();
+      expect(asked).toEqual([{ T8410: 100 }]);
+      expect((await reg.record("A")).things?.properties.nightvision_type?.type).toBe("bool");
+      expect(saved).toEqual([{ things: { T8410: held } }]);
+    });
+
+    it("replaces a changed description and saves it", async () => {
+      const changed = {
+        profile: { product_code: "T8410" },
+        update_time: 200,
+        properties: [{ identifier: "led_on_off", data_type: { type: "bool" } }],
+      };
+      const saved: unknown[] = [];
+      const reg = new DeviceRegistry({
+        mega: fakeMega({ post: listOf(rawDevice("A")), getThingsList: async () => ({ things_list: [changed] }) }),
+        onError: () => {},
+        thingStore: {
+          load: () => ({ things: { T8410: { ...thingsReply("T8410").things_list[0], update_time: 100 } } }),
+          save: (s) => saved.push(s),
+          clear: () => {},
+        },
+      });
+      await reg.getDevices();
+      const things = (await reg.record("A")).things;
+      expect(things?.updateTime).toBe(200);
+      expect(Object.keys(things?.properties ?? {})).toEqual(["led_on_off"]);
+      expect(saved).toEqual([{ things: { T8410: changed } }]);
     });
 
     it("leaves the record without one when the call fails, and asks again on the next refresh", async () => {
