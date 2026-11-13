@@ -280,10 +280,6 @@ export function isChargingState(v: string | number | boolean): boolean {
  * Each write is gated on the device reporting the param it reads back, because "has a battery" is much
  * weaker evidence than "speaks this setting": an entry sensor reports a level (1101) and nothing else,
  * and handing it a power-source frame it never accepts would look like success.
- *
- * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
- * which the reference site does not carry.
- * @internal
  */
 const CAMERA_BATTERY_MEMBERS = cellGated({
   /**
@@ -546,6 +542,10 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
  * The published `battery` table: the full camera surface, minus every member on the `sensor` codec —
  * a sensor's 1101 is a non-cell sentinel and it has none of the camera power reads, so it exposes no
  * battery entity (see {@link notOnSensor}). Every getter, setter and description derives from this.
+ *
+ * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * which the reference site does not carry.
+ * @internal
  */
 export const BATTERY_MEMBERS = notOnSensor(CAMERA_BATTERY_MEMBERS);
 
