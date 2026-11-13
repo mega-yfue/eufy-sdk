@@ -18,7 +18,7 @@ import {
 import { parseAiotDpReport } from "../transport/mqtt/dp-codec.js";
 import { classifyDevice, type DeviceClass, type EufyDevice, type RealtimeKind } from "../core/types.js";
 import { inspectParams, resolveDevice, type Capability, type Codec, type DeviceInspection } from "../model/index.js";
-import { parseThingsList, type ThingDescription } from "../model/capabilities/thing-description.js";
+import { parseThingsList, resolveThing, type ThingDescription } from "../model/capabilities/thing-description.js";
 
 /** The device-record shape {@link EufyMega.getDevice}/`commandContext` resolve a serial to. */
 export interface DeviceRecord {
@@ -484,6 +484,28 @@ export class DeviceRegistry {
   }
 
   /**
+   * The device's product description resolved for this device ({@link resolveThing}): against its serial
+   * and firmware (`main_sw_version`), the station it is reached through and that station's firmware, the
+   * account's country and its reported params.
+   */
+  private thingsFor(dev: EufyDevice, station: string, params: Record<number, string>): ThingDescription | undefined {
+    const td = this.things.get(dev.model ?? "");
+    if (!td) return undefined;
+    const firmware = (d?: EufyDevice) => {
+      const v = (d?.raw as Record<string, unknown> | undefined)?.["main_sw_version"];
+      return typeof v === "string" ? v : undefined;
+    };
+    return resolveThing(td, {
+      serial: dev.sn,
+      firmwareVersion: firmware(dev),
+      stationSerial: station,
+      stationFirmwareVersion: firmware(this.devices.find((d) => d.sn === station)),
+      country: this.mega.countryCode,
+      params,
+    });
+  }
+
+  /**
    * Hold the thing description of every product code the account has, fetched once per code in one
    * `get_things_list` call for the codes not yet held — product data, the same for every account. A failure
    * keeps what was held and is retried on the next refresh; a code the reply omits is not asked again.
@@ -569,7 +591,7 @@ export class DeviceRegistry {
       params,
       paramUpdatedAt,
       dpParams: this.dpParams.get(sn),
-      things: this.things.get(dev.model ?? ""),
+      things: this.thingsFor(dev, station, params),
     };
   }
 

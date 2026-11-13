@@ -182,6 +182,36 @@ describe("DeviceRegistry", () => {
       expect(dumped.things?.properties.nightvision_type?.type, "inspectDevice carries it, serialisable").toBe("bool");
     });
 
+    it("resolves the description for the device: its firmware picks the variant", async () => {
+      const reply = {
+        things_list: [
+          {
+            profile: { product_code: "T8410" },
+            properties: [
+              { identifier: "nightvision_type", data_type: { type: "tenum" } },
+              {
+                identifier: "nightvision_type__v1",
+                data_type: { type: "bool" },
+                read_conditions: {
+                  condition_list: [{ conditions: [{ type: "device_version", qualifier: "<=", value: "2.1.7.7" }] }],
+                },
+              },
+            ],
+          },
+        ],
+      };
+      const reg = new DeviceRegistry({
+        mega: fakeMega({
+          post: listOf(rawDevice("A", { main_sw_version: "2.1.7.7" }), rawDevice("B", { main_sw_version: "2.3.0.0" })),
+          getThingsList: async () => reply,
+        }),
+        onError: () => {},
+      });
+      await reg.getDevices();
+      expect((await reg.record("A")).things?.properties.nightvision_type?.identifier).toBe("nightvision_type__v1");
+      expect((await reg.record("B")).things?.properties.nightvision_type?.identifier).toBe("nightvision_type");
+    });
+
     it("leaves the record without one when the call fails, and asks again on the next refresh", async () => {
       let calls = 0;
       const reg = new DeviceRegistry({

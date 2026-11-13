@@ -1,4 +1,4 @@
-import { parseThingsList } from "../thing-description.js";
+import { conditionsPass, parseThingsList, resolveThing } from "../thing-description.js";
 
 /**
  * A synthetic `get_things_list` reply shaped like the service's: one product with a property of every
@@ -101,14 +101,14 @@ const REPLY = {
 describe("parseThingsList", () => {
   const t = parseThingsList(REPLY).T0000!;
 
-  it("keeps the product's identity, versions and plugin", () => {
+  it("keeps the product's identity, versions and settings bundle", () => {
     expect(t).toMatchObject({
       productCode: "T0000",
       version: "1.0",
       updateTime: 1700000000,
       largeVersion: 12,
       largeVersionUpdateTime: 1700000100,
-      plugin: {
+      bundle: {
         id: "plugin-id",
         path: "https://cdn.example/T0000Handle.mix.js",
         zipId: "zip-id",
@@ -176,5 +176,146 @@ describe("parseThingsList", () => {
 
   it("answers an empty result for a reply it does not recognise", () => {
     for (const raw of [undefined, null, 42, "x", {}, { things_list: {} }]) expect(parseThingsList(raw)).toEqual({});
+  });
+});
+
+describe("conditionsPass", () => {
+  const c = (type: string, qualifier: string, value: string, propId?: string) => ({
+    type,
+    qualifier,
+    value,
+    ...(propId ? { propId } : {}),
+  });
+  const pass = (list: ReturnType<typeof c>[][], facts = {}) => conditionsPass(list, facts);
+
+  it("passes an empty list, any passing entry, and an entry only when all its conditions pass", () => {
+    expect(pass([])).toBe(true);
+    const fw = { firmwareVersion: "2.0.0.0" };
+    expect(pass([[c("device_version", ">=", "3.0.0.0")], [c("device_version", "<", "3.0.0.0")]], fw)).toBe(true);
+    expect(pass([[c("device_version", "<", "3.0.0.0"), c("device_version", ">", "2.5.0.0")]], fw)).toBe(false);
+    expect(pass([[c("unknown_type", "=", "x")]])).toBe(false);
+  });
+
+  it("compares firmware as versions, dropping trailing letters", () => {
+    const at = (firmwareVersion: string, q: string, v: string) =>
+      pass([[c("device_version", q, v)]], { firmwareVersion });
+    expect(at("2.1.7.7", "<=", "2.1.7.7")).toBe(true);
+    expect(at("2.1.10.0", ">=", "2.1.9.9"), "numerically, not as text").toBe(true);
+    expect(at("3.1.1.7a", "=", "3.1.1.7")).toBe(true);
+    expect(at("2.3", ">=", "2.3.0.0"), "missing parts count as 0").toBe(true);
+    expect(at("2.2.9.9", "!=", "2.3.0.0")).toBe(true);
+  });
+
+  it("reads topology from the station serial, the device's own when it stands alone", () => {
+    const sn = (stationSerial: string | undefined) => ({ serial: "T8400P0000000000", stationSerial });
+    const behind = [[c("parent_sn", "RE", "^(T8030).*$")]];
+    expect(pass(behind, sn("T8030P0000000000"))).toBe(true);
+    expect(pass(behind, sn(undefined))).toBe(false);
+    expect(pass([[c("parent_sn", "RE", "^(T8400).*$")]], sn(undefined)), "standalone").toBe(true);
+    expect(pass([[c("parent_sn", "RE", "^(?!T8400|T7000).*$")]], sn(undefined))).toBe(false);
+  });
+
+  it("strips a suffixed station's firmware suffix before comparing, and only that station's", () => {
+    const st = (stationSerial: string) =>
+      pass([[c("parent_version", ">=", "3.2.8.6")]], { stationSerial, stationFirmwareVersion: "3.2.8.6_EU" });
+    expect(st("T8010P0000000000")).toBe(true);
+    expect(st("T8030P0000000000")).toBe(false);
+  });
+
+  it("honours Java's inline (?i), passes an empty value, and fails an invalid pattern", () => {
+    expect(pass([[c("user_country", "RE", "^(?i)(jp).*$")]], { country: "JP" })).toBe(true);
+    expect(pass([[c("user_country", "RE", "(?i)^(?!(JP|OM)).*$")]], { country: "fr" })).toBe(true);
+    expect(pass([[c("user_country", "RE", "^(JP).*$")]], {}), "an empty value passes, as in the app").toBe(true);
+    expect(pass([[c("device_sn", "RE", "([")]], { serial: "T8170P0000000000" })).toBe(false);
+  });
+
+  it("evaluates sdk_version against the app's own, associated fields against a looked-up value", () => {
+    expect(pass([[c("sdk_version", "<=", "2.3.3.1")]])).toBe(true);
+    expect(pass([[c("sdk_version", ">", "2.3.3.1")]])).toBe(false);
+    const value = (v: string) => ({ propertyValue: (id: string) => (id === "ai_empower" ? v : undefined) });
+    expect(pass([[c("associated_field", "=", "1", "ai_empower")]], value("1"))).toBe(true);
+    expect(pass([[c("associated_field", "=", "1", "ai_empower")]], {}), "unknown value").toBe(false);
+  });
+
+  it("matches a reported param for camera_info", () => {
+    const params = { 1234: "on" };
+    expect(pass([[c("camera_info", "equals", '{"param":1234,"value":"on"}')]], { params })).toBe(true);
+    expect(pass([[c("camera_info", "RE", '{"param":1234,"regex":"^o"}')]], { params })).toBe(true);
+    expect(pass([[c("camera_info", "equals", '{"param":99,"value":"on"}')]], { params })).toBe(false);
+  });
+});
+
+describe("resolveThing", () => {
+  const prop = (identifier: string, type: string, extra: Record<string, unknown> = {}) => ({
+    identifier,
+    access_mode: "RW",
+    data_type: { type },
+    ...extra,
+  });
+  const cond = (...conditions: { type: string; qualifier: string; value: string }[]) => ({
+    condition_list: [{ conditions }],
+  });
+  const td = parseThingsList({
+    things_list: [
+      {
+        profile: { product_code: "T0000" },
+        properties: [
+          prop("nightvision_type", "tenum"),
+          prop("nightvision_type__v1", "bool", {
+            read_conditions: cond({ type: "device_version", qualifier: "<=", value: "2.1.7.7" }),
+          }),
+          prop("mode", "enum"),
+          prop("mode__v1", "int", { read_conditions: cond({ type: "parent_sn", qualifier: "RE", value: "^T8030" }) }),
+          prop("mode__v2", "string", {
+            read_conditions: cond(
+              { type: "parent_sn", qualifier: "RE", value: "^T8030" },
+              { type: "device_version", qualifier: ">=", value: "3.0.0.0" },
+            ),
+          }),
+          prop("mode__v3", "bool"),
+          prop("hidden", "bool", {
+            available_conditions: cond({ type: "parent_sn", qualifier: "RE", value: "^T8030" }),
+          }),
+          prop("locked", "bool", {
+            write_conditions: cond({ type: "device_version", qualifier: ">=", value: "9.0.0.0" }),
+          }),
+        ],
+        actions: [
+          { identifier: "always" },
+          {
+            identifier: "behind_only",
+            available_conditions: cond({ type: "parent_sn", qualifier: "RE", value: "^T8030" }),
+          },
+        ],
+      },
+    ],
+  }).T0000!;
+  const standalone = (firmwareVersion: string) => resolveThing(td, { serial: "T0000P0000000000", firmwareVersion });
+
+  it("picks the firmware variant the app picks, keyed by the base identifier", () => {
+    expect(standalone("2.1.7.7").properties.nightvision_type).toMatchObject({
+      identifier: "nightvision_type__v1",
+      type: "bool",
+    });
+    expect(standalone("2.3.0.0").properties.nightvision_type).toMatchObject({
+      identifier: "nightvision_type",
+      type: "tenum",
+    });
+    expect(standalone("2.3.0.0").properties.nightvision_type__v1).toBeUndefined();
+  });
+
+  it("prefers the passing variant with the most conditions, never one without read conditions", () => {
+    const behind = (firmwareVersion: string) =>
+      resolveThing(td, { serial: "T0000P0000000000", stationSerial: "T8030P0000000000", firmwareVersion }).properties
+        .mode?.identifier;
+    expect(behind("3.1.0.0")).toBe("mode__v2");
+    expect(behind("2.0.0.0")).toBe("mode__v1");
+    expect(standalone("3.1.0.0").properties.mode?.identifier).toBe("mode");
+  });
+
+  it("leaves out what is unavailable and holds a refused write as read-only", () => {
+    expect(standalone("2.3.0.0").properties.hidden).toBeUndefined();
+    expect(standalone("2.3.0.0").properties.locked?.accessMode).toBe("R");
+    expect(Object.keys(standalone("2.3.0.0").actions)).toEqual(["always"]);
   });
 });

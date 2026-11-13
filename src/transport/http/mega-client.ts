@@ -464,6 +464,11 @@ export class MegaHttpClient {
     return this.region;
   }
 
+  /** The account's country code as configured (e.g. `"FR"`), the one logins are sent with. */
+  get countryCode(): string {
+    return this.cfg.countryCode;
+  }
+
   /**
    * The shard the estimated domain names (`…-ie-…`/`…-ie.` → `ie-pr`), else {@link regionShard}. The
    * eu/us classification cannot name shards like `ie-pr`.
