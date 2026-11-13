@@ -181,6 +181,44 @@ describe("recording download", () => {
     expect(out).toMatchObject({ frames: 3, missingFrames: 2 });
   });
 
+  const HD = { width: 1280, height: 720 };
+  const FHD = { width: 1920, height: 1080 };
+
+  it("counts frame numbers on from the frame before a keyframe that changes the frame size", () => {
+    const frames = [
+      clearVideoFrame(IDR, true, 30, 0, HD),
+      clearVideoFrame(slice(1), false, 31, 100, HD),
+      clearVideoFrame(IDR, true, 0, 200, FHD),
+      clearVideoFrame(slice(2), false, 1, 300, FHD),
+      clearVideoFrame(IDR, true, 0, 400, HD),
+      clearVideoFrame(slice(3), false, 1, 500, HD),
+      clearVideoFrame(IDR, true, 4, 800, HD),
+    ];
+
+    expect(decodeRecording(frames, HB3)).toMatchObject({ frames: 7, missingFrames: 2, durationMs: 800, fps: 10 });
+  });
+
+  it("counts on across a size change at the first keyframe, after leading frames of another size", () => {
+    const frames = [
+      clearVideoFrame(slice(1), false, 40, 0, HD),
+      clearVideoFrame(slice(2), false, 41, 67, HD),
+      clearVideoFrame(IDR, true, 0, 133, FHD),
+      clearVideoFrame(slice(3), false, 1, 200, FHD),
+    ];
+
+    expect(decodeRecording(frames, HB3)).toMatchObject({ frames: 4, missingFrames: 0, durationMs: 200, fps: 15 });
+  });
+
+  it("keeps the numbering at a frame that changes size without being a keyframe", () => {
+    const frames = [
+      clearVideoFrame(IDR, true, 0, 0, HD),
+      clearVideoFrame(slice(1), false, 1, 67, HD),
+      clearVideoFrame(slice(2), false, 5, 333, FHD),
+    ];
+
+    expect(decodeRecording(frames, HB3)).toMatchObject({ frames: 3, missingFrames: 3 });
+  });
+
   it("joins split pictures and omits a continuation whose opening frame was lost", () => {
     const { eccHex, publicKey } = camera();
     const key = randomBytes(32);

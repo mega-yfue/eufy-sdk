@@ -26,7 +26,7 @@ import { decodeMapFrame } from "./map-channels.js";
 import { VacuumMapStore } from "../model/index.js";
 import { type P2PSession, type P2PFrame } from "../transport/p2p/p2p-session.js";
 import { P2PCommandRouter } from "../transport/p2p/command-router.js";
-import { RtcCommandRouter, type RtcRoute } from "../transport/rtc/command-router.js";
+import { RtcCommandRouter, RTC_CONTROL_COMMAND_KINDS, type RtcRoute } from "../transport/rtc/command-router.js";
 import { jpegGeometry } from "../transport/p2p/media.js";
 import type { PowerTier } from "../transport/p2p/session-manager.js";
 import { MqttCommandRouter } from "../transport/mqtt/command-router.js";
@@ -79,6 +79,7 @@ import {
 import {
   isNvrMediaCamera,
   isNvrDualLensCamera,
+  isNvrFullHdCamera,
   isCallDoorbell,
   isHomeBase,
   isNvrT8N00,
@@ -87,6 +88,7 @@ import {
 } from "../model/device-family.js";
 import { cameraPowerTier } from "../model/capabilities/battery.js";
 import { DeviceRegistry, type DeviceRecord, type ParamChange } from "./device-registry.js";
+import { PushRepeats } from "./push-repeats.js";
 import type {
   EufyMegaOptions,
   EufyMegaEvent,
@@ -189,6 +191,27 @@ const PUSH_RETRY_MAX_MS = 600_000;
 const STATION_REOPEN_MIN_MS = 5_000;
 const STATION_REOPEN_MAX_MS = 300_000;
 
+/**
+ * The command kinds that ride a device's PRIMARY transport — the ones {@link EufyMega.routeCommand} lets
+ * fall through to `this.rtc` / `this.p2p` after peeling off the self-routed kinds (`ff09-*`,
+ * `keyed-payload-actuate`, `mqtt-dp*`, `aiot-dp`, which name their own wire). Kept beside the routing it
+ * mirrors so the two change together; `commandContext` turns it into the per-device refused set.
+ */
+const PORTAL_COMMAND_KINDS: ReadonlySet<Command["kind"]> = new Set<Command["kind"]>([
+  "set-payload",
+  "set-json",
+  "set-param",
+  "set-json-raw",
+  "p2p-station-scalar",
+  "p2p-int-string",
+  "p2p-privacy-burst",
+]);
+
+/** The portal kinds an RTC-control station refuses: every portal kind its control channel cannot frame. */
+const RTC_CONTROL_REFUSED_KINDS: ReadonlySet<Command["kind"]> = new Set<Command["kind"]>(
+  [...PORTAL_COMMAND_KINDS].filter((kind) => !RTC_CONTROL_COMMAND_KINDS.has(kind)),
+);
+
 interface RealtimeGeneration {
   readonly epoch: number;
   readonly readiness: MutableRealtimeReadiness;
@@ -286,6 +309,11 @@ export class EufyMega extends EventEmitter {
   /** Device list/record/capability resolution + the frame→caps cache. */
   private readonly registry: DeviceRegistry;
   private pushClient?: PushClient;
+  /**
+   * Second FCM deliveries of one detection. Only pulse events (no {@link STATE_EVENT_FIELDS} entry) are
+   * held back on a repeat; state-carrying events are already edge-triggered by {@link noteState}.
+   */
+  private readonly pushRepeats = new PushRepeats();
   /** Push-fed passive image store; absent when the caller disables acquisition. */
   private readonly storedImages?: StoredImageCache;
   /** Account whose retained images are currently held. */
@@ -1373,6 +1401,7 @@ export class EufyMega extends EventEmitter {
       return this.rtc.nvrMediaProviderFor(
         { ...route, cameraSn: sn, channel },
         isNvrDualLensCamera(camera) ? [0, 1] : [0],
+        isNvrFullHdCamera(camera) ? ["1080p"] : undefined,
       );
     }
     return this.rtc.mediaProviderFor({ ...route, cameraSn: sn, channel });
@@ -2459,6 +2488,12 @@ export class EufyMega extends EventEmitter {
       (resolved.codec === "vacuum" || resolved.codec === "mower") && rec.model
         ? await this.fetchDpCatalog(rec.model)
         : undefined;
+    const rtcRoute = this.rtcRouteFor(sn);
+    const refusedCommandKinds: ReadonlySet<Command["kind"]> | undefined = !rtcRoute
+      ? undefined
+      : rtcRoute.mediaTrack
+        ? PORTAL_COMMAND_KINDS
+        : RTC_CONTROL_REFUSED_KINDS;
     return {
       channel,
       timezone: recordString(parentRaw ?? {}, "time_zone"),
@@ -2490,6 +2525,7 @@ export class EufyMega extends EventEmitter {
       // Topology as the record states it: a parent that isn't the device itself means HomeBase-attached.
       homeBaseAttached: !!raw.parent_sn && raw.parent_sn !== dev.sn,
       stationDeviceType: this.stationDeviceTypeOf(sn),
+      refusedCommandKinds,
       dpCatalog,
     };
   }
@@ -2567,9 +2603,11 @@ export class EufyMega extends EventEmitter {
         payload: ev.payload as Record<string, unknown>,
       };
       const caps = this.capsForEvent(ev.deviceSn);
-      const decoded = decodeCapabilityEvent(signal, caps);
+      const all = decodeCapabilityEvent(signal, caps);
+      const repeat = all.some((out) => !STATE_EVENT_FIELDS[out.event]) && this.pushRepeats.repeat(ev);
+      const decoded = repeat ? all.filter((out) => STATE_EVENT_FIELDS[out.event]) : all;
       this.opts.logger?.debug(
-        `[push] in: eventType=${ev.eventType} device=${caps ? "known" : ev.deviceSn ? "unknown" : "none"} events=${decoded.length}`,
+        `[push] in: eventType=${ev.eventType} device=${caps ? "known" : ev.deviceSn ? "unknown" : "none"} events=${decoded.length}${repeat ? " (repeat)" : ""}`,
       );
       for (const out of decoded) {
         this.emitSemantic(out.event, out.payload, { edge: true, refresh: out.refresh });

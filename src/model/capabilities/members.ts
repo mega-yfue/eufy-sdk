@@ -902,6 +902,71 @@ export function installs(
 }
 
 /**
+ * Whether a command of this kind can route over the device's primary transport. The client decides what
+ * a transport refuses — `ctx.refusedCommandKinds`, the kinds the device's primary transport cannot carry
+ * — so the model keeps no copy of the routing table: a kind absent from the set (and the whole set, the
+ * P2P default `undefined`) routes.
+ */
+export function kindRoutable(kind: Command["kind"], ctx: AvailabilityContext): boolean {
+  return !ctx.refusedCommandKinds?.has(kind);
+}
+
+/**
+ * Every in-domain probe value for a member whose command KIND can depend on the value written — both
+ * bools, every enum option, else one scalar (the stored minimum, or `0`). The write builders are pure,
+ * so emitting each to read back its `kind` touches no transport. In-domain matters: a builder that
+ * validates its argument returns `undefined` for an out-of-domain value, which `writeRoutable` reads as
+ * unprobeable and fails open on rather than as unroutable.
+ */
+function probeValues(m: ValueMember, ctx: CommandContext): (boolean | number | string)[] {
+  if (m.type === "bool") return [false, true];
+  const { values } = resolvedEnum(m, ctx);
+  const keys = values ? Object.keys(values).map(Number) : undefined;
+  if (m.type === "string") return keys && values ? keys.map((k) => values[k]) : [""];
+  if (m.type === "enum") return keys ?? [0];
+  return keys ?? [m.min ?? 0]; // number
+}
+
+/**
+ * Whether this device's PRIMARY transport can carry the setter — true when ANY in-domain value it would
+ * write routes. A member whose command kind depends on its value keeps its setter as long as one value
+ * reaches the device (test mode enters over `set-payload` but leaves over `set-param`, so probing only
+ * `false` would wrongly drop it behind an RTC-control station).
+ *
+ * Fails OPEN: a builder that throws or declines (returns `undefined`) for a probe leaves the setter
+ * installed, so a write we cannot probe is never silently dropped — the gate only ever withdraws a
+ * setter it positively knows no in-domain value can route.
+ */
+function writeRoutable(m: ValueMember, ctx: CommandContext): boolean {
+  if (!ctx.refusedCommandKinds) return true;
+  for (const value of probeValues(m, ctx)) {
+    let kind: Command["kind"] | undefined;
+    try {
+      kind = m.write?.(value, ctx)?.kind;
+    } catch {
+      return true;
+    }
+    if (kind === undefined || kindRoutable(kind, ctx)) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether this device's PRIMARY transport can carry a momentary action's command. Fails OPEN on a
+ * throwing builder, the same as {@link writeRoutable}.
+ */
+function actionRoutable(m: ActionMember, ctx: CommandContext): boolean {
+  if (!ctx.refusedCommandKinds) return true;
+  let kind: Command["kind"];
+  try {
+    kind = m.action(ctx).kind;
+  } catch {
+    return true;
+  }
+  return kindRoutable(kind, ctx);
+}
+
+/**
  * Bind the table: evidence-gated getters, derived setters, momentary actions.
  *
  * Three rules the loop enforces for every member, so no module restates them:
@@ -941,7 +1006,8 @@ export function bindMembers<M extends Members>(members: M, deps: MemberDeps): Su
       continue;
     }
     if ("action" in m) {
-      if (installs(m, ctx)) out[name] = describe(m.description, () => sink.dispatch(m.action(ctx)), {});
+      if (installs(m, ctx) && actionRoutable(m, ctx))
+        out[name] = describe(m.description, () => sink.dispatch(m.action(ctx)), {});
       continue;
     }
     const prop = m.property ?? name;
@@ -965,7 +1031,7 @@ export function bindMembers<M extends Members>(members: M, deps: MemberDeps): Su
       const get = decode ? () => decode(raw(), rawDp, ctx) : () => narrow(m.type, read, prop, domain);
       Object.defineProperty(out, name, { get, enumerable: true, configurable: true });
     }
-    if (!m.write || m.unverified || m.unverifiedFor?.(ctx) || !installs(m, ctx)) continue;
+    if (!m.write || m.unverified || m.unverifiedFor?.(ctx) || !installs(m, ctx) || !writeRoutable(m, ctx)) continue;
     if (m.writeOnly) unobservable.push(name);
     else if (m.readReflectsWrite && !m.readReflectsWrite(ctx)) unreflected.push(name);
     const setter = m.writeAs ?? `set${name[0].toUpperCase()}${name.slice(1)}`;

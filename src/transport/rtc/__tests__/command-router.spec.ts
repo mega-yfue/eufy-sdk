@@ -37,6 +37,8 @@ class FakeSession extends EventEmitter {
   closed = false;
   sent: Buffer[] = [];
   raw: Buffer[] = [];
+  stage = "calling";
+  peerState: string | undefined = undefined;
   /** Whether a raw keepalive is echoed back as the hub does (default) or goes unanswered. */
   echoKeepalive = true;
   /** What to do with a sent packet: "ack" (default), "nack" (errCode 1), "silent", or "close". */
@@ -413,7 +415,7 @@ describe("RtcCommandRouter", () => {
       expect(sessions[0]!.closed).toBe(true);
       FakeSession.connectMode = "never";
       const { router: r2, sessions: s2 } = makeRouter();
-      const late = new RegExp(`did not come up within ${CONNECT_TIMEOUT_MS}ms`);
+      const late = new RegExp(`did not come up within ${CONNECT_TIMEOUT_MS}ms \\(stage calling, peer not started\\)`);
       await onFakeTimers(() => rejectsAfter(r2.dispatchCommand(ST, arming(1)), late, CONNECT_TIMEOUT_MS));
       expect(s2[0]!.closed).toBe(true);
       // connect() that never settles at all: the bounded bring-up's deadline still fires and closes it

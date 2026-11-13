@@ -141,6 +141,9 @@ export const isNvrMediaCamera = (ctx: FamilyContext): boolean =>
   ctx.model !== undefined && NVR_MEDIA_CAMERA_MODELS.has(ctx.model);
 /** PoE S4 camera with independently streamed fixed and movable optical views. */
 export const isNvrDualLensCamera = (ctx: FamilyContext): boolean => ctx.model === "T8E00";
+
+/** NVR cameras verified to support an explicit 1080p live output. */
+export const isNvrFullHdCamera = (ctx: FamilyContext): boolean => ctx.model === "T8E00" || ctx.model === "T8P00";
 /** Video Doorbell C31 (T8223) or C30 (T8224), streamed by the app over the portal `call` route. */
 export const isCallDoorbell = (ctx: FamilyContext): boolean => ctx.model === "T8223" || ctx.model === "T8224";
 /** Wired doorbell (DeviceType.DOORBELL). */
