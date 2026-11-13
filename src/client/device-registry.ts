@@ -18,7 +18,7 @@ import {
 import { parseAiotDpReport } from "../transport/mqtt/dp-codec.js";
 import { classifyDevice, type DeviceClass, type EufyDevice, type RealtimeKind } from "../core/types.js";
 import { inspectParams, resolveDevice, type Capability, type Codec, type DeviceInspection } from "../model/index.js";
-import { parseThingsList, type ThingProperties } from "../model/capabilities/dp-catalog.js";
+import { parseThingsList, type ThingDescription } from "../model/capabilities/thing-description.js";
 
 /** The device-record shape {@link EufyMega.getDevice}/`commandContext` resolve a serial to. */
 export interface DeviceRecord {
@@ -45,7 +45,7 @@ export interface DeviceRecord {
    */
   dpParams?: Record<number, string>;
   /** The product's thing description (see {@link CloudRecord.things}). */
-  things?: ThingProperties;
+  things?: ThingDescription;
 }
 
 /**
@@ -234,7 +234,7 @@ export class DeviceRegistry {
   /** Per-serial cloud data points of an AIoT robot, joined beneath the params in {@link record} — see {@link loadCloudDps}. */
   private readonly cloudDps = new Map<string, Record<number, string>>();
   /** Per-product-code thing description — see {@link loadThings}; `undefined` for a code the cloud returned none for. */
-  private readonly things = new Map<string, ThingProperties | undefined>();
+  private readonly things = new Map<string, ThingDescription | undefined>();
   /** Per-serial realtime state, keyed by param id in the device's own namespace (see {@link DeviceRecord.dpParams}). */
   private readonly dpParams = new Map<string, Record<number, string>>();
   /** Callers blocked in {@link awaitRealtimeState}, released by the device's first report. */
@@ -500,7 +500,7 @@ export class DeviceRegistry {
       return;
     }
     const parsed = parseThingsList(raw);
-    for (const code of codes) this.things.set(code, parsed.get(code));
+    for (const code of codes) this.things.set(code, parsed[code]);
   }
 
   /**

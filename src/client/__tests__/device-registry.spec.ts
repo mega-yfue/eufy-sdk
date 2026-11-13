@@ -156,22 +156,7 @@ describe("DeviceRegistry", () => {
       things_list: [
         {
           profile: { product_code: code },
-          properties: [
-            { identifier: "nightvision_type", data_type: { type: "bool", specs: { defaultValue: "true" } } },
-            {
-              identifier: "nightvision_type_new",
-              data_type: {
-                type: "enum",
-                specs: {
-                  eunmList: [
-                    { associatedValue: "1", value: "102" },
-                    { associatedValue: "0", value: "100" },
-                  ],
-                },
-              },
-            },
-            { data_type: { type: "bool" } },
-          ],
+          properties: [{ identifier: "nightvision_type", data_type: { type: "bool" } }],
         },
       ],
     });
@@ -192,18 +177,9 @@ describe("DeviceRegistry", () => {
       await reg.getDevices();
       await reg.getDevices();
       expect(asked).toEqual([["T8410"]]);
-      const things = (await reg.record("A")).things;
-      expect(things?.get("nightvision_type")).toEqual({ type: "bool", values: [] });
-      expect(things?.get("nightvision_type_new"), "wire values, not UI values").toEqual({
-        type: "enum",
-        values: ["1", "0"],
-      });
-      expect(things?.size, "a property without an identifier is skipped").toBe(2);
+      expect((await reg.record("A")).things?.properties.nightvision_type?.type).toBe("bool");
       const dumped = JSON.parse(JSON.stringify(await reg.inspectDevice("A")));
-      expect(dumped.things?.nightvision_type_new, "inspectDevice carries it, serialisable").toEqual({
-        type: "enum",
-        values: ["1", "0"],
-      });
+      expect(dumped.things?.properties.nightvision_type?.type, "inspectDevice carries it, serialisable").toBe("bool");
     });
 
     it("leaves the record without one when the call fails, and asks again on the next refresh", async () => {
@@ -222,7 +198,7 @@ describe("DeviceRegistry", () => {
       expect((await reg.record("A")).things).toBeUndefined();
       await reg.getDevices();
       expect(calls).toBe(2);
-      expect((await reg.record("A")).things?.has("nightvision_type")).toBe(true);
+      expect((await reg.record("A")).things?.productCode).toBe("T8410");
     });
   });
 

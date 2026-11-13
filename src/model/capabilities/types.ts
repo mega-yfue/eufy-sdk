@@ -1,4 +1,5 @@
-import type { DpCatalog, ThingProperties } from "./dp-catalog.js";
+import type { DpCatalog } from "./dp-catalog.js";
+import type { ThingDescription } from "./thing-description.js";
 
 /**
  * Capability-module contract — the extended shape each `capabilities/<cap>.ts` file implements.
@@ -255,7 +256,7 @@ export interface AvailabilityContext {
    * named property offers on this product. Absent when not fetched — fall back to static defaults rather
    * than treating the device as incapable.
    */
-  things?: ThingProperties;
+  things?: ThingDescription;
   /**
    * Whether the device hangs off a HomeBase (a `parent_sn` other than its own) rather than standing
    * alone. A DEVICE fact, not a transport one — the same class of routing evidence as {@link hasP2p} —

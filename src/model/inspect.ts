@@ -16,7 +16,7 @@
 
 import type { CloudRecord, PropertySource, PropertyValueType, RegistryEntry, ResolvedDevice } from "./types.js";
 import { codecBaseline } from "./capabilities/index.js";
-import type { ThingProperty } from "./capabilities/dp-catalog.js";
+import type { ThingDescription } from "./capabilities/thing-description.js";
 import { resolveDevice, MODEL_REGISTRY } from "./registry.js";
 import { paramDef, namespaceForCodec, type ParamNamespace } from "./param-namespace.js";
 
@@ -50,11 +50,8 @@ export interface DeviceInspection {
   registrySnippet: string;
   /** Paste-ready param-dictionary lines for the unknown params. */
   dictionarySnippet: string;
-  /**
-   * The product's thing description by property identifier, as the record carries it — a plain object
-   * so it serialises. Absent when the cloud returned none for the product code.
-   */
-  things?: Record<string, ThingProperty>;
+  /** The product's thing description, as the record carries it. Absent when the cloud returned none for the product code. */
+  things?: ThingDescription;
 }
 
 function inferType(value: string): PropertyValueType {
@@ -145,7 +142,7 @@ export function inspectParams(rec: CloudRecord, sn?: string): DeviceInspection {
     },
     suggestedRegistry: { model, entry, exists: !!MODEL_REGISTRY[model.toUpperCase()] },
     registrySnippet: buildRegistrySnippet(model, entry),
-    things: rec.things && Object.fromEntries(rec.things),
+    things: rec.things,
     dictionarySnippet: buildDictSnippet(model, unknown),
   };
 }
