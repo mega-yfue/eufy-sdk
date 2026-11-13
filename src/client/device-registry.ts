@@ -20,6 +20,17 @@ import { classifyDevice, type DeviceClass, type EufyDevice, type RealtimeKind } 
 import { inspectParams, resolveDevice, type Capability, type Codec, type DeviceInspection } from "../model/index.js";
 import { parseThingsList, resolveThing, type ThingDescription } from "../model/capabilities/thing-description.js";
 
+/**
+ * Read a non-empty string field off a raw device record, tolerating the app's `deviceParams` nesting
+ * (the v6 app resolves e.g. firmware as `record.deviceParams?.main_sw_version ?? record.main_sw_version`).
+ * Returns `undefined` for a missing or empty value, so a blank firmware never surfaces as `""`.
+ */
+export function recordString(raw: Record<string, unknown>, key: string): string | undefined {
+  const nested = (raw.deviceParams as Record<string, unknown> | undefined)?.[key];
+  const v = typeof nested === "string" && nested ? nested : raw[key];
+  return typeof v === "string" && v ? v : undefined;
+}
+
 /** The device-record shape {@link EufyMega.getDevice}/`commandContext` resolve a serial to. */
 export interface DeviceRecord {
   deviceType?: number;
@@ -491,10 +502,7 @@ export class DeviceRegistry {
   private thingsFor(dev: EufyDevice, station: string, params: Record<number, string>): ThingDescription | undefined {
     const td = this.things.get(dev.model ?? "");
     if (!td) return undefined;
-    const firmware = (d?: EufyDevice) => {
-      const v = (d?.raw as Record<string, unknown> | undefined)?.["main_sw_version"];
-      return typeof v === "string" ? v : undefined;
-    };
+    const firmware = (d?: EufyDevice) => recordString((d?.raw ?? {}) as Record<string, unknown>, "main_sw_version");
     return resolveThing(td, {
       serial: dev.sn,
       firmwareVersion: firmware(dev),

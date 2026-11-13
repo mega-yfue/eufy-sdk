@@ -10,14 +10,14 @@ function fakeMega(opts: {
   post: PostFn;
   getDeviceParamList?: (sn: string) => Promise<any>;
   getDeviceRelationList?: () => Promise<any>;
-  getThingsList?: (codes: readonly string[], codeTimeMap: Record<string, number>) => Promise<any>;
+  getThingsList?: (codes: readonly string[]) => Promise<any>;
 }): MegaHttpClient {
   return {
     post: (service: string, path: string, body?: unknown) => opts.post(service, path, body),
     getDeviceParamList: (sn: string) => (opts.getDeviceParamList ?? (async () => ({})))(sn),
     getDeviceRelationList: () => (opts.getDeviceRelationList ?? (async () => Promise.reject(new Error("not faked"))))(),
-    getThingsList: (codes: readonly string[], codeTimeMap: Record<string, number> = {}) =>
-      (opts.getThingsList ?? (async () => Promise.reject(new Error("not faked"))))(codes, codeTimeMap),
+    getThingsList: (codes: readonly string[]) =>
+      (opts.getThingsList ?? (async () => Promise.reject(new Error("not faked"))))(codes),
   } as unknown as MegaHttpClient;
 }
 
@@ -202,7 +202,11 @@ describe("DeviceRegistry", () => {
       };
       const reg = new DeviceRegistry({
         mega: fakeMega({
-          post: listOf(rawDevice("A", { main_sw_version: "2.1.7.7" }), rawDevice("B", { main_sw_version: "2.3.0.0" })),
+          post: listOf(
+            rawDevice("A", { main_sw_version: "2.1.7.7" }),
+            rawDevice("B", { main_sw_version: "2.3.0.0" }),
+            rawDevice("C", { deviceParams: { main_sw_version: "2.3.0.0" } }),
+          ),
           getThingsList: async () => reply,
         }),
         onError: () => {},
@@ -210,6 +214,10 @@ describe("DeviceRegistry", () => {
       await reg.getDevices();
       expect((await reg.record("A")).things?.properties.nightvision_type?.identifier).toBe("nightvision_type__v1");
       expect((await reg.record("B")).things?.properties.nightvision_type?.identifier).toBe("nightvision_type");
+      expect(
+        (await reg.record("C")).things?.properties.nightvision_type?.identifier,
+        "firmware under deviceParams",
+      ).toBe("nightvision_type");
     });
 
     it("leaves the record without one when the call fails, and asks again on the next refresh", async () => {
