@@ -894,30 +894,13 @@ export function installs(
 }
 
 /**
- * The command kinds that follow a device's PRIMARY (RTC-or-P2P) transport, and so are the only ones a
- * portal-reach gate consults. Every other kind is self-routed — it names its own wire (`mqtt-dp*` +
- * `aiot-dp` their broker, `ff09-*` / `keyed-payload-actuate` a P2P-vs-MQTT pick from the device's own
- * topology) and rides it regardless of the portal, so it is always routable.
+ * Whether a command of this kind can route over the device's primary transport. The client decides what
+ * a transport refuses — `ctx.refusedCommandKinds`, the kinds the device's primary transport cannot carry
+ * — so the model keeps no copy of the routing table: a kind absent from the set (and the whole set, the
+ * P2P default `undefined`) routes.
  */
-const PORTAL_COMMAND_KINDS: ReadonlySet<Command["kind"]> = new Set<Command["kind"]>([
-  "set-payload",
-  "set-json",
-  "set-param",
-  "set-json-raw",
-  "p2p-station-scalar",
-  "p2p-int-string",
-  "p2p-privacy-burst",
-]);
-
-/**
- * Whether a command of this kind can route over the device's primary transport. A self-routed kind
- * (one outside {@link PORTAL_COMMAND_KINDS}), and any device whose transport carries every portal kind
- * (`ctx.portalCommandKinds` undefined — the P2P default), both route at once.
- */
-function kindRoutable(kind: Command["kind"], ctx: CommandContext): boolean {
-  if (!ctx.portalCommandKinds) return true;
-  if (!PORTAL_COMMAND_KINDS.has(kind)) return true;
-  return ctx.portalCommandKinds.has(kind);
+export function kindRoutable(kind: Command["kind"], ctx: AvailabilityContext): boolean {
+  return !ctx.refusedCommandKinds?.has(kind);
 }
 
 /**
@@ -946,8 +929,8 @@ function probeValues(m: ValueMember, ctx: CommandContext): (boolean | number | s
  * installed, so a write we cannot probe is never silently dropped — the gate only ever withdraws a
  * setter it positively knows no in-domain value can route.
  */
-export function writeRoutable(m: ValueMember, ctx: CommandContext): boolean {
-  if (!ctx.portalCommandKinds) return true;
+function writeRoutable(m: ValueMember, ctx: CommandContext): boolean {
+  if (!ctx.refusedCommandKinds) return true;
   for (const value of probeValues(m, ctx)) {
     let kind: Command["kind"] | undefined;
     try {
@@ -965,7 +948,7 @@ export function writeRoutable(m: ValueMember, ctx: CommandContext): boolean {
  * throwing builder, the same as {@link writeRoutable}.
  */
 function actionRoutable(m: ActionMember, ctx: CommandContext): boolean {
-  if (!ctx.portalCommandKinds) return true;
+  if (!ctx.refusedCommandKinds) return true;
   let kind: Command["kind"];
   try {
     kind = m.action(ctx).kind;

@@ -259,8 +259,8 @@ export interface AvailabilityContext {
    * cannot do what its name promises there.
    */
   homeBaseAttached?: boolean;
-  /** The portal command kinds this device's primary transport carries; `undefined` when it carries all of them (the P2P default). */
-  portalCommandKinds?: ReadonlySet<Command["kind"]>;
+  /** The command kinds this device's primary transport REFUSES (a setter emitting one is withheld); `undefined` when it refuses none (the P2P default). Set by the client, which owns the routing. */
+  refusedCommandKinds?: ReadonlySet<Command["kind"]>;
   /** Serial of the covering station, when the device record names one. */
   stationSerial?: string;
   /**

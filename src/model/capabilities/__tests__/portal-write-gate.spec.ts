@@ -1,12 +1,13 @@
 import { bind } from "./bind.js";
+import { buildCommand } from "../index.js";
 import type { Command } from "../../../core/contracts.js";
 import type { CommandContext } from "../types.js";
 
 /**
- * A setting whose command kind the device's transport cannot carry must NOT advertise a setter, while
- * the setting's READ stays installed. A device reached over a narrow portal (an RTC-control station, or
- * a media-only route) carries only a slice of the portal command kinds; a setter whose kind the portal
- * cannot frame would throw at dispatch though the setting reports itself writable.
+ * A setting whose command kind the device's transport REFUSES must NOT advertise a setter, while the
+ * setting's READ stays installed. A device reached over a narrow portal (an RTC-control station, or a
+ * media-only route) refuses some of the portal command kinds; a setter whose kind the portal would
+ * refuse throws at dispatch though the setting reports itself writable.
  *
  * Probed through the `camera` capability, which carries both a `set-param` setter (`imageFlipped`, wire
  * 1207) and a `set-json` setter (`soundDetection`, wire 6043) beside their read getters.
@@ -15,38 +16,45 @@ const IMAGE_FLIPPED = 1207; // CAMERA_CMD.ROTATE_IMAGE → set-param
 const SOUND_DETECTION = 6043; // CAMERA_CMD.SOUND_DETECTION → set-json
 const SENSOR_WORK_MODE = 1612; // MOTION_CMD.SENSOR_WORK_MODE — the testMode read id
 
-/** The two kinds the RTC control channel frames; a media-only route frames none. */
-const RTC_CONTROL = new Set<Command["kind"]>(["set-payload", "set-json"]);
-const MEDIA_ONLY = new Set<Command["kind"]>();
+// The refused sets the client hands the model (see `eufy-mega.ts`): an RTC-control station refuses every
+// portal kind but set-payload/set-json; a media-only route refuses them all.
+const RTC_CONTROL_REFUSED = new Set<Command["kind"]>([
+  "set-param",
+  "set-json-raw",
+  "p2p-station-scalar",
+  "p2p-int-string",
+  "p2p-privacy-burst",
+]);
+const MEDIA_REFUSED = new Set<Command["kind"]>([...RTC_CONTROL_REFUSED, "set-payload", "set-json"]);
 
 type Surface = Record<string, unknown>;
 
-/** A camera context reporting both params, with the portal reach of the given route. */
-const cameraCtx = (portalCommandKinds: ReadonlySet<Command["kind"]> | undefined): CommandContext => ({
+/** A camera context reporting both params, refusing the given kinds. */
+const cameraCtx = (refusedCommandKinds: ReadonlySet<Command["kind"]> | undefined): CommandContext => ({
   channel: 0,
   codec: "camera",
   paramIds: new Set([IMAGE_FLIPPED, SOUND_DETECTION]),
   capabilities: new Set(["camera"]),
-  portalCommandKinds,
+  refusedCommandKinds,
 });
 
-const bindCamera = (portalCommandKinds: ReadonlySet<Command["kind"]> | undefined): Surface =>
-  bind<Surface>("camera", cameraCtx(portalCommandKinds)).acts;
+const bindCamera = (refusedCommandKinds: ReadonlySet<Command["kind"]> | undefined): Surface =>
+  bind<Surface>("camera", cameraCtx(refusedCommandKinds)).acts;
 
 const hasGetter = (acts: Surface, name: string): boolean =>
   typeof Object.getOwnPropertyDescriptor(acts, name)?.get === "function";
 
-describe("a setter whose command kind the device's transport cannot carry", () => {
+describe("a setter whose command kind the device's transport refuses", () => {
   it("drops a set-param AND a set-json setter on a media-only route, keeping the reads", () => {
-    // A standalone call doorbell streams on a media track and carries no portal command at all.
-    const acts = bindCamera(MEDIA_ONLY);
+    // A standalone call doorbell streams on a media track and takes no portal command at all.
+    const acts = bindCamera(MEDIA_REFUSED);
     expect(hasGetter(acts, "imageFlipped")).toBe(true);
     expect(hasGetter(acts, "soundDetection")).toBe(true);
     expect(typeof acts.setImageFlipped).toBe("undefined");
     expect(typeof acts.setSoundDetection).toBe("undefined");
   });
 
-  it("keeps every setter on a P2P device (undefined = unrestricted — zero regression)", () => {
+  it("keeps every setter on a P2P device (undefined = refuses nothing — zero regression)", () => {
     const acts = bindCamera(undefined);
     expect(hasGetter(acts, "imageFlipped")).toBe(true);
     expect(typeof acts.setImageFlipped).toBe("function");
@@ -55,7 +63,7 @@ describe("a setter whose command kind the device's transport cannot carry", () =
 
   it("on an RTC-control station keeps the set-json write but drops the set-param write", () => {
     // The RTC control channel frames set-payload/set-json only.
-    const acts = bindCamera(RTC_CONTROL);
+    const acts = bindCamera(RTC_CONTROL_REFUSED);
     expect(hasGetter(acts, "imageFlipped")).toBe(true);
     expect(typeof acts.setImageFlipped).toBe("undefined");
     expect(typeof acts.setSoundDetection).toBe("function");
@@ -73,10 +81,36 @@ describe("a setter whose command kind the device's transport cannot carry", () =
       codec: "sensor",
       paramIds: new Set([SENSOR_WORK_MODE]),
       capabilities: new Set(["motion"]),
-      portalCommandKinds: RTC_CONTROL,
+      refusedCommandKinds: RTC_CONTROL_REFUSED,
     };
     const acts = bind<Surface>("motion", sensorCtx).acts;
     expect(hasGetter(acts, "testMode")).toBe(true);
     expect(typeof acts.setTestMode).toBe("function");
+  });
+
+  /**
+   * The momentary-action branch is gated too. The siren's `test` action emits `set-payload`, which a
+   * media-only route refuses, so the action is withheld there but present on P2P.
+   */
+  it("drops a momentary action whose command the transport refuses, keeping it elsewhere", () => {
+    const sirenCtx = (refusedCommandKinds: ReadonlySet<Command["kind"]> | undefined): CommandContext => ({
+      channel: 0,
+      codec: "sensor",
+      paramIds: new Set([1825, 61008]), // ALARM_VOLUME + RING_STATUS → standalone-siren evidence
+      capabilities: new Set(["siren"]),
+      refusedCommandKinds,
+    });
+    expect(typeof bind<Surface>("siren", sirenCtx(undefined)).acts.test).toBe("function");
+    expect(typeof bind<Surface>("siren", sirenCtx(MEDIA_REFUSED)).acts.test).toBe("undefined");
+  });
+
+  /**
+   * The intent path (`buildCommand`) runs the same check on the value it is given: a `set-param` write
+   * the transport refuses yields `undefined`, never a command that would throw at dispatch.
+   */
+  it("returns undefined from the intent path for a write the transport refuses", () => {
+    const ctx = cameraCtx(RTC_CONTROL_REFUSED);
+    expect(buildCommand("imageFlipped", true, ctx)).toBeUndefined();
+    expect(buildCommand("imageFlipped", true, cameraCtx(undefined))).toBeDefined();
   });
 });

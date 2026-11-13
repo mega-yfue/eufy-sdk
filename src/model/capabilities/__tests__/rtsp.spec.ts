@@ -88,18 +88,17 @@ describe("rtsp capability module", () => {
     expect(sent).toHaveLength(1);
   });
 
-  it("withholds the publish switch and its momentary methods behind a HomeBase S1 Pro, but keeps the read", () => {
-    // The S1 Pro's control channel frames set-payload/set-json only, so the publish scalar (set-param)
-    // cannot route: its derived setter is withdrawn by the portal-reach gate, and `publish`/`withdraw`
-    // — `method` members the portal-reach gate cannot probe — keep their own stationDeviceType gate.
-    // The READ stays installed, so the camera's publish state remains visible.
-    const behindS1Pro = {
+  it("withholds the publish switch and its momentary methods behind a station that refuses a scalar, but keeps the read", () => {
+    // An S1 Pro / T8N00 control channel frames set-payload/set-json only, so the publish scalar
+    // (set-param) cannot route: its derived setter is withdrawn by the generic portal-reach gate, and
+    // `publish`/`withdraw` — `method` members that gate can't probe — ask `kindRoutable("set-param")`
+    // themselves. The READ stays installed, so the camera's publish state remains visible.
+    const behindNarrowStation = {
       ...ctx,
       homeBaseAttached: true,
-      stationDeviceType: 27,
-      portalCommandKinds: new Set(["set-payload", "set-json"]),
+      refusedCommandKinds: new Set(["set-param", "set-json-raw", "p2p-station-scalar"]),
     } as CommandContext;
-    const { acts: actions } = bind<RtspActions>("rtsp", behindS1Pro);
+    const { acts: actions } = bind<RtspActions>("rtsp", behindNarrowStation);
 
     expect(actions.publish).toBeUndefined();
     expect(actions.withdraw).toBeUndefined();
