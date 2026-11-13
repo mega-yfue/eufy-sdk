@@ -428,19 +428,9 @@ function isT8442(ctx: AvailabilityContext): boolean {
   return ctx.model === "T8442";
 }
 
-/** T8400 reports its night vision on 2002 and writes it on a bare level-1 1013. */
-function isT8400(ctx: AvailabilityContext): boolean {
-  return ctx.model === "T8400";
-}
-
-/** Models that report night vision on 2002 rather than 1277. */
+/** A device that reports its night vision on 2002 and not on 1277, or a T8442 whatever else it reports. */
 function readsNightVisionOn2002(ctx: AvailabilityContext): boolean {
-  return isT8442(ctx) || isT8400(ctx);
-}
-
-/** Models whose night vision offers a held-on infrared ({@link NightVision.InfraredOn}) instead of full colour. */
-function offersInfraredOn(ctx: AvailabilityContext): boolean {
-  return isT8400(ctx) || ctx.model === "T8171";
+  return isT8442(ctx) || (ctx.paramIds?.has(2002) === true && !ctx.paramIds.has(CAMERA_CMD.NIGHT_VISION_TYPE));
 }
 
 /** T8410 on HomeBase 3 firmware >= 2.3.1.0 uses the wrapped disable-bit power switch. */
@@ -753,26 +743,21 @@ export const CAMERA_MEMBERS = {
     },
   },
   /**
-   * Three modes, and `FullColor` is the conditional one: a model without a spotlight or starlight
-   * sensor omits it, and the wire accepts the value regardless — the device's own reported set is the
-   * only statement of which of the three it has. `coerceEnumValue` rejects a value outside
-   * {@link NightVision} rather than coercing it. The payload key on the wire is `night_sion`.
+   * Four modes, each model offering a subset no reported param states: the device's own reported value
+   * is the only statement of which it has. Every model read so far gives the four values the same
+   * meaning on 1277 and on 2002. `coerceEnumValue` rejects a value outside {@link NightVision} rather
+   * than coercing it. The payload key on the 1277 wire is `night_sion`.
    *
-   * 1277 carries more than these three on some models: the V6 app's per-model mappings put modes on
-   * 3, 5, 6 and 8 as well, and which model takes which mapping is not in the app bundle. A reported value
-   * outside the published options reads as `undefined` rather than as an unnamed number.
+   * The V6 app's per-model mappings put modes on 5, 6 and 8 as well, and which model takes which mapping
+   * is not in the app bundle. A reported value outside the published options reads as `undefined`
+   * rather than as an unnamed number.
    */
   nightVision: {
     param: CAMERA_CMD.NIGHT_VISION_TYPE,
     type: "enum",
     kind: "enum",
     enumValues: { 0: "Off", 1: "Infrared", 2: "Full Color", 3: "Infrared On" },
-    enumValuesFor: (ctx): Record<number, string> | undefined =>
-      isT8442(ctx)
-        ? { 0: "Off", 1: "Infrared" }
-        : offersInfraredOn(ctx)
-          ? { 0: "Off", 1: "Infrared", 3: "Infrared On" }
-          : { 0: "Off", 1: "Infrared", 2: "Full Color" },
+    enumValuesFor: (ctx) => (isT8442(ctx) ? { 0: "Off", 1: "Infrared" } : undefined),
     provenance: "verified",
     available: isCameraCodec,
     readAvailable: (ctx) => !readsNightVisionOn2002(ctx),
@@ -780,11 +765,11 @@ export const CAMERA_MEMBERS = {
     coerce: (raw) => (raw === true || raw === "true" ? 1 : raw === false || raw === "false" ? 0 : Number(raw)),
     description:
       "Night-vision mode: 0 = off, 1 = infrared switched by the light level (B&W), 2 = full colour, " +
-      "3 = infrared held on, each model offering a subset. T8425 uses NIGHT_VISION_TYPE 1277 (1350 " +
-      'SET_PAYLOAD, night_sion); T8442 reports 2002 ("0"/"1", and "true" while the app\'s Auto Night ' +
-      "Vision is on) and writes direct IC_NIGHT_VISION_TYPE 1013 (int-string, 0/1); T8400 reports 2002 " +
-      "(0/1/3) and writes 1013 as a bare level-1 [channel][value]; T8171 reports 0/1/3 on 1277. Reads " +
-      "verified live on each; the T8400 write is the app's own frame, the T8171's 3 is not.",
+      "3 = infrared held on, each model offering a subset. A device reporting 1277 writes NIGHT_VISION_TYPE " +
+      "(1350 SET_PAYLOAD, night_sion); one reporting 2002 instead writes IC_NIGHT_VISION_TYPE 1013 as a bare " +
+      'level-1 [channel][value]. T8442 reports 2002 ("0"/"1", and "true" while the app\'s Auto Night Vision ' +
+      "is on) and writes 1013 int-string, 0/1. Reads verified live on T8170, T8171, T8400, T8410 and T8442; " +
+      "the 2002 write is the app's own frame, and 3 on 1277 has none.",
     write: (v, ctx) => {
       const nv = coerceEnumValue(NightVision, v);
       if (nv == null) return undefined;
@@ -793,10 +778,7 @@ export const CAMERA_MEMBERS = {
           throw new Error("nightVision: only Off/Infrared are supported on T8442");
         return setScalar(CAMERA_CMD.IC_NIGHT_VISION_TYPE, nv, ctx, "int-string");
       }
-      if (isT8400(ctx)) {
-        if (nv === NightVision.FullColor) throw new Error("nightVision: Full Color is not supported on T8400");
-        return setScalar(CAMERA_CMD.IC_NIGHT_VISION_TYPE, nv, ctx, "int-pair");
-      }
+      if (readsNightVisionOn2002(ctx)) return setScalar(CAMERA_CMD.IC_NIGHT_VISION_TYPE, nv, ctx, "int-pair");
       if (nv === NightVision.InfraredOn)
         throw new Error("nightVision: Infrared On has no verified write on this model");
       return setPayload(CAMERA_CMD.NIGHT_VISION_TYPE, { channel: ctx.channel, night_sion: nv }, ctx, 0, 0, "auto");

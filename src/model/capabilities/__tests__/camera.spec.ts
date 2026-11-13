@@ -141,31 +141,22 @@ describe("camera capability module", () => {
     });
   });
 
-  describe("T8400 and T8171 night vision (held-on infrared)", () => {
-    it("reads a T8400's 2002 as Off, Infrared and Infrared On", () => {
+  describe("night vision on 2002 and the held-on infrared mode", () => {
+    it("reads 2002 on any device that reports it without 1277, as Off, Infrared and Infrared On", () => {
       const dev = Device.fromRecord("TEST-SN", { model: "T8400", params: { 2002: "1" } });
-      expect(dev.properties.find((p) => p.name === "nightVision")).toMatchObject({
-        paramType: 2002,
-        enumValues: { 0: "Off", 1: "Infrared", 3: "Infrared On" },
-      });
+      expect(dev.properties.find((p) => p.name === "nightVision")?.paramType).toBe(2002);
       expect(dev.getProperty("nightVision")?.value).toBe(NightVision.Infrared);
       dev.applyParams({ 2002: "3" });
       expect(dev.getProperty("nightVision")?.value).toBe(NightVision.InfraredOn);
     });
 
-    it("writes a T8400's mode as a bare level-1 1013, and refuses Full Color", () => {
-      const t8400 = ctx(0, { model: "T8400", paramIds: new Set([2002]) });
-      expect(buildCommand("nightVision", NightVision.InfraredOn, t8400)).toEqual({
-        kind: "set-param",
-        param: CAMERA_CMD.IC_NIGHT_VISION_TYPE,
-        value: 3,
-        form: "int-pair",
-        channel: 0,
-      });
-      expect(() => buildCommand("nightVision", NightVision.FullColor, t8400)).toThrow(/Full Color/);
+    it("writes a 2002 device's mode as a bare level-1 1013", () => {
+      expect(
+        buildCommand("nightVision", NightVision.InfraredOn, ctx(0, { model: "T8410", paramIds: new Set([2002]) })),
+      ).toEqual({ kind: "set-param", param: CAMERA_CMD.IC_NIGHT_VISION_TYPE, value: 3, form: "int-pair", channel: 0 });
     });
 
-    it("offers a T8171 Infrared On on 1277 without a write for it", () => {
+    it("reads Infrared On on 1277 without a write for it", () => {
       const dev = Device.fromRecord("TEST-SN", { model: "T8171", params: { 1277: "3" } });
       expect(dev.getProperty("nightVision")?.value).toBe(NightVision.InfraredOn);
       expect(() =>
