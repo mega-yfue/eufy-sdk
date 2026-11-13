@@ -141,6 +141,39 @@ describe("camera capability module", () => {
     });
   });
 
+  describe("T8400 and T8171 night vision (held-on infrared)", () => {
+    it("reads a T8400's 2002 as Off, Infrared and Infrared On", () => {
+      const dev = Device.fromRecord("TEST-SN", { model: "T8400", params: { 2002: "1" } });
+      expect(dev.properties.find((p) => p.name === "nightVision")).toMatchObject({
+        paramType: 2002,
+        enumValues: { 0: "Off", 1: "Infrared", 3: "Infrared On" },
+      });
+      expect(dev.getProperty("nightVision")?.value).toBe(NightVision.Infrared);
+      dev.applyParams({ 2002: "3" });
+      expect(dev.getProperty("nightVision")?.value).toBe(NightVision.InfraredOn);
+    });
+
+    it("writes a T8400's mode as a bare level-1 1013, and refuses Full Color", () => {
+      const t8400 = ctx(0, { model: "T8400", paramIds: new Set([2002]) });
+      expect(buildCommand("nightVision", NightVision.InfraredOn, t8400)).toEqual({
+        kind: "set-param",
+        param: CAMERA_CMD.IC_NIGHT_VISION_TYPE,
+        value: 3,
+        form: "int-pair",
+        channel: 0,
+      });
+      expect(() => buildCommand("nightVision", NightVision.FullColor, t8400)).toThrow(/Full Color/);
+    });
+
+    it("offers a T8171 Infrared On on 1277 without a write for it", () => {
+      const dev = Device.fromRecord("TEST-SN", { model: "T8171", params: { 1277: "3" } });
+      expect(dev.getProperty("nightVision")?.value).toBe(NightVision.InfraredOn);
+      expect(() =>
+        buildCommand("nightVision", NightVision.InfraredOn, ctx(0, { model: "T8171", paramIds: new Set([1277]) })),
+      ).toThrow(/no verified write/);
+    });
+  });
+
   describe("T8442 night vision (read alias + direct wire)", () => {
     const t8442 = ctx(2, { model: "T8442", paramIds: new Set([2002]) });
 
@@ -200,7 +233,7 @@ describe("camera capability module", () => {
     });
 
     it("rejects Full Color on T8442 with a model-specific error", async () => {
-      const message = /nightVision: Full Color is not supported on T8442 \(only Off\/Infrared\)/;
+      const message = /nightVision: only Off\/Infrared are supported on T8442/;
       expect(() => buildCommand("nightVision", NightVision.FullColor, t8442)).toThrow(message);
       await expect(camera(t8442).acts.setNightVision!(NightVision.FullColor)).rejects.toThrow(message);
     });
@@ -387,7 +420,7 @@ describe("camera capability module", () => {
           /watermark: .+ is not a valid value \(must be one of 0\/1\/2\)/,
         );
         expect(() => buildCommand("nightVision", bad as number, ctx())).toThrow(
-          /nightVision: .+ is not a valid value \(must be one of 0\/1\/2\)/,
+          /nightVision: .+ is not a valid value \(must be one of 0\/1\/2\/3\)/,
         );
       }
       // Valid enum values still pass.
@@ -397,7 +430,7 @@ describe("camera capability module", () => {
 
     it("nightVision → 1350 set-payload, mChannel 0, {channel,night_sion} (verified)", () => {
       // Verified live: device channel goes INSIDE the payload; the envelope's mChannel is 0.
-      expect(NightVision).toEqual({ Off: 0, Infrared: 1, FullColor: 2 });
+      expect(NightVision).toEqual({ Off: 0, Infrared: 1, FullColor: 2, InfraredOn: 3 });
       expect(buildCommand("nightVision", NightVision.FullColor, ctx(3))).toMatchObject({
         kind: "set-payload",
         cmd: CAMERA_CMD.NIGHT_VISION_TYPE,
@@ -750,7 +783,7 @@ describe("camera capability module", () => {
       expect(sent[1]).toMatchObject({ cmd: CAMERA_CMD.RECORDING_QUALITY_SET, payload: { quality: 3 } });
       await expect(acts.setWatermark!(5)).rejects.toThrow("watermark: 5 is not a valid value (must be one of 0/1/2)");
       await expect(acts.setNightVision!(9)).rejects.toThrow(
-        "nightVision: 9 is not a valid value (must be one of 0/1/2)",
+        "nightVision: 9 is not a valid value (must be one of 0/1/2/3)",
       );
       await expect(acts.setRecordingQuality!(0)).rejects.toThrow(
         "recordingQuality: 0 is not a valid value (must be one of 1/2/3)",

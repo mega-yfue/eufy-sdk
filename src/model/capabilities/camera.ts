@@ -207,17 +207,19 @@ export const SoundDetectionType = {
 export type SoundDetectionTypeValue = (typeof SoundDetectionType)[keyof typeof SoundDetectionType];
 
 /**
- * Night-vision mode: 0=Off, 1=Infrared (the app shows "B&W Auto"), 2=FullColor ("Color"). Use
- * `NightVision.FullColor` etc. with `setNightVision` / `setProperty(sn,"nightVision",…)`. Some models
- * omit `FullColor`.
+ * Night-vision mode: 0=Off, 1=Infrared (the app shows "B&W Auto"), 2=FullColor ("Color"), 3=InfraredOn.
+ * Use `NightVision.FullColor` etc. with `setNightVision` / `setProperty(sn,"nightVision",…)`. Each model
+ * offers a subset.
  */
 export const NightVision = {
   /** Off — never use infrared. */
   Off: 0,
-  /** Infrared / "B&W Auto" — black-and-white night vision. */
+  /** Infrared / "B&W Auto" — black-and-white night vision, switched on when it gets dark. */
   Infrared: 1,
   /** Full colour night vision (models with a spotlight / starlight sensor). */
   FullColor: 2,
+  /** Infrared held on — black-and-white night vision, not switched by the light level. */
+  InfraredOn: 3,
 } as const;
 /** A night-vision mode — the value side of {@link NightVision}. */
 export type NightVisionValue = (typeof NightVision)[keyof typeof NightVision];
@@ -424,6 +426,21 @@ function isT8410HomeBase3(ctx: AvailabilityContext): boolean {
 /** T8442 has a binary night-vision wire, unlike cameras with the three-mode 1277 control. */
 function isT8442(ctx: AvailabilityContext): boolean {
   return ctx.model === "T8442";
+}
+
+/** T8400 reports its night vision on 2002 and writes it on a bare level-1 1013. */
+function isT8400(ctx: AvailabilityContext): boolean {
+  return ctx.model === "T8400";
+}
+
+/** Models that report night vision on 2002 rather than 1277. */
+function readsNightVisionOn2002(ctx: AvailabilityContext): boolean {
+  return isT8442(ctx) || isT8400(ctx);
+}
+
+/** Models whose night vision offers a held-on infrared ({@link NightVision.InfraredOn}) instead of full colour. */
+function offersInfraredOn(ctx: AvailabilityContext): boolean {
+  return isT8400(ctx) || ctx.model === "T8171";
 }
 
 /** T8410 on HomeBase 3 firmware >= 2.3.1.0 uses the wrapped disable-bit power switch. */
@@ -749,26 +766,39 @@ export const CAMERA_MEMBERS = {
     param: CAMERA_CMD.NIGHT_VISION_TYPE,
     type: "enum",
     kind: "enum",
-    enumValues: { 0: "Off", 1: "Infrared", 2: "Full Color" },
-    enumValuesFor: (ctx) => (isT8442(ctx) ? { 0: "Off", 1: "Infrared" } : undefined),
+    enumValues: { 0: "Off", 1: "Infrared", 2: "Full Color", 3: "Infrared On" },
+    enumValuesFor: (ctx): Record<number, string> | undefined =>
+      isT8442(ctx)
+        ? { 0: "Off", 1: "Infrared" }
+        : offersInfraredOn(ctx)
+          ? { 0: "Off", 1: "Infrared", 3: "Infrared On" }
+          : { 0: "Off", 1: "Infrared", 2: "Full Color" },
     provenance: "verified",
     available: isCameraCodec,
-    readAvailable: (ctx) => !isT8442(ctx),
-    readAliases: [{ paramType: 2002, available: isT8442 }],
+    readAvailable: (ctx) => !readsNightVisionOn2002(ctx),
+    readAliases: [{ paramType: 2002, available: readsNightVisionOn2002 }],
     coerce: (raw) => (raw === true || raw === "true" ? 1 : raw === false || raw === "false" ? 0 : Number(raw)),
     description:
-      "Night-vision mode: 0 = off, 1 = infrared (B&W), 2 = full colour where supported. " +
-      "T8425 uses NIGHT_VISION_TYPE 1277 (1350 SET_PAYLOAD, night_sion); T8442 reports 2002 " +
-      '("0"/"1", and "true" while the app\'s Auto Night Vision is on) and writes direct ' +
-      "IC_NIGHT_VISION_TYPE 1013 (int-string, 0/1). Both wires verified live.",
+      "Night-vision mode: 0 = off, 1 = infrared switched by the light level (B&W), 2 = full colour, " +
+      "3 = infrared held on, each model offering a subset. T8425 uses NIGHT_VISION_TYPE 1277 (1350 " +
+      'SET_PAYLOAD, night_sion); T8442 reports 2002 ("0"/"1", and "true" while the app\'s Auto Night ' +
+      "Vision is on) and writes direct IC_NIGHT_VISION_TYPE 1013 (int-string, 0/1); T8400 reports 2002 " +
+      "(0/1/3) and writes 1013 as a bare level-1 [channel][value]; T8171 reports 0/1/3 on 1277. Reads " +
+      "verified live on each; the T8400 write is the app's own frame, the T8171's 3 is not.",
     write: (v, ctx) => {
       const nv = coerceEnumValue(NightVision, v);
       if (nv == null) return undefined;
       if (isT8442(ctx)) {
-        if (nv === NightVision.FullColor)
-          throw new Error("nightVision: Full Color is not supported on T8442 (only Off/Infrared)");
+        if (nv === NightVision.FullColor || nv === NightVision.InfraredOn)
+          throw new Error("nightVision: only Off/Infrared are supported on T8442");
         return setScalar(CAMERA_CMD.IC_NIGHT_VISION_TYPE, nv, ctx, "int-string");
       }
+      if (isT8400(ctx)) {
+        if (nv === NightVision.FullColor) throw new Error("nightVision: Full Color is not supported on T8400");
+        return setScalar(CAMERA_CMD.IC_NIGHT_VISION_TYPE, nv, ctx, "int-pair");
+      }
+      if (nv === NightVision.InfraredOn)
+        throw new Error("nightVision: Infrared On has no verified write on this model");
       return setPayload(CAMERA_CMD.NIGHT_VISION_TYPE, { channel: ctx.channel, night_sion: nv }, ctx, 0, 0, "auto");
     },
   },
