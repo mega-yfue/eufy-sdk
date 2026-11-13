@@ -91,7 +91,13 @@ import { VACUUM_DOCK } from "./vacuum-dock.js";
 import { SUCTION } from "./suction.js";
 import { MOWER } from "./mower.js";
 export { type DpCatalog, EMPTY_DP_CATALOG } from "./dp-catalog.js";
-export type { ThingDescription } from "./thing-description.js";
+export type {
+  ThingCondition,
+  ThingConditions,
+  ThingDescription,
+  ThingMember,
+  ThingProperty,
+} from "./thing-description.js";
 import { DISPLAY } from "./display.js";
 import { LOCATE } from "./locate.js";
 import { SMART_DROP } from "./smart-drop.js";
