@@ -193,13 +193,12 @@ const notMainsCamera = (ctx: AvailabilityContext): boolean => {
  *    it, and a mains camera genuinely has them. They are the reason the capability stays attached.
  *  - `cameraInfo` (1103) is a number whose meaning is unevidenced. Gating it would assert it is a
  *    battery fact, which is the kind of claim this guard exists to stop making.
- *  - `powerSource` (1293) is out of THIS list (the mains-camera cell gate). Both values it names —
- *    `Battery` and `External Solar Panel` — describe how a CELL is fed, so by this list's own rule it
- *    arguably belongs here; it is out because every param above is one a live mains camera was observed
- *    to publish and 1293 was not among them, and because it is `requires`-gated on its own param, so it
- *    appears only where the device reports it. Whether a MAINS CAMERA should also withhold it stays
- *    unresolved. Separately, the member carries its OWN `available` gate for the `lock` codec: a video
- *    smart lock reports 1293 but has no selectable supply, so it is withheld there (see the member).
+ *  - `powerSource` (1293) is the open one. Both values it names — `Battery` and `External Solar Panel` —
+ *    describe how a CELL is fed, so by this list's own rule it arguably belongs here. It is out because
+ *    every param above is one a live mains camera was observed to publish and 1293 was not among them,
+ *    and because it is `requires`-gated on its own param, so it appears only where the device reports
+ *    it. Gating it would also withhold a described WRITE rather than a read, which is a different class
+ *    of change. Unresolved rather than decided: see the note in the pull request.
  *
  * The two solar params ARE here: a panel exists to charge a cell, so a device without one has no solar
  * harvest to report either.
@@ -299,6 +298,9 @@ export const BATTERY_MEMBERS = cellGated({
    *
    * The write is a `1350` SET_PAYLOAD, inner cmd 1293, `{charge_mode:N}`, `mValue3` 0 (the app uses 0,
    * not the cmd id), and the setter accepts a NAME as well as the index the getter answers.
+   *
+   * Withheld on a device that resolved `lock`: a video smart lock (E330/T8531) reports 1293 but has no
+   * selectable supply, so the read is not offered there.
    */
   powerSource: {
     param: BATTERY_PARAM.POWER_CHARGE,
@@ -308,10 +310,6 @@ export const BATTERY_MEMBERS = cellGated({
     provenance: "verified",
     coerce: decodePowerSource,
     requires: [BATTERY_PARAM.POWER_CHARGE],
-    // Withheld on a device that resolved `lock`, exactly as `level` above is: both values this names
-    // (`Battery` / `External Solar Panel`) describe how a solar camera's CELL is fed, which is
-    // meaningless on a lock. A video smart lock (E330/T8531) reports 1293 but has no selectable
-    // supply — writing it is refused at the wire — so the read is not offered there.
     available: (ctx: AvailabilityContext) => !hasCapability(ctx, "lock"),
     args: [{ name: "source", kind: "enum", description: "The raw value, or the name `battery`/`external`." }],
     ...accepts<PowerSourceName>(),
