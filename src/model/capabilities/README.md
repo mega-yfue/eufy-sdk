@@ -52,6 +52,33 @@ Indoor-PT statically (`deviceTypes`). All hardcoded id/type assignments live in 
 files — not in `classify.ts`/`registry.ts`. (`classify.ts` keeps only codec _routing_ — which
 wire protocol a `deviceType` speaks — a separate axis.)
 
+## Product thing descriptions — what the app itself reads
+
+Detection says whether a device HAS a feature; what values that feature takes on THIS product — two
+night-vision modes or three, which firmware uses which variant, whether the device is behind a station
+that changes it — is a different question, and no reported param answers it. The v6 app answers it from
+each product's **thing description** (`app/things/get_things_list`), and so does the SDK:
+
+- the registry fetches one description per product code, persists it (`thingStore`) and refreshes it
+  the way the app does, then **resolves it for each device** — variants (`identifier__vN`) chosen and
+  unavailable entries dropped against the device's firmware, its station and that station's firmware,
+  its serial and the account's country (`resolveThing`, a port of the app's own condition rules);
+- every context carries the result as `ctx.things`; `inspectDevice` and `getThingDescription` return it;
+- a member names the identifiers it is with `thing`, in the app's order of preference, and an enum
+  member with `thing` gets its per-device options from it — the members' wire values (`associatedValue`)
+  it names, 0 and 1 for a `bool` property.
+
+So the order of preference for a per-product fact is: the thing description, then a reported param,
+then the codec, a model hint or a DeviceType table. A list of model codes is the last resort, for a fact
+neither the description nor a param states.
+
+A `thing` mapping is evidence like a param id. Name an identifier only where the products' settings
+bundles — the per-product scripts each description's `profile` links to — read it from the member's
+param and the name states the same feature. `scripts/dev/things-corpus.ts` dumps every description and
+bundle and extracts, per identifier, the commands it is read from and written with, statically. Map an
+enum member only after checking its wire values against `enumValues` across that corpus: a value the
+enum does not name is a finding to settle first, not to filter away.
+
 ## Inbound events — one semantic event from any transport
 
 Device events arrive from four transports — FCM **push**, **P2P frames**, cloud **poll**, secure

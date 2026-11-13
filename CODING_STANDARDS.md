@@ -150,9 +150,15 @@ those layers. CI-enforced by `guard:capability-ownership`.
   capability rather than duplicating device-type sets.
 - **What a product offers comes from its thing description, not a model list.** The cloud's
   `get_things_list` gives each product code its named properties and, for an enum, the wire value of
-  every member it offers; the context carries it as `things`. A per-product option set reads it in
-  `enumValuesFor` and falls back to the static domain when it is absent. A set of model codes is the
-  last resort, for a fact neither the description nor a reported parameter states.
+  every member it offers; the context carries it as `things`, already resolved for the device (variant
+  and availability by firmware, station, serial, country). A member names its identifiers with `thing`,
+  and an enum member's per-device options then come from it; anything the generic rule cannot state reads
+  `ctx.things` in `enumValuesFor`. Without a description the static domain stays. A set of model codes
+  is the last resort, for a fact neither the description nor a reported parameter states.
+- **A `thing` mapping is evidence, like a param id.** Name an identifier only where the products' settings
+  bundles read it from the member's param and the name states the same feature
+  (`scripts/dev/things-corpus.ts` builds that corpus). Check an enum member's wire values against its
+  `enumValues` across the corpus before mapping it.
 - Transport **encryption level** is a runtime topology fact, resolved once in the transport — never a
   family trait.
 - **Every property declares what its value MEANS (`kind`)**, not just how it is stored.
