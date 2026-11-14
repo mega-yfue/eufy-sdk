@@ -92,9 +92,12 @@ import { SUCTION } from "./suction.js";
 import { MOWER } from "./mower.js";
 export { type DpCatalog, EMPTY_DP_CATALOG } from "./dp-catalog.js";
 export type {
+  ThingAction,
+  ThingBundle,
   ThingCondition,
   ThingConditions,
   ThingDescription,
+  ThingEvent,
   ThingMember,
   ThingProperty,
 } from "./thing-description.js";
