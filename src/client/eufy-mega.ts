@@ -87,7 +87,7 @@ import {
   isTuyaVacuum,
 } from "../model/device-family.js";
 import { cameraPowerTier } from "../model/capabilities/battery.js";
-import { DeviceRegistry, type DeviceRecord, type ParamChange } from "./device-registry.js";
+import { DeviceRegistry, recordString, type DeviceRecord, type ParamChange } from "./device-registry.js";
 import { PushRepeats } from "./push-repeats.js";
 import type {
   EufyMegaOptions,
@@ -118,17 +118,6 @@ type SemanticEventRefresh = Pick<CommandObservation, "param" | "property" | "res
   expected?: CommandObservation["expected"];
   observed?: CommandObservation["observed"];
 };
-
-/**
- * Read a non-empty string field off a raw device record, tolerating the app's `deviceParams` nesting
- * (the v6 app resolves e.g. firmware as `record.deviceParams?.main_sw_version ?? record.main_sw_version`).
- * Returns `undefined` for a missing or empty value, so a blank firmware never surfaces as `""`.
- */
-function recordString(raw: Record<string, unknown>, key: string): string | undefined {
-  const nested = (raw.deviceParams as Record<string, unknown> | undefined)?.[key];
-  const v = typeof nested === "string" && nested ? nested : raw[key];
-  return typeof v === "string" && v ? v : undefined;
-}
 
 /** The owning member's `admin_user_id` off a raw device record, which its station scopes writes to. */
 function adminUserIdFrom(raw: unknown): string | undefined {
@@ -2514,6 +2503,7 @@ export class EufyMega extends EventEmitter {
       macAddress: recordString(raw, "wifi_mac"),
       updateAvailable: raw.needUpdate === true || raw.needUpdate === 1 || raw.needUpdate === "1",
       paramIds: new Set([...Object.keys(rec.params), ...Object.keys(rec.dpParams ?? {})].map(Number)),
+      things: rec.things,
       capabilities: new Set(resolved.capabilities),
       // Member identity for ff09-* command devices (see core/contracts Ff09Identity).
       adminUserId: typeof member.admin_user_id === "string" ? member.admin_user_id : undefined,

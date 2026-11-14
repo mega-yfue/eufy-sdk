@@ -52,6 +52,17 @@ Indoor-PT statically (`deviceTypes`). All hardcoded id/type assignments live in 
 files — not in `classify.ts`/`registry.ts`. (`classify.ts` keeps only codec _routing_ — which
 wire protocol a `deviceType` speaks — a separate axis.)
 
+## Product thing descriptions — what the app itself reads
+
+What values a feature takes on THIS product (two night-vision modes or three, per firmware) no reported
+param answers; the v6 app reads it from the product's **thing description** (`app/things/get_things_list`).
+The registry fetches one per product code per start and resolves it for each device (`resolveThing`, a
+port of the app's variant and availability rules); every context carries it as `ctx.things`. An enum
+member names its identifiers with `thing`, and its per-device options are the listed wire values it
+names (0 and 1 for a `bool`). Prefer it over a reported param, and a param over a list of model codes.
+The wire an identifier rides is in the product's settings bundle, not the description:
+`scripts/dev/things-corpus.ts` extracts what each bundle declares, as a lead the evidence rule still applies to.
+
 ## Inbound events — one semantic event from any transport
 
 Device events arrive from four transports — FCM **push**, **P2P frames**, cloud **poll**, secure

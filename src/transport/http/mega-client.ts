@@ -464,6 +464,11 @@ export class MegaHttpClient {
     return this.region;
   }
 
+  /** The account's country code as configured (e.g. `"FR"`), the one logins are sent with. */
+  get countryCode(): string {
+    return this.cfg.countryCode;
+  }
+
   /**
    * The shard the estimated domain names (`…-ie-…`/`…-ie.` → `ie-pr`), else {@link regionShard}. The
    * eu/us classification cannot name shards like `ie-pr`.
@@ -871,6 +876,25 @@ export class MegaHttpClient {
    */
   getProductDataPoint<T = unknown>(code: string): Promise<T> {
     return this.post<T>("things", "/app/things/get_product_data_point", { code });
+  }
+
+  /**
+   * Fetch the **thing descriptions** of the given product codes from the mega `things` service: per
+   * product, every named property with its type and offered values, its actions and events. The v6 app
+   * fetches the same list for the products an account holds and reads each setting's options from it.
+   * Product-level data, not account data. `codeTimeMap` names, per product code, the `update_time` of the
+   * description already held: a product whose description has not changed since comes back with that
+   * `update_time` and no properties, one that has (or is not named) comes back in full. Returns the raw
+   * `data`.
+   */
+  getThingsList<T = unknown>(
+    productCodes: readonly string[],
+    codeTimeMap: Readonly<Record<string, number>> = {},
+  ): Promise<T> {
+    return this.post<T>("things", "/app/things/get_things_list", {
+      product_codes: productCodes,
+      code_time_map: codeTimeMap,
+    });
   }
 
   /**

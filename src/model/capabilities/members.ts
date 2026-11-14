@@ -57,6 +57,14 @@ export interface ValueMember {
    * static `enumValues` (or none) in place.
    */
   enumValuesFor?: (ctx: AvailabilityContext) => Record<number, string> | undefined;
+  /**
+   * The product thing-description identifiers this value is, in the app's order of preference
+   * (`nightvision_type_new` before `nightvision_type`), each grounded in the products' settings bundles
+   * reading it from this member's param. For an enum member without an {@link enumValuesFor} answer, the
+   * first one the device's resolved description has gives the options: its members' wire values that
+   * {@link enumValues} names, or 0 and 1 for a `bool` property.
+   */
+  thing?: readonly string[];
   provenance?: PropertySpec["provenance"];
   invert?: boolean;
   /** Per-device read polarity; undefined retains the static default. */
@@ -579,17 +587,31 @@ export type Surface<M extends Members> = {
 // ── the derived RUNTIME ─────────────────────────────────────────────────────────────────────────
 
 /**
+ * The options a member's {@link ValueMember.thing} gives on this device: the first listed identifier the
+ * resolved description has, its members' wire values (0 and 1 for a `bool`) that `enumValues` names.
+ * `undefined` without a static domain, a description, a listed property or any named value.
+ */
+function thingEnum(m: ValueMember, ctx: AvailabilityContext): Record<number, string> | undefined {
+  const named = m.enumValues;
+  const property = named && m.thing?.map((id) => ctx.things?.properties[id]).find(Boolean);
+  if (!named || !property) return undefined;
+  const wire = property.type === "bool" ? [0, 1] : property.members.map((x) => Number(x.wireValue ?? NaN));
+  const options = Object.fromEntries(wire.filter((v) => v in named).map((v) => [v, named[v]!]));
+  return Object.keys(options).length ? options : undefined;
+}
+
+/**
  * Resolve a member's enum options for a device, evaluating `enumValuesFor` at most once. Returns the
  * options and whether they came from the device context (`dynamic`), so the option set and the enum
- * `kind` both come from a single result. A context domain (`enumValuesFor(ctx)`) is
- * returned when present; absent that (or with no context) the static `enumValues`; a member with
- * neither yields no options.
+ * `kind` both come from a single result. A context domain — `enumValuesFor(ctx)`, else what the
+ * member's `thing` gives on the device — is returned when present; absent that (or with no context) the
+ * static `enumValues`; a member with neither yields no options.
  */
 export function resolvedEnum(
   m: ValueMember,
   ctx?: AvailabilityContext,
 ): { values?: Record<number, string>; dynamic: boolean } {
-  const dynamic = ctx ? m.enumValuesFor?.(ctx) : undefined;
+  const dynamic = ctx ? (m.enumValuesFor?.(ctx) ?? thingEnum(m, ctx)) : undefined;
   return dynamic ? { values: dynamic, dynamic: true } : { values: m.enumValues, dynamic: false };
 }
 
