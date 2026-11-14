@@ -16,7 +16,7 @@ import { SECURITY_PARAMS, CLEAN_PARAMS, MOWER_PARAMS, type ParamDef, DISPLAY_PAR
 import { LIFE_PARAMS } from "./life-params.js";
 
 /** The param id spaces this SDK models. */
-export type ParamNamespace = "security" | "clean" | "mower" | "life" | "print" | "display";
+export type ParamNamespace = "security" | "clean" | "mower" | "life" | "print" | "display" | "tracker";
 
 const TABLES: Record<ParamNamespace, Record<number, ParamDef>> = {
   security: SECURITY_PARAMS,
@@ -31,6 +31,10 @@ const TABLES: Record<ParamNamespace, Record<number, ParamDef>> = {
   // Smart Display (T87Ax) — ids 8001-8006, four of them named. Same reason as `print`: its own
   // dictionary rather than a corner of another line's.
   display: DISPLAY_PARAMS,
+  // SmartTrack item trackers — empty until a live capture confirms the param↔semantic map. Present so
+  // the tracker codec resolves to its OWN namespace rather than decoding a tracker's ids against
+  // SECURITY_PARAMS.
+  tracker: {},
 };
 
 /** Look up a param def in the given namespace. */
@@ -69,6 +73,7 @@ const NAMESPACE_BY_CODEC: Record<Codec, ParamNamespace> = {
   light: "life",
   printer: "print",
   display: "display",
+  tracker: "tracker",
 };
 
 /** The param namespace a device's ids live in, from its codec, via the module-local `NAMESPACE_BY_CODEC` table. */
