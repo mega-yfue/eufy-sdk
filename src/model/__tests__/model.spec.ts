@@ -112,6 +112,15 @@ describe("resolveDevice — 3-tier composition", () => {
     expect(r.capabilities).toEqual(expect.arrayContaining(["light", "battery", "video", "motion"]));
   });
 
+  it("tier 1: a T851F lock reporting a camera-family device_type is pinned to the lock codec", () => {
+    const r = resolveDevice({ model: "T851F", deviceType: 1, params: {} });
+    expect(r.codec).toBe("lock");
+    expect(r.source).toBe("model");
+    expect(r.capabilities).toContain("lock");
+    expect(r.capabilities).not.toContain("video");
+    expect(r.capabilities).not.toContain("snapshot");
+  });
+
   it("tier 2: an unknown model still classifies by device_type with baseline caps", () => {
     const r = resolveDevice({ deviceType: 9, model: "T8XYZ" }); // some camera, no row
     expect(r.codec).toBe("camera");
