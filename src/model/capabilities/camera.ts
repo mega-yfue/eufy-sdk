@@ -1036,19 +1036,19 @@ export const CAMERA: CapabilityModule = {
   properties: propertiesOf(CAMERA_MEMBERS),
   /** Every camera-codec device has the power/privacy surface. */
   detection: { codecs: ["camera"] },
-  /** The sound (3105) and crying (3104) pushes, each claimed on {@link CAMERA_MEMBERS.soundDetection}. */
+  /** The sound (3105) and crying (3104) pushes, each claimed on the product's thing property for it. */
   events: [
     {
       source: "push",
       match: IndoorPushEvent.SOUND_DETECTION,
       emit: "soundDetected",
-      claim: { reads: ["soundDetection"] },
+      claim: { things: ["sound_detection_status"] },
     },
     {
       source: "push",
       match: IndoorPushEvent.CRYING_DETECTION,
       emit: "cryingDetected",
-      claim: { reads: ["soundDetection"] },
+      claim: { things: ["notification_ai_crying_switch"] },
     },
   ],
   /** Only the no-argument power verbs, which carry no value for a member to hold. */

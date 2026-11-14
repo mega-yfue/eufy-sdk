@@ -187,6 +187,12 @@ export interface EventClaim {
    * and ignored where that is absent.
    */
   homeBaseAttached?: boolean;
+  /**
+   * Thing-description property identifiers whose presence is the evidence: the product's description,
+   * resolved for this device, lists at least one of them. Compared against
+   * {@link AvailabilityContext.things}, and ignored where that is absent.
+   */
+  things?: readonly string[];
 }
 
 /**
