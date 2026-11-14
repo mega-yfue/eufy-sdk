@@ -98,6 +98,7 @@ export default defineConfig({
           text: "Under the hood",
           items: [
             { text: "How it fits together", link: "/architecture" },
+            { text: "Thing descriptions", link: "/thing-descriptions" },
             { text: "API reference", link: "/api/" },
           ],
         },

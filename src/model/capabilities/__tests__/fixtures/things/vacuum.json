@@ -1,0 +1,301 @@
+{
+  "things_list": [
+    {
+      "actions": [
+        {
+          "available_conditions": {},
+          "dispatch_type": "",
+          "identifier": "ecl_continue_or_pause",
+          "input_data": {
+            "specs": {},
+            "type": "string"
+          },
+          "output_data": {
+            "specs": {},
+            "type": "string"
+          },
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          }
+        },
+        {
+          "available_conditions": {},
+          "dispatch_type": "",
+          "identifier": "ecl_start_auto_clean",
+          "input_data": {
+            "specs": {},
+            "type": "string"
+          },
+          "output_data": {
+            "specs": {},
+            "type": "string"
+          },
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          }
+        },
+        {
+          "available_conditions": {},
+          "dispatch_type": "",
+          "identifier": "ecl_start_go_home",
+          "input_data": {
+            "specs": {},
+            "type": "string"
+          },
+          "output_data": {
+            "specs": {},
+            "type": "string"
+          },
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          }
+        },
+        {
+          "available_conditions": {},
+          "dispatch_type": "",
+          "identifier": "ecl_start_room_clean",
+          "input_data": {
+            "specs": {},
+            "type": "string"
+          },
+          "output_data": {
+            "specs": {},
+            "type": "string"
+          },
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          }
+        }
+      ],
+      "events": [
+        {
+          "available_conditions": {},
+          "dispatch_type": "",
+          "event_type": "",
+          "identifier": "ecl_event_map_data",
+          "output_data": {
+            "specs": {},
+            "type": "string"
+          },
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          }
+        }
+      ],
+      "is_filter": false,
+      "large_version": 124,
+      "large_version_update_time": 1793867565,
+      "profile": {
+        "plugin_id": "00000000000000000000000000000000",
+        "plugin_id_qjsc": "",
+        "plugin_id_zip": "00000000000000000000000000000000",
+        "plugin_path": "https://cdn.example/T2351Handle.mix.js",
+        "plugin_path_qjsc": "",
+        "plugin_path_zip": "https://cdn.example/T2351.zip",
+        "product_code": "T2351",
+        "version": "1.0.0"
+      },
+      "properties": [
+        {
+          "access_mode": "R",
+          "available_conditions": {},
+          "data_type": {
+            "specs": {
+              "defaultValue": "-1",
+              "max": "4",
+              "min": "-1",
+              "step": "1"
+            },
+            "type": "int"
+          },
+          "dispatch_type": "",
+          "identifier": "ecl_clean_param_fan_suction",
+          "read_conditions": {},
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          },
+          "write_conditions": {}
+        },
+        {
+          "access_mode": "R",
+          "available_conditions": {},
+          "data_type": {
+            "specs": {},
+            "type": "int"
+          },
+          "dispatch_type": "",
+          "identifier": "ecl_status_battery",
+          "read_conditions": {},
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          },
+          "write_conditions": {}
+        },
+        {
+          "access_mode": "R",
+          "available_conditions": {},
+          "data_type": {
+            "specs": {
+              "defaultValue": "-1",
+              "max": "8",
+              "min": "-1",
+              "step": "1"
+            },
+            "type": "int"
+          },
+          "dispatch_type": "",
+          "identifier": "ecl_status_state",
+          "read_conditions": {},
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          },
+          "write_conditions": {}
+        },
+        {
+          "access_mode": "R",
+          "available_conditions": {},
+          "data_type": {
+            "specs": {
+              "eunmList": []
+            },
+            "type": "tenum"
+          },
+          "dispatch_type": "",
+          "identifier": "ecl_suction",
+          "read_conditions": {},
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          },
+          "write_conditions": {}
+        },
+        {
+          "access_mode": "R",
+          "available_conditions": {},
+          "data_type": {
+            "specs": {},
+            "type": "int"
+          },
+          "dispatch_type": "",
+          "identifier": "ecl_voice",
+          "read_conditions": {},
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          },
+          "write_conditions": {}
+        }
+      ],
+      "update_time": 1793784835,
+      "version": "1.0"
+    }
+  ],
+  "wire": {
+    "ecl_start_auto_clean": {
+      "reads": [],
+      "writes": [
+        {
+          "via": "dp",
+          "dp": 152,
+          "method": "0"
+        }
+      ],
+      "versions": []
+    },
+    "ecl_start_room_clean": {
+      "reads": [],
+      "writes": [
+        {
+          "via": "dp",
+          "dp": 152,
+          "method": "1"
+        }
+      ],
+      "versions": []
+    },
+    "ecl_continue_or_pause": {
+      "reads": [],
+      "writes": [
+        {
+          "via": "dp",
+          "dp": 152
+        }
+      ],
+      "versions": []
+    },
+    "ecl_start_go_home": {
+      "reads": [],
+      "writes": [
+        {
+          "via": "dp",
+          "dp": 152,
+          "method": "6"
+        }
+      ],
+      "versions": []
+    },
+    "ecl_status_state": {
+      "reads": [
+        {
+          "via": "dp",
+          "dp": 153,
+          "path": "state"
+        }
+      ],
+      "writes": [],
+      "versions": []
+    },
+    "ecl_clean_param_fan_suction": {
+      "reads": [
+        {
+          "via": "dp",
+          "dp": 154,
+          "path": "cleanParam.fan.suction"
+        }
+      ],
+      "writes": [],
+      "versions": []
+    },
+    "ecl_status_battery": {
+      "reads": [
+        {
+          "via": "dp",
+          "dp": 163,
+          "path": "statusBattery"
+        }
+      ],
+      "writes": [],
+      "versions": []
+    },
+    "ecl_voice": {
+      "reads": [
+        {
+          "via": "dp",
+          "dp": 161,
+          "path": "voice"
+        }
+      ],
+      "writes": [],
+      "versions": []
+    },
+    "ecl_suction": {
+      "reads": [
+        {
+          "via": "dp",
+          "dp": 158,
+          "path": "sction"
+        }
+      ],
+      "writes": [],
+      "versions": []
+    }
+  }
+}

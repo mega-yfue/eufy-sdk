@@ -1,4 +1,5 @@
 import { conditionsPass, parseThingsList, resolveThing } from "../thing-description.js";
+import { readFileSync } from "node:fs";
 import { resolvedEnum } from "../members.js";
 
 /**
@@ -355,5 +356,69 @@ describe("a member's thing gives its enum options on the device", () => {
     expect(
       resolvedEnum({ ...member, enumValues: undefined }, { codec: "camera", things: things([listed("mode", ["1"])]) }),
     ).toEqual({ values: undefined, dynamic: false });
+  });
+});
+
+/**
+ * Trimmed `get_things_list` entries of one product per family, as the service returns them, with the
+ * bundle ids and URLs synthesized, each beside the `wire` the product's settings bundle declares for its
+ * identifiers (`scripts/dev/things-corpus.ts --fixture`).
+ */
+const FIXTURES = {
+  smartlight: "T8L00",
+  vacuum: "T2351",
+  "vacuum-legacy": "T2250",
+  mower: "T2801",
+  security: "T8410",
+  radar: "T8C00",
+} as const;
+type Wire = {
+  via: string;
+  dp?: number;
+  method?: string;
+  tag?: number;
+  code?: string;
+  cmd?: { id?: number };
+  subCmd?: { id?: number };
+};
+const fixture = (name: keyof typeof FIXTURES) =>
+  JSON.parse(readFileSync(new URL(`fixtures/things/${name}.json`, import.meta.url), "utf8")) as {
+    things_list: Array<Record<"properties" | "actions" | "events", Array<{ identifier: string }>>>;
+    wire: Record<string, { reads: Wire[]; writes: Wire[] }>;
+  };
+const described = (name: keyof typeof FIXTURES) => parseThingsList(fixture(name))[FIXTURES[name]]!;
+
+describe("a service reply of each product family", () => {
+  it.each(Object.keys(FIXTURES) as (keyof typeof FIXTURES)[])("parses the %s entry whole", (name) => {
+    const raw = fixture(name).things_list[0]!;
+    const td = described(name);
+    const ids = (xs: Array<{ identifier: string }>) => xs.map((x) => x.identifier);
+    expect(Object.keys(td.properties)).toEqual(ids(raw.properties));
+    expect(Object.keys(td.actions)).toEqual(ids(raw.actions));
+    expect(Object.keys(td.events)).toEqual(ids(raw.events));
+    expect(td.bundle.path).toBe(`https://cdn.example/${FIXTURES[name]}Handle.mix.js`);
+  });
+
+  it("parses an unchanged product's short reply to its revision with nothing listed", () => {
+    const td = parseThingsList({
+      things_list: [{ profile: { product_code: "T0000" }, update_time: 1700000000 }],
+    }).T0000!;
+    expect([td.updateTime, Object.keys(td.properties).length, Object.keys(td.actions).length]).toEqual([
+      1700000000, 0, 0,
+    ]);
+  });
+
+  it("resolves the camera's night vision to the firmware variant, with its wire values", () => {
+    const at = (firmwareVersion: string) =>
+      resolveThing(described("security"), { serial: "T8410P0000000000", firmwareVersion }).properties.nightvision_type!;
+    expect(at("2.1.7.7").type).toBe("bool");
+    expect(at("2.1.7.8").members.map((m) => m.wireValue)).toEqual(["1", "3", "0"]);
+  });
+
+  it("offers a station-gated variant only behind the stations its pattern admits", () => {
+    const alarm = (stationSerial: string) =>
+      resolveThing(described("security"), { serial: "T8410P0000000000", stationSerial }).properties.set_alarm_type;
+    expect(alarm("T8410P0000000000")).toBeUndefined();
+    expect(alarm("T8010P0000000000")?.members.map((m) => m.wireValue)).toEqual(["1", "4"]);
   });
 });
