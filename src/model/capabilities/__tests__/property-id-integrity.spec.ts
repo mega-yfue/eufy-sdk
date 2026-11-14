@@ -54,7 +54,6 @@ const KNOWN_UNLISTED = new Map<number, string>([
   // invariant, so its own change rather than a capability's.
   [1014, "person_detection.personDetection — guessed"],
   [1016, "person_detection.personDetected — guessed"],
-  [1560, "leak.leakDetected — guessed"],
   [1561, "smoke.smokeDetected — guessed"],
   [1562, "co.coDetected — guessed"],
   [2010, "storage.sdCard — guessed"],
