@@ -5,6 +5,7 @@ import { buildCommand, detectCapabilities } from "../index.js";
 import { bind } from "./bind.js";
 import type { CommandContext } from "../types.js";
 import { DeviceType } from "../../device-types.js";
+import { parseThingsList } from "../thing-description.js";
 import type { Command } from "../../../core/contracts.js";
 
 /**
@@ -54,6 +55,18 @@ describe("light capability module", () => {
     }
     expect(detectCapabilities({ name: "Floodlight Cam" }, "camera")).toContain("light");
     expect(detectCapabilities({ name: "Wired Doorbell" }, "camera")).not.toContain("light");
+  });
+
+  it("detects from the product's description over its params when it has one", () => {
+    const things = (...identifiers: string[]) =>
+      parseThingsList({
+        things_list: [
+          { profile: { product_code: "T0000" }, properties: identifiers.map((identifier) => ({ identifier })) },
+        ],
+      }).T0000!;
+    const params = { 1400: "0", 1401: "50", 1403: "1" };
+    expect(detectCapabilities({ params, things: things("nightvision_type") }, "camera")).not.toContain("light");
+    expect(detectCapabilities({ params: {}, things: things("spotlight_switch") }, "camera")).toContain("light");
   });
 
   describe("buildCommand — variant resolution", () => {
