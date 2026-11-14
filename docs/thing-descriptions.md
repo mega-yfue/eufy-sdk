@@ -16,17 +16,24 @@ keys are snake_case; any product code is answered, owned or not. `code_time_map`
 
 `data.things_list` holds one entry per product:
 
-| key                                       | content                                                                                                   |
-| ----------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `profile`                                 | `product_code`, `version`, and the settings bundle below                                                  |
-| `properties`                              | `identifier`, `access_mode` (`R` / `RW`), `data_type {type, specs}`, read, write and available conditions |
-| `actions`, `events`                       | `identifier`, input / output types, available conditions                                                  |
-| `update_time`, `large_version`, `version` | revision metadata                                                                                         |
+| key                                       | content                                                                                            |
+| ----------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `profile`                                 | `product_code`, `version`, and the settings bundle below                                           |
+| `properties`                              | `identifier`, `access_mode` (`R` / `RW`), `data_type {type, specs}`, read and available conditions |
+| `actions`, `events`                       | `identifier`, input / output types, available conditions                                           |
+| `update_time`, `large_version`, `version` | revision metadata                                                                                  |
 
 Types seen across products: `int`, `bool`, `string`, `text`, `enum`, `tenum`, `ienum`. An enum lists its
 members in `eunmList` (the vendor's spelling): the app's UI `value`, a label `desc` and, when the member
 maps onto the device, the wire value `associatedValue`. A property may exist as `identifier__v1`,
 `__v2`, … each gated on the device's firmware, station, serial, country or another property's value.
+
+Another property's value (`associated_field`) is the one the settings bundle parses from a reported param;
+`resolveThing` derives it for the identifiers the catalogue conditions on most: `is_support_silent_ota_switch`
+(param 6287 reported), `ai_empower` (1299) and `device_power_supply_mode` (6445), which cover 370 of its
+400 uses. Any other compares an empty value. `camera_info` compares a reported param, as a value, a pattern
+or a JSON object (`json_match`). The catalogue uses no write condition and no `user_domain`,
+`user_permission` or `parent_associated_field` condition; a condition type the SDK does not handle fails.
 
 Identifier families: security products use plain names (`nightvision_type`, `led_on_off`), vacuums
 `ecl_*`, mowers `ecl_mow_*`, smart lights `light_*` and `device_*`.

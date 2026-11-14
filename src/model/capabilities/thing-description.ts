@@ -64,7 +64,6 @@ export interface ThingProperty {
   readonly step?: number;
   readonly unit?: string;
   readonly readConditions: ThingConditions;
-  readonly writeConditions: ThingConditions;
   readonly availableConditions: ThingConditions;
 }
 
@@ -112,8 +111,8 @@ export interface ThingDescription {
 /**
  * What a device's conditions are evaluated against. `stationSerial` is the serial of the station the
  * device is reached through — its own serial when it stands alone — and `stationFirmwareVersion` that
- * station's firmware. An `associated_field` / `parent_associated_field` condition compares an empty
- * string. `params` are the device's reported `param_type → value`, for `camera_info`.
+ * station's firmware. `params` are the device's reported `param_type → value`, which `camera_info` reads and
+ * an `associated_field` derives the other property's value from.
  */
 export interface ThingFacts {
   readonly serial?: string;
@@ -229,7 +228,10 @@ function compare(current: string, qualifier: string, target: string): boolean {
   }
 }
 
-/** `camera_info`: a reported param, named by `value`'s JSON `param`, compared by `equals` (`value`) or `RE` (`regex`). */
+/**
+ * `camera_info`: a reported param, named by `value`'s JSON `param`, compared by `equals` (`value`), `RE`
+ * (`regex`) or `json_match` (the param parsed as a JSON object, see {@link jsonMatch}).
+ */
 function cameraInfo(facts: ThingFacts, qualifier: string, value: string): boolean {
   let spec: Raw;
   try {
@@ -241,7 +243,88 @@ function cameraInfo(facts: ThingFacts, qualifier: string, value: string): boolea
   if (reported === undefined) return false;
   if (qualifier === "equals") return typeof spec.value === "string" && spec.value === reported;
   if (qualifier === "RE") return typeof spec.regex === "string" && re(spec.regex, reported);
-  return false;
+  if (qualifier !== "json_match" || !spec.json_match || typeof spec.json_match !== "object") return false;
+  const target = json(reported) as Raw | undefined;
+  return !!target && typeof target === "object" && !Array.isArray(target) && jsonMatch(target, spec.json_match);
+}
+
+/** A JSON primitive's content as a string, as the app reads it; absent for null, an object or an array. */
+const content = (v: unknown): string | undefined =>
+  v === null || v === undefined || typeof v === "object" ? undefined : String(v);
+
+/** `JSON.parse`, or `undefined` for text that is not JSON. */
+const json = (text: string): unknown => {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+};
+
+/** `asInt(value, fallback)` as the bundles use it: the value's integer, else the fallback. */
+const asInt = (v: unknown, fallback: number): number => {
+  const n = Number.parseInt(String(v), 10);
+  return Number.isNaN(n) ? fallback : n;
+};
+
+/**
+ * The value of another property, for `associated_field`: what the product's settings bundle parses it to
+ * from a reported param, as the app compares it (a string). The same in every bundle that defines it; an
+ * identifier not listed, or whose param is not reported, compares an empty value.
+ */
+const ASSOCIATED: Readonly<Record<string, (params: Readonly<Record<number, string>>) => string | undefined>> = {
+  /** `true` once `APP_CMD_SET_SILENT_OTA_SWITCH` (6287) is reported. */
+  is_support_silent_ota_switch: (p) => (p[6287] === undefined ? undefined : "true"),
+  /** `APP_CMD_HB3_AI_Empowerment` (1299): its JSON value, else the value as an integer (0 when none). */
+  ai_empower: (p) => {
+    const v = p[1299];
+    if (v === undefined) return undefined;
+    const parsed = json(v);
+    if (parsed === undefined) return String(asInt(v, 0));
+    return content(parsed) ?? JSON.stringify(parsed);
+  },
+  /** `APP_CMD_GET_POWER_SUPPLY_MODE` (6445): its JSON `power_source`, else `source`, as an integer; 1 when empty. */
+  device_power_supply_mode: (p) => {
+    const v = p[6445];
+    if (v === undefined) return undefined;
+    if (v === "") return "1";
+    const parsed = json(v) as Raw | undefined;
+    return parsed === undefined ? undefined : String(asInt(parsed?.power_source ?? parsed?.source, 1));
+  },
+};
+
+/**
+ * The app's `json_match`: `target` a JSON object, every check of `match` passing (`mode` `all`, the
+ * default) or any one (`any`, which fails with no check). A check is a key present (`contains_key`) or
+ * absent (`not_contains_key`), or a key's primitive value equal (`value_equals`), different
+ * (`value_not_equals`) or matched (`value_regex`); a missing or non-primitive value fails its check.
+ */
+function jsonMatch(target: Raw, match: Raw): boolean {
+  const checks: boolean[] = [];
+  const keys = (k: string): string[] =>
+    Array.isArray(match[k])
+      ? match[k].map(content).filter((x: string | undefined): x is string => x !== undefined)
+      : [];
+  const pairs = (k: string): [string, string | undefined][] =>
+    match[k] && typeof match[k] === "object" ? Object.entries(match[k]).map(([key, v]) => [key, content(v)]) : [];
+  for (const k of keys("contains_key")) checks.push(Object.hasOwn(target, k));
+  for (const k of keys("not_contains_key")) checks.push(!Object.hasOwn(target, k));
+  const valued = (k: string, test: (actual: string, expected: string) => boolean) => {
+    for (const [key, expected] of pairs(k)) {
+      const actual = content(target[key]);
+      checks.push(expected !== undefined && actual !== undefined && test(actual, expected));
+    }
+  };
+  valued("value_equals", (a, e) => a === e);
+  valued("value_not_equals", (a, e) => a !== e);
+  valued("value_regex", (a, e) => {
+    try {
+      return new RegExp(e).test(a);
+    } catch {
+      return false;
+    }
+  });
+  return match.mode === "any" ? checks.some(Boolean) : checks.every(Boolean);
 }
 
 /** One condition, as the app's condition runner evaluates it; a type it does not know fails. */
@@ -261,15 +344,10 @@ function condition(c: ThingCondition, facts: ThingFacts): boolean {
       return re(c.value, facts.serial ?? "");
     case "user_country":
       return re(c.value, facts.country ?? "");
-    case "user_domain":
-      return re(c.value, "");
     case "sdk_version":
       return version(APP_SDK_VERSION, c.qualifier, c.value);
     case "associated_field":
-    case "parent_associated_field":
-      return compare("", c.qualifier, c.value);
-    case "user_permission":
-      return c.qualifier === "in";
+      return compare(ASSOCIATED[c.propId ?? ""]?.(facts.params ?? {}) ?? "", c.qualifier, c.value);
     case "camera_info":
       return cameraInfo(facts, c.qualifier, c.value);
     default:
@@ -297,8 +375,7 @@ const bare = (identifier: string): string => {
  * `identifier__vN` whose read conditions pass (a variant without read conditions is never chosen), the
  * one with the most conditions, the first listed on a tie, else the base `identifier`. The chosen
  * property's `identifier` keeps the variant's name. A property whose available conditions fail is left
- * out, as are actions and events whose available conditions fail. A property whose write conditions fail
- * is held as `R`.
+ * out, as are actions and events whose available conditions fail.
  */
 export function resolveThing(td: ThingDescription, facts: ThingFacts): ThingDescription {
   const properties: Record<string, ThingProperty> = Object.create(null);
@@ -315,7 +392,7 @@ export function resolveThing(td: ThingDescription, facts: ThingFacts): ThingDesc
     }
     const p = td.properties[chosen];
     if (!p || !conditionsPass(p.availableConditions, facts)) continue;
-    properties[base] = conditionsPass(p.writeConditions, facts) ? p : { ...p, accessMode: "R" };
+    properties[base] = p;
   }
   const available = <T extends { availableConditions: ThingConditions }>(entries: Readonly<Record<string, T>>) => {
     const out: Record<string, T> = Object.create(null);
@@ -370,7 +447,6 @@ function property(p: Raw): ThingProperty {
     ...(num(specs.step) !== undefined ? { step: num(specs.step) } : {}),
     ...(optStr(specs.unit) !== undefined ? { unit: str(specs.unit) } : {}),
     readConditions: conditions(p.read_conditions),
-    writeConditions: conditions(p.write_conditions),
     availableConditions: conditions(p.available_conditions),
   };
 }
