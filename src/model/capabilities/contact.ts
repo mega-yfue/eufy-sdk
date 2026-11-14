@@ -130,20 +130,20 @@ export const CONTACT_MEMBERS = {
     provenance: "verified",
     description: "Contact state, true=open (1550, sensor_door_status).",
   },
-  /** The sensor was removed from its mount. */
+  /** The sensor was removed from its mount. Reported by a T8900; the meaning of a set value is the product bundle's. */
   tampered: {
     param: CONTACT_CMD.TAMPER,
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
+    provenance: "apk",
     description: "Removed from its mount (61015, sensor_disassemble_status).",
   },
-  /** The alarm currently skips this sensor. */
+  /** The alarm currently skips this sensor. Reported by a T8900; the meaning of a set value is the product bundle's. */
   bypassed: {
     param: CONTACT_CMD.BYPASS,
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
+    provenance: "apk",
     description: "Bypassed by the alarm (61016, sensor_door_bypass_status).",
   },
   /**
