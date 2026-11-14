@@ -94,6 +94,14 @@ import { stationChannels, stationOf } from "./station-channels.js";
 const DIRECT_CMD_SENDS = 5;
 
 /**
+ * `GET_CAMERA_INFO` (1103) body: `[u32 mValue = 255][u32 mValueSub = 903]`, the constants the app's request
+ * builder sets for this command (`msgType` 14, packed as two little-endian ints by its native sender). A
+ * HomeBase answers on channel 255 with its whole parameter table, every attached device's entries under
+ * its own channel.
+ */
+const STATION_TABLE_QUERY = Buffer.from("ff00000087030000", "hex");
+
+/**
  * How long each command is given where the level-2 key is a REQUIREMENT — the HomeBase-routed commands
  * that cannot be framed without it. This grace is per call, because a delayed `CMD_GATEWAYINFO` on an old
  * session may still produce the key while the command waits.
@@ -636,7 +644,10 @@ export class P2PCommandRouter {
       if (this.manager.get(stationSn) !== session) return;
       this.tearDownStation(stationSn);
     });
-    session.on("level2Ready", ({ cipherId }: { cipherId: number }) => this.deps.onLevel2Ready(stationSn, cipherId));
+    session.on("level2Ready", ({ cipherId }: { cipherId: number }) => {
+      session.sendRawLevel2Bytes(STATION_TABLE_QUERY, 0, P2P_ENVELOPE.GET_CAMERA_INFO, 8);
+      this.deps.onLevel2Ready(stationSn, cipherId);
+    });
     session.on("peerAnswer", (atMs: number) => {
       if (this.manager.get(stationSn) === session) this.deps.onPeerAnswer?.(stationSn, atMs);
     });
@@ -2386,10 +2397,9 @@ export class P2PCommandRouter {
       }),
       "utf-8",
     );
-    const camInfoPre = Buffer.from("ff00000087030000", "hex"); // 1103 GET_CAMERA_INFO precursor
     const gap = () => sleep(150);
 
-    session.sendRawLevel2Bytes(camInfoPre, 255, P2P_ENVELOPE.GET_CAMERA_INFO, 8); // precursor on the station channel
+    session.sendRawLevel2Bytes(STATION_TABLE_QUERY, 255, P2P_ENVELOPE.GET_CAMERA_INFO, 8); // precursor on the station channel
     await gap();
     for (let i = 0; i < 2; i++) {
       session.sendRawLevel2Bytes(setJson, 0, P2P_ENVELOPE.SET_PAYLOAD, 8); // SET on ch0 (station scope)
@@ -2399,7 +2409,7 @@ export class P2PCommandRouter {
       session.sendRawLevel2Bytes(setJson, channel, P2P_ENVELOPE.SET_PAYLOAD, 8); // SET on the camera channel
       await gap();
     }
-    session.sendRawLevel2Bytes(camInfoPre, 0, P2P_ENVELOPE.GET_CAMERA_INFO, 8); // 1103 companion on ch0
+    session.sendRawLevel2Bytes(STATION_TABLE_QUERY, 0, P2P_ENVELOPE.GET_CAMERA_INFO, 8); // 1103 companion on ch0
   }
 
   /**

@@ -53,6 +53,11 @@ class FakeSession extends EventEmitter {
   repromptLevel2Key() {
     return false;
   }
+  sent: unknown[][] = [];
+  sendRawLevel2Bytes(...frame: unknown[]) {
+    this.sent.push(frame);
+    return true;
+  }
   /** As the real one does, it drops the connection at once and emits `close` only once its END send settles. */
   async close() {
     this.isConnected = false;
@@ -183,6 +188,18 @@ describe("a second live camera on a claimed station session", () => {
     built[1].emit("level2Ready", { cipherId: 1 });
 
     expect(events).toEqual([]);
+  });
+
+  it("asks the station for its parameter table once its own session has the key, not on a media session", async () => {
+    const r = router();
+    (await openLive(r, CAM_A)).attach();
+    (await openLive(r, CAM_B)).attach();
+
+    built[0].emit("level2Ready", { cipherId: 1 });
+    built[1].emit("level2Ready", { cipherId: 1 });
+
+    expect(built[0].sent).toEqual([[Buffer.from("ff00000087030000", "hex"), 0, 1103, 8]]);
+    expect(built[1].sent).toEqual([]);
   });
 
   it("announces the station's own session, which is the one that carries its events", async () => {
