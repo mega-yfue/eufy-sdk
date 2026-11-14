@@ -22,6 +22,7 @@ import {
   createCipheriv,
   createECDH,
   createDecipheriv,
+  createPrivateKey,
   generateKeyPairSync,
   privateDecrypt,
   randomBytes,
@@ -838,6 +839,13 @@ export class P2PSession extends EventEmitter {
         const keys = typeof resolved === "string" ? { ecc: resolved } : resolved;
         const eccPrivHex = keys?.ecc;
         const rsaPrivKey = eccPrivHex ? undefined : keys?.rsa;
+        // ponytail: temporary shape trace for #398 (lengths and one framing byte, never key bytes); drop once it is decided.
+        this.logger.debug(
+          `[p2p] ${this.cfg.stationSn} level-2 inputs cipher_id=${cipherId} payload=${gwPayload.length}B ` +
+            `byte4=0x${(gwPayload[4] ?? 0).toString(16).padStart(2, "0")} ` +
+            `ecc=${eccPrivHex ? `${eccPrivHex.length}hex/${/^[0-9a-f]+$/i.test(eccPrivHex) ? "hex" : "not-hex"}` : "none"} ` +
+            `rsa=${keys?.rsa ? `${keys.rsa.length}ch/${keys.rsa.startsWith("-----BEGIN") ? "pem" : "raw"}` : "none"}`,
+        );
         if (!eccPrivHex && !rsaPrivKey) {
           this.logger.debug(`[p2p] ${this.cfg.stationSn} no ECC or RSA key for cipher_id ${cipherId}`);
           this.trace({ phase: "level2-unavailable", reason: "no-cipher-key", cipherId });
@@ -847,7 +855,61 @@ export class P2PSession extends EventEmitter {
         const key = eccPrivHex
           ? deriveLevel2KeyFromGatewayInfo(gwPayload, eccPrivHex)
           : deriveLevel2KeyFromRsaGatewayInfo(gwPayload, rsaPrivKey!);
+        // ponytail: temporary #398 probe, both decoders forced on the same payload; drop with the trace above.
+        const probe = (f: () => Buffer | undefined) => {
+          try {
+            const k = f();
+            return k ? `ok/${k.length}B` : "fail";
+          } catch (e) {
+            return `throw/${(e as Error).message.slice(0, 40)}`;
+          }
+        };
+        this.logger.debug(
+          `[p2p] ${this.cfg.stationSn} level-2 probe cipher_id=${cipherId} ` +
+            `ecc=${keys?.ecc ? probe(() => deriveLevel2KeyFromGatewayInfo(gwPayload, keys.ecc!)) : "-"} ` +
+            `rsa=${keys?.rsa ? probe(() => deriveLevel2KeyFromRsaGatewayInfo(gwPayload, keys.rsa!)) : "-"}`,
+        );
+        if (keys?.rsa) {
+          const stripped = keys.rsa.replace(/-----(BEGIN|END)[^-]*-----/gi, "").replace(/\s+/g, "");
+          const body = keys.rsa.search(/[A-Za-z0-9+/]{24}/);
+          const tail = keys.rsa.length - (keys.rsa.match(/[A-Za-z0-9+/=]{24}[^A-Za-z0-9+/=]*$/)?.[0].length ?? 0) + 24;
+          this.logger.debug(
+            `[p2p] ${this.cfg.stationSn} level-2 rsa-frame head=${JSON.stringify(keys.rsa.slice(0, Math.max(body, 0)))} tail=${JSON.stringify(keys.rsa.slice(tail))}`,
+          );
+          const der = Buffer.from(stripped, "base64");
+          const inner = der.toString("latin1");
+          this.logger.debug(
+            `[p2p] ${this.cfg.stationSn} level-2 rsa-shape chars=${keys.rsa.length} der=${der.length}B head=${der.subarray(0, 4).toString("hex")} ` +
+              `bodyUpper=${(stripped.match(/[A-Z]/g) ?? []).length} innerPem=${inner.includes("BEGIN") ? "yes" : "no"} innerB64=${/^[A-Za-z0-9+/=\s-]+$/.test(inner) ? "yes" : "no"}`,
+          );
+          const innerDer = Buffer.from(inner.replace(/-----(BEGIN|END)[^-]*-----/g, "").replace(/\s+/g, ""), "base64");
+          for (const [name, keyDer, type] of [
+            ["pkcs8", der, "pkcs8"],
+            ["pkcs1", der, "pkcs1"],
+            ["inner-pkcs8", innerDer, "pkcs8"],
+            ["inner-pkcs1", innerDer, "pkcs1"],
+          ] as const) {
+            let detail: string;
+            try {
+              const k = createPrivateKey({ key: keyDer, format: "der", type });
+              const len = Math.ceil((k.asymmetricKeyDetails?.modulusLength ?? 0) / 8);
+              const nul = gwPayload.indexOf(0x00, 4);
+              const block = privateDecrypt(
+                { key: k, padding: constants.RSA_NO_PADDING },
+                gwPayload.subarray(4, 4 + len),
+              );
+              const sep = block.indexOf(0x00, 2);
+              detail = `mod=${len}B ctNulAt=${nul - 4} pad=${block.subarray(0, 2).toString("hex")} sep=${sep} plain=${sep > 0 ? block.length - sep - 1 : -1}B`;
+            } catch (e) {
+              detail = `throw/${(e as Error).message.slice(0, 50)}`;
+            }
+            this.logger.debug(`[p2p] ${this.cfg.stationSn} level-2 rsa-probe ${name} ${detail}`);
+          }
+        }
         if (!key) {
+          this.logger.debug(
+            `[p2p] ${this.cfg.stationSn} level-2 derivation failed via ${eccPrivHex ? "ecc" : "rsa"} (cipher_id ${cipherId})`,
+          );
           this.trace({ phase: "level2-unavailable", reason: "derivation-failed", cipherId });
           this.settleLevel2();
           if (eccPrivHex) this.emit("error", new Error(`level-2 key derivation failed (cipher_id ${cipherId})`));
