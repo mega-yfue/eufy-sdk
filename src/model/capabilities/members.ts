@@ -153,6 +153,13 @@ export interface ValueMember {
    */
   unverified?: true;
   /**
+   * {@link unverified}, decided per device: the write wire is confirmed on some families and not on the
+   * one this predicate answers `true` for. There the setter is not installed and the intent path throws,
+   * exactly as for a member that is unverified everywhere. Like `available`, a member that declares this
+   * lands its setter OPTIONAL on the surface, because whether it exists is a runtime fact.
+   */
+  unverifiedFor?: (ctx: AvailabilityContext) => boolean;
+  /**
    * Extra names the intent path should route here, taking the caller's value as-is. Unlike
    * {@link aliases}, no value is supplied: it is the same write under a second name.
    */
@@ -507,10 +514,11 @@ export type UnverifiedKeys<M extends Members> = {
 /**
  * Members whose presence is a runtime fact, so the surface must make a caller check: a write installed
  * only on the devices that prove they speak it ({@link ValueMember.requires}), or one whose wire is not
- * captured ({@link ValueMember.unverified}).
+ * captured ({@link ValueMember.unverified}) everywhere or on some families ({@link ValueMember.unverifiedFor}).
  */
 export type ConditionalKeys<M extends Members> =
   | UnverifiedKeys<M>
+  | { [K in keyof M]: M[K] extends { unverifiedFor: unknown } ? K : never }[keyof M]
   | { [K in keyof M]: M[K] extends { requires: readonly number[] } ? K : never }[keyof M]
   | { [K in keyof M]: M[K] extends { requiresRead: true } ? K : never }[keyof M]
   | { [K in keyof M]: M[K] extends { available: unknown } ? K : never }[keyof M];
@@ -651,7 +659,7 @@ export function propertiesOf(members: Members, ctx?: AvailabilityContext): Prope
         // stored value is that payload — see `PropertySpec.raw`.
         raw: m.decode ? true : undefined,
         readAliases: aliases?.slice(promoted ? 1 : 0).map(({ paramType, invert }) => ({ paramType, invert })),
-        writable: m.write !== undefined || m.writtenElsewhere === true,
+        writable: (m.write !== undefined && !(ctx && m.unverifiedFor?.(ctx))) || m.writtenElsewhere === true,
         reported: ctx?.paramIds
           ? wasReported(m, borrowedBy(m, members), { ...ctx, paramIds: ctx.paramIds })
           : undefined,
@@ -996,8 +1004,9 @@ function actionRoutable(m: ActionMember, ctx: CommandContext): boolean {
  *    identity and says so by throwing) and a method returning `Promise<void>` must not surprise a caller
  *    chaining `.catch()`. Caught here once rather than in each module's own wrapper.
  *
- * A getter is skipped for a `writeOnly` or `unexposed` member, and a setter for an `unverified` one —
- * declared so the capability documents the device, never installed.
+ * A getter is skipped for a `writeOnly` or `unexposed` member, and a setter for an `unverified` one, or
+ * one whose `unverifiedFor` holds for this device — declared so the capability documents the device,
+ * never installed.
  */
 export function bindMembers<M extends Members>(members: M, deps: MemberDeps): Surface<M> {
   const { ctx, sink, read, rawDp } = deps;
@@ -1044,7 +1053,7 @@ export function bindMembers<M extends Members>(members: M, deps: MemberDeps): Su
       const get = decode ? () => decode(raw(), rawDp, ctx) : () => narrow(m.type, read, prop, domain);
       Object.defineProperty(out, name, { get, enumerable: true, configurable: true });
     }
-    if (!m.write || m.unverified || !installs(m, ctx) || !writeRoutable(m, ctx)) continue;
+    if (!m.write || m.unverified || m.unverifiedFor?.(ctx) || !installs(m, ctx) || !writeRoutable(m, ctx)) continue;
     if (m.writeOnly) unobservable.push(name);
     else if (m.readReflectsWrite && !m.readReflectsWrite(ctx)) unreflected.push(name);
     const setter = m.writeAs ?? `set${name[0].toUpperCase()}${name.slice(1)}`;
