@@ -315,25 +315,22 @@ export const LIGHT_MEMBERS = {
   },
 } as const satisfies Members;
 
-/**
- * Models that report the spotlight params 1400/1401/1403 without having a spotlight, so for them those
- * ids are not evidence of one. The camera status LED (1045) is never light evidence either.
- * - T8171: three units on firmware 1.2.1.6 report 1400/1401/1403 and have no spotlight.
- * - T8416 (Indoor Cam S350): reports 1400/1401/1403/1410 while its night vision is infrared only; the
- *   vendor app offers no spotlight control for it.
- */
-const NO_SPOTLIGHT_MODELS: ReadonlySet<string> = new Set(["T8171", "T8416"]);
-
 export const LIGHT: CapabilityModule = {
   capability: "light",
   description: "Floodlight / spotlight manual switch and brightness.",
   members: LIGHT_MEMBERS,
   properties: propertiesOf(LIGHT_MEMBERS),
+  /**
+   * A product whose thing description lists no `spotlight_switch` has no spotlight, whatever it reports: a
+   * T8171 and a T8416 report 1400/1401/1403 and the app offers them no spotlight control. Without a
+   * description, a spotlight param is the evidence; the camera status LED (1045) never is.
+   */
   detection: {
     modelHints: [/floodlight|wall.?light|spot.?light|search.?light/i],
     detect: (record) =>
-      !NO_SPOTLIGHT_MODELS.has(record.model ?? "") &&
-      [1400, 1401, 1403, 6080, 6082, 1413].some((param) => Object.hasOwn(record.params ?? {}, param)),
+      record.things
+        ? "spotlight_switch" in record.things.properties
+        : [1400, 1401, 1403, 6080, 6082, 1413].some((param) => Object.hasOwn(record.params ?? {}, param)),
   },
   /**
    * Only what the member table cannot express: `on`/`off` as no-argument verbs over the same wire as the
