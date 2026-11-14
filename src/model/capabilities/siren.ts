@@ -190,14 +190,37 @@ function cameraAlarm(seconds: number, ctx: CommandContext): Command {
   };
 }
 
+/** The self-station `1201` wire from the app capture in #569: `value` = seconds with `valueSub` 23 sounds, `value` 0 with `valueSub` 4 stops. */
+function selfStationAlarm(seconds: number, ctx: CommandContext): Command {
+  return {
+    kind: "p2p-int-string",
+    cmd: SIREN_CMD.HOMEBASE_TONE,
+    value: seconds,
+    valueSub: seconds > 0 ? 23 : 4,
+    channel: ctx.channel,
+  };
+}
+
+/** Self-station camera models by the alarm wire each was sounded and stopped with on real hardware. */
+const SELF_STATION_ALARM: ReadonlyMap<string, (seconds: number, ctx: CommandContext) => Command> = new Map([
+  ["T8151", selfStationAlarm], // CAMERA_FG, the #569 wire, sounded and stopped on a T8151
+  ["T86P2", selfStationAlarm], // CAMERA_4G_S330, the #569 wire, sounded and stopped on a T86P2
+]);
+
+/** Whether this camera is its own station, of a model in {@link SELF_STATION_ALARM}. */
+function isSelfStationAlarm(ctx: CommandContext): boolean {
+  return ctx.codec === "camera" && ctx.homeBaseAttached === false && SELF_STATION_ALARM.has(ctx.model ?? "");
+}
+
 /** Alarm-output protocol families admitted by runtime evidence. */
-type AlarmOutputFamily = "homebase" | "camera" | "standalone";
+type AlarmOutputFamily = "homebase" | "camera" | "standalone" | "selfStation";
 
 /** Classify only the alarm-output families whose runtime evidence admits a command. */
 function alarmOutputFamily(ctx: CommandContext): AlarmOutputFamily | undefined {
   if (isEvidencedStationAlarm(ctx)) return "homebase";
   if (isEvidencedAttachedCamera(ctx)) return "camera";
   if (isEvidencedStandaloneSiren(ctx)) return "standalone";
+  if (isSelfStationAlarm(ctx)) return "selfStation";
   return undefined;
 }
 
@@ -206,6 +229,7 @@ function triggerAlarm(seconds: number, ctx: CommandContext): Command {
   const family = alarmOutputFamily(ctx);
   if (family === "homebase") return homeBaseAlarm(seconds, ctx);
   if (family === "camera") return cameraAlarm(seconds, ctx);
+  if (family === "selfStation") return SELF_STATION_ALARM.get(ctx.model ?? "")!(seconds, ctx);
   throw new Error("manual alarm trigger has no verified wire for this device family");
 }
 
@@ -215,6 +239,7 @@ function stopAlarm(ctx: CommandContext): Command {
   if (family === "homebase") return homeBaseAlarm(0, ctx);
   if (family === "camera") return cameraAlarm(0, ctx);
   if (family === "standalone") return sirenPayload(SIREN_CMD.MANUAL_STOP, {}, ctx);
+  if (family === "selfStation") return SELF_STATION_ALARM.get(ctx.model ?? "")!(0, ctx);
   throw new Error("manual alarm stop has no verified wire for this device family");
 }
 
@@ -360,7 +385,10 @@ export const SIREN_MEMBERS = {
     available: isEvidencedStandaloneSiren,
     description: "Sound the siren briefly as a test.",
   },
-  /** Trigger a verified station-family HomeBase or evidenced attached-camera alarm for a bounded duration. */
+  /**
+   * Trigger a verified station-family HomeBase, evidenced attached-camera or verified self-station camera
+   * alarm for a bounded duration.
+   */
   trigger: {
     ...method(
       ({ ctx, sink }) =>
@@ -368,7 +396,10 @@ export const SIREN_MEMBERS = {
           await sink.dispatch(triggerAlarm(validateTriggerDuration(seconds), ctx));
         },
       "Trigger the alarm for a positive whole-number duration in seconds.",
-      (ctx) => isEvidencedStationAlarm(ctx) || isEvidencedAttachedCamera(ctx),
+      (ctx) => {
+        const family = alarmOutputFamily(ctx);
+        return family !== undefined && family !== "standalone";
+      },
     ),
     args: [{ name: "seconds", kind: "seconds", min: 1, description: "A positive whole-number duration." }],
   },
@@ -391,14 +422,19 @@ export const SIREN: CapabilityModule = {
   description: "Audible alarm output with evidence-bounded state, configuration, test, trigger, and stop members.",
   members: SIREN_MEMBERS,
   properties: propertiesOf(SIREN_MEMBERS),
-  /** Detection uses reported evidence and topology; no model string or device type admits a wire. */
+  /**
+   * Detection uses reported evidence and topology. A self-station camera reports no alarm parameter, so its
+   * model, sounded with the wire on real hardware, stands in for it.
+   */
   detection: {
     detect: (record, codec) => {
       const homeBase = record.deviceType !== undefined && HOMEBASE_TYPES.has(record.deviceType);
       const homeBaseAlarm = homeBase && HUB_ALARM_EVIDENCE.some((param) => Object.hasOwn(record.params ?? {}, param));
       const attachedCameraAlarm = codec === "camera" && !!record.parentSn && hasReportedEasSwitch(record);
       const standaloneSiren = codec === "sensor" && hasStandaloneSirenEvidence(record);
-      return homeBaseAlarm || attachedCameraAlarm || standaloneSiren;
+      const selfStationAlarm =
+        codec === "camera" && record.parentSn === undefined && SELF_STATION_ALARM.has(record.model ?? "");
+      return homeBaseAlarm || attachedCameraAlarm || standaloneSiren || selfStationAlarm;
     },
   },
 };
