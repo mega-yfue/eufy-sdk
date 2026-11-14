@@ -279,6 +279,8 @@ export interface P2PRouterDeps {
   localAddresses?: Record<string, string>;
   /** Suppress the `255.255.255.255` local-lookup broadcast; cloud lookup and a known LAN address still run. */
   noBroadcast?: boolean;
+  /** Wider hole punch on public addresses (see {@link P2PSessionConfig.punchSpread}). */
+  punchSpread?: number;
 }
 
 export class P2PCommandRouter {
@@ -619,6 +621,7 @@ export class P2PCommandRouter {
       localAddress,
       dskKey,
       noBroadcast: this.deps.noBroadcast,
+      punchSpread: this.deps.punchSpread,
       resolveCipherKey: (cipherId: number) => this.cipherKeysFor(session, cipherId, adminUserId, stationSn),
       logger: this.deps.logger ?? noopLogger,
     });

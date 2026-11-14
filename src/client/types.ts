@@ -82,6 +82,12 @@ export interface EufyMegaOptions extends MegaClientConfig {
    */
   noBroadcast?: boolean;
   /**
+   * Hole-punch this many ports either side of a device's public address (default 3). A device behind a
+   * mobile carrier's NAT gets a new port per destination, handed out in sequence, so the default often
+   * misses it. Applies to public addresses only, at most once a second per address and socket.
+   */
+  p2pPunchSpread?: number;
+  /**
    * Auto-manage connectivity (default `true`). When on, a successful {@link EufyMega.login} brings up
    * the always-on event channels itself — FCM push + secure MQTT (if the account has appliances) — and
    * eagerly warms P2P only for **wired** stations (HomeBases / mains cameras). Battery cameras stay
