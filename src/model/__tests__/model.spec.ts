@@ -505,10 +505,9 @@ describe("inspectParams — enrichment export", () => {
 });
 
 describe("mergeProperties — shared props dedupe across capabilities", () => {
-  it("collapses repeated props (rssi/lastSeen) first-wins", () => {
-    const props = mergeProperties(["contact", "leak"]); // both contribute lastSeen
-    const lastSeen = props.filter((p) => p.name === "lastSeen");
-    expect(lastSeen).toHaveLength(1);
+  it("collapses repeated props first-wins", () => {
+    const props = mergeProperties(["lock", "battery"]); // both contribute battery
+    expect(props.filter((p) => p.name === "battery")).toHaveLength(1);
   });
 
   it("detectCapabilities gates camera extras on the camera codec", () => {

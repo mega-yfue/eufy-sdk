@@ -5,7 +5,7 @@ import type { Capability } from "../../types.js";
 describe("keypad capability module", () => {
   it("declares the capability + schema", () => {
     expect(KEYPAD.capability).toBe("keypad");
-    expect(KEYPAD.properties.map((p) => p.name)).toEqual(["batteryLow", "charging", "rssi"]);
+    expect(KEYPAD.properties.map((p) => p.name)).toEqual(["batteryLow", "charging"]);
   });
 
   it("is the keypad-codec baseline", () => {

@@ -89,8 +89,7 @@ function contactOpen(raw: unknown): Record<string, unknown> {
 export type ContactActions = Surface<typeof CONTACT_MEMBERS>;
 
 /**
- * Every `contact` feature, declared once. `contact` (1550) and `lastSeen` (1551) are verified reads;
- * the built-in alarm tone (1507) and volume (1508) are verified writes captured live on a T90E0.
+ * Every `contact` feature, declared once. `contact` (1550) is a verified read; the built-in alarm tone (1507) and volume (1508) are verified writes captured live on a T90E0.
  *
  * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
  * which the reference site does not carry.
@@ -111,31 +110,6 @@ export const CONTACT_MEMBERS = {
     kind: "boolean",
     provenance: "verified",
     description: "Contact state, true=open (verified: param 1550 entry-sensor contact).",
-  },
-  /**
-   * Unix seconds at which the sensor last checked in — the liveness read beside the contact state, and
-   * the way to tell a genuinely closed door from a sensor that stopped reporting. A `timestamp` kind
-   * takes no `unit`: it is an instant, not a duration.
-   */
-  lastSeen: {
-    param: 1551,
-    type: "number",
-    kind: "timestamp",
-    provenance: "verified",
-    description: "Last-seen unix timestamp, seconds (verified: param 1551).",
-  },
-  /**
-   * Link quality to whichever radio the sensor is paired over, in dBm as the device measures it. The
-   * same param 1141 the other sub-1G sensors report on, so the number is comparable across them —
-   * unlike a bars mapping, which this SDK never applies.
-   */
-  rssi: {
-    param: 1141,
-    type: "number",
-    unit: "dBm",
-    kind: "dbm",
-    provenance: "verified",
-    description: "Sub-1G/Wi-Fi signal strength (verified: param 1141 = RSSI).",
   },
   /**
    * Rejected, not clamped, outside the tone enum: a fire-and-forget write of a bogus tone would look like
@@ -202,12 +176,11 @@ export const CONTACT_MEMBERS = {
 } as const satisfies Members;
 
 /**
- * `contact` — entry/door-window sensor. `contact` (1550) and `lastSeen` (1551) are verified; the
- * built-in alarm tone (1507) and volume (1508) are verified writes captured live on a T90E0.
+ * `contact` — entry/door-window sensor. `contact` (1550) is verified; the built-in alarm tone (1507) and volume (1508) are verified writes captured live on a T90E0.
  */
 export const CONTACT: CapabilityModule = {
   capability: "contact",
-  description: "Entry (door/window) sensor: contact state, last-seen, and the built-in alarm tone/volume.",
+  description: "Entry (door/window) sensor: contact state and the built-in alarm tone/volume.",
   members: CONTACT_MEMBERS,
   properties: propertiesOf(CONTACT_MEMBERS),
   /** A reported entry-sensor contact param (1550) is the verified proof of a contact sensor. */

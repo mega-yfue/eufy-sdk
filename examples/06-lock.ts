@@ -2,7 +2,7 @@
  * Example 06 — read a smart lock's state and drive it.
  *
  * Resolves a device with the `lock` capability and reads its state via the typed fluent getters:
- * `lock().locked` (lock state), `lock().battery` (0–100), `lock().rssi` (dBm). Inbound lock events
+ * `lock().locked` (lock state), `lock().battery` (0–100), and its signal as `link().rssi` (dBm). Inbound lock events
  * arrive as the `lockState` semantic event over push (see example 02).
  *
  * `lock()`/`unlock()` and `setAutoLock(enabled, delaySeconds?)` are LIVE-VERIFIED on both the P2P
@@ -34,7 +34,7 @@ async function main(): Promise<void> {
   console.log(`lock ${sn}:`);
   console.log(`  locked : ${lock.locked ?? "unknown"}`);
   console.log(`  battery: ${lock.battery ?? "unknown"}%`);
-  console.log(`  rssi   : ${lock.rssi ?? "unknown"} dBm`);
+  console.log(`  rssi   : ${dev.link?.()?.rssi ?? "unknown"} dBm`);
 
   switch (action) {
     case "lock":

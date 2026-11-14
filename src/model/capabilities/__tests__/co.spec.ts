@@ -3,7 +3,7 @@ import { CO } from "../co.js";
 describe("co capability module", () => {
   it("declares the capability + schema", () => {
     expect(CO.capability).toBe("co");
-    expect(CO.properties.map((p) => p.name)).toEqual(["coDetected", "lastSeen"]);
+    expect(CO.properties.map((p) => p.name)).toEqual(["coDetected"]);
   });
 
   it("detects via the co/carbon model-name regex", () => {
