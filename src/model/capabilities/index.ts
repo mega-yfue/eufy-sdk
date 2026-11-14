@@ -813,7 +813,7 @@ export interface DeviceActionMap {
   motion: MotionActions;
   /** Entry (door/window) sensor: reads `open`, `alarmSoundType`, `alarmVolume`; writes `setAlarmSoundType`, `setAlarmVolume` (present when the sensor reports the alarm params). */
   contact: ContactActions;
-  /** Water-leak / freeze sensor reads (read-only): `leakDetected`. */
+  /** Water and freeze sensor reads (read-only): `leakDetected`, `lowTemperature`, `lowTemperatureThreshold`. */
   leak: LeakActions;
   /** Smoke-detector reads (read-only): `smokeDetected`. */
   smoke: SmokeActions;
