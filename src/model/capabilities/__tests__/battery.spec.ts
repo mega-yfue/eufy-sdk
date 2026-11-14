@@ -59,6 +59,7 @@ describe("battery capability module", () => {
       "solarConnected24h",
       "batteryPowerStats",
       "cameraInfo",
+      "batteryLow",
     ]);
   });
 
@@ -415,10 +416,11 @@ const _noSetLevel: Exact<"setLevel" extends keyof BatteryActions ? true : false,
 const _noSetCharging: Exact<"setCharging" extends keyof BatteryActions ? true : false, false> = true;
 
 // Reported but unexposed: in the schema, reachable via getProperty, NOT on the typed surface. 1103 is
-// pinned here by BOTH names — a getter over it must not reappear under either.
+// pinned here by both names it has carried.
 const _noCameraInfo: Exact<"cameraInfo" extends keyof BatteryActions ? true : false, false> = true;
 const _noPowerStats: Exact<"batteryPowerStats" extends keyof BatteryActions ? true : false, false> = true;
-const _noBatteryLow: Exact<"batteryLow" extends keyof BatteryActions ? true : false, false> = true;
+// A sensor's low-battery flag: present only on the `sensor` codec, so optional on the surface.
+const _batteryLow: Exact<undefined extends typeof bat.batteryLow ? true : false, true> = true;
 
 export const _surfaceAssertions = [
   _level,
@@ -433,5 +435,5 @@ export const _surfaceAssertions = [
   _noSetCharging,
   _noCameraInfo,
   _noPowerStats,
-  _noBatteryLow,
+  _batteryLow,
 ];
