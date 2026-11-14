@@ -26,7 +26,7 @@ import { decodeMapFrame } from "./map-channels.js";
 import { VacuumMapStore } from "../model/index.js";
 import { type P2PSession, type P2PFrame } from "../transport/p2p/p2p-session.js";
 import { P2PCommandRouter } from "../transport/p2p/command-router.js";
-import { RtcCommandRouter, type RtcRoute } from "../transport/rtc/command-router.js";
+import { RtcCommandRouter, RTC_CONTROL_COMMAND_KINDS, type RtcRoute } from "../transport/rtc/command-router.js";
 import { jpegGeometry } from "../transport/p2p/media.js";
 import type { PowerTier } from "../transport/p2p/session-manager.js";
 import { MqttCommandRouter } from "../transport/mqtt/command-router.js";
@@ -87,7 +87,7 @@ import {
   isTuyaVacuum,
 } from "../model/device-family.js";
 import { cameraPowerTier } from "../model/capabilities/battery.js";
-import { DeviceRegistry, type DeviceRecord, type ParamChange } from "./device-registry.js";
+import { DeviceRegistry, recordString, type DeviceRecord, type ParamChange } from "./device-registry.js";
 import { PushRepeats } from "./push-repeats.js";
 import type {
   EufyMegaOptions,
@@ -118,17 +118,6 @@ type SemanticEventRefresh = Pick<CommandObservation, "param" | "property" | "res
   expected?: CommandObservation["expected"];
   observed?: CommandObservation["observed"];
 };
-
-/**
- * Read a non-empty string field off a raw device record, tolerating the app's `deviceParams` nesting
- * (the v6 app resolves e.g. firmware as `record.deviceParams?.main_sw_version ?? record.main_sw_version`).
- * Returns `undefined` for a missing or empty value, so a blank firmware never surfaces as `""`.
- */
-function recordString(raw: Record<string, unknown>, key: string): string | undefined {
-  const nested = (raw.deviceParams as Record<string, unknown> | undefined)?.[key];
-  const v = typeof nested === "string" && nested ? nested : raw[key];
-  return typeof v === "string" && v ? v : undefined;
-}
 
 /** The owning member's `admin_user_id` off a raw device record, which its station scopes writes to. */
 function adminUserIdFrom(raw: unknown): string | undefined {
@@ -190,6 +179,27 @@ const PUSH_RETRY_MAX_MS = 600_000;
  */
 const STATION_REOPEN_MIN_MS = 5_000;
 const STATION_REOPEN_MAX_MS = 300_000;
+
+/**
+ * The command kinds that ride a device's PRIMARY transport — the ones {@link EufyMega.routeCommand} lets
+ * fall through to `this.rtc` / `this.p2p` after peeling off the self-routed kinds (`ff09-*`,
+ * `keyed-payload-actuate`, `mqtt-dp*`, `aiot-dp`, which name their own wire). Kept beside the routing it
+ * mirrors so the two change together; `commandContext` turns it into the per-device refused set.
+ */
+const PORTAL_COMMAND_KINDS: ReadonlySet<Command["kind"]> = new Set<Command["kind"]>([
+  "set-payload",
+  "set-json",
+  "set-param",
+  "set-json-raw",
+  "p2p-station-scalar",
+  "p2p-int-string",
+  "p2p-privacy-burst",
+]);
+
+/** The portal kinds an RTC-control station refuses: every portal kind its control channel cannot frame. */
+const RTC_CONTROL_REFUSED_KINDS: ReadonlySet<Command["kind"]> = new Set<Command["kind"]>(
+  [...PORTAL_COMMAND_KINDS].filter((kind) => !RTC_CONTROL_COMMAND_KINDS.has(kind)),
+);
 
 interface RealtimeGeneration {
   readonly epoch: number;
@@ -2467,6 +2477,12 @@ export class EufyMega extends EventEmitter {
       (resolved.codec === "vacuum" || resolved.codec === "mower") && rec.model
         ? await this.fetchDpCatalog(rec.model)
         : undefined;
+    const rtcRoute = this.rtcRouteFor(sn);
+    const refusedCommandKinds: ReadonlySet<Command["kind"]> | undefined = !rtcRoute
+      ? undefined
+      : rtcRoute.mediaTrack
+        ? PORTAL_COMMAND_KINDS
+        : RTC_CONTROL_REFUSED_KINDS;
     return {
       channel,
       timezone: recordString(parentRaw ?? {}, "time_zone"),
@@ -2487,6 +2503,7 @@ export class EufyMega extends EventEmitter {
       macAddress: recordString(raw, "wifi_mac"),
       updateAvailable: raw.needUpdate === true || raw.needUpdate === 1 || raw.needUpdate === "1",
       paramIds: new Set([...Object.keys(rec.params), ...Object.keys(rec.dpParams ?? {})].map(Number)),
+      things: rec.things,
       capabilities: new Set(resolved.capabilities),
       // Member identity for ff09-* command devices (see core/contracts Ff09Identity).
       adminUserId: typeof member.admin_user_id === "string" ? member.admin_user_id : undefined,
@@ -2498,6 +2515,7 @@ export class EufyMega extends EventEmitter {
       // Topology as the record states it: a parent that isn't the device itself means HomeBase-attached.
       homeBaseAttached: !!raw.parent_sn && raw.parent_sn !== dev.sn,
       stationDeviceType: this.stationDeviceTypeOf(sn),
+      refusedCommandKinds,
       dpCatalog,
     };
   }

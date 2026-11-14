@@ -1,8 +1,7 @@
 import type { Command } from "../../core/contracts.js";
 import { asBool, enumLabels } from "../../core/util.js";
-import { isStation9000 } from "../device-family.js";
 import { setJson, setPayload, setScalar } from "./access.js";
-import { method, propertiesOf, type Members, type Surface } from "./members.js";
+import { kindRoutable, method, propertiesOf, type Members, type Surface } from "./members.js";
 import type { AvailabilityContext, CapabilityModule, CommandContext, DecodedState, InboundSignal } from "./types.js";
 
 /** The state params this capability owns — its OWN vocabulary, used by no other capability. */
@@ -109,13 +108,14 @@ export type RtspRecordingModeValue = (typeof RtspRecordingMode)[keyof typeof Rts
 export type RtspActions = Surface<typeof RTSP_MEMBERS>;
 
 /**
- * Whether the publish switch has a wire to this camera. A HomeBase S1 Pro (`STATION_9000`) carries an
- * attached camera's commands over its WebRTC control channel, which takes only the `1350` and `1700`
- * envelopes; the switch is a plain scalar, and no other frame for it is captured there. Gating the
- * `published` member drops its read with its setter, since one availability decision covers both.
+ * Whether the device's transport can carry the publish switch — a plain `set-param` scalar. Gates the
+ * `publish`/`withdraw` METHOD members: the generic portal-reach gate withholds the derived setter and the
+ * write intents, but cannot reach a `method`, whose arbitrary signature it has no command kind to probe,
+ * so the two momentary methods ask the same question explicitly. True on P2P; false behind any station
+ * whose portal cannot frame a scalar (an S1 Pro or a T8N00, which take only the `1350`/`1700` envelopes).
  */
 function publishable(ctx: AvailabilityContext): boolean {
-  return !isStation9000({ deviceType: ctx.stationDeviceType });
+  return kindRoutable("set-param", ctx);
 }
 
 /** The RTSP publish switch, both directions — a plain scalar, verified live on both topologies. */
@@ -166,7 +166,6 @@ export const RTSP_MEMBERS = {
       "directions (DESCRIBE 404→200 with a real SDP, and back).",
     write: (v, ctx) => publishCommand(asBool(v), ctx),
     aliases: { publish: true, withdraw: false },
-    available: publishable,
   },
   /**
    * The device-reported RTSP URL — the full `rtsp://user:pass@host/path`, carrying the credentials the

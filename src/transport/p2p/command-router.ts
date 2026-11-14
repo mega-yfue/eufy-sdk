@@ -143,6 +143,9 @@ const OWN_LIVE_SESSION_MODELS: ReadonlySet<string> = new Set(["T8030"]);
 /** Models whose speaker plays `aac-eld` talkback; every other model talks `aac-lc`. */
 const ELD_TALKBACK_MODELS: ReadonlySet<string> = new Set(["T8410C"]);
 
+/** Models whose own-session `ff09` frames go in the clear once the station refuses level-2. */
+const CLEAR_FF09_MODELS: ReadonlySet<string> = new Set(["T8506"]);
+
 /**
  * The codec a camera's speaker plays: `aac-eld` when the first audio frame `consumer` delivers is `aac-eld`, otherwise
  * `aac-lc`. The `timeoutMs` wait starts at the consumer's first frame of either kind, so a cold source's warm-up is not
@@ -224,6 +227,8 @@ interface ResolvedSession {
   channel: number;
   accountId: string;
   homeBaseAttached: boolean;
+  /** Set when `clearFallback` admitted a session whose station {@link P2PSession.refusedLevel2}. */
+  sendsClear?: boolean;
 }
 
 /** The options of one {@link MediaProvider.downloadRecording} call. */
@@ -1701,6 +1706,9 @@ export class P2PCommandRouter {
    * sources on the replaced session are discarded before closing it (see {@link tearDownStation}).
    * Replaced at most once per resolution, so a station whose replacement is silent too is returned rather
    * than closed again.
+   *
+   * `clearFallback` hands over a session whose station {@link P2PSession.refusedLevel2} instead of throwing, for
+   * a standalone device of a model in {@link CLEAR_FF09_MODELS}.
    */
   private async resolveSession(
     sn: string,
@@ -1708,6 +1716,7 @@ export class P2PCommandRouter {
       waitLevel2?: boolean | "soft" | "settle";
       requireLevel2ForAttached?: boolean;
       level2Sender?: "set-payload";
+      clearFallback?: boolean;
       signal?: AbortSignal;
     } = {},
     /** Whether this resolution has already replaced a silent path — see the check below. */
@@ -1772,7 +1781,13 @@ export class P2PCommandRouter {
       if (!ready && session.repromptLevel2Key()) {
         ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call", sender), opts.signal);
       }
-      if (!ready) throw new StationKeyUnavailableError(parentSn);
+      const sendsClear =
+        opts.clearFallback === true &&
+        !homeBaseAttached &&
+        CLEAR_FF09_MODELS.has(this.recordFor(sn)?.model ?? "") &&
+        session.refusedLevel2;
+      if (!ready && !sendsClear) throw new StationKeyUnavailableError(parentSn);
+      return { session, parentSn, channel, accountId, homeBaseAttached, sendsClear };
     }
     return { session, parentSn, channel, accountId, homeBaseAttached };
   }
@@ -1940,7 +1955,8 @@ export class P2PCommandRouter {
     await this.replayLevel2Send(
       sn,
       `set-payload cmd ${cmd}`,
-      ({ session, accountId }) => session.sendControlLevel2(cmd, channel, accountId, payload, mValue3 ?? cmd),
+      ({ session, accountId, sendsClear }) =>
+        session.sendControlLevel2(cmd, channel, accountId, payload, mValue3 ?? cmd, sendsClear),
       resolved ?? (await this.resolveSession(sn, { waitLevel2: true, level2Sender })),
     );
   }
@@ -2124,7 +2140,7 @@ export class P2PCommandRouter {
    * bytes and never the routing channel — that's re-resolved here from the device record.
    */
   private async sendFf09Actuate(sn: string, cmd: Ff09Identity): Promise<void> {
-    const resolved = await this.resolveSession(sn, { waitLevel2: true });
+    const resolved = await this.resolveSession(sn, { waitLevel2: true, clearFallback: true });
     const frame = buildFf09Frame({
       engage: cmd.engage,
       adminUserId: cmd.adminUserId,
