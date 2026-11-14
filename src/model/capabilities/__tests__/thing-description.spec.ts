@@ -127,7 +127,6 @@ describe("parseThingsList", () => {
       members: [],
       defaultValue: "true",
       readConditions: [],
-      writeConditions: [],
       availableConditions: [],
     });
     expect(t.properties.nightvision_type_new?.members, "wire value apart from the UI value").toEqual([
@@ -231,10 +230,26 @@ describe("conditionsPass", () => {
     expect(pass([[c("device_sn", "RE", "([")]], { serial: "T8170P0000000000" })).toBe(false);
   });
 
-  it("evaluates sdk_version against the app's own, associated fields against an empty value", () => {
+  it("evaluates sdk_version against the app's own", () => {
     expect(pass([[c("sdk_version", "<=", "2.3.3.1")]])).toBe(true);
     expect(pass([[c("sdk_version", ">", "2.3.3.1")]])).toBe(false);
-    expect(pass([[c("associated_field", "=", "1", "ai_empower")]]), "no value to compare").toBe(false);
+  });
+
+  it("compares an associated field with the value the settings bundle parses from its reported param", () => {
+    const field = (propId: string, q: string, v: string, params: Record<number, string>) =>
+      pass([[c("associated_field", q, v, propId)]], { params });
+    expect(field("is_support_silent_ota_switch", "=", "true", { 6287: "0" }), "reported at all").toBe(true);
+    expect(field("is_support_silent_ota_switch", "=", "true", {})).toBe(false);
+    expect(field("ai_empower", "=", "1", { 1299: "1" })).toBe(true);
+    expect(field("ai_empower", "!=", "1", { 1299: "0" })).toBe(true);
+    expect(field("ai_empower", "=", "0", { 1299: "none" }), "not JSON: as an integer, 0 when none").toBe(true);
+    expect(field("device_power_supply_mode", "=", "2", { 6445: '{"power_source":2}' })).toBe(true);
+    expect(field("device_power_supply_mode", "=", "5", { 6445: '{"source":5}' }), "source when no power_source").toBe(
+      true,
+    );
+    expect(field("device_power_supply_mode", "=", "1", { 6445: "" }), "an empty param is 1").toBe(true);
+    expect(field("ai_empower", "=", "", {}), "an unreported param compares an empty value").toBe(true);
+    expect(field("view_mode", "=", "", { 1299: "1" }), "an identifier with no derivation, the same").toBe(true);
   });
 
   it("matches a reported param for camera_info", () => {
@@ -242,6 +257,23 @@ describe("conditionsPass", () => {
     expect(pass([[c("camera_info", "equals", '{"param":1234,"value":"on"}')]], { params })).toBe(true);
     expect(pass([[c("camera_info", "RE", '{"param":1234,"regex":"^o"}')]], { params })).toBe(true);
     expect(pass([[c("camera_info", "equals", '{"param":99,"value":"on"}')]], { params })).toBe(false);
+  });
+
+  it("matches a reported JSON param for camera_info's json_match", () => {
+    const at = (reported: string, match: object) =>
+      pass([[c("camera_info", "json_match", JSON.stringify({ param: 1092, json_match: match }))]], {
+        params: { 1092: reported },
+      });
+    const onvif = { mode: "all", contains_key: ["onvif_support"], value_equals: { onvif_support: 1 } };
+    expect(at('{"onvif_support":1}', onvif)).toBe(true);
+    expect(at('{"onvif_support":0}', onvif)).toBe(false);
+    expect(at("{}", onvif)).toBe(false);
+    expect(at("not json", onvif)).toBe(false);
+    expect(at('{"a":1}', { mode: "any", contains_key: ["a", "b"] })).toBe(true);
+    expect(at('{"a":"x1"}', { not_contains_key: ["b"], value_not_equals: { a: "y" }, value_regex: { a: "^x" } })).toBe(
+      true,
+    );
+    expect(at('{"a":1}', { mode: "any" }), "any with no check fails").toBe(false);
   });
 });
 
@@ -275,9 +307,6 @@ describe("resolveThing", () => {
           prop("mode__v3", "bool"),
           prop("hidden", "bool", {
             available_conditions: cond({ type: "parent_sn", qualifier: "RE", value: "^T8030" }),
-          }),
-          prop("locked", "bool", {
-            write_conditions: cond({ type: "device_version", qualifier: ">=", value: "9.0.0.0" }),
           }),
         ],
         actions: [
@@ -313,9 +342,8 @@ describe("resolveThing", () => {
     expect(standalone("3.1.0.0").properties.mode?.identifier).toBe("mode");
   });
 
-  it("leaves out what is unavailable and holds a refused write as read-only", () => {
+  it("leaves out what is unavailable", () => {
     expect(standalone("2.3.0.0").properties.hidden).toBeUndefined();
-    expect(standalone("2.3.0.0").properties.locked?.accessMode).toBe("R");
     expect(Object.keys(standalone("2.3.0.0").actions)).toEqual(["always"]);
   });
 });
