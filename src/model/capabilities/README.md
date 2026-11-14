@@ -60,6 +60,8 @@ The registry fetches one per product code per start and resolves it for each dev
 port of the app's variant and availability rules); every context carries it as `ctx.things`. An enum
 member names its identifiers with `thing`, and its per-device options are the listed wire values it
 names (0 and 1 for a `bool`). Prefer it over a reported param, and a param over a list of model codes.
+The wire an identifier rides is in the product's settings bundle, not the description:
+`scripts/dev/things-corpus.ts` extracts what each bundle declares, as a lead the evidence rule still applies to.
 
 ## Inbound events — one semantic event from any transport
 
@@ -285,7 +287,9 @@ when the key would collide there (`battery`'s `level` → property `battery`, si
   `write` beside it is **not installed** (a caller learns at compile time, from the optional setter) and
   the intent path throws `"<cap>: <member> write wire unverified"` rather than reporting a device that
   lacks the feature. A fire-and-forget write that is wrong looks exactly like success — promoting one is
-  a single edit once a capture lands.
+  a single edit once a capture lands. `unverifiedFor: (ctx) => …` is the per-device form, for a wire
+  confirmed on some families only: where it holds, the setter is absent, the property is published
+  read-only, and the intent path throws the same way.
 - `min`/`max`/`enumValues`/`decodedValues` are the PUBLISHED domain, enforced once in `memberWrite` for
   both entry points and named in the generated rejection message, so it cannot go stale as the set grows.
 - **A write domain narrower than the read's** is stated as the first `args` entry's `values`, which then

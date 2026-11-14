@@ -187,6 +187,12 @@ export interface EventClaim {
    * and ignored where that is absent.
    */
   homeBaseAttached?: boolean;
+  /**
+   * Thing-description property identifiers whose presence is the evidence: the product's description,
+   * resolved for this device, lists at least one of them. Compared against
+   * {@link AvailabilityContext.things}, and ignored where that is absent.
+   */
+  things?: readonly string[];
 }
 
 /**
@@ -266,6 +272,8 @@ export interface AvailabilityContext {
    * cannot do what its name promises there.
    */
   homeBaseAttached?: boolean;
+  /** The command kinds this device's primary transport REFUSES (a setter emitting one is withheld); `undefined` when it refuses none (the P2P default). Set by the client, which owns the routing. */
+  refusedCommandKinds?: ReadonlySet<Command["kind"]>;
   /** Serial of the covering station, when the device record names one. */
   stationSerial?: string;
   /**
