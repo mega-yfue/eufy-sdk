@@ -898,46 +898,6 @@ export class MegaHttpClient {
   }
 
   /**
-   * Fetch the app's **per-product feature configuration** descriptor from the mega `things` service:
-   * `{ config_type, s3_url, version }`, where `s3_url` is a presigned link, valid one hour, to a JSON
-   * object keyed by product code and by family name. Each entry has a `parent` family, `extras` feature
-   * flags it adds and `excludes` flags it drops, so a product's flags are its family chain's union
-   * (`T8410 > IndoorCamera > WiredCamera > Camera > Base`). The flags name app behaviours such as
-   * `playback`, `snooze`, `spotLight`, `query_status_by_1103`, `rtc_media_cmd`. No body. Returns the raw
-   * `data`; the file itself is not fetched here.
-   */
-  getDeviceConfiguration<T = unknown>(): Promise<T> {
-    return this.post<T>("things", "/app/things/get_device_configuration");
-  }
-
-  /**
-   * Fetch the **product catalogue** from the mega `things` service: `{ categories }`, a tree of
-   * categories whose leaves list products as `{ code, name, device_type, channel_type, is_things_parsing,
-   * icon, id }`. `device_type` is the vendor DeviceType as a string. No body. Returns the raw `data`.
-   */
-  getProducts<T = unknown>(): Promise<T> {
-    return this.post<T>("things", "/app/things/get_products");
-  }
-
-  /**
-   * Ask the mega `things` service whether this app version may add a product: `{ is_allow,
-   * min_app_version }` for the product code `pn`. Returns the raw `data`.
-   */
-  checkProductVersion<T = unknown>(pn: string): Promise<T> {
-    return this.post<T>("things", "/app/things/check_product_version", { pn });
-  }
-
-  /**
-   * Fetch the **global named parameters** from the mega `help` service: `{ over_all_params }`, each
-   * `{ param_id, param_name, param_value, desc, parent_id }` with `param_value` a string, often JSON —
-   * server-side switches such as the products without cloud storage, forced firmware versions and OTA
-   * host rules. Body `{}`. Returns the raw `data`.
-   */
-  getOverAllParam<T = unknown>(): Promise<T> {
-    return this.post<T>("help", "/app/help/get_over_all_param", {});
-  }
-
-  /**
    * Fetch the **live param list** from the mega `devicemanage` service. Body keys off a
    * `device_sns` ARRAY (a bare `device_sn` 400s with "type mismatch"). Each returned entry is
    * `{ param_type, param_value, update_time }` — VALUES ONLY, no name/meaning (the param→meaning
