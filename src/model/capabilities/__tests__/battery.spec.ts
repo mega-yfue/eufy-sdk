@@ -135,6 +135,21 @@ describe("battery capability module", () => {
     }
   });
 
+  it("withholds powerSource on a lock-codec device, exactly as it withholds level", () => {
+    // A video smart lock (E330/T8531) attaches `battery` for its settings but resolves `lock`, whose
+    // own member owns the cell. `powerSource` names how a solar camera's cell is fed — meaningless on a
+    // lock, which has no selectable supply and refuses the write at the wire — so it is gated off there,
+    // the same `!hasCapability(lock)` gate the headline `level` carries.
+    const names = (caps: Capability[]) =>
+      propertiesOf(BATTERY.members!, {
+        codec: "lock",
+        capabilities: new Set<Capability>(caps),
+      } as AvailabilityContext).map((p) => p.name);
+    expect(names(["battery", "lock"])).not.toContain("powerSource");
+    // A battery camera (no `lock`) still publishes it.
+    expect(names(["battery"])).toContain("powerSource");
+  });
+
   it("withholds the reading from getProperty too, not just from the typed surface", () => {
     // The gate has to hold on the surface a host actually reads, and `propertiesOf` is not that surface.
     // `applyParams` names by precedence — curated spec, then the param dictionary — so dropping the

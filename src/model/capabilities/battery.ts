@@ -322,6 +322,9 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
    *
    * The write is a `1350` SET_PAYLOAD, inner cmd 1293, `{charge_mode:N}`, `mValue3` 0 (the app uses 0,
    * not the cmd id), and the setter accepts a NAME as well as the index the getter answers.
+   *
+   * Withheld on a device that resolved `lock`: a video smart lock (E330/T8531) reports 1293 but has no
+   * selectable supply, so the read is not offered there.
    */
   powerSource: {
     param: BATTERY_PARAM.POWER_CHARGE,
@@ -331,6 +334,7 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
     provenance: "verified",
     coerce: decodePowerSource,
     requires: [BATTERY_PARAM.POWER_CHARGE],
+    available: (ctx: AvailabilityContext) => !hasCapability(ctx, "lock"),
     args: [{ name: "source", kind: "enum", description: "The raw value, or the name `battery`/`external`." }],
     ...accepts<PowerSourceName>(),
     description:

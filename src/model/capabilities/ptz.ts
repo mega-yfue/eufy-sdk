@@ -510,8 +510,11 @@ export const PTZ: CapabilityModule = {
   // signal that separates the two. Match ONLY confirmed rotating model codes here — do NOT widen to
   // a `T81\d\dR` wildcard: the "R = rotating" reading is unverified for other models, and an
   // over-broad hint would false-positive a future non-PT model, the same class of bug as a mislabel.
+  // The param fallback is camera-codec only (a video smart lock like the E330/T8531 reports 6210 on a
+  // fixed lens, yet never pans).
   detection: {
-    detect: (record) =>
+    detect: (record, codec) =>
+      codec === "camera" &&
       !FIXED_LENS_MODELS.has(record.model ?? "") &&
       PRESET_EVIDENCE_PARAMS.some((p) => Object.hasOwn(record.params ?? {}, p)),
     deviceTypes: [
