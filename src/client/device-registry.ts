@@ -648,6 +648,19 @@ export class DeviceRegistry {
   }
 
   /**
+   * Land a cloud param the cloud's own push announced on the {@link pollChanges} baseline.
+   *
+   * The push is the cloud stating the value it now holds, so the next pass diffs the cloud against it: a
+   * device that moves and moves back between two passes is then seen moving back. Never into the
+   * realtime half, which would outrank the cloud until a pass saw the cloud move. No-op before the
+   * first pass, which takes its baseline from the cloud.
+   */
+  applyPushedParams(sn: string, params: Record<number, string>): void {
+    const prev = this.pollSnapshot?.devices.get(sn);
+    if (prev) prev.params = { ...prev.params, ...params };
+  }
+
+  /**
    * Record state a device reported over its realtime wire, merging into whatever it last reported.
    *
    * Merged rather than replaced because a report can be partial — a status frame that omits a field is

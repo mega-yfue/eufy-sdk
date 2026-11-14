@@ -442,7 +442,8 @@ function decodeLockTransition(signal: InboundSignal): Record<string, unknown> {
 /**
  * `lock` — smart lock. `locked` reports lock state via verified param 6000 (4=locked, 3=unlocked);
  * a device that reports no stable state param carries its transitions on the `lockState` event instead,
- * whose payload names the decoded `locked`.
+ * whose payload names the decoded `locked`. A push (un)lock action also lands param 6000, so the
+ * state follows the push and a later cloud read that moved back is a transition.
  */
 export const LOCK: CapabilityModule = {
   capability: "lock",
@@ -450,6 +451,8 @@ export const LOCK: CapabilityModule = {
   members: LOCK_MEMBERS,
   properties: propertiesOf(LOCK_MEMBERS),
   decodeState(signal) {
+    const { locked } = decodeLockTransition(signal);
+    if (locked !== undefined) return { params: { 6000: locked ? "4" : "3" } };
     const report = nativeReport(signal);
     if (!report) return null;
     const params: Record<number, string> = {};
