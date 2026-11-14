@@ -1,5 +1,6 @@
 import { asBool, coerceEnumValue } from "../../core/util.js";
 import { DeviceType } from "../device-types.js";
+import { IndoorPushEvent } from "../push-events.js";
 import {
   isCallDoorbell,
   isIndoorCamera,
@@ -1035,6 +1036,21 @@ export const CAMERA: CapabilityModule = {
   properties: propertiesOf(CAMERA_MEMBERS),
   /** Every camera-codec device has the power/privacy surface. */
   detection: { codecs: ["camera"] },
+  /** The sound (3105) and crying (3104) pushes, each claimed on the product's thing property for it. */
+  events: [
+    {
+      source: "push",
+      match: IndoorPushEvent.SOUND_DETECTION,
+      emit: "soundDetected",
+      claim: { things: ["sound_detection_status", "sound_detection_type"] },
+    },
+    {
+      source: "push",
+      match: IndoorPushEvent.CRYING_DETECTION,
+      emit: "cryingDetected",
+      claim: { things: ["notification_ai_crying_switch", "sound_detection_type"] },
+    },
+  ],
   /** Only the no-argument power verbs, which carry no value for a member to hold. */
   actions({ ctx, sink }: MemberDeps): CapabilityActions {
     if (!isCameraCodec(ctx)) return {};
