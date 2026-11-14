@@ -22,18 +22,6 @@ export const SMOKE_MEMBERS = {
     provenance: "guessed",
     description: "Smoke detected. UNVERIFIED: placeholder id pending capture verification.",
   },
-  /**
-   * Unix seconds at which the detector last checked in — param 1551, the same last-seen id the other
-   * sensor capabilities read. A `timestamp` kind takes no `unit`: the number is an instant, not a
-   * duration, and declaring `unit: "s"` beside it fails the value-kind spec.
-   */
-  lastSeen: {
-    param: 1551,
-    type: "number",
-    kind: "timestamp",
-    provenance: "verified",
-    description: "Last-seen unix timestamp, seconds (verified: param 1551).",
-  },
 } as const satisfies Members;
 
 /** Bound smoke-detector reads — the object returned by `dev.smoke()`. Read-only. */

@@ -63,13 +63,11 @@ const KNOWN_UNLISTED = new Map<number, string>([
 
 /**
  * Params legitimately READ by more than one capability with the SAME meaning — a device-wide reading
- * (battery, signal, last-seen) that several capabilities surface. These are not one-owner violations.
+ * (battery) that several capabilities surface. These are not one-owner violations.
  */
 const SHARED_READS = new Set<number>([
   1101, // battery level
   1103, // battery-low
-  1141, // rssi
-  1551, // lastSeen
 ]);
 
 type Mod = CapabilityModule & { line?: string };

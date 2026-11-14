@@ -42,7 +42,7 @@ const batteryChange = (to: string): ParamChange => paramChange(1101, "88", to);
  * the `contact` capability is granted and `contact` is a schema property with a typed getter.
  */
 function liveContactSensor(eufy: EufyMega, sn = "T8000P0000000000"): Device {
-  const record = { model: "T8900", category: "eufy_security", params: { 1550: "0" }, paramUpdatedAt: {} };
+  const record = { model: "T8900", category: "eufy_security", params: { 1550: "0", 1141: "-70" }, paramUpdatedAt: {} };
   const dev = Device.fromRecord(sn, record);
   vi.spyOn((eufy as any).registry, "record").mockResolvedValue(record);
   (eufy as any).liveDevices.set(sn, new WeakRef(dev));

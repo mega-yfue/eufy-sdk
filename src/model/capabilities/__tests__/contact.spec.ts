@@ -8,13 +8,7 @@ const ctx = (paramIds: number[] = [1550, 1507, 1508], channel = 27): CommandCont
 describe("contact capability module", () => {
   it("declares the capability + schema", () => {
     expect(CONTACT.capability).toBe("contact");
-    expect(CONTACT.properties.map((p) => p.name)).toEqual([
-      "contact",
-      "lastSeen",
-      "rssi",
-      "alarmSoundType",
-      "alarmVolume",
-    ]);
+    expect(CONTACT.properties.map((p) => p.name)).toEqual(["contact", "alarmSoundType", "alarmVolume"]);
   });
 
   it("proves contact via the entry-sensor contact param 1550", () => {

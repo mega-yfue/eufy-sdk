@@ -104,7 +104,7 @@ describe("lock capability — classic Wi-Fi lock family", () => {
 describe("lock capability module", () => {
   it("declares the capability + schema", () => {
     expect(LOCK.capability).toBe("lock");
-    expect(LOCK.properties.map((p) => p.name)).toEqual(["locked", "battery", "rssi"]);
+    expect(LOCK.properties.map((p) => p.name)).toEqual(["locked", "battery"]);
   });
 
   it("lock/unlock on a P2P lock dispatch a transport-neutral ff09-actuate intent (no wire bytes, no routing key)", async () => {
@@ -333,7 +333,6 @@ declare const lk: LockActions;
 
 const _locked: Exact<typeof lk.locked, boolean | undefined> = true;
 const _battery: Exact<typeof lk.battery, number | undefined> = true;
-const _rssi: Exact<typeof lk.rssi, number | undefined> = true;
 
 // A read-only member gets no setter — `locked` has no confirmed write param.
 const _noSetLocked: Exact<"setLocked" extends keyof LockActions ? true : false, false> = true;
@@ -364,7 +363,6 @@ const _snapshot: Exact<
 export const _surfaceAssertions = [
   _locked,
   _battery,
-  _rssi,
   _noSetLocked,
   _lockRequired,
   _lockArgs,
