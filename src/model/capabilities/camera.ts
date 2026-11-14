@@ -1036,24 +1036,19 @@ export const CAMERA: CapabilityModule = {
   properties: propertiesOf(CAMERA_MEMBERS),
   /** Every camera-codec device has the power/privacy surface. */
   detection: { codecs: ["camera"] },
-  /**
-   * Inbound sound pushes, each claimed on the member that arms it: 3105 → `"soundDetected"` on
-   * SOUND_DETECTION (6043), 3104 → `"cryingDetected"` on SOUND_DETECTION_TYPE (6046), whose `Crying`
-   * value is the crying trigger. Both ids are drawn from the indoor and HB3-paired vocabularies and
-   * absent from the doorbell one, so a camera codec alone is not the population that issues them.
-   */
+  /** The sound (3105) and crying (3104) pushes, each claimed on {@link CAMERA_MEMBERS.soundDetection}. */
   events: [
     {
       source: "push",
       match: IndoorPushEvent.SOUND_DETECTION,
       emit: "soundDetected",
-      claim: { codecs: ["camera"], reads: ["soundDetection"] },
+      claim: { reads: ["soundDetection"] },
     },
     {
       source: "push",
       match: IndoorPushEvent.CRYING_DETECTION,
       emit: "cryingDetected",
-      claim: { codecs: ["camera"], reads: ["soundDetectionType"] },
+      claim: { reads: ["soundDetection"] },
     },
   ],
   /** Only the no-argument power verbs, which carry no value for a member to hold. */

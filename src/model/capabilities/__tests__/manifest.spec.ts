@@ -420,10 +420,10 @@ describe("describeCapabilities — events claimed on evidence", () => {
 });
 
 /**
- * The sound detections are described only on a camera that reports the setting arming them — a
+ * The sound detections are described only on a camera that reports the sound-detection switch — a
  * doorbell with no sound trigger announces neither.
  */
-describe("describeCapabilities — sound detections claimed on their settings", () => {
+describe("describeCapabilities — sound detections claimed on the sound-detection switch", () => {
   const cameraEvents = (params: number[]): readonly string[] =>
     describeCapabilities(buildActions(["camera"], { ctx: ctxWith(new Set(params)), sink, read: () => undefined }), {
       codec: "camera",
@@ -431,17 +431,12 @@ describe("describeCapabilities — sound detections claimed on their settings", 
     }).find((entry) => entry.capability === "camera")!.events;
 
   const SOUND_DETECTION = 6043;
-  const SOUND_DETECTION_TYPE = 6046;
 
-  it("claims sound where the device reports the sound-detection switch", () => {
-    expect(cameraEvents([SOUND_DETECTION])).toContain("soundDetected");
+  it("claims sound and crying where the device reports the sound-detection switch", () => {
+    expect(cameraEvents([SOUND_DETECTION])).toEqual(expect.arrayContaining(["soundDetected", "cryingDetected"]));
   });
 
-  it("claims crying where the device reports the sound-detection type", () => {
-    expect(cameraEvents([SOUND_DETECTION_TYPE])).toContain("cryingDetected");
-  });
-
-  it("withholds both from a camera that reports neither", () => {
+  it("withholds both from a camera that does not report it", () => {
     const events = cameraEvents([]);
     expect(events).not.toContain("soundDetected");
     expect(events).not.toContain("cryingDetected");
