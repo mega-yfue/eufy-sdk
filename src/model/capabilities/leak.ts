@@ -24,18 +24,6 @@ export const LEAK_MEMBERS = {
       "Water-leak detected. UNVERIFIED: actually delivered as a push event, not a state param; " +
       "placeholder id pending capture verification.",
   },
-  /**
-   * Unix seconds at which the sensor last checked in — param 1551, the same last-seen id the other
-   * sensor capabilities read. A `timestamp` kind takes no `unit`: the number is an instant, not a
-   * duration, and declaring `unit: "s"` beside it fails the value-kind spec.
-   */
-  lastSeen: {
-    param: 1551,
-    type: "number",
-    kind: "timestamp",
-    provenance: "verified",
-    description: "Last-seen unix timestamp, seconds (verified: param 1551).",
-  },
 } as const satisfies Members;
 
 /** Bound leak-sensor reads — the object returned by `dev.leak()`. Read-only. */

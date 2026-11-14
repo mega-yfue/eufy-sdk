@@ -3,7 +3,7 @@ import { LEAK } from "../leak.js";
 describe("leak capability module", () => {
   it("declares the capability + schema", () => {
     expect(LEAK.capability).toBe("leak");
-    expect(LEAK.properties.map((p) => p.name)).toEqual(["leakDetected", "lastSeen"]);
+    expect(LEAK.properties.map((p) => p.name)).toEqual(["leakDetected"]);
   });
 
   it("detects via the water/leak/freeze model-name regex", () => {

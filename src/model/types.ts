@@ -60,6 +60,8 @@ export type Capability =
   | "siren"
   | "lock"
   | "keypad"
+  // Check-in timestamp and signal strength, on any security device that reports them.
+  | "link"
   | "arming"
   | "storage"
   // Publish a camera's stream over RTSP for a NAS/NVR (the vendor's NAS/RTSP feature).

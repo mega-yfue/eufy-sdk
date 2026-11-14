@@ -3,8 +3,8 @@ import { propertiesOf, type Members, type Surface } from "./members.js";
 import type { CapabilityModule } from "./types.js";
 
 /**
- * Every `keypad` feature, declared once. `rssi` is a verified read and `charging` follows the app's own
- * decode of the keypad's charger state.
+ * Every `keypad` feature, declared once. `charging` follows the app's own decode of the keypad's charger
+ * state.
  *
  * `batteryLow` is `unexposed`: the app maps its param to the same low-battery field the entry and motion
  * sensors feed, but its value decode is absent from the app's parser, so the polarity is not evidenced.
@@ -43,18 +43,6 @@ export const KEYPAD_MEMBERS = {
     description:
       "Keypad charging — derived from APP_CMD_KEYPAD_BATTERY_CHARGER_STATE (1655) as `value ∉ {0,2}`, " +
       "matching the app's own decode.",
-  },
-  /**
-   * The keypad's link quality in dBm, on the same param 1141 the other sub-1G sensors report signal
-   * strength on. Reported as the device measures it: raw dBm, never normalised to a bar count.
-   */
-  rssi: {
-    param: 1141,
-    type: "number",
-    unit: "dBm",
-    kind: "dbm",
-    provenance: "verified",
-    description: "Keypad signal strength (verified: param 1141 = RSSI).",
   },
 } as const satisfies Members;
 
