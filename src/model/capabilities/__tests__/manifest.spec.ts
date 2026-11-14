@@ -444,6 +444,12 @@ describe("describeCapabilities — sound detections claimed on the thing descrip
     expect(cameraEvents(things("notification_ai_crying_switch"))).toContain("cryingDetected");
   });
 
+  it("claims both where the description offers sound detection through its type alone", () => {
+    expect(cameraEvents(things("sound_detection_type", "sound_detection_sensitivity"))).toEqual(
+      expect.arrayContaining(["soundDetected", "cryingDetected"]),
+    );
+  });
+
   it("withholds both where the description lists neither", () => {
     const events = cameraEvents(things("nightvision_type"));
     expect(events).not.toContain("soundDetected");

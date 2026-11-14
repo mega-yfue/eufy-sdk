@@ -1042,13 +1042,13 @@ export const CAMERA: CapabilityModule = {
       source: "push",
       match: IndoorPushEvent.SOUND_DETECTION,
       emit: "soundDetected",
-      claim: { things: ["sound_detection_status"] },
+      claim: { things: ["sound_detection_status", "sound_detection_type"] },
     },
     {
       source: "push",
       match: IndoorPushEvent.CRYING_DETECTION,
       emit: "cryingDetected",
-      claim: { things: ["notification_ai_crying_switch"] },
+      claim: { things: ["notification_ai_crying_switch", "sound_detection_type"] },
     },
   ],
   /** Only the no-argument power verbs, which carry no value for a member to hold. */
