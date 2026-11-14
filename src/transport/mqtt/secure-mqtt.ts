@@ -34,7 +34,15 @@ const SUBACK_FAILURE = 0x80;
  */
 function isRefusal(err: unknown): boolean {
   const granted = (err as { packet?: { granted?: unknown } } | null)?.packet?.granted;
-  return Array.isArray(granted) && granted.some((g) => typeof g === "number" && (g & SUBACK_FAILURE) !== 0);
+  return Array.isArray(granted) && granted.some(isSubackFailure);
+}
+
+/**
+ * Whether a SUBACK return code is the broker refusing the filter ({@link SUBACK_FAILURE} set).
+ * @internal
+ */
+export function isSubackFailure(code: unknown): boolean {
+  return typeof code === "number" && (code & SUBACK_FAILURE) !== 0;
 }
 
 /**
@@ -81,10 +89,9 @@ export interface SecureMqttCredentials {
 export interface SecureMqttOptions {
   credentials: SecureMqttCredentials;
   clientId?: string;
-  /** Dial this IP directly instead of resolving `credentials.endpoint_addr` via DNS — the broker
-   * hostname fronts multiple independent backend instances that do NOT share subscribe/publish
-   * routing (see `transport/mqtt/broker-discovery.ts`); pin to the instance a device's session was
-   * confirmed to be on, found via {@link discoverReachableInstance}. */
+  /** Dial this IP directly instead of resolving `credentials.endpoint_addr` via DNS — one of the
+   * hostname's instances, found via {@link discoverReachableInstance} to grant the device's topic;
+   * the certificate is still checked against `credentials.endpoint_addr`. */
   instanceIp?: string;
   /**
    * mqtt.js's own `reconnectPeriod` (ms) — auto-reconnect on an unexpected drop. Default `5000`,
@@ -289,9 +296,9 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
    *
    * NOTE: which cert scope is used does NOT gate publishing to a security device's topic — confirmed
    * live, an `eufy_mega`-scoped cert and an `eufy_security`-scoped cert get the identical grant/deny
-   * pattern. What actually matters is landing on the broker instance that currently holds the device's
-   * session (`ensureSecurityMqttFor`/`broker-discovery.ts` — the NLB fronts several instances that
-   * don't share subscribe/publish routing).
+   * pattern. What actually matters is landing on the broker cluster the device's session lives on
+   * (`ensureSecurityMqttFor` — a lock's is the `security-mqtt-*` cluster, which shares no routing with
+   * the `aiot-mqtt-*` one).
    */
   async publish(topic: string, body: string | Buffer, opts: { qos?: 0 | 1 | 2 } = {}): Promise<void> {
     if (!this.client) throw new Error("SecureMqtt not connected");

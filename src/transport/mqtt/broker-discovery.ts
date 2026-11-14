@@ -1,14 +1,13 @@
 /**
  * Garage/lock broker-INSTANCE discovery — reachability probing without ever publishing a command.
  *
- * `aiot-mqtt-{region}.anker.com` resolves through an AWS NLB (`…-nlb2-….elb.{region}.amazonaws.com`,
- * confirmed via `dig`) to one IP per AZ. The brokers behind those targets do NOT share subscribe/publish
- * routing state — a device's live session lives on exactly one target at a time. Landing on the wrong
- * one still completes the TLS CONNECT (same cert-trust chain everywhere) but denies SUBSCRIBE for that
- * device's topic (SUBACK return code 0x80). A granted SUBSCRIBE is a reliable proxy for "this instance
- * holds the device's session" — confirmed live: a real actuation only ever succeeded on an instance
- * that had already granted the SUBSCRIBE. That means we can find the right instance with SUBSCRIBE
- * alone — no PUBLISH is required to tell instances apart, so this module never sends one.
+ * A regional broker hostname resolves through an AWS NLB to one IP per AZ. A probe dials each candidate,
+ * SUBSCRIBEs to the device's `/res` topic and records whether the SUBSCRIBE was granted (a denial is a
+ * SUBACK return code 0x80), so a command connection is only ever pinned to an instance that grants the
+ * device's topic. A grant says the topic is authorised there, not that the device is connected to that
+ * cluster: the `aiot-mqtt-*` cluster grants the topics of locks whose sessions live on `security-mqtt-*`,
+ * and the two share no routing, which is why the caller chooses the cluster before probing it. Telling
+ * instances apart needs no PUBLISH, so this module never sends one.
  */
 import { loadMqtt } from "./engine.js";
 import { resolve4 } from "node:dns/promises";
