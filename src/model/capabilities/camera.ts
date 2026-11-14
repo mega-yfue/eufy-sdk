@@ -68,7 +68,7 @@ export const CAMERA_CMD = {
    * (1013). (Some models omit full colour; enum in {@link NightVision}.)
    */
   NIGHT_VISION_TYPE: 1277,
-  /** T8442 infrared night vision on/off: direct L1 int-string, hardware verified (0/1). */
+  /** Night vision on a device reporting 2002: direct level-1 [channel][value]. */
   IC_NIGHT_VISION_TYPE: 1013,
   /**
    * Push-notification STYLE — how much a detection push carries: text alone, a thumbnail, or text
@@ -208,17 +208,19 @@ export const SoundDetectionType = {
 export type SoundDetectionTypeValue = (typeof SoundDetectionType)[keyof typeof SoundDetectionType];
 
 /**
- * Night-vision mode: 0=Off, 1=Infrared (the app shows "B&W Auto"), 2=FullColor ("Color"). Use
- * `NightVision.FullColor` etc. with `setNightVision` / `setProperty(sn,"nightVision",…)`. Some models
- * omit `FullColor`.
+ * Night-vision mode: 0=Off, 1=Infrared (the app shows "B&W Auto"), 2=FullColor ("Color"), 3=InfraredOn.
+ * Use `NightVision.FullColor` etc. with `setNightVision` / `setProperty(sn,"nightVision",…)`. Each model
+ * offers a subset.
  */
 export const NightVision = {
   /** Off — never use infrared. */
   Off: 0,
-  /** Infrared / "B&W Auto" — black-and-white night vision. */
+  /** Infrared / "B&W Auto" — black-and-white night vision, switched on when it gets dark. */
   Infrared: 1,
   /** Full colour night vision (models with a spotlight / starlight sensor). */
   FullColor: 2,
+  /** Infrared held on — black-and-white night vision, not switched by the light level. */
+  InfraredOn: 3,
 } as const;
 /** A night-vision mode — the value side of {@link NightVision}. */
 export type NightVisionValue = (typeof NightVision)[keyof typeof NightVision];
@@ -422,9 +424,9 @@ function isT8410HomeBase3(ctx: AvailabilityContext): boolean {
   return ctx.model === "T8410" && ctx.stationSerial?.startsWith("T8030") === true;
 }
 
-/** T8442 has a binary night-vision wire, unlike cameras with the three-mode 1277 control. */
-function isT8442(ctx: AvailabilityContext): boolean {
-  return ctx.model === "T8442";
+/** A device that reports its night vision on 2002 and not on 1277. */
+function readsNightVisionOn2002(ctx: AvailabilityContext): boolean {
+  return ctx.paramIds?.has(2002) === true && !ctx.paramIds.has(CAMERA_CMD.NIGHT_VISION_TYPE);
 }
 
 /** T8410 on HomeBase 3 firmware >= 2.3.1.0 uses the wrapped disable-bit power switch. */
@@ -736,38 +738,27 @@ export const CAMERA_MEMBERS = {
         : setJson(CAMERA_CMD.PUSH_NOTIFY_TYPE, { value: style, transaction: String(Date.now()) }, ctx);
     },
   },
-  /**
-   * Three modes, and `FullColor` is the conditional one: a model without a spotlight or starlight
-   * sensor omits it, and the wire accepts the value regardless — the device's own reported set is the
-   * only statement of which of the three it has. `coerceEnumValue` rejects a value outside
-   * {@link NightVision} rather than coercing it. The payload key on the wire is `night_sion`.
-   *
-   * 1277 carries more than these three on some models: the V6 app's per-model mappings put modes on
-   * 3, 5, 6 and 8 as well, and which model takes which mapping is not in the app bundle. A reported value
-   * outside the published options reads as `undefined` rather than as an unnamed number.
-   */
+  /** Modes come from the thing description (`thing`); unlisted values read as `undefined`. */
   nightVision: {
     param: CAMERA_CMD.NIGHT_VISION_TYPE,
     type: "enum",
     kind: "enum",
-    enumValues: { 0: "Off", 1: "Infrared", 2: "Full Color" },
-    enumValuesFor: (ctx) => (isT8442(ctx) ? { 0: "Off", 1: "Infrared" } : undefined),
+    enumValues: { 0: "Off", 1: "Infrared", 2: "Full Color", 3: "Infrared On" },
+    thing: ["nightvision_type_new", "nightvision_type"],
     provenance: "verified",
     available: isCameraCodec,
-    readAvailable: (ctx) => !isT8442(ctx),
-    readAliases: [{ paramType: 2002, available: isT8442 }],
+    readAvailable: (ctx) => !readsNightVisionOn2002(ctx),
+    readAliases: [{ paramType: 2002, available: readsNightVisionOn2002 }],
+    coerce: (raw) => (raw === "true" ? 1 : raw === "false" ? 0 : Number(raw)),
     description:
-      "Night-vision mode: 0 = off, 1 = infrared (B&W), 2 = full colour where supported. " +
-      "T8425 uses NIGHT_VISION_TYPE 1277 (1350 SET_PAYLOAD, night_sion); T8442 reports 2002 " +
-      "and writes direct IC_NIGHT_VISION_TYPE 1013 (int-string, 0/1). Both wires verified live.",
+      "Night-vision mode: 0 = off, 1 = infrared by light level, 2 = full colour, 3 = infrared held on. " +
+      "Written on 1277 (1350 SET_PAYLOAD, night_sion), or on 1013 as a bare [channel][value] when the device reports 2002.",
     write: (v, ctx) => {
       const nv = coerceEnumValue(NightVision, v);
       if (nv == null) return undefined;
-      if (isT8442(ctx)) {
-        if (nv === NightVision.FullColor)
-          throw new Error("nightVision: Full Color is not supported on T8442 (only Off/Infrared)");
-        return setScalar(CAMERA_CMD.IC_NIGHT_VISION_TYPE, nv, ctx, "int-string");
-      }
+      if (readsNightVisionOn2002(ctx)) return setScalar(CAMERA_CMD.IC_NIGHT_VISION_TYPE, nv, ctx, "int-pair");
+      if (nv === NightVision.InfraredOn)
+        throw new Error("nightVision: Infrared On has no verified write on this model");
       return setPayload(CAMERA_CMD.NIGHT_VISION_TYPE, { channel: ctx.channel, night_sion: nv }, ctx, 0, 0, "auto");
     },
   },

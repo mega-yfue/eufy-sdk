@@ -687,9 +687,9 @@ export function memberWrite(
   value: boolean | number | string,
   ctx: CommandContext,
 ): Command {
-  if (!inDomain(m, value)) throw new Error(rejection(name, m, value));
+  if (!inDomain(m, value, ctx)) throw new Error(rejection(name, m, value, ctx));
   const cmd = m.write?.(value, ctx);
-  if (!cmd) throw new Error(rejection(name, m, value));
+  if (!cmd) throw new Error(rejection(name, m, value, ctx));
   const reflected = m.observation?.reflects(value, ctx);
   return m.observation && reflected
     ? observeCommand(cmd, {
@@ -719,8 +719,9 @@ export function memberWrite(
  * One source for all three consumers — the check, the generated refusal, and the argument a caller is
  * offered — so a caller is never shown a value it will then be refused for sending.
  */
-function writeDomain(m: ValueMember): readonly (string | number)[] | undefined {
-  return m.args?.[0]?.values ?? m.decodedValues ?? (m.enumValues && Object.keys(m.enumValues).map(Number));
+function writeDomain(m: ValueMember, ctx: CommandContext): readonly (string | number)[] | undefined {
+  const values = resolvedEnum(m, ctx).values;
+  return m.args?.[0]?.values ?? m.decodedValues ?? (values && Object.keys(values).map(Number));
 }
 
 /**
@@ -739,13 +740,13 @@ function writeDomain(m: ValueMember): readonly (string | number)[] | undefined {
  * unchecked `setProperty("power", 999999)` reads as "turn it off" and, on a fire-and-forget wire, looks
  * like success. The values it accepts are the ones `asBool` gives meaning to.
  */
-function inDomain(m: ValueMember, value: unknown): boolean {
+function inDomain(m: ValueMember, value: unknown, ctx: CommandContext): boolean {
   if (m.type === "bool") return BOOL_VALUES.has(typeof value === "string" ? value.toLowerCase() : value);
   if (typeof value === "number") {
     if (m.min !== undefined && value < m.min) return false;
     if (m.max !== undefined && value > m.max) return false;
   }
-  const domain = writeDomain(m)?.filter((v) => typeof v === typeof value);
+  const domain = writeDomain(m, ctx)?.filter((v) => typeof v === typeof value);
   return !domain?.length || domain.includes(value as string | number);
 }
 
@@ -757,8 +758,8 @@ function inDomain(m: ValueMember, value: unknown): boolean {
  * own set, so a mode the device reports but cannot be set is refused by naming the three that can — the
  * message and the offered argument answer from one declaration.
  */
-function rejection(name: string, m: ValueMember, value: unknown): string {
-  const options = writeDomain(m);
+function rejection(name: string, m: ValueMember, value: unknown, ctx: CommandContext): string {
+  const options = writeDomain(m, ctx);
   const domain = options?.length
     ? `one of ${options.join("/")}`
     : m.min !== undefined && m.max !== undefined

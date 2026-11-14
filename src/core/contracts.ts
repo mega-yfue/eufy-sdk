@@ -336,14 +336,14 @@ export class StateConvergenceError extends Error {
 }
 
 /**
- * Wire form for a scalar {@link Command} `"set-param"` intent — how the write is sealed. The BODY is the
- * same struct in every case — `[u32 channel][u32 value][account_id → 128B]` — so these choose only the
- * encryption.
+ * Wire form for a scalar {@link Command} `"set-param"` intent — how the write is sealed. The BODY is
+ * `[u32 channel][u32 value][account_id → 128B]` in every form but `"int-pair"`.
  *
  * - `"int-string"` pins level-1 (AES-128-ECB), `"direct-binary"` pins level-2 (AES-256-GCM).
+ * - `"int-pair"` pins level-1 with the bare `[u32 channel][u32 value]` body and no account id.
  * - `"auto"` lets the transport pick the level, which it resolves from the session it will send on.
  */
-export type ScalarForm = "auto" | "int-string" | "direct-binary";
+export type ScalarForm = "auto" | "int-string" | "int-pair" | "direct-binary";
 
 /**
  * The identity fields an actuation frame is built from — for `ff09`, the AES key/IV inputs
