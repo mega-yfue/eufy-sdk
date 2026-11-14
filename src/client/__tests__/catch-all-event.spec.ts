@@ -71,6 +71,7 @@ describe("catch-all event tag", () => {
     const sequence: string[] = [];
     let mode = 1;
     const device = {
+      announcements: () => [],
       getProperty: () => ({ value: mode }),
       applyParams: vi.fn((params: Record<number, string>) => {
         mode = Number(params[1224]);
@@ -106,6 +107,7 @@ describe("catch-all event tag", () => {
     let cloudMode = "1";
     let polls = 0;
     const device = {
+      announcements: () => [],
       getProperty: () => ({ value: mode }),
       applyParams: vi.fn((params: Record<number, string>) => {
         mode = Number(params[1224]);
@@ -140,6 +142,7 @@ describe("catch-all event tag", () => {
     let mode = 1;
     let cloudMode = "1";
     const device = {
+      announcements: () => [],
       getProperty: () => ({ value: mode }),
       applyParams: (params: Record<number, string>) => {
         mode = Number(params[1224]);
@@ -167,6 +170,7 @@ describe("catch-all event tag", () => {
     const eufy = client();
     let mode = 1;
     const device = {
+      announcements: () => [],
       getProperty: () => ({ value: mode }),
       applyParams: (params: Record<number, string>) => {
         mode = Number(params[1224]);
@@ -209,6 +213,7 @@ describe("catch-all event tag", () => {
     vi.useFakeTimers();
     const eufy = client();
     const device = {
+      announcements: () => [],
       getProperty: () => ({ value: 1 }),
       applyParams: () => undefined,
     };
@@ -248,7 +253,7 @@ describe("catch-all event tag", () => {
     const eufy = client();
     (eufy as any).liveDevices.set(
       "T8000P0000000000",
-      new WeakRef({ getProperty: () => ({ value: 1 }), applyParams: () => undefined }),
+      new WeakRef({ announcements: () => [], getProperty: () => ({ value: 1 }), applyParams: () => undefined }),
     );
     vi.spyOn((eufy as any).registry, "require").mockReturnValue({ params: { 1224: "1" } });
     /**
@@ -293,7 +298,7 @@ describe("catch-all event tag", () => {
     const eufy = client();
     (eufy as any).liveDevices.set(
       "T8000P0000000000",
-      new WeakRef({ getProperty: () => ({ value: 5 }), applyParams: () => undefined }),
+      new WeakRef({ announcements: () => [], getProperty: () => ({ value: 5 }), applyParams: () => undefined }),
     );
     vi.spyOn((eufy as any).registry, "require").mockReturnValue({ params: { 1224: "5" } });
     vi.spyOn((eufy as any).registry, "getDevices").mockResolvedValue([]);
@@ -318,7 +323,7 @@ describe("catch-all event tag", () => {
     const eufy = client();
     (eufy as any).liveDevices.set(
       "T8000P0000000000",
-      new WeakRef({ getProperty: () => undefined, applyParams: () => undefined }),
+      new WeakRef({ announcements: () => [], getProperty: () => undefined, applyParams: () => undefined }),
     );
     vi.spyOn((eufy as any).registry, "require").mockImplementation(() => {
       throw new Error("synthetic registry fault");
@@ -344,6 +349,7 @@ describe("catch-all event tag", () => {
     let mode = 1;
     let cloudMode = "1";
     const device = {
+      announcements: () => [],
       getProperty: () => ({ value: mode }),
       applyParams: (params: Record<number, string>) => {
         mode = Number(params[1224]);
@@ -389,6 +395,7 @@ describe("catch-all event tag", () => {
       finishReset = resolve;
     });
     const device = {
+      announcements: () => [],
       getProperty: () => ({ value: mode }),
       applyParams: (params: Record<number, string>) => {
         mode = Number(params[1224]);
@@ -428,7 +435,7 @@ describe("catch-all event tag", () => {
   it("acknowledges an observed command without failing when authoritative readback expires", async () => {
     vi.useFakeTimers();
     const eufy = client();
-    const device = { getProperty: () => ({ value: 1 }), applyParams: vi.fn() };
+    const device = { announcements: () => [], getProperty: () => ({ value: 1 }), applyParams: vi.fn() };
     (eufy as any).liveDevices.set("T8000P0000000000", new WeakRef(device));
     vi.spyOn((eufy as any).registry, "require").mockReturnValue({ params: { 1224: "1" } });
     vi.spyOn((eufy as any).registry, "getDevices").mockResolvedValue([]);
@@ -455,6 +462,7 @@ describe("catch-all event tag", () => {
     let mode = 1;
     let cloudMode = "1";
     const device = {
+      announcements: () => [],
       getProperty: () => ({ value: mode }),
       applyParams: (params: Record<number, string>) => {
         mode = Number(params[1224]);
