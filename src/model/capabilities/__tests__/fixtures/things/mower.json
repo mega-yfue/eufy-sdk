@@ -1,0 +1,241 @@
+{
+  "things_list": [
+    {
+      "actions": [
+        {
+          "available_conditions": {},
+          "dispatch_type": "",
+          "identifier": "ecl_mow_control_pause",
+          "input_data": {
+            "specs": {},
+            "type": "string"
+          },
+          "output_data": {
+            "specs": {},
+            "type": "string"
+          },
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          }
+        },
+        {
+          "available_conditions": {},
+          "dispatch_type": "",
+          "identifier": "ecl_mow_control_start_global_clean",
+          "input_data": {
+            "specs": {},
+            "type": "string"
+          },
+          "output_data": {
+            "specs": {},
+            "type": "string"
+          },
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          }
+        },
+        {
+          "available_conditions": {},
+          "dispatch_type": "",
+          "identifier": "ecl_mow_control_start_return",
+          "input_data": {
+            "specs": {},
+            "type": "string"
+          },
+          "output_data": {
+            "specs": {},
+            "type": "string"
+          },
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          }
+        },
+        {
+          "available_conditions": {},
+          "dispatch_type": "",
+          "identifier": "ecl_mow_set_volume",
+          "input_data": {
+            "specs": {},
+            "type": "int"
+          },
+          "output_data": {
+            "specs": {},
+            "type": "string"
+          },
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          }
+        }
+      ],
+      "events": [],
+      "is_filter": false,
+      "large_version": 50,
+      "large_version_update_time": 1783063911,
+      "profile": {
+        "plugin_id": "00000000000000000000000000000000",
+        "plugin_id_qjsc": "",
+        "plugin_id_zip": "00000000000000000000000000000000",
+        "plugin_path": "https://cdn.example/T2801Handle.mix.js",
+        "plugin_path_qjsc": "",
+        "plugin_path_zip": "https://cdn.example/T2801.zip",
+        "product_code": "T2801",
+        "version": "1.0.0"
+      },
+      "properties": [
+        {
+          "access_mode": "R",
+          "available_conditions": {},
+          "data_type": {
+            "specs": {},
+            "type": "int"
+          },
+          "dispatch_type": "",
+          "identifier": "ecl_mow_battery_status_state",
+          "read_conditions": {},
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          },
+          "write_conditions": {}
+        },
+        {
+          "access_mode": "R",
+          "available_conditions": {},
+          "data_type": {
+            "specs": {},
+            "type": "bool"
+          },
+          "dispatch_type": "",
+          "identifier": "ecl_mow_get_children_lock",
+          "read_conditions": {},
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          },
+          "write_conditions": {}
+        },
+        {
+          "access_mode": "R",
+          "available_conditions": {},
+          "data_type": {
+            "specs": {},
+            "type": "int"
+          },
+          "dispatch_type": "",
+          "identifier": "ecl_mow_get_power_level",
+          "read_conditions": {},
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          },
+          "write_conditions": {}
+        },
+        {
+          "access_mode": "R",
+          "available_conditions": {},
+          "data_type": {
+            "specs": {},
+            "type": "int"
+          },
+          "dispatch_type": "",
+          "identifier": "ecl_mow_get_volume",
+          "read_conditions": {},
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          },
+          "write_conditions": {}
+        }
+      ],
+      "update_time": 1779419377,
+      "version": "1.0"
+    }
+  ],
+  "wire": {
+    "ecl_mow_battery_status_state": {
+      "reads": [
+        {
+          "via": "dp",
+          "dp": 108,
+          "path": "state"
+        }
+      ],
+      "writes": [],
+      "versions": []
+    },
+    "ecl_mow_set_volume": {
+      "reads": [],
+      "writes": [
+        {
+          "via": "dp",
+          "dp": 26
+        }
+      ],
+      "versions": []
+    },
+    "ecl_mow_control_start_return": {
+      "reads": [],
+      "writes": [
+        {
+          "via": "dp",
+          "dp": 103
+        }
+      ],
+      "versions": []
+    },
+    "ecl_mow_control_start_global_clean": {
+      "reads": [],
+      "writes": [
+        {
+          "via": "dp",
+          "dp": 103
+        }
+      ],
+      "versions": []
+    },
+    "ecl_mow_control_pause": {
+      "reads": [],
+      "writes": [
+        {
+          "via": "dp",
+          "dp": 105
+        }
+      ],
+      "versions": []
+    },
+    "ecl_mow_get_power_level": {
+      "reads": [
+        {
+          "via": "dp",
+          "dp": 8
+        }
+      ],
+      "writes": [],
+      "versions": []
+    },
+    "ecl_mow_get_volume": {
+      "reads": [
+        {
+          "via": "dp",
+          "dp": 26
+        }
+      ],
+      "writes": [],
+      "versions": []
+    },
+    "ecl_mow_get_children_lock": {
+      "reads": [
+        {
+          "via": "dp",
+          "dp": 47
+        }
+      ],
+      "writes": [],
+      "versions": []
+    }
+  }
+}

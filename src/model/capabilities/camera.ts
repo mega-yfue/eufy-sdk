@@ -1,5 +1,6 @@
 import { asBool, coerceEnumValue } from "../../core/util.js";
 import { DeviceType } from "../device-types.js";
+import { IndoorPushEvent } from "../push-events.js";
 import {
   isCallDoorbell,
   isIndoorCamera,
@@ -541,10 +542,12 @@ function refuseWhenDisabled(ctx: CommandContext, read: (name: string) => { value
     throw new CameraDisabledError(ctx.name ?? ctx.serial);
 }
 
-/** Reject an unavailable optical view before a media pull is requested. */
-function refuseUnsupportedView(media: MediaProvider, opts?: MediaSourceSelection): void {
+/** Reject an unavailable optical view or output size before requesting media. */
+function refuseUnsupportedSelection(media: MediaProvider, opts?: MediaSourceSelection): void {
   const view = opts?.view ?? 0;
   if (!(media.views ?? [0]).includes(view)) throw new RangeError(`camera: unsupported optical view ${view}`);
+  if (opts?.outputResolution !== undefined && !media.outputResolutions?.includes(opts.outputResolution))
+    throw new RangeError(`camera: unsupported output resolution ${opts.outputResolution}`);
 }
 
 /**
@@ -914,6 +917,12 @@ export const CAMERA_MEMBERS = {
     "Optical view identifiers supported by this camera's media route.",
   ),
 
+  outputResolutions: provided(
+    "media",
+    (m) => m.outputResolutions && (() => m.outputResolutions!),
+    "Output sizes supported by this camera's live media route; omission preserves its default output.",
+  ),
+
   /**
    * Media is not a property: it returns DATA rather than moving state, its options are richer than a
    * value, and it exists only on a device bound to a provider. Each is declared once, with its
@@ -943,7 +952,7 @@ export const CAMERA_MEMBERS = {
       isCameraCodec(ctx) &&
       (async (opts?: Parameters<MediaProvider["snapshotLive"]>[0]) => {
         refuseWhenDisabled(ctx, read);
-        refuseUnsupportedView(m, opts);
+        refuseUnsupportedSelection(m, opts);
         return m.snapshotLive({ powered: poweredOf(ctx), ...opts });
       }),
     "Fresh still decoded from a short live burst.",
@@ -953,7 +962,7 @@ export const CAMERA_MEMBERS = {
     (m, { ctx, read }) =>
       async (opts?: Parameters<MediaProvider["live"]>[0]) => {
         refuseWhenDisabled(ctx, read);
-        refuseUnsupportedView(m, opts);
+        refuseUnsupportedSelection(m, opts);
         return m.live({ powered: poweredOf(ctx), ...opts });
       },
     "Open a managed live stream.",
@@ -968,7 +977,7 @@ export const CAMERA_MEMBERS = {
       }),
     "Record N seconds → an mp4/h264 buffer.",
   ),
-  /** The T8530 serves its live feed as a Readable too; its other media pulls stay withheld. */
+  /** The T8530 serves its live feed as a Readable too. */
   openReadable: provided(
     "media",
     (m, { ctx, read }) =>
@@ -976,7 +985,7 @@ export const CAMERA_MEMBERS = {
       m.openReadable &&
       (async (opts?: Parameters<NonNullable<MediaProvider["openReadable"]>>[0]) => {
         refuseWhenDisabled(ctx, read);
-        refuseUnsupportedView(m, opts);
+        refuseUnsupportedSelection(m, opts);
         return m.openReadable!({ powered: poweredOf(ctx), ...opts });
       }),
     "Open a node:stream Readable of the live feed.",
@@ -992,13 +1001,14 @@ export const CAMERA_MEMBERS = {
       }),
     "Continuous fragmented-MP4 (CMAF) recording.",
   ),
+  /** A T8530 is offered the download behind a HomeBase 3 alone. */
   downloadRecording: provided(
     "media",
     (m, { ctx }) =>
-      isCameraCodec(ctx) &&
+      (isCameraCodec(ctx) || (isVideoSmartLock(ctx) && ctx.stationSerial?.startsWith("T8030") === true)) &&
       m.downloadRecording &&
       ((opts: Parameters<NonNullable<MediaProvider["downloadRecording"]>>[0]) => m.downloadRecording!(opts)),
-    "Download a recording the station holds → H.264 and AAC elementary streams.",
+    "Download a recording the station holds → H.264 or H.265 and AAC elementary streams.",
   ),
   /**
    * Push audio from the host to this camera's speaker. Gated on the **speaker** param specifically —
@@ -1026,6 +1036,21 @@ export const CAMERA: CapabilityModule = {
   properties: propertiesOf(CAMERA_MEMBERS),
   /** Every camera-codec device has the power/privacy surface. */
   detection: { codecs: ["camera"] },
+  /** The sound (3105) and crying (3104) pushes, each claimed on the product's thing property for it. */
+  events: [
+    {
+      source: "push",
+      match: IndoorPushEvent.SOUND_DETECTION,
+      emit: "soundDetected",
+      claim: { things: ["sound_detection_status", "sound_detection_type"] },
+    },
+    {
+      source: "push",
+      match: IndoorPushEvent.CRYING_DETECTION,
+      emit: "cryingDetected",
+      claim: { things: ["notification_ai_crying_switch", "sound_detection_type"] },
+    },
+  ],
   /** Only the no-argument power verbs, which carry no value for a member to hold. */
   actions({ ctx, sink }: MemberDeps): CapabilityActions {
     if (!isCameraCodec(ctx)) return {};

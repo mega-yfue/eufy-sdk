@@ -4,6 +4,7 @@ import { describeDevice, setJson, setJsonRaw, setPayload, setScalar } from "./ac
 import { propertiesOf, type Members, type Surface, type MemberDeps } from "./members.js";
 import { DeviceType } from "../device-types.js";
 import type {
+  AvailabilityContext,
   CapabilityActions,
   CapabilityModule,
   CapabilityStateReader,
@@ -139,6 +140,13 @@ export const MOTION_CMD = {
    * as a `1700` control payload carrying an index rather than the `1350` envelope its siblings take.
    */
   INDOOR_SENSITIVITY_INDEX: 6041,
+  /**
+   * Motion detection on-off on a T8410 (app `CMD_INDOOR_DET_SET_MOTION_DETECT_ENABLE`). `1700` control
+   * payload `{"commandType":6040,"data":{"enable":0,"quality":0,"status":0|1,"value":0}}`.
+   *
+   * ⚠️ Replay + readback confirmed on a standalone and a HomeBase 3-attached T8410, NOT byte-captured.
+   */
+  INDOOR_MOTION_ENABLE: 6040,
   /**
    * Detection sensitivity a solo camera REPORTS (app `SET_MOTION_DETECTION_SENSITIVITY_SOLO`). It does
    * not accept writes on this id — the write goes to {@link MOTION_SENSITIVITY}, which is why a scale
@@ -441,6 +449,11 @@ function sensitivityCommand(step: unknown, scale: SensitivityScale, ctx: Command
  */
 const EXIT_TEST_MODE_VALUE = 0x30303000;
 
+/** A T8410, whose motion switch is {@link MOTION_CMD.INDOOR_MOTION_ENABLE} rather than {@link MOTION_CMD.CAMERA_PIR}. */
+function isT8410(ctx: AvailabilityContext): boolean {
+  return ctx.model === "T8410";
+}
+
 /**
  * Reject a write on a device family its wire was never captured on.
  *
@@ -512,10 +525,16 @@ export const MOTION_MEMBERS = {
     type: "bool",
     kind: "boolean",
     provenance: "verified",
-    description: "Motion/PIR detection enabled (verified: param 1011 = CAMERA_PIR).",
+    readAvailable: (ctx) => !isT8410(ctx),
+    readAliases: [{ paramType: MOTION_CMD.INDOOR_MOTION_ENABLE, available: isT8410 }],
+    description:
+      "Motion/PIR detection enabled (verified: param 1011 = CAMERA_PIR; a T8410 reads and writes " +
+      "INDOOR_MOTION_ENABLE 6040 instead).",
     write: (v, ctx) => {
       requireFamily("motionDetection", ctx, "camera");
-      return setScalar(MOTION_CMD.CAMERA_PIR, asBool(v) ? 1 : 0, ctx, "direct-binary");
+      const on = asBool(v) ? 1 : 0;
+      if (!isT8410(ctx)) return setScalar(MOTION_CMD.CAMERA_PIR, on, ctx, "direct-binary");
+      return setJson(MOTION_CMD.INDOOR_MOTION_ENABLE, { enable: 0, quality: 0, status: on, value: 0 }, ctx);
     },
     writeAs: "setDetection",
   },
@@ -797,8 +816,6 @@ export const MOTION: CapabilityModule = {
   events: [
     { source: "push", match: DoorbellPushEvent.MOTION_DETECTION, emit: "motion" },
     { source: "push", match: CusPushEvent.MOTION_SENSOR_PIR, emit: "motion" },
-    { source: "push", match: IndoorPushEvent.CRYING_DETECTION, emit: "cryingDetected", claim: CAMERA_AI_CLAIM },
-    { source: "push", match: IndoorPushEvent.SOUND_DETECTION, emit: "soundDetected", claim: CAMERA_AI_CLAIM },
     { source: "push", match: IndoorPushEvent.PET_DETECTION, emit: "petDetection", claim: CAMERA_AI_CLAIM },
     { source: "push", match: DoorbellPushEvent.VEHICLE_DETECTION, emit: "vehicleDetected", claim: VEHICLE_CLAIM },
     { source: "push", match: HB3PairedDevicePushEvent.DOG_DETECTION, emit: "dogDetected", claim: DOG_CLAIM },

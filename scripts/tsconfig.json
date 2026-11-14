@@ -1,0 +1,6 @@
+{
+  // Type-checks the dev scripts and their specs. `npm run typecheck:scripts` runs it; verify does too.
+  "extends": "../examples/tsconfig.json",
+  "compilerOptions": { "types": ["node", "vitest/globals"] },
+  "include": ["dev/**/*.ts"]
+}

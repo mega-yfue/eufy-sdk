@@ -225,9 +225,10 @@ function emitsOf(m: CapabilityModule, reads: readonly ReadDescriptor[], ctx?: Av
  * it rather than evidence that confirms it.
  *
  * A read the device never reported is the contradiction for `reads`: the getter is absent from the
- * bound object, which is the same evidence gate the read itself answers to. A topology the context
- * does not state contradicts nothing, so the event stands; narrowing on an unknown would withdraw an
- * event from every caller that describes a device without resolving its parent.
+ * bound object, which is the same evidence gate the read itself answers to. A product whose resolved
+ * thing description lists none of a claim's identifiers is the contradiction for `things`. A topology
+ * or a description the context does not carry contradicts nothing, so the event stands; narrowing on
+ * an unknown would withdraw an event from every caller that describes a device without resolving it.
  *
  * `codecs` is the exception to that leniency, and for the reason {@link AvailabilityContext.codec}
  * gives: an absent codec is a device outside the eufy device model rather than one whose family is
@@ -237,6 +238,8 @@ function holds(claim: EventClaim | undefined, installed: ReadonlySet<string>, ct
   if (!claim) return true;
   if (claim.codecs && (ctx?.codec === undefined || !claim.codecs.includes(ctx.codec))) return false;
   if (claim.reads?.some((name) => !installed.has(name))) return false;
+  const things = ctx?.things;
+  if (claim.things && things && !claim.things.some((id) => things.properties[id])) return false;
   if (claim.homeBaseAttached !== undefined && ctx?.homeBaseAttached !== undefined) {
     return ctx.homeBaseAttached === claim.homeBaseAttached;
   }

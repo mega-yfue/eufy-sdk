@@ -11,11 +11,12 @@ import {
   bindMembers,
   hasRequiredCapabilities,
   installs,
+  kindRoutable,
   memberWrite,
   propertiesOf,
   type MemberDeps,
 } from "./members.js";
-import { camelCase } from "./access.js";
+import { camelCase, describeDevice } from "./access.js";
 import { describeBound, type CapabilityDescriptor } from "./manifest.js";
 import type {
   CapabilityModule,
@@ -91,6 +92,16 @@ import { VACUUM_DOCK } from "./vacuum-dock.js";
 import { SUCTION } from "./suction.js";
 import { MOWER } from "./mower.js";
 export { type DpCatalog, EMPTY_DP_CATALOG } from "./dp-catalog.js";
+export type {
+  ThingAction,
+  ThingBundle,
+  ThingCondition,
+  ThingConditions,
+  ThingDescription,
+  ThingEvent,
+  ThingMember,
+  ThingProperty,
+} from "./thing-description.js";
 import { DISPLAY } from "./display.js";
 import { LOCATE } from "./locate.js";
 import { SMART_DROP } from "./smart-drop.js";
@@ -937,11 +948,15 @@ function memberCommand(
     const aliased = member.aliases?.[action];
     const claims = action === property || member.intentNames?.includes(action) === true;
     if (!claims && aliased === undefined) continue;
-    if (member.unverified) {
-      throw new Error(`${m.capability}: ${name} write wire unverified — confirm it on a device before sending`);
+    if (member.unverified || member.unverifiedFor?.(ctx)) {
+      throw new Error(
+        `${m.capability}: ${name} write wire unverified — confirm it on a device before sending [${describeDevice(ctx)}]`,
+      );
     }
     if (!member.write || !installs(member, ctx)) continue;
-    return memberWrite(name, member, claims ? value : (aliased as boolean | number | string), ctx);
+    const cmd = memberWrite(name, member, claims ? value : (aliased as boolean | number | string), ctx);
+    if (!kindRoutable(cmd.kind, ctx)) continue;
+    return cmd;
   }
   return undefined;
 }
