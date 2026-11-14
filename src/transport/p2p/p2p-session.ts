@@ -76,6 +76,8 @@ import { CMD_DATABASE, CMD_DATABASE_IMAGE, DB_QUERY, DB_TABLE_TIMEOUT_MS, fullTa
 import { StationUnreachableError } from "../../core/contracts.js";
 
 const LOCAL_LOOKUP_PORT = 32108;
+/** The highest UDP port. */
+const MAX_UDP_PORT = 65535;
 const HEARTBEAT_MS = 5_000;
 /**
  * How long a path may go without answering a heartbeat before it stops being committed to.
@@ -2727,8 +2729,18 @@ export class P2PSession extends EventEmitter {
     this.emit("data", frame);
   }
 
+  /**
+   * Send one message to `addr`. A port Node's dgram `send` refuses — outside 1..{@link MAX_UDP_PORT} — is
+   * skipped like a failed send instead of thrown: a peer-reported address reaches here from inside the
+   * socket's `message` listener, where a throw is uncaught.
+   */
   private send(addr: Address, type: Buffer, payload?: Buffer, socket = this.socket, done?: () => void): void {
     if (!socket) return;
+    if (!Number.isInteger(addr.port) || addr.port < 1 || addr.port > MAX_UDP_PORT) {
+      this.logger.debug(`[p2p] send skipped ${addr.host}:${addr.port}: not a UDP port`);
+      done?.();
+      return;
+    }
     const packet = frameMessage(type, payload);
     socket.send(packet, addr.port, addr.host, (err) => {
       if (err) this.logger.warn(`[p2p] send err ${addr.host}:${addr.port}`, err.message);
