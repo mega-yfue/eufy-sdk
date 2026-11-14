@@ -243,20 +243,21 @@ function cellGated<T extends Members>(members: T): T {
  * — and the sensor has none of the rest of this surface (no charge source or solar, no camera
  * working/recording mode, no cell health/temperature). A sensor's real battery is a BOOLEAN low-power
  * flag on its own param (`entrySensorBatState` 1552 / `motionSensorBatState` 1601), never a percentage,
- * so this capability has nothing valid to show on one. Keyed on the CODEC, not a model list: no security
+ * which is the one member it gets (`batteryLow`). Keyed on the CODEC, not a model list: no security
  * sensor fuel-gauges a cell, so the whole family is covered the moment it resolves. Fails open — a record
  * with no resolved codec still publishes, the same safe direction as {@link notMainsCamera}.
  */
 const notSensor = (ctx: AvailabilityContext): boolean => ctx.codec !== "sensor";
 
 /**
- * Withhold EVERY battery member on the `sensor` codec, composing with any gate a member already carries
- * (the cell gate's {@link notMainsCamera}, `level`/`powerSource`'s lock check). A sensor then exposes no
- * battery entity at all — rather than a bogus percentage plus a dozen `unknown` camera-power reads for
- * params it never speaks.
+ * Withhold every battery member but `sensorOnly` on the `sensor` codec, composing with any gate a member
+ * already carries (the cell gate's {@link notMainsCamera}, `level`/`powerSource`'s lock check). A sensor
+ * then exposes its low-battery flag and nothing else — rather than a bogus percentage plus a dozen
+ * `unknown` camera-power reads for params it never speaks.
  */
-function notOnSensor<T extends Members>(members: T): T {
+function notOnSensor<T extends Members>(members: T, sensorOnly: readonly (keyof T)[]): T {
   const gated = Object.entries(members).map(([name, m]) => {
+    if (sensorOnly.includes(name)) return [name, m] as const;
     const own = (m as { available?: (ctx: AvailabilityContext) => boolean }).available;
     const available = own ? (ctx: AvailabilityContext) => notSensor(ctx) && own(ctx) : notSensor;
     return [name, { ...(m as object), available }] as const;
@@ -536,22 +537,36 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
       "Raw GET_CAMERA_INFO value (1103), meaning unevidenced — read live as the constant 5 on a T8170 at " +
       "92% and a T8171 at 27%, so it is NOT a low-battery flag.",
   },
+  /**
+   * A sensor's battery is low. The app reads the entry sensor's 1552 and the motion sensor's 1601 into the
+   * same field (`sensor_is_low_power`, `asBoolean`), so one member reads whichever the sensor reports.
+   * Present on the `sensor` codec only: a camera or a lock reports a level instead.
+   */
+  batteryLow: {
+    param: 1552,
+    readAliases: [{ paramType: 1601 }],
+    type: "bool",
+    kind: "boolean",
+    provenance: "verified",
+    available: (ctx: AvailabilityContext) => !notSensor(ctx),
+    description: "Sensor battery low (1552 entry sensor, 1601 motion sensor; sensor_is_low_power).",
+  },
 } as const satisfies Members);
 
 /**
- * The published `battery` table: the full camera surface, minus every member on the `sensor` codec —
- * a sensor's 1101 is a non-cell sentinel and it has none of the camera power reads, so it exposes no
- * battery entity (see {@link notOnSensor}). Every getter, setter and description derives from this.
+ * The published `battery` table: the full camera surface, minus every member but `batteryLow` on the
+ * `sensor` codec — a sensor's 1101 is a non-cell sentinel and it has none of the camera power reads, so
+ * it exposes its low-battery flag alone (see {@link notOnSensor}). Every getter, setter and description derives from this.
  *
  * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
  * which the reference site does not carry.
  * @internal
  */
-export const BATTERY_MEMBERS = notOnSensor(CAMERA_BATTERY_MEMBERS);
+export const BATTERY_MEMBERS = notOnSensor(CAMERA_BATTERY_MEMBERS, ["batteryLow"]);
 
 export const BATTERY: CapabilityModule = {
   capability: "battery",
-  description: "Battery level, charging, health, temperature, and solar input.",
+  description: "Battery level, charging, health, temperature and solar input; a sensor's low-battery flag.",
   members: BATTERY_MEMBERS,
   properties: propertiesOf(BATTERY_MEMBERS),
   /** A reported battery-level param (1101) is the verified proof the device is battery-powered. */

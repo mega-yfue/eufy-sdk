@@ -424,6 +424,9 @@ const SETTER_ELSEWHERE: Record<string, string> = {
   // Both halves of the doorbell's param 1705 (live-view quality + encoding format) must be written
   // together, so `videoQuality` is `writtenElsewhere` via setVideoQuality, which takes both.
   "doorbell.videoQuality": "setVideoQuality",
+  // An entry sensor's left-open alert and daily check each carry two fields in one base64 JSON param.
+  "contact.openAlertConfig": "setOpenAlert",
+  "contact.dailyCheckConfig": "setDailyCheck",
 };
 
 describe("published schema — every writable property has a reachable setter", () => {
