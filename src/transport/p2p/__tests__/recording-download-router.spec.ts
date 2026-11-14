@@ -15,6 +15,8 @@ import { ACCOUNT_ID, DEVICE_SN, STATION_SN, connectedSession, routerWithSession 
 
 const RECORDING = "20260101120000";
 const CIPHER_ID = 7;
+/** A recording name the fake HomeBase 3 holds no recording under when told so. */
+const MISSING = "20260101130000";
 
 /**
  * A router over a fake HomeBase 2 session that answers a download request with one recording, a keyframe at
@@ -58,11 +60,11 @@ function homeBase2(deps: Partial<P2PRouterDeps> = {}, opts: { finish?: boolean; 
 }
 
 /**
- * A router over a fake HomeBase 3 session that answers a download request with one recording in the clear, a
- * keyframe and an audio frame at 5 ms then a plain frame at 25 ms, followed by the finish frame tagged with
- * channel 255.
+ * A router over a fake HomeBase 3 session that answers a download request with result code 0 at 1 ms, then one
+ * recording in the clear, a keyframe and an audio frame at 5 ms then a plain frame at 25 ms, followed by the
+ * finish frame tagged with channel 255. A request for `opts.missing` is answered only with result code -111.
  */
-function homeBase3() {
+function homeBase3(opts: { missing?: string } = {}) {
   const session = connectedSession();
   const sent: unknown[][] = [];
   const media = (frame: { commandId: number; signCode: number; raw: Buffer }, channel: number) =>
@@ -71,6 +73,14 @@ function homeBase3() {
     sendStringPairCommand: vi.fn((...args: unknown[]) => {
       sent.push(args);
       const channel = args[3] as number;
+      const missing = opts.missing !== undefined && String(args[1]).includes(opts.missing);
+      const reply = Buffer.alloc(132);
+      reply.writeInt32LE(missing ? -111 : 0);
+      setTimeout(
+        () => session.emit("data", { commandId: 1024, dataType: 0, signCode: 0, raw: reply, data: reply, channel }),
+        1,
+      );
+      if (missing) return;
       setTimeout(() => {
         media(clearVideoFrame(IDR, true, 0, 0), channel);
         media(clearAudioFrame(adts(180, 1)), channel);
@@ -256,6 +266,29 @@ describe("recording download through the router", () => {
       expect(out.video).toEqual(Buffer.concat([IDR, slice(1)]));
       expect(out.audio).toEqual(adts(180, 1));
       expect(out).toMatchObject({ frames: 2, missingFrames: 0, durationMs: 67 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects a recording a HomeBase 3 does not hold at once, and the next download takes its turn", async () => {
+    vi.useFakeTimers();
+    try {
+      const { media, sent } = homeBase3({ missing: MISSING });
+
+      const outcomes = Promise.allSettled([
+        media.downloadRecording!({ recording: MISSING, cipherId: 0 }),
+        media.downloadRecording!({ recording: RECORDING, cipherId: 0 }),
+      ]);
+      await vi.advanceTimersByTimeAsync(100);
+      const [missing, held] = await Promise.race([outcomes, Promise.resolve([])]);
+
+      expect(missing).toMatchObject({ status: "rejected", reason: { reason: "no-data" } });
+      expect(held).toMatchObject({ status: "fulfilled", value: { frames: 2 } });
+      expect(sent.map((args) => args[1])).toEqual([
+        `/zx/emmcdata/Camera01/202601/${MISSING}/${MISSING}.zxvideo`,
+        `/zx/emmcdata/Camera01/202601/${RECORDING}/${RECORDING}.zxvideo`,
+      ]);
     } finally {
       vi.useRealTimers();
     }

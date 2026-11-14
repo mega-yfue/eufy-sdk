@@ -18,6 +18,18 @@ import {
 import { parseAiotDpReport } from "../transport/mqtt/dp-codec.js";
 import { classifyDevice, type DeviceClass, type EufyDevice, type RealtimeKind } from "../core/types.js";
 import { inspectParams, resolveDevice, type Capability, type Codec, type DeviceInspection } from "../model/index.js";
+import { parseThingsList, resolveThing, type ThingDescription } from "../model/capabilities/thing-description.js";
+
+/**
+ * Read a non-empty string field off a raw device record, tolerating the app's `deviceParams` nesting
+ * (the v6 app resolves e.g. firmware as `record.deviceParams?.main_sw_version ?? record.main_sw_version`).
+ * Returns `undefined` for a missing or empty value, so a blank firmware never surfaces as `""`.
+ */
+export function recordString(raw: Record<string, unknown>, key: string): string | undefined {
+  const nested = (raw.deviceParams as Record<string, unknown> | undefined)?.[key];
+  const v = typeof nested === "string" && nested ? nested : raw[key];
+  return typeof v === "string" && v ? v : undefined;
+}
 
 /** The device-record shape {@link EufyMega.getDevice}/`commandContext` resolve a serial to. */
 export interface DeviceRecord {
@@ -43,6 +55,8 @@ export interface DeviceRecord {
    * capabilities a device is judged to have.
    */
   dpParams?: Record<number, string>;
+  /** The product's thing description (see {@link CloudRecord.things}). */
+  things?: ThingDescription;
 }
 
 /**
@@ -230,6 +244,8 @@ export class DeviceRegistry {
   private readonly deviceCapsCache = new Map<string, ReadonlySet<Capability> | null>();
   /** Per-serial cloud data points of an AIoT robot, joined beneath the params in {@link record} — see {@link loadCloudDps}. */
   private readonly cloudDps = new Map<string, Record<number, string>>();
+  /** Per-product-code thing description — see {@link loadThings}; `undefined` for a code the cloud returned none for. */
+  private readonly things = new Map<string, ThingDescription | undefined>();
   /** Per-serial realtime state, keyed by param id in the device's own namespace (see {@link DeviceRecord.dpParams}). */
   private readonly dpParams = new Map<string, Record<number, string>>();
   /** Callers blocked in {@link awaitRealtimeState}, released by the device's first report. */
@@ -349,6 +365,7 @@ export class DeviceRegistry {
       }
     }
     await this.loadCloudDps(seen);
+    await this.loadThings(seen);
     this.lastRefreshPartial = partial;
     if (partial) for (const prev of this.devices) if (!seen.has(prev.sn)) seen.set(prev.sn, prev);
     this.devices = [...seen.values()];
@@ -478,6 +495,43 @@ export class DeviceRegistry {
   }
 
   /**
+   * The device's product description resolved for this device ({@link resolveThing}): against its serial
+   * and firmware (`main_sw_version`), the station it is reached through and that station's firmware, the
+   * account's country and its reported params.
+   */
+  private thingsFor(dev: EufyDevice, station: string, params: Record<number, string>): ThingDescription | undefined {
+    const td = this.things.get(dev.model ?? "");
+    if (!td) return undefined;
+    const firmware = (d?: EufyDevice) => recordString((d?.raw ?? {}) as Record<string, unknown>, "main_sw_version");
+    return resolveThing(td, {
+      serial: dev.sn,
+      firmwareVersion: firmware(dev),
+      stationSerial: station,
+      stationFirmwareVersion: firmware(this.devices.find((d) => d.sn === station)),
+      country: this.mega.countryCode,
+      params,
+    });
+  }
+
+  /**
+   * Fetch, once per start, the thing description of each product code the account has, in one
+   * `get_things_list` call. A failed call is logged and asked again on the next refresh.
+   */
+  private async loadThings(seen: Map<string, EufyDevice>): Promise<void> {
+    const codes = [...new Set([...seen.values()].map((d) => d.model ?? ""))].filter((c) => c && !this.things.has(c));
+    if (!codes.length) return;
+    let parsed: Readonly<Record<string, ThingDescription>>;
+    try {
+      parsed = parseThingsList(await this.mega.getThingsList(codes));
+    } catch (e) {
+      if (e instanceof SessionExpiredError) throw e;
+      this.logger.debug(`[registry] thing descriptions unavailable: ${(e as Error)?.message ?? e}`);
+      return;
+    }
+    for (const code of codes) this.things.set(code, parsed[code]);
+  }
+
+  /**
    * Resolve a serial to a {@link DeviceRecord} with current params: starts from the device-list params, then
    * overlays a fresh `get_device_param_list` when that call is available to this account. An AIoT robot's
    * cloud data points ({@link loadCloudDps}) sit beneath both, filling only ids neither carries.
@@ -543,6 +597,7 @@ export class DeviceRegistry {
       params,
       paramUpdatedAt,
       dpParams: this.dpParams.get(sn),
+      things: this.thingsFor(dev, station, params),
     };
   }
 

@@ -105,6 +105,39 @@ describe("LiveStream", () => {
     ]);
   });
 
+  /**
+   * When header bit 0 is clear, the keyframe is decided from the payload: a unit that sniffs a codec and
+   * contains an IDR is a keyframe, one without an IDR is a delta.
+   */
+  it("detects a bit-0-clear keyframe from an IDR in the payload", () => {
+    const SC = Buffer.from([0, 0, 0, 1]);
+    const keyframeAu = Buffer.concat([
+      Buffer.from([0x40, 0x01, 0x0c]),
+      SC,
+      Buffer.from([0x42, 0x01, 0x01]),
+      SC,
+      Buffer.from([0x44, 0x01, 0xc0]),
+      SC,
+      Buffer.from([0x26, 0x01, 0xaf]),
+    ]);
+    const deltaAu = Buffer.from([0x02, 0x01, 0xd0]);
+
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const { session, live } = mk({ logger });
+    const frames: any[] = [];
+    live.on("video", (f) => frames.push(f));
+    live.start();
+
+    session.push(p2pVideoFrame({ nal: keyframeAu }));
+    session.push(p2pVideoFrame({ nal: deltaAu }));
+
+    expect(frames.map((f) => f.keyframe)).toEqual([true, false]);
+    expect(frames.map((f) => f.codec)).toEqual(["h265", "h265"]);
+    expect(
+      logger.debug.mock.calls.filter(([message]) => message === "[live] start trace").map(([, detail]) => detail),
+    ).toContainEqual({ phase: "first-keyframe" });
+  });
+
   it("sniffs codec on a keyframe and carries it onto following delta frames", () => {
     const { session, live } = mk();
     const frames: any[] = [];

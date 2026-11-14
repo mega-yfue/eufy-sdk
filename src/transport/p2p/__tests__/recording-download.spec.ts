@@ -102,7 +102,7 @@ describe("recording download", () => {
     const out = decodeRecording(frames, HB2, eccHex);
 
     expect(out.video).toEqual(Buffer.concat([IDR, slice(1), slice(2), IDR, slice(4)]));
-    expect(out).toMatchObject({ frames: 5, missingFrames: 0, durationMs: 267 });
+    expect(out).toMatchObject({ codec: "h264", frames: 5, missingFrames: 0, durationMs: 267 });
     expect(out.fps).toBeCloseTo(4 / 0.267, 1);
     expect(out.audio).toEqual(Buffer.concat(aac));
   });
@@ -121,7 +121,7 @@ describe("recording download", () => {
     const out = decodeRecording(frames, HB3);
 
     expect(out.video).toEqual(Buffer.concat([IDR, slice(1), slice(2), IDR]));
-    expect(out).toMatchObject({ frames: 4, missingFrames: 0, durationMs: 200, fps: 15 });
+    expect(out).toMatchObject({ codec: "h264", frames: 4, missingFrames: 0, durationMs: 200, fps: 15 });
     expect(out.audio).toEqual(Buffer.concat([adts(180, 1), adts(190, 2)]));
   });
 
@@ -132,7 +132,16 @@ describe("recording download", () => {
     );
 
     expect(out.video).toEqual(Buffer.concat([HEVC_IDR, hevcSlice(1)]));
-    expect(out).toMatchObject({ frames: 2, missingFrames: 0, durationMs: 67 });
+    expect(out).toMatchObject({ codec: "h265", frames: 2, missingFrames: 0, durationMs: 67 });
+  });
+
+  it("names the codec from a keyframe, not from a P-frame whose header byte reads as an H.265 VPS", () => {
+    const delta = Buffer.from([0, 0, 0, 1, 0x41, 0x9a, 0x02]);
+
+    expect(decodeRecording([clearVideoFrame(delta, false, 0, 0)], HB3).codec).toBeUndefined();
+    expect(decodeRecording([clearVideoFrame(delta, false, 0, 0), clearVideoFrame(IDR, true, 1, 67)], HB3).codec).toBe(
+      "h264",
+    );
   });
 
   it("joins a HomeBase 3 keyframe split at 400000 bytes", () => {
@@ -170,6 +179,44 @@ describe("recording download", () => {
     );
 
     expect(out).toMatchObject({ frames: 3, missingFrames: 2 });
+  });
+
+  const HD = { width: 1280, height: 720 };
+  const FHD = { width: 1920, height: 1080 };
+
+  it("counts frame numbers on from the frame before a keyframe that changes the frame size", () => {
+    const frames = [
+      clearVideoFrame(IDR, true, 30, 0, HD),
+      clearVideoFrame(slice(1), false, 31, 100, HD),
+      clearVideoFrame(IDR, true, 0, 200, FHD),
+      clearVideoFrame(slice(2), false, 1, 300, FHD),
+      clearVideoFrame(IDR, true, 0, 400, HD),
+      clearVideoFrame(slice(3), false, 1, 500, HD),
+      clearVideoFrame(IDR, true, 4, 800, HD),
+    ];
+
+    expect(decodeRecording(frames, HB3)).toMatchObject({ frames: 7, missingFrames: 2, durationMs: 800, fps: 10 });
+  });
+
+  it("counts on across a size change at the first keyframe, after leading frames of another size", () => {
+    const frames = [
+      clearVideoFrame(slice(1), false, 40, 0, HD),
+      clearVideoFrame(slice(2), false, 41, 67, HD),
+      clearVideoFrame(IDR, true, 0, 133, FHD),
+      clearVideoFrame(slice(3), false, 1, 200, FHD),
+    ];
+
+    expect(decodeRecording(frames, HB3)).toMatchObject({ frames: 4, missingFrames: 0, durationMs: 200, fps: 15 });
+  });
+
+  it("keeps the numbering at a frame that changes size without being a keyframe", () => {
+    const frames = [
+      clearVideoFrame(IDR, true, 0, 0, HD),
+      clearVideoFrame(slice(1), false, 1, 67, HD),
+      clearVideoFrame(slice(2), false, 5, 333, FHD),
+    ];
+
+    expect(decodeRecording(frames, HB3)).toMatchObject({ frames: 3, missingFrames: 3 });
   });
 
   it("joins split pictures and omits a continuation whose opening frame was lost", () => {
@@ -216,6 +263,7 @@ describe("recording download", () => {
     );
 
     expect(out.video).toEqual(slice(1));
+    expect(out.codec).toBeUndefined();
     expect(out.audio).toBeUndefined();
   });
 
@@ -348,6 +396,48 @@ describe("recording download", () => {
       const settled = expect(transfer.frames).rejects.toMatchObject({ reason: "no-data" });
       await vi.advanceTimersByTimeAsync(21_000);
       await settled;
+    });
+
+    it("answers no-data at once when the station replies that it holds no such recording, and stops listening", async () => {
+      vi.useFakeTimers();
+      const reply = (data: Buffer) => ({ commandId: 1024, dataType: 0, channel: 0, signCode: 0, raw: data, data });
+      const missing = Buffer.alloc(132);
+      missing.writeInt32LE(-111);
+      const session = station((s) => {
+        s.emit("data", reply(Buffer.alloc(2)));
+        s.emit("data", reply(missing));
+      });
+
+      const transfer = receiveRecording(session as unknown as P2PSession, { ...request, missingCode: -111 });
+      const settled = expect(transfer.frames).rejects.toMatchObject({
+        reason: "no-data",
+        message: "the station holds no recording at /p",
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      await settled;
+      await transfer.drained;
+      expect(session.listenerCount("data")).toBe(0);
+    });
+
+    it("ignores a no-such-recording reply on another channel or after the recording's frames began", async () => {
+      vi.useFakeTimers();
+      const reply = (channel: number) => {
+        const data = Buffer.alloc(132);
+        data.writeInt32LE(-111);
+        return { commandId: 1024, dataType: 0, channel, signCode: 0, raw: data, data };
+      };
+      const session = station((s) => {
+        s.emit("data", reply(1));
+        s.emit("data", frame(1300));
+        s.emit("data", reply(0));
+        s.emit("data", frame(1301));
+        s.emit("data", frame(1304, { dataType: 2 }));
+      });
+
+      const transfer = receiveRecording(session as unknown as P2PSession, { ...request, missingCode: -111 });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect((await transfer.frames).map((f) => f.commandId)).toEqual([1300, 1301]);
     });
 
     it("answers incomplete at the byte ceiling, and keeps listening until the station finishes", async () => {
