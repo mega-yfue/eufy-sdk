@@ -10,11 +10,14 @@ function fakeMega(opts: {
   post: PostFn;
   getDeviceParamList?: (sn: string) => Promise<any>;
   getDeviceRelationList?: () => Promise<any>;
+  getThingsList?: (codes: readonly string[]) => Promise<any>;
 }): MegaHttpClient {
   return {
     post: (service: string, path: string, body?: unknown) => opts.post(service, path, body),
     getDeviceParamList: (sn: string) => (opts.getDeviceParamList ?? (async () => ({})))(sn),
     getDeviceRelationList: () => (opts.getDeviceRelationList ?? (async () => Promise.reject(new Error("not faked"))))(),
+    getThingsList: (codes: readonly string[]) =>
+      (opts.getThingsList ?? (async () => Promise.reject(new Error("not faked"))))(codes),
   } as unknown as MegaHttpClient;
 }
 
@@ -145,6 +148,95 @@ describe("DeviceRegistry", () => {
       alive = false;
       await expect(reg.getDevices()).rejects.toBeInstanceOf(SessionExpiredError);
       expect(reg.list().map((d) => d.sn)).toEqual(["A"]);
+    });
+  });
+
+  describe("record — thing descriptions", () => {
+    const thingsReply = (code: string) => ({
+      things_list: [
+        {
+          profile: { product_code: code },
+          properties: [{ identifier: "nightvision_type", data_type: { type: "bool" } }],
+        },
+      ],
+    });
+    const listOf =
+      (...devices: unknown[]) =>
+      async (_s: string, path: string) =>
+        path.endsWith("get_house_list") ? { house_infos: [] } : { devices };
+
+    it("fetches each product code once and attaches its description to the record", async () => {
+      const asked: (readonly string[])[] = [];
+      const reg = new DeviceRegistry({
+        mega: fakeMega({
+          post: listOf(rawDevice("A"), rawDevice("B")),
+          getThingsList: async (codes) => (asked.push(codes), thingsReply("T8410")),
+        }),
+        onError: () => {},
+      });
+      await reg.getDevices();
+      await reg.getDevices();
+      expect(asked).toEqual([["T8410"]]);
+      expect((await reg.record("A")).things?.properties.nightvision_type?.type).toBe("bool");
+      const dumped = JSON.parse(JSON.stringify(await reg.inspectDevice("A")));
+      expect(dumped.things?.properties.nightvision_type?.type, "inspectDevice carries it, serialisable").toBe("bool");
+    });
+
+    it("resolves the description for the device: its firmware picks the variant", async () => {
+      const reply = {
+        things_list: [
+          {
+            profile: { product_code: "T8410" },
+            properties: [
+              { identifier: "nightvision_type", data_type: { type: "tenum" } },
+              {
+                identifier: "nightvision_type__v1",
+                data_type: { type: "bool" },
+                read_conditions: {
+                  condition_list: [{ conditions: [{ type: "device_version", qualifier: "<=", value: "2.1.7.7" }] }],
+                },
+              },
+            ],
+          },
+        ],
+      };
+      const reg = new DeviceRegistry({
+        mega: fakeMega({
+          post: listOf(
+            rawDevice("A", { main_sw_version: "2.1.7.7" }),
+            rawDevice("B", { main_sw_version: "2.3.0.0" }),
+            rawDevice("C", { deviceParams: { main_sw_version: "2.3.0.0" } }),
+          ),
+          getThingsList: async () => reply,
+        }),
+        onError: () => {},
+      });
+      await reg.getDevices();
+      expect((await reg.record("A")).things?.properties.nightvision_type?.identifier).toBe("nightvision_type__v1");
+      expect((await reg.record("B")).things?.properties.nightvision_type?.identifier).toBe("nightvision_type");
+      expect(
+        (await reg.record("C")).things?.properties.nightvision_type?.identifier,
+        "firmware under deviceParams",
+      ).toBe("nightvision_type");
+    });
+
+    it("leaves the record without one when the call fails, and asks again on the next refresh", async () => {
+      let calls = 0;
+      const reg = new DeviceRegistry({
+        mega: fakeMega({
+          post: listOf(rawDevice("A")),
+          getThingsList: async () => {
+            if (++calls === 1) throw new Error("things boom");
+            return thingsReply("T8410");
+          },
+        }),
+        onError: () => {},
+      });
+      await reg.getDevices();
+      expect((await reg.record("A")).things).toBeUndefined();
+      await reg.getDevices();
+      expect(calls).toBe(2);
+      expect((await reg.record("A")).things?.productCode).toBe("T8410");
     });
   });
 

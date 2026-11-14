@@ -1,0 +1,244 @@
+{
+  "things_list": [
+    {
+      "actions": [
+        {
+          "available_conditions": {},
+          "dispatch_type": "",
+          "identifier": "get_device_info",
+          "input_data": {
+            "specs": {},
+            "type": "string"
+          },
+          "output_data": {
+            "specs": {},
+            "type": "string"
+          },
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          }
+        },
+        {
+          "available_conditions": {},
+          "dispatch_type": "",
+          "identifier": "light_on_off",
+          "input_data": {
+            "specs": {},
+            "type": "int"
+          },
+          "output_data": {
+            "specs": {},
+            "type": "string"
+          },
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          }
+        },
+        {
+          "available_conditions": {},
+          "dispatch_type": "",
+          "identifier": "device_set_light_brightness",
+          "input_data": {
+            "specs": {
+              "defaultValue": "0"
+            },
+            "type": "int"
+          },
+          "output_data": {
+            "specs": {},
+            "type": "string"
+          },
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          }
+        }
+      ],
+      "events": [
+        {
+          "available_conditions": {},
+          "dispatch_type": "",
+          "event_type": "",
+          "identifier": "event_device_status_notify",
+          "output_data": {
+            "specs": {},
+            "type": "string"
+          },
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          }
+        }
+      ],
+      "is_filter": false,
+      "large_version": 17,
+      "large_version_update_time": 1779105710,
+      "profile": {
+        "plugin_id": "00000000000000000000000000000000",
+        "plugin_id_qjsc": "",
+        "plugin_id_zip": "00000000000000000000000000000000",
+        "plugin_path": "https://cdn.example/T8L00Handle.mix.js",
+        "plugin_path_qjsc": "",
+        "plugin_path_zip": "https://cdn.example/T8L00.zip",
+        "product_code": "T8L00",
+        "version": "1.0.0"
+      },
+      "properties": [
+        {
+          "access_mode": "R",
+          "available_conditions": {},
+          "data_type": {
+            "specs": {},
+            "type": "int"
+          },
+          "dispatch_type": "",
+          "identifier": "spotlight_switch",
+          "read_conditions": {},
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          },
+          "write_conditions": {}
+        },
+        {
+          "access_mode": "R",
+          "available_conditions": {},
+          "data_type": {
+            "specs": {},
+            "type": "int"
+          },
+          "dispatch_type": "",
+          "identifier": "device_light_brightness",
+          "read_conditions": {},
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          },
+          "write_conditions": {}
+        },
+        {
+          "access_mode": "R",
+          "available_conditions": {},
+          "data_type": {
+            "specs": {},
+            "type": "int"
+          },
+          "dispatch_type": "",
+          "identifier": "light_length",
+          "read_conditions": {},
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          },
+          "write_conditions": {}
+        },
+        {
+          "access_mode": "R",
+          "available_conditions": {},
+          "data_type": {
+            "specs": {},
+            "type": "int"
+          },
+          "dispatch_type": "",
+          "identifier": "light_effect_mode",
+          "read_conditions": {},
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          },
+          "write_conditions": {}
+        }
+      ],
+      "update_time": 1776162998,
+      "version": "1.0"
+    }
+  ],
+  "wire": {
+    "get_device_info": {
+      "reads": [],
+      "writes": [
+        {
+          "via": "mqtt",
+          "code": "0x0200"
+        }
+      ],
+      "versions": []
+    },
+    "light_on_off": {
+      "reads": [],
+      "writes": [
+        {
+          "via": "mqtt",
+          "code": "0x0201"
+        }
+      ],
+      "versions": []
+    },
+    "device_set_light_brightness": {
+      "reads": [],
+      "writes": [
+        {
+          "via": "mqtt",
+          "code": "0x0201"
+        }
+      ],
+      "versions": []
+    },
+    "event_device_status_notify": {
+      "reads": [
+        {
+          "via": "mqtt",
+          "code": "0x0204"
+        }
+      ],
+      "writes": [],
+      "versions": []
+    },
+    "spotlight_switch": {
+      "reads": [
+        {
+          "via": "tlv",
+          "tag": 161
+        }
+      ],
+      "writes": [],
+      "versions": []
+    },
+    "device_light_brightness": {
+      "reads": [
+        {
+          "via": "tlv",
+          "tag": 162
+        }
+      ],
+      "writes": [],
+      "versions": []
+    },
+    "light_length": {
+      "reads": [
+        {
+          "via": "tlv",
+          "tag": 163
+        }
+      ],
+      "writes": [],
+      "versions": []
+    },
+    "light_effect_mode": {
+      "reads": [
+        {
+          "via": "tlv",
+          "tag": 167
+        },
+        {
+          "via": "tlv",
+          "tag": 168
+        }
+      ],
+      "writes": [],
+      "versions": []
+    }
+  }
+}

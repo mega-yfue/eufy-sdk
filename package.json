@@ -54,6 +54,7 @@
     "dev": "tsc -p tsconfig.build.json --watch",
     "typecheck": "tsc --noEmit",
     "typecheck:examples": "tsc -p examples/tsconfig.json",
+    "typecheck:scripts": "tsc -p scripts/tsconfig.json",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
     "format": "prettier --write .",
@@ -65,7 +66,7 @@
     "guard:lines": "bash scripts/ci/guard-lines.sh",
     "check:esm": "node -e \"import('./dist/index.js').then(m=>console.log('ESM OK:',Object.keys(m).length,'exports'))\"",
     "check:snippets": "node scripts/ci/check-doc-snippets.mjs",
-    "verify": "npm run format:check && npm run typecheck && npm run guard:decorrelation && npm run guard:lines && npm run guard:docrefs && npm run guard:consumer-agnostic && npm run guard:capability-ownership && npm run build && npm run check:esm && npm run check:snippets && npm run typecheck:examples && npm test",
+    "verify": "npm run format:check && npm run typecheck && npm run guard:decorrelation && npm run guard:lines && npm run guard:docrefs && npm run guard:consumer-agnostic && npm run guard:capability-ownership && npm run build && npm run check:esm && npm run check:snippets && npm run typecheck:examples && npm run typecheck:scripts && npm test",
     "release": "bash scripts/release.sh"
   },
   "engines": {
