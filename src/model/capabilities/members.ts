@@ -597,13 +597,15 @@ export type Surface<M extends Members> = {
 /**
  * The options a member's {@link ValueMember.thing} gives on this device: the first listed identifier the
  * resolved description has, its members' wire values (0 and 1 for a `bool`) that `enumValues` names.
- * `undefined` without a static domain, a description, a listed property or any named value.
+ * `undefined` without a static domain, a description, a listed property or any named value, and for a
+ * property listing every member on one wire value, which states no wire.
  */
 function thingEnum(m: ValueMember, ctx: AvailabilityContext): Record<number, string> | undefined {
   const named = m.enumValues;
   const property = named && m.thing?.map((id) => ctx.things?.properties[id]).find(Boolean);
   if (!named || !property) return undefined;
   const wire = property.type === "bool" ? [0, 1] : property.members.map((x) => Number(x.wireValue ?? NaN));
+  if (wire.length > 1 && new Set(wire).size === 1) return undefined;
   const options = Object.fromEntries(wire.filter((v) => v in named).map((v) => [v, named[v]!]));
   return Object.keys(options).length ? options : undefined;
 }
