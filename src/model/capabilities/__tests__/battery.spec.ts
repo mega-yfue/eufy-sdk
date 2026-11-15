@@ -15,6 +15,7 @@ import { buildCommand } from "../index.js";
 import { propertiesOf } from "../members.js";
 import type { AvailabilityContext } from "../types.js";
 import { Device } from "../../device.js";
+import { parseThingsList, type ThingDescription } from "../thing-description.js";
 import { bind } from "./bind.js";
 import type { CommandContext } from "../types.js";
 import type { Capability } from "../../types.js";
@@ -240,6 +241,18 @@ describe("battery capability module", () => {
     const read = (value: number) => bind<BatteryActions>("battery", evidenced(), { read: () => ({ value }) }).acts;
     expect(read(1).powerSource).toBe(1);
     expect(read(5).powerSource).toBeUndefined();
+  });
+
+  it("offers powerSource where the product's description lists power_charge_mode, and without a description", () => {
+    const described = (...ids: string[]) =>
+      parseThingsList({
+        things_list: [{ profile: { product_code: "T0000" }, properties: ids.map((identifier) => ({ identifier })) }],
+      }).T0000!;
+    const acts = (things?: ThingDescription) =>
+      Object.keys(bind<BatteryActions>("battery", evidenced({ things })).acts as object);
+    expect(acts(described("power_charge_mode"))).toContain("setPowerSource");
+    expect(acts(described("power_source_mode")), "reports 1293, lists none").not.toContain("powerSource");
+    expect(acts(), "no description").toContain("setPowerSource");
   });
 
   it("resolveWorkingMode maps per model — cameras use DEFAULT, the T8214 doorbell its own map (confirmed live)", () => {

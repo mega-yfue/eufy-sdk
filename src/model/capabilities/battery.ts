@@ -193,12 +193,7 @@ const notMainsCamera = (ctx: AvailabilityContext): boolean => {
  *    it, and a mains camera genuinely has them. They are the reason the capability stays attached.
  *  - `cameraInfo` (1103) is a number whose meaning is unevidenced. Gating it would assert it is a
  *    battery fact, which is the kind of claim this guard exists to stop making.
- *  - `powerSource` (1293) is the open one. Both values it names — `Battery` and `External Solar Panel` —
- *    describe how a CELL is fed, so by this list's own rule it arguably belongs here. It is out because
- *    every param above is one a live mains camera was observed to publish and 1293 was not among them,
- *    and because it is `requires`-gated on its own param, so it appears only where the device reports
- *    it. Gating it would also withhold a described WRITE rather than a read, which is a different class
- *    of change. Unresolved rather than decided: see the note in the pull request.
+ *  - `powerSource` (1293) is gated on the product's description instead (`power_charge_mode`).
  *
  * The two solar params ARE here: a panel exists to charge a cell, so a device without one has no solar
  * harvest to report either.
@@ -251,7 +246,7 @@ const notSensor = (ctx: AvailabilityContext): boolean => ctx.codec !== "sensor";
 
 /**
  * Withhold every battery member but `sensorOnly` on the `sensor` codec, composing with any gate a member
- * already carries (the cell gate's {@link notMainsCamera}, `level`/`powerSource`'s lock check). A sensor
+ * already carries (the cell gate's {@link notMainsCamera}, `level`'s lock check). A sensor
  * then exposes its low-battery flag and nothing else — rather than a bogus percentage plus a dozen
  * `unknown` camera-power reads for params it never speaks.
  */
@@ -323,6 +318,9 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
    *
    * The write is a `1350` SET_PAYLOAD, inner cmd 1293, `{charge_mode:N}`, `mValue3` 0 (the app uses 0,
    * not the cmd id), and the setter accepts a NAME as well as the index the getter answers.
+   *
+   * Offered where the product's description lists `power_charge_mode`, the identifier the products'
+   * settings bundles write as this `{charge_mode}` payload on 1293. No description hides nothing.
    */
   powerSource: {
     param: BATTERY_PARAM.POWER_CHARGE,
@@ -332,6 +330,7 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
     provenance: "verified",
     coerce: decodePowerSource,
     requires: [BATTERY_PARAM.POWER_CHARGE],
+    available: (ctx: AvailabilityContext) => !ctx.things || "power_charge_mode" in ctx.things.properties,
     args: [{ name: "source", kind: "enum", description: "The raw value, or the name `battery`/`external`." }],
     ...accepts<PowerSourceName>(),
     description:
