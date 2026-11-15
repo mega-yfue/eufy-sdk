@@ -166,7 +166,7 @@ describe("motion capability module", () => {
       expect(intent("motionDetection", true, t8410())).toEqual({
         kind: "set-json",
         param: MOTION_CMD.INDOOR_MOTION_ENABLE,
-        data: { enable: 0, quality: 0, status: 1, value: 0 },
+        data: { status: 1 },
         channel: 0,
       });
       expect(intent("motionDetection", false, t8410())).toMatchObject({ data: { status: 0 } });
@@ -179,7 +179,7 @@ describe("motion capability module", () => {
         {
           kind: "set-json",
           param: MOTION_CMD.INDOOR_MOTION_ENABLE,
-          data: { enable: 0, quality: 0, status: 1, value: 0 },
+          data: { status: 1 },
           channel: 0,
         },
       ]);
@@ -200,7 +200,7 @@ describe("motion capability module", () => {
       expect(intent("motionDetection", false, attached)).toMatchObject({
         kind: "set-json",
         param: MOTION_CMD.INDOOR_MOTION_ENABLE,
-        data: { enable: 0, quality: 0, status: 0, value: 0 },
+        data: { status: 0 },
       });
     });
 

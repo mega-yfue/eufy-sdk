@@ -141,10 +141,11 @@ export const MOTION_CMD = {
    */
   INDOOR_SENSITIVITY_INDEX: 6041,
   /**
-   * Motion detection on-off on a T8410 (app `CMD_INDOOR_DET_SET_MOTION_DETECT_ENABLE`). `1700` control
-   * payload `{"commandType":6040,"data":{"enable":0,"quality":0,"status":0|1,"value":0}}`.
+   * Motion detection on-off on a camera reporting it (app `INDOOR_MOTION_ENABLE`). `1700` control payload
+   * `{"commandType":6040,"data":{"status":0|1}}`, the params the app's per-product bundle
+   * sends. A `data` that also carries `enable: 0` turns a battery SoloCam off but never back on.
    *
-   * ⚠️ Replay + readback confirmed on a standalone and a HomeBase 3-attached T8410, NOT byte-captured.
+   * ⚠️ PENDING fleet write + readback, NOT byte-captured.
    */
   INDOOR_MOTION_ENABLE: 6040,
   /**
@@ -538,7 +539,7 @@ export const MOTION_MEMBERS = {
       requireFamily("motionDetection", ctx, "camera");
       const on = asBool(v) ? 1 : 0;
       if (!reportsIndoorSwitch(ctx)) return setScalar(MOTION_CMD.CAMERA_PIR, on, ctx, "direct-binary");
-      return setJson(MOTION_CMD.INDOOR_MOTION_ENABLE, { enable: 0, quality: 0, status: on, value: 0 }, ctx);
+      return setJson(MOTION_CMD.INDOOR_MOTION_ENABLE, { status: on }, ctx);
     },
     writeAs: "setDetection",
   },
