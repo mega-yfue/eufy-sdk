@@ -27,7 +27,7 @@ function cipherGatewayInfo(cipherId: number): Buffer {
 
 /** Hand a `CMD_GATEWAYINFO` reply to the session's negotiation. */
 function negotiate(session: P2PSession, payload: Buffer): void {
-  (session as unknown as { negotiateLevel2Key(payload: Buffer): void }).negotiateLevel2Key(payload);
+  (session as unknown as { negotiateLevel2Key(payload: Buffer, version: number): void }).negotiateLevel2Key(payload, 8);
 }
 
 /** Give the session an address and collect what it sends there. */

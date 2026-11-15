@@ -93,7 +93,8 @@ describe("deriveLevel2KeyFromRsaGatewayInfo", () => {
 });
 
 type SessionInternals = {
-  negotiateLevel2Key(payload: Buffer): void;
+  negotiateLevel2Key(payload: Buffer, version: number): void;
+  handleFrame(header: unknown, payload: Buffer, dataType: number): void;
   connectAddress: unknown;
   send: (addr: unknown, type: Buffer, payload: Buffer) => void;
 };
@@ -119,7 +120,7 @@ function rsaSession(stationSn = STATION_SN): {
 /** {@link rsaSession}, negotiated from a gateway info. */
 async function negotiatedSession(stationSn = STATION_SN): Promise<ReturnType<typeof rsaSession>> {
   const built = rsaSession(stationSn);
-  (built.session as unknown as SessionInternals).negotiateLevel2Key(gatewayInfo(wrapped()));
+  (built.session as unknown as SessionInternals).negotiateLevel2Key(gatewayInfo(wrapped()), 1);
   await built.session.awaitLevel2Key(1_000, "call", "set-payload");
   return built;
 }
@@ -137,12 +138,36 @@ describe("P2PSession level-2 over an RSA cipher", () => {
     ]);
   });
 
+  /** The app's `NotifyInterceptor` picks the key by the header version, not by which key the cipher has. */
+  test("a version-1 gateway info takes the RSA key even when the cipher also has an ECC key", async () => {
+    const { logger, traces } = traceCollector();
+    const session = new P2PSession({
+      stationSn: STATION_SN,
+      p2pDid: P2P_DID,
+      logger,
+      resolveCipherKey: async () => ({ ecc: "11".repeat(32), rsa: PKCS8_B64 }),
+    });
+    const errors: unknown[] = [];
+    session.on("error", (e) => errors.push(e));
+    const payload = gatewayInfo(wrapped());
+
+    (session as unknown as SessionInternals).handleFrame(
+      { commandId: 1100, bytesToRead: payload.length, version: 1, channel: 0, signCode: 0, type: 0 },
+      payload,
+      1,
+    );
+
+    expect(await session.awaitLevel2Key(1_000, "call", "set-payload")).toBe(true);
+    expect(errors).toEqual([]);
+    expect(traces.filter((trace) => trace.phase === "level2-set-payload-only")).toHaveLength(1);
+  });
+
   test("an RSA key that does not unwrap the gateway info is traced and settled, not an error", async () => {
     const { session, traces } = rsaSession();
     const errors: unknown[] = [];
     session.on("error", (e) => errors.push(e));
 
-    (session as unknown as SessionInternals).negotiateLevel2Key(gatewayInfo(Buffer.alloc(128, 0x33)));
+    (session as unknown as SessionInternals).negotiateLevel2Key(gatewayInfo(Buffer.alloc(128, 0x33)), 1);
 
     expect(await session.awaitLevel2Key(1_000, "call", "set-payload")).toBe(false);
     expect(errors).toEqual([]);

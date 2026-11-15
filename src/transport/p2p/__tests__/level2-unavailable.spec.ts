@@ -35,7 +35,10 @@ describe("why a level-2 key is not coming", () => {
 
   it("states a wait that ran out, with how long it waited", async () => {
     const { session: target, traces } = session(() => new Promise(() => {}));
-    (target as unknown as { negotiateLevel2Key(payload: Buffer): void }).negotiateLevel2Key(gatewayInfo(3));
+    (target as unknown as { negotiateLevel2Key(payload: Buffer, version: number): void }).negotiateLevel2Key(
+      gatewayInfo(3),
+      8,
+    );
 
     await expect(target.awaitLevel2Key(20)).resolves.toBe(false);
 
@@ -47,7 +50,10 @@ describe("why a level-2 key is not coming", () => {
   /** A station that answered and produced nothing states the cipher it asked for; the reason is not a timeout. */
   it("states cipher material the account does not hold, under the cipher the station named", async () => {
     const { session: target, traces } = session(async () => undefined);
-    (target as unknown as { negotiateLevel2Key(payload: Buffer): void }).negotiateLevel2Key(gatewayInfo(7));
+    (target as unknown as { negotiateLevel2Key(payload: Buffer, version: number): void }).negotiateLevel2Key(
+      gatewayInfo(7),
+      8,
+    );
 
     await expect(target.awaitLevel2Key(1_000)).resolves.toBe(false);
 

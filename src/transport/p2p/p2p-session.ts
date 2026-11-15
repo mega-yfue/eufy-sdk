@@ -806,9 +806,9 @@ export class P2PSession extends EventEmitter {
   /**
    * Negotiate the level-2 session key from the decrypted CMD_GATEWAYINFO payload: read its
    * `cipher_id`, resolve that cipher's private keys once (cloud `get_ciphers`, via the configured
-   * `resolveCipherKey`), run the ECIES unwrap with the ECC key, and `setLevel2Key()`. A cipher with no
-   * ECC key uses its RSA key instead and holds the RSA-decrypted 16-byte key as the AES-128-ECB level-2
-   * key. Emits `level2Ready` only when the AES-256-GCM key is negotiated, traces
+   * `resolveCipherKey`), run the ECIES unwrap with the ECC key, and `setLevel2Key()`. The frame's header
+   * `version` picks the key, as the app's `NotifyInterceptor` does: 8 takes the ECC key, any other takes the
+   * RSA key and holds the RSA-decrypted 16-byte key as the AES-128-ECB level-2 key. Emits `level2Ready` only when the AES-256-GCM key is negotiated, traces
    * `level2-set-payload-only` instead for the AES-128-ECB key, and emits `error` when the ECC unwrap
    * fails; an RSA unwrap failure is only traced (non-fatal either way — level-1 traffic keeps working).
    *
@@ -818,7 +818,7 @@ export class P2PSession extends EventEmitter {
    * generation ended settles nothing. A {@link gatewayInfoRefused} reply names no cipher, so it settles at once
    * with no cloud lookup, and a later reply naming a cipher withdraws the refusal.
    */
-  private negotiateLevel2Key(gwPayload: Buffer): void {
+  private negotiateLevel2Key(gwPayload: Buffer, version: number): void {
     this.gatewayRefused = gatewayInfoRefused(gwPayload);
     if (this.gatewayRefused) {
       this.logger.debug(`[p2p] ${this.cfg.stationSn} gateway info refused level-2`);
@@ -830,14 +830,15 @@ export class P2PSession extends EventEmitter {
     const generation = this.connectionGeneration;
     const cipherId = gatewayInfoCipherId(gwPayload);
     this.gatewayCipherId = cipherId;
+    this.logger.debug(`[p2p] ${this.cfg.stationSn} level-2 gateway info v${version} (cipher_id ${cipherId})`);
     this.trace({ phase: "level2-negotiating", cipherId });
     void (async () => {
       try {
         const resolved = await this.cfg.resolveCipherKey?.(cipherId);
         if (this.closed || generation !== this.connectionGeneration) return;
         const keys = typeof resolved === "string" ? { ecc: resolved } : resolved;
-        const eccPrivHex = keys?.ecc;
-        const rsaPrivKey = eccPrivHex ? undefined : keys?.rsa;
+        const eccPrivHex = version === 8 ? keys?.ecc : undefined;
+        const rsaPrivKey = version === 8 ? undefined : keys?.rsa;
         if (!eccPrivHex && !rsaPrivKey) {
           this.logger.debug(`[p2p] ${this.cfg.stationSn} no ECC or RSA key for cipher_id ${cipherId}`);
           this.trace({ phase: "level2-unavailable", reason: "no-cipher-key", cipherId });
@@ -2669,7 +2670,7 @@ export class P2PSession extends EventEmitter {
       !this.level2Negotiating &&
       this.cfg.resolveCipherKey
     ) {
-      this.negotiateLevel2Key(data);
+      this.negotiateLevel2Key(data, header.version);
     }
     // CMD_DATABASE (1306) reply chunks are level-1 encrypted but NOT 16-aligned
     // (a trailing byte past the block boundary), so decrypt the block-aligned head
