@@ -53,8 +53,7 @@ describe("light capability module", () => {
     for (const param of [1400, 1401, 1403, 6080, 6082, 1413]) {
       expect(detectCapabilities({ params: { [param]: "1" } }, "camera")).toContain("light");
     }
-    expect(detectCapabilities({ name: "Floodlight Cam" }, "camera")).toContain("light");
-    expect(detectCapabilities({ name: "Wired Doorbell" }, "camera")).not.toContain("light");
+    expect(detectCapabilities({ name: "Floodlight Cam" }, "camera")).not.toContain("light");
   });
 
   it("detects from the product's description over its params when it has one", () => {
@@ -67,6 +66,8 @@ describe("light capability module", () => {
     const params = { 1400: "0", 1401: "50", 1403: "1" };
     expect(detectCapabilities({ params, things: things("nightvision_type") }, "camera")).not.toContain("light");
     expect(detectCapabilities({ params: {}, things: things("spotlight_switch") }, "camera")).toContain("light");
+    const named = { params, name: "Garage Spotlight", things: things("nightvision_type") };
+    expect(detectCapabilities(named, "camera")).not.toContain("light");
   });
 
   describe("buildCommand — variant resolution", () => {

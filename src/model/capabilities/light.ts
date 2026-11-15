@@ -321,12 +321,11 @@ export const LIGHT: CapabilityModule = {
   members: LIGHT_MEMBERS,
   properties: propertiesOf(LIGHT_MEMBERS),
   /**
-   * A product whose thing description lists no `spotlight_switch` has no spotlight, whatever it reports: a
-   * T8171 and a T8416 report 1400/1401/1403 and the app offers them no spotlight control. Without a
-   * description, a spotlight param is the evidence; the camera status LED (1045) never is.
+   * The app offers a spotlight only where the product's thing description lists `spotlight_switch`; a
+   * T8171, T8416 and T8213 report 1400/1401/1403 and list none. Without a description, a spotlight param is
+   * the evidence; the camera status LED (1045) never is. Never the device's name: its owner typed it.
    */
   detection: {
-    modelHints: [/floodlight|wall.?light|spot.?light|search.?light/i],
     detect: (record) =>
       record.things
         ? "spotlight_switch" in record.things.properties
