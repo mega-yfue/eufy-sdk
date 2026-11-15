@@ -791,14 +791,13 @@ export const MOTION: CapabilityModule = {
     return mode == null ? null : { params: { [MOTION_CMD.SENSOR_WORK_MODE]: String(mode) } };
   },
   /**
-   * A reported PIR switch (1011) proves it; glass-break is an acoustic motion-class event; every
-   * camera-codec device has motion in its baseline surface; and a standalone motion sensor IS the
-   * capability by device type — it reports no 1011, so evidence alone would miss the one device class
-   * named after the feature.
+   * A reported PIR switch (1011) proves it; every camera-codec device has motion in its baseline surface;
+   * and a standalone motion sensor IS the capability by device type — it reports no 1011, so evidence
+   * alone would miss the one device class named after the feature. Never the device's name: that is what
+   * its owner typed.
    */
   detection: {
     evidenceParams: [1011],
-    modelHints: [/glass/i],
     codecs: ["camera"],
     deviceTypes: [DeviceType.MOTION_SENSOR, DeviceType.PIR_SENSOR_E20],
   },

@@ -12,6 +12,7 @@ import type { CommandContext } from "../types.js";
 import type { Command } from "../../../core/contracts.js";
 import { buildActions, buildCommand } from "../index.js";
 import { Device } from "../../device.js";
+import { resolveDevice } from "../../registry.js";
 
 /**
  * Bind the way a device does: a member's setter is derived in the barrel, not returned by `actions()`.
@@ -323,10 +324,11 @@ describe("motion capability module", () => {
     it("proves motion via the PIR switch param 1011", () => {
       expect(MOTION.detection?.evidenceParams).toContain(1011);
     });
-    it("the glass-break model hint matches glass but not an unrelated string", () => {
-      const re = MOTION.detection!.modelHints![0];
-      expect(re.test("Glass Break Sensor")).toBe(true);
-      expect(re.test("Wired Doorbell")).toBe(false);
+    it("detects from the reported PIR switch, never the owner's name", () => {
+      const caps = (rec: object) =>
+        resolveDevice({ category: "eufy_security", model: "T0000", deviceType: 2, ...rec }).capabilities;
+      expect(caps({ params: { 1011: "1" } })).toContain("motion");
+      expect(caps({ params: {}, name: "Glass Break Sensor" })).not.toContain("motion");
     });
   });
 });
