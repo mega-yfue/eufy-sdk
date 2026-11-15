@@ -381,6 +381,23 @@ describe("lock capability — SmartDrop lid", () => {
     expect(lock.lock!()!.locked).toBe(false);
   });
 
+  it("lands the lid's 2108 and status-update events as 2105, on a SmartDrop only", () => {
+    const frame = (cmd: number, payload: unknown, deviceType: number = DeviceType.SMART_DROP) =>
+      LOCK.decodeState!({
+        source: "p2p-frame",
+        stationSn: "T8790P0000000000",
+        commandId: 1351,
+        channel: 0,
+        deviceType,
+        json: { cmd, payload },
+      });
+    expect(frame(2108, { evt: 2 })).toEqual({ params: { 2105: "0" } });
+    expect(frame(2108, { evt: 1 })).toEqual({ params: { 2105: "1" } });
+    expect(frame(1946157057, { event_value: { type: 3, action: 0 } })).toEqual({ params: { 2105: "1" } });
+    expect(frame(1946157057, { event_value: { type: 3, action: 1 } })).toEqual({ params: { 2105: "0" } });
+    expect(frame(2108, { evt: 2 }, DeviceType.SOLO_CAMERA)).toBeNull();
+  });
+
   it("is opened standalone only", () => {
     expect(lockOf({ ...ctx, stationSerial: "T8030P0000000000" }).acts.unlock).toBeUndefined();
   });
