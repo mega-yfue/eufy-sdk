@@ -316,14 +316,16 @@ export function deriveLevel2KeyFromGatewayInfo(gwPayload: Buffer, eccPrivateKeyH
  * key fails closed: under OpenSSL's implicit rejection, `RSA_PKCS1_PADDING` answers random bytes for it
  * instead of throwing, and those can be 16 bytes long.
  *
- * `rsaPrivateKey` is the `get_ciphers` `private_key`: base64 PKCS#8 DER.
+ * `rsaPrivateKey` is the `get_ciphers` `private_key`, PEM or base64 PKCS#8 DER.
  *
  * Returns the 16-byte key, or `undefined` when the key does not parse, the payload is short, or the
  * padding or key length is wrong (fails closed, never throws).
  */
 export function deriveLevel2KeyFromRsaGatewayInfo(gwPayload: Buffer, rsaPrivateKey: string): Buffer | undefined {
   try {
-    const key = createPrivateKey({ key: Buffer.from(rsaPrivateKey, "base64"), format: "der", type: "pkcs8" });
+    const key = rsaPrivateKey.includes("-----BEGIN")
+      ? createPrivateKey(rsaPrivateKey)
+      : createPrivateKey({ key: Buffer.from(rsaPrivateKey, "base64"), format: "der", type: "pkcs8" });
     const modulusBits = key.asymmetricKeyDetails?.modulusLength;
     if (!modulusBits) return undefined;
     const len = Math.ceil(modulusBits / 8);
