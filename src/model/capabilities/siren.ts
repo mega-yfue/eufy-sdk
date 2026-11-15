@@ -201,15 +201,15 @@ function selfStationAlarm(seconds: number, ctx: CommandContext): Command {
   };
 }
 
-/** Self-station camera models by the alarm wire each was sounded and stopped with on real hardware. */
-const SELF_STATION_ALARM: ReadonlyMap<string, (seconds: number, ctx: CommandContext) => Command> = new Map([
-  ["T8151", selfStationAlarm], // CAMERA_FG, the #569 wire, sounded and stopped on a T8151
-  ["T86P2", selfStationAlarm], // CAMERA_4G_S330, the #569 wire, sounded and stopped on a T86P2
+/** Self-station camera models whose siren was sounded and stopped with {@link selfStationAlarm} on real hardware. */
+const SELF_STATION_ALARM_MODELS: ReadonlySet<string> = new Set([
+  "T8151", // CAMERA_FG
+  "T86P2", // CAMERA_4G_S330
 ]);
 
-/** Whether this camera is its own station, of a model in {@link SELF_STATION_ALARM}. */
+/** Whether this camera is its own station, of a model in {@link SELF_STATION_ALARM_MODELS}. */
 function isSelfStationAlarm(ctx: CommandContext): boolean {
-  return ctx.codec === "camera" && ctx.homeBaseAttached === false && SELF_STATION_ALARM.has(ctx.model ?? "");
+  return ctx.codec === "camera" && ctx.homeBaseAttached === false && SELF_STATION_ALARM_MODELS.has(ctx.model ?? "");
 }
 
 /** Alarm-output protocol families admitted by runtime evidence. */
@@ -229,7 +229,7 @@ function triggerAlarm(seconds: number, ctx: CommandContext): Command {
   const family = alarmOutputFamily(ctx);
   if (family === "homebase") return homeBaseAlarm(seconds, ctx);
   if (family === "camera") return cameraAlarm(seconds, ctx);
-  if (family === "selfStation") return SELF_STATION_ALARM.get(ctx.model ?? "")!(seconds, ctx);
+  if (family === "selfStation") return selfStationAlarm(seconds, ctx);
   throw new Error("manual alarm trigger has no verified wire for this device family");
 }
 
@@ -239,7 +239,7 @@ function stopAlarm(ctx: CommandContext): Command {
   if (family === "homebase") return homeBaseAlarm(0, ctx);
   if (family === "camera") return cameraAlarm(0, ctx);
   if (family === "standalone") return sirenPayload(SIREN_CMD.MANUAL_STOP, {}, ctx);
-  if (family === "selfStation") return SELF_STATION_ALARM.get(ctx.model ?? "")!(0, ctx);
+  if (family === "selfStation") return selfStationAlarm(0, ctx);
   throw new Error("manual alarm stop has no verified wire for this device family");
 }
 
@@ -433,7 +433,7 @@ export const SIREN: CapabilityModule = {
       const attachedCameraAlarm = codec === "camera" && !!record.parentSn && hasReportedEasSwitch(record);
       const standaloneSiren = codec === "sensor" && hasStandaloneSirenEvidence(record);
       const selfStationAlarm =
-        codec === "camera" && record.parentSn === undefined && SELF_STATION_ALARM.has(record.model ?? "");
+        codec === "camera" && record.parentSn === undefined && SELF_STATION_ALARM_MODELS.has(record.model ?? "");
       return homeBaseAlarm || attachedCameraAlarm || standaloneSiren || selfStationAlarm;
     },
   },
