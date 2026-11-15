@@ -17,6 +17,7 @@ import {
 } from "../index.js";
 import type { CloudRecord } from "../index.js";
 import { DeviceType } from "../device-types.js";
+import { parseThingsList } from "../capabilities/thing-description.js";
 // `isHomeBase` and its DeviceType set stay internal to device-family.ts, so a spec reaches it by direct
 // path — the same way VACUUM_DP is imported below.
 import { isHomeBase } from "../device-family.js";
@@ -175,22 +176,21 @@ describe("resolveDevice — 3-tier composition", () => {
     }
   });
 
-  it.each([undefined, DeviceType.CAMERA_POE_S4])(
-    "recognizes PoE S4 pan-tilt without reported preset parameters (device type %s)",
-    (deviceType) => {
-      expect(
-        resolveDevice({ model: "T8E00", category: "eufy_security", deviceType, params: {} }).capabilities,
-      ).toContain("ptz");
-    },
-  );
+  it("recognizes PoE S4 pan-tilt without reported preset parameters, from its device type or its description", () => {
+    const things = parseThingsList({
+      things_list: [{ profile: { product_code: "T0000" }, actions: [{ identifier: "ptz_action_control" }] }],
+    }).T0000!;
+    const caps = (rec: object) =>
+      resolveDevice({ model: "T0000", category: "eufy_security", params: {}, ...rec }).capabilities;
+    expect(caps({ deviceType: DeviceType.CAMERA_POE_S4 })).toContain("ptz");
+    expect(caps({ things })).toContain("ptz");
+  });
 
   it("a normal solar cam (T8124R) is NOT pan-tilt — the mistaken model hint is gone", () => {
     // T8124R (deviceType 62 = SOLO_CAMERA_SPOTLIGHT_SOLAR) is a FIXED solar cam: it reports no PT param
     // and isn't a PT deviceType. An unfounded `\bT8124R\b` model hint used to grant it ptz anyway;
     // confirmed on a real owned unit that it does not pan/tilt, so the hint was removed.
     expect(resolveDevice({ model: "T8124R", deviceType: 62 }).capabilities).not.toContain("ptz");
-    // Genuine PT models still resolve via their real signals — a name hint (S340) and a PT deviceType.
-    expect(resolveDevice({ model: "SoloCam S340" }).capabilities).toContain("ptz");
     expect(resolveDevice({ deviceType: 48 }).capabilities).toContain("ptz"); // OUTDOOR_PT_CAMERA
   });
 
