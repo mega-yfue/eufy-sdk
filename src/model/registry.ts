@@ -90,7 +90,6 @@ export const MODEL_REGISTRY: Readonly<Record<string, RegistryEntry>> = {
   // Sensors — the concrete sensor kind is curated (DeviceType 2 alone is ambiguous).
   T8900: { codec: "sensor", caps: ["contact"], name: "Entry Sensor" },
   T8910: { codec: "sensor", caps: ["battery"], name: "Motion Sensor" },
-  // Smoke Alarm E10. `smoke` is curated: its model hint matches the name, not the T-code.
   T90S0: { codec: "sensor", caps: ["smoke"], name: "Smoke Alarm E10" },
 
   // Keypad (DeviceType 11).
