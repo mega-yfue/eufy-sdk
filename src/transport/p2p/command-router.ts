@@ -40,6 +40,7 @@ import {
 } from "./keyed-payload.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { assertNever } from "../../core/util.js";
+import { setTimeout as sleep } from "node:timers/promises";
 import { CONNECT_TIMEOUT_MS, P2PSession, type P2PFrame } from "./p2p-session.js";
 import { LEVEL2_SETTLE_MS } from "./level2-settle.js";
 import { buildDirectBinaryBody } from "./write-commands.js";
@@ -82,9 +83,6 @@ import { Talkback } from "./talkback.js";
 import { FragmentRecording } from "./fragment-recording.js";
 import { traceLiveStart, type LiveTrace } from "./live-trace.js";
 import { stationChannels, stationOf } from "./station-channels.js";
-
-/** On the global timer, which `vi.useFakeTimers()` fakes and `node:timers/promises` escapes. */
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /**
  * How many times each idempotent "direct" control command (camera on/off 1035, spotlight
