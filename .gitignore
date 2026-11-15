@@ -16,6 +16,8 @@ docs/.vitepress/cache/
 
 .DS_Store
 scratch/
+# agent worktrees: full checkouts that prettier would otherwise walk
+.claude/
 
 # media retrieved from a real HomeBase — device serials, timestamps and footage
 downloads/

@@ -4,6 +4,7 @@ import { P2PSession } from "../p2p-session.js";
 import { decryptP2PData, deriveLevel2KeyFromRsaGatewayInfo, parseDataFrameHeader } from "../codec.js";
 import {
   DEVICE_SN,
+  onFakeTime,
   STATION_SN as ROUTER_STATION_SN,
   routerWithSession,
   traceCollector,
@@ -216,14 +217,16 @@ describe("routing on an RSA session", () => {
     const sent = capture(session);
     const router = routerWithSession(session as unknown as FakeP2PSession);
 
-    await router.dispatchCommand(DEVICE_SN, {
-      kind: "set-payload",
-      cmd: 2100,
-      payload: PAYLOAD,
-      channel: 0,
-      mValue3: 0,
-      level2Sender: "set-payload",
-    });
+    await onFakeTime(() =>
+      router.dispatchCommand(DEVICE_SN, {
+        kind: "set-payload",
+        cmd: 2100,
+        payload: PAYLOAD,
+        channel: 0,
+        mValue3: 0,
+        level2Sender: "set-payload",
+      }),
+    );
     await expect(
       router.dispatchCommand(DEVICE_SN, { kind: "set-payload", cmd: 1716, payload: { light_enable: 1 }, channel: 0 }),
     ).rejects.toBeInstanceOf(StationKeyUnavailableError);

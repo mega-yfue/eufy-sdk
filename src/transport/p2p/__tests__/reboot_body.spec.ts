@@ -1,6 +1,6 @@
 import { vi } from "vitest";
 import { buildDirectBinaryBody } from "../write-commands.js";
-import { connectedSession, routerWithSession, ACCOUNT_ID, STATION_SN } from "./session-fixtures.js";
+import { connectedSession, onFakeTime, routerWithSession, ACCOUNT_ID, STATION_SN } from "./session-fixtures.js";
 import { P2P_ENVELOPE } from "../envelope.js";
 
 /**
@@ -48,7 +48,7 @@ describe("RESTART_HUB on a keyless session", () => {
       sendRawLevel2Bytes: vi.fn(() => true),
       sendRawLevel1Bytes: vi.fn(() => true),
     });
-    await routerWithSession(session).rebootStation(STATION_SN);
+    await onFakeTime(() => routerWithSession(session).rebootStation(STATION_SN));
     expect(session.sendRawLevel2Bytes).not.toHaveBeenCalled();
     expect(session.sendRawLevel1Bytes).toHaveBeenCalledWith(
       buildDirectBinaryBody(0, ACCOUNT_ID),
