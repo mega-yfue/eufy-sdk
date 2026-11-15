@@ -723,6 +723,7 @@ export const CAMERA_MEMBERS = {
     type: "enum",
     kind: "enum",
     enumValues: { 1: "Text Only", 2: "Included Thumbnail", 3: "Text First, Then Thumbnail" },
+    thing: ["notification_type"],
     provenance: "verified",
     available: isCameraCodec,
     description:
@@ -782,6 +783,7 @@ export const CAMERA_MEMBERS = {
     type: "number",
     kind: "enum",
     enumValues: STREAMING_QUALITY_TIERS,
+    thing: ["live_streaming_resolution"],
     provenance: "verified",
     available: (ctx: AvailabilityContext) =>
       isCameraCodec(ctx) && !(ctx.paramIds?.has(DOORBELL_CMD.VIDEO_QUALITY) ?? false),
