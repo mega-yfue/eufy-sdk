@@ -852,10 +852,8 @@ export class EufyMega extends EventEmitter {
        * does. Reads what is already known and fetches nothing, so a param the DEVICE volunteered over its own
        * session settles the write for free.
        *
-       * Lands the observed param alone and announces it. This is the path a valueless event's new state
-       * arrives on, and the poll's diff afterwards is edge-triggered on the same live state, so a silent apply
-       * here loses the `propertyChanged` for good. The rest of the record is the cloud half only, and applying
-       * it would put an older value back over any id the device has since reported over realtime.
+       * Lands and announces the observed param alone: the record is the cloud half, and the rest of it would
+       * revert ids the device has reported over realtime since.
        */
       const settled = (): boolean => {
         const device = this.liveDevices.get(sn)?.deref();

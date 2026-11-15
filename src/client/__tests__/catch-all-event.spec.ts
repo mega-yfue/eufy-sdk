@@ -71,7 +71,7 @@ describe("catch-all event tag", () => {
     const sequence: string[] = [];
     let mode = 1;
     const device = {
-      announcements: () => [],
+      announcements: () => [{ property: "armingMode", value: mode }],
       getProperty: () => ({ value: mode }),
       applyParams: vi.fn((params: Record<number, string>) => {
         mode = Number(params[1224]);
@@ -79,8 +79,9 @@ describe("catch-all event tag", () => {
       }),
     };
     (eufy as any).liveDevices.set("T8000P0000000000", new WeakRef(device));
-    vi.spyOn((eufy as any).registry, "require").mockReturnValue({ params: { 1224: "63" } });
+    vi.spyOn((eufy as any).registry, "require").mockReturnValue({ params: { 1224: "63", 1101: "1" } });
     vi.spyOn((eufy as any).registry, "getDevices").mockResolvedValue([]);
+    eufy.on("propertyChanged", (e) => sequence.push(`${e.property}=${String(e.value)}`));
     eufy.on("armingModeChanged", () => sequence.push("event"));
 
     (eufy as any).emitSemantic(
@@ -90,7 +91,7 @@ describe("catch-all event tag", () => {
     );
 
     expect(sequence).toEqual([]);
-    await vi.waitFor(() => expect(sequence).toEqual(["refresh", "event"]));
+    await vi.waitFor(() => expect(sequence).toEqual(["refresh", "armingMode=63", "event"]));
     expect(device.applyParams).toHaveBeenCalledExactlyOnceWith({ 1224: "63" });
   });
 
