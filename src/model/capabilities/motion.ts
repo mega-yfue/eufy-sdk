@@ -449,9 +449,13 @@ function sensitivityCommand(step: unknown, scale: SensitivityScale, ctx: Command
  */
 const EXIT_TEST_MODE_VALUE = 0x30303000;
 
-/** A T8410, whose motion switch is {@link MOTION_CMD.INDOOR_MOTION_ENABLE} rather than {@link MOTION_CMD.CAMERA_PIR}. */
-function isT8410(ctx: AvailabilityContext): boolean {
-  return ctx.model === "T8410";
+/**
+ * A device reporting {@link MOTION_CMD.INDOOR_MOTION_ENABLE}, whose motion switch is that param rather than
+ * {@link MOTION_CMD.CAMERA_PIR}. The app reads 6040 on a standalone camera and 1011 behind a HomeBase; a
+ * HomeBase 3-attached T8410 reports both and only 6040 follows the app.
+ */
+function reportsIndoorSwitch(ctx: AvailabilityContext): boolean {
+  return ctx.paramIds?.has(MOTION_CMD.INDOOR_MOTION_ENABLE) === true;
 }
 
 /**
@@ -525,15 +529,15 @@ export const MOTION_MEMBERS = {
     type: "bool",
     kind: "boolean",
     provenance: "verified",
-    readAvailable: (ctx) => !isT8410(ctx),
-    readAliases: [{ paramType: MOTION_CMD.INDOOR_MOTION_ENABLE, available: isT8410 }],
+    readAvailable: (ctx) => !reportsIndoorSwitch(ctx),
+    readAliases: [{ paramType: MOTION_CMD.INDOOR_MOTION_ENABLE, available: reportsIndoorSwitch }],
     description:
-      "Motion/PIR detection enabled (verified: param 1011 = CAMERA_PIR; a T8410 reads and writes " +
-      "INDOOR_MOTION_ENABLE 6040 instead).",
+      "Motion/PIR detection enabled (verified: param 1011 = CAMERA_PIR; a device reporting " +
+      "INDOOR_MOTION_ENABLE 6040 reads and writes that instead).",
     write: (v, ctx) => {
       requireFamily("motionDetection", ctx, "camera");
       const on = asBool(v) ? 1 : 0;
-      if (!isT8410(ctx)) return setScalar(MOTION_CMD.CAMERA_PIR, on, ctx, "direct-binary");
+      if (!reportsIndoorSwitch(ctx)) return setScalar(MOTION_CMD.CAMERA_PIR, on, ctx, "direct-binary");
       return setJson(MOTION_CMD.INDOOR_MOTION_ENABLE, { enable: 0, quality: 0, status: on, value: 0 }, ctx);
     },
     writeAs: "setDetection",

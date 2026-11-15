@@ -144,7 +144,7 @@ describe("motion capability module", () => {
     });
   });
 
-  describe("motionDetection on a T8410 (6040)", () => {
+  describe("motionDetection on a device reporting 6040", () => {
     const t8410 = (extra: Partial<CommandContext> = {}): CommandContext => ({
       ...ctx([MOTION_CMD.INDOOR_MOTION_ENABLE], 0),
       model: "T8410",
@@ -204,8 +204,21 @@ describe("motion capability module", () => {
       });
     });
 
-    it("every other camera keeps the 1011 direct-binary switch", () => {
-      expect(intent("motionDetection", true, { ...ctx([1011, 6040], 3), model: "T8425" })).toMatchObject({
+    it("reads and writes 6040 on any standalone camera that reports it, not only a T8410", () => {
+      const dev = Device.fromRecord("T8170P0000000000", { model: "T8170", params: { 6040: "1" } });
+      expect(dev.properties.find((p) => p.name === "motionDetection")?.paramType).toBe(MOTION_CMD.INDOOR_MOTION_ENABLE);
+      expect(dev.getProperty("motionDetection")?.value).toBe(true);
+      expect(
+        intent("motionDetection", false, { ...ctx([MOTION_CMD.INDOOR_MOTION_ENABLE], 0), model: "T8170" }),
+      ).toMatchObject({
+        kind: "set-json",
+        param: MOTION_CMD.INDOOR_MOTION_ENABLE,
+        data: { status: 0 },
+      });
+    });
+
+    it("a camera reporting only 1011 keeps the 1011 direct-binary switch", () => {
+      expect(intent("motionDetection", true, { ...ctx([1011], 3), model: "T8425" })).toMatchObject({
         kind: "set-param",
         param: MOTION_CMD.CAMERA_PIR,
         form: "direct-binary",
