@@ -41,7 +41,6 @@ const EXPECTED_ACCESSORS = [
   "ptz",
   "rtsp",
   "siren",
-  "smartDrop",
   "smartLight",
   "smoke",
   "vacuumClean",

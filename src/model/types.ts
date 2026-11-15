@@ -77,8 +77,6 @@ export type Capability =
   | "locate"
   // Robot-mower state from its own Tuya DP space (read-only).
   | "mower"
-  // SmartDrop parcel box: open the lid.
-  | "smart_drop"
   // eufy_life smart lighting (own secure-MQTT DP namespace) — the T8L0x line's on/off/brightness/
   // effect control. Distinct from the camera-floodlight `light` capability above.
   | "smart_light"
@@ -264,7 +262,12 @@ export interface PropertySpec {
    * different ids (a battery camera and a standalone one disagree) — the family variance lives
    * in the capability spec, not in per-device branches.
    */
-  readAliases?: ReadonlyArray<{ paramType: number; invert?: boolean }>;
+  readAliases?: ReadonlyArray<{
+    paramType: number;
+    invert?: boolean;
+    decode?: PropertySpec["decode"];
+    provenance?: PropertySpec["provenance"];
+  }>;
   /** Short description for docs / discovery. */
   description?: string;
 }

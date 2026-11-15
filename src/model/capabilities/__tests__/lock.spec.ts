@@ -240,7 +240,6 @@ describe("lock capability module", () => {
     ).not.toContain("lock");
     expect(caps({ params: {}, name: "Front Door Lock", things: things("nightvision_type") })).not.toContain("lock");
     expect(caps({ params: {}, name: "Smart Safe" })).not.toContain("lock");
-    expect(caps({ model: "T8790", params: {}, things: things("smart_lock_onoff_status") })).not.toContain("lock");
     expect(caps({ deviceType: DeviceType.LOCK_WIFI, params: {} })).toContain("lock");
     expect(caps({ params: { 6000: "3" } })).toContain("lock");
   });
@@ -331,6 +330,59 @@ describe("lock capability module", () => {
       });
       expect(dev.capabilities).toContain("lock");
     });
+  });
+});
+
+describe("lock capability — SmartDrop lid", () => {
+  const things = parseThingsList({
+    things_list: [{ profile: { product_code: "T8790" }, properties: [{ identifier: "smart_lock_onoff_status" }] }],
+  }).T8790!;
+  const record = { model: "T8790", deviceType: DeviceType.SMART_DROP, params: { 2105: "1" }, things };
+  const ctx: CommandContext = {
+    channel: 0,
+    codec: "camera",
+    deviceType: DeviceType.SMART_DROP,
+    paramIds: new Set([2105]),
+    hasP2p: true,
+  };
+
+  it("is a lock read on 2105 and opened with the level-2 set-payload 2100, never locked", async () => {
+    const sent: unknown[] = [];
+    const dev = Device.fromRecord("T8790P0000000000", record);
+    dev.bindActions(ctx, { dispatch: async (c) => void sent.push(c) });
+    const lid = dev.lock!()!;
+    expect(lid.locked).toBe(false);
+    dev.applyParams({ 2105: "0" });
+    expect(lid.locked).toBe(true);
+    await lid.unlock!();
+    expect(sent).toEqual([
+      {
+        kind: "set-payload",
+        cmd: 2100,
+        payload: { isOpen: 1, userIndex: 0 },
+        channel: 0,
+        mValue3: 0,
+        level2Sender: "set-payload",
+      },
+    ]);
+    expect(lid.lock).toBeUndefined();
+    expect(lid.setAutoLock).toBeUndefined();
+    expect(lid.setRainMode).toBeUndefined();
+    const ff09 = { getAutoLockState: vi.fn() } as unknown as Ff09SettingsReader;
+    expect("getAutoLockState" in lockOf(ctx, ff09).acts).toBe(false);
+  });
+
+  it("reads 2105's 0/1 as its own apk evidence and leaves a lock's 6000 reading 4 alone as locked", () => {
+    const locked = resolveDevice(record).properties.find((p) => p.name === "locked")!;
+    expect(locked.provenance).toBe("verified");
+    expect(locked.readAliases).toEqual([expect.objectContaining({ paramType: 2105, provenance: "apk" })]);
+    const lock = Device.fromRecord("T8500P0000000000", { model: "T8500", params: { 6000: "0" } });
+    lock.bindActions({ channel: 0, codec: "lock", paramIds: new Set([6000]) }, { dispatch: async () => {} });
+    expect(lock.lock!()!.locked).toBe(false);
+  });
+
+  it("is opened standalone only", () => {
+    expect(lockOf({ ...ctx, stationSerial: "T8030P0000000000" }).acts.unlock).toBeUndefined();
   });
 });
 

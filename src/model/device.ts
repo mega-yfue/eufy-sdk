@@ -101,14 +101,15 @@ function coerceByType(
 /** The string forms a boolean takes on the wire; anything else on a `bool` property is not a boolean. */
 const BOOL_WIRE = new Set(["0", "1", "true", "false"]);
 
-/** Coerce one wire value to its property's declared type. */
+/** Coerce one wire value to its property's declared type; `decode` is the matched read-alias's own, if any. */
 function coerce(
   spec: PropertySpec,
   raw: string | number | boolean,
   invert = false,
   logger: Logger = noopLogger,
+  decode = spec.decode,
 ): boolean | number | string {
-  if (spec.decode) return spec.decode(raw);
+  if (decode) return decode(raw);
   if (spec.raw && spec.type === "bool" && typeof raw === "string" && !BOOL_WIRE.has(raw)) return raw;
   const v = coerceByType(spec.type, raw, spec.name, spec.raw ? noopLogger : logger);
   // A `bool` param that is a disable flag reads inverted ("0"/false ⇒ TRUE). `invert` comes from
@@ -170,7 +171,7 @@ export class Device {
    * from the spec) plus any `readAliases` (invert from the alias) so a property that rides
    * different wire ids across device families still resolves to one named value.
    */
-  private specByParam!: ReadonlyMap<number, { spec: PropertySpec; invert: boolean }>;
+  private specByParam!: ReadonlyMap<number, { spec: PropertySpec; invert: boolean; decode?: PropertySpec["decode"] }>;
   /**
    * Params a resolved capability declares that this device's schema does not carry — withheld by a
    * member's gate, so not named from the param dictionary either. See {@link Device.applyParams}.
@@ -238,13 +239,14 @@ export class Device {
     this.source = resolved.source;
     this.capSet = new Set(resolved.capabilities);
     this.specByName = new Map(resolved.properties.map((p) => [p.name, p]));
-    const byParam = new Map<number, { spec: PropertySpec; invert: boolean }>();
+    const byParam = new Map<number, { spec: PropertySpec; invert: boolean; decode?: PropertySpec["decode"] }>();
     for (const p of resolved.properties) {
       // Own param first (wins on conflict), then read-aliases. First writer wins so an earlier
       // capability's own param is never clobbered by a later capability's alias.
       if (!byParam.has(p.paramType)) byParam.set(p.paramType, { spec: p, invert: p.invert ?? false });
       for (const a of p.readAliases ?? [])
-        if (!byParam.has(a.paramType)) byParam.set(a.paramType, { spec: p, invert: a.invert ?? false });
+        if (!byParam.has(a.paramType))
+          byParam.set(a.paramType, { spec: p, invert: a.invert ?? false, decode: a.decode ?? p.decode });
     }
     this.specByParam = byParam;
     this.withheld = new Set([...claimedParams(resolved.capabilities)].filter((pt) => !byParam.has(pt)));
@@ -460,7 +462,7 @@ export class Device {
       const value: ParamValue = def?.encoding
         ? decodeEncoded(rawVal, def.encoding) // base64+json / json → structured object
         : spec
-          ? coerce(spec, rawVal, hit!.invert, this.logger)
+          ? coerce(spec, rawVal, hit!.invert, this.logger, hit!.decode ?? spec.decode)
           : def
             ? coerceByType(def.type, rawVal, def.name, this.logger)
             : String(rawVal);
