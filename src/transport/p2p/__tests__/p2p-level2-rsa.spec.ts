@@ -48,6 +48,13 @@ describe("deriveLevel2KeyFromRsaGatewayInfo", () => {
     expect(deriveLevel2KeyFromRsaGatewayInfo(gatewayInfo(wrapped()), PKCS8_B64)).toEqual(SESSION_KEY);
   });
 
+  test("recovers the 16-byte key with a PEM private key, PKCS#8 or PKCS#1", () => {
+    for (const type of ["pkcs8", "pkcs1"] as const) {
+      const pem = privateKey.export({ type, format: "pem" }).toString();
+      expect(deriveLevel2KeyFromRsaGatewayInfo(gatewayInfo(wrapped()), pem)).toEqual(SESSION_KEY);
+    }
+  });
+
   test("answers undefined for a payload shorter than the modulus", () => {
     expect(deriveLevel2KeyFromRsaGatewayInfo(gatewayInfo(wrapped()).subarray(0, 100), PKCS8_B64)).toBeUndefined();
   });
