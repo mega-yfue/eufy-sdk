@@ -23,6 +23,13 @@ import { isHomeBase } from "../device-family.js";
 // VACUUM_DP is the capability's own wire vocabulary (internal — not on the barrel), so a spec imports
 // it by direct path, the same way the P2P command specs import `CAMERA_CMD`.
 import { VACUUM_DP } from "../capabilities/vacuum-clean.js";
+import { parseThingsList } from "../capabilities/thing-description.js";
+
+/** A description of product `code` listing only the given identifiers. */
+const described = (code: string, ...identifiers: string[]) =>
+  parseThingsList({
+    things_list: [{ profile: { product_code: code }, properties: identifiers.map((identifier) => ({ identifier })) }],
+  })[code]!;
 
 describe("classify (device_type → codec)", () => {
   it("maps known DeviceType numbers to their codec family", () => {
@@ -150,7 +157,8 @@ describe("resolveDevice — 3-tier composition", () => {
   it("does not advertise a spotlight from the params reported by T8171", () => {
     // Three T8171 units on firmware 1.2.1.6 reported precisely these light-detection params.
     const params = { 1400: "0", 1401: "80", 1403: "1" };
-    const e30 = resolveDevice({ model: "T8171", deviceType: DeviceType.SOLO_CAMERA_E30, params });
+    const things = described("T8171", "nightvision_type");
+    const e30 = resolveDevice({ model: "T8171", deviceType: DeviceType.SOLO_CAMERA_E30, params, things });
     expect(e30.capabilities).not.toContain("light");
     const properties = e30.properties.map((p) => p.name);
     for (const name of ["light", "brightness", "spotlightEnabled", "colorTemp"]) {
@@ -159,7 +167,7 @@ describe("resolveDevice — 3-tier composition", () => {
     expect(resolveDevice({ model: "T8170", deviceType: 48, params }).capabilities).toContain("light");
     for (const [param, value] of Object.entries(params)) {
       expect(
-        resolveDevice({ model: "T8171", deviceType: DeviceType.SOLO_CAMERA_E30, params: { [param]: value } })
+        resolveDevice({ model: "T8171", deviceType: DeviceType.SOLO_CAMERA_E30, params: { [param]: value }, things })
           .capabilities,
       ).not.toContain("light");
     }
@@ -167,7 +175,8 @@ describe("resolveDevice — 3-tier composition", () => {
 
   it("does not advertise a spotlight from the params reported by an Indoor Cam S350 (T8416)", () => {
     const params = { 1400: "0", 1401: "70", 1403: "1", 1410: "100" };
-    const s350 = resolveDevice({ model: "T8416", deviceType: DeviceType.INDOOR_PT_CAMERA_S350, params });
+    const things = described("T8416", "nightvision_type");
+    const s350 = resolveDevice({ model: "T8416", deviceType: DeviceType.INDOOR_PT_CAMERA_S350, params, things });
     expect(s350.capabilities).not.toContain("light");
     const properties = s350.properties.map((p) => p.name);
     for (const name of ["light", "brightness", "spotlightEnabled", "colorTemp"]) {
