@@ -145,7 +145,8 @@ export const MOTION_CMD = {
    * `{"commandType":6040,"data":{"status":0|1}}`, the params the app's per-product bundle
    * sends. A `data` that also carries `enable: 0` turns a battery SoloCam off but never back on.
    *
-   * ⚠️ PENDING fleet write + readback, NOT byte-captured.
+   * ✅ Write + cloud readback both ways on standalone T8410, T8442, T8400; on a T8170 the app showed the off
+   * and the cloud followed the on. A T8171 followed the on; its off was not observed. NOT byte-captured.
    */
   INDOOR_MOTION_ENABLE: 6040,
   /**
