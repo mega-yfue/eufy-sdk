@@ -40,6 +40,7 @@ async function writeGuardMode(eufy: EufyMega, sn: string, expected: number): Pro
   let mode = 1;
   let cloudMode = "1";
   const device = {
+    announcements: () => [],
     getProperty: () => ({ value: mode }),
     applyParams: (params: Record<number, string>) => {
       mode = Number(params[GUARD_MODE_PARAM]);
