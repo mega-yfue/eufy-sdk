@@ -27,6 +27,14 @@ describe("P2P int-plus-string command dispatch", () => {
     expect(session.sendIntStringCommand).toHaveBeenCalledWith(1202, 10, 1, ACCOUNT_ID, 1);
   });
 
+  it("sends an int-pair set-param as the bare level-1 [channel][value] body, with no account id", async () => {
+    const { router, session } = setup();
+
+    await router.dispatchCommand(DEVICE_SN, { kind: "set-param", param: 1013, value: 3, form: "int-pair", channel: 1 });
+
+    expect(session.sendIntStringCommand).toHaveBeenCalledWith(1013, 3, 1, "", 1);
+  });
+
   it("rejects missing account identity without sending", async () => {
     const { router, session } = setup("");
 

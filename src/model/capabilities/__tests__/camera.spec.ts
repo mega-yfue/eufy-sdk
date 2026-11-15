@@ -22,6 +22,7 @@ import type { CameraActions } from "../camera.js";
 import { DeviceType } from "../../device-types.js";
 import { Device } from "../../device.js";
 import type { CommandContext } from "../types.js";
+import { parseThingsList, type ThingDescription } from "../thing-description.js";
 import { CameraDisabledError, type MediaProvider } from "../../../core/contracts.js";
 
 /**
@@ -35,6 +36,28 @@ const ctx = (channel = 0, extra: Partial<CommandContext> = {}): CommandContext =
   capabilities: new Set(["camera"]),
   ...extra,
 });
+
+/**
+ * A product's thing description as `get_things_list` returns it, each property's `eunmList` given by its
+ * members' wire values, or `"bool"` for a boolean property. Parsed by the real parser.
+ */
+const things = (props: Record<string, readonly string[] | "bool">): ThingDescription =>
+  parseThingsList({
+    things_list: [
+      {
+        profile: { product_code: "T0000" },
+        properties: Object.entries(props).map(([identifier, members]) => ({
+          identifier,
+          data_type:
+            members === "bool"
+              ? { type: "bool", specs: { defaultValue: "true" } }
+              : { type: "enum", specs: { eunmList: members.map((associatedValue) => ({ associatedValue })) } },
+        })),
+      },
+    ],
+  }).T0000!;
+const AUTO_NIGHT_VISION = things({ nightvision_type: "bool" });
+const SPOTLIGHT = things({ nightvision_type_new: ["1", "2", "0"] });
 
 /** The bound `dev.camera()` object — the members derive their setters in the barrel, not in `actions()`. */
 const camera = (c: CommandContext, media?: MediaProvider) => bind<CameraActions>("camera", c, { media });
@@ -141,11 +164,63 @@ describe("camera capability module", () => {
     });
   });
 
-  describe("T8442 night vision (read alias + direct wire)", () => {
-    const t8442 = ctx(2, { model: "T8442", paramIds: new Set([2002]) });
+  describe("night vision on 2002 and the held-on infrared mode", () => {
+    it("reads 2002 on any device that reports it without 1277, as Off, Infrared and Infrared On", () => {
+      const dev = Device.fromRecord("TEST-SN", { model: "T8400", params: { 2002: "1" } });
+      expect(dev.properties.find((p) => p.name === "nightVision")?.paramType).toBe(2002);
+      expect(dev.getProperty("nightVision")?.value).toBe(NightVision.Infrared);
+      dev.applyParams({ 2002: "3" });
+      expect(dev.getProperty("nightVision")?.value).toBe(NightVision.InfraredOn);
+    });
 
-    it("keeps one nightVision property, reads 2002 as Off/Infrared and updates both ways", () => {
-      const dev = Device.fromRecord("TEST-SN", { model: "T8442", params: { 2002: "0" } });
+    it("offers the modes the product's thing description lists, nightvision_type_new first", () => {
+      const options = (description?: ThingDescription) =>
+        Device.fromRecord("TEST-SN", { model: "T8170", params: { 1277: "1" }, things: description }).properties.find(
+          (p) => p.name === "nightVision",
+        )?.enumValues;
+      expect(options(things({ nightvision_type: ["2", "1", "0"], nightvision_type_new: ["1", "2", "0"] }))).toEqual({
+        0: "Off",
+        1: "Infrared",
+        2: "Full Color",
+      });
+      expect(options(things({ nightvision_type: ["1", "3", "0"], nightvision_type_new: ["0", "3", "1"] }))).toEqual({
+        0: "Off",
+        1: "Infrared",
+        3: "Infrared On",
+      });
+      expect(options(things({ nightvision_type: "bool", nightvision_type_new: ["1", "0"] }))).toEqual({
+        0: "Off",
+        1: "Infrared",
+      });
+      expect(options(AUTO_NIGHT_VISION), "the Auto Night Vision switch").toEqual({ 0: "Off", 1: "Infrared" });
+      expect(options(things({ nightvision_type: ["1", "6", "0"] })), "an unnamed mode").toEqual({
+        0: "Off",
+        1: "Infrared",
+      });
+      expect(options(), "no description").toEqual({ 0: "Off", 1: "Infrared", 2: "Full Color", 3: "Infrared On" });
+      expect(() =>
+        buildCommand(
+          "nightVision",
+          NightVision.FullColor,
+          ctx(0, { paramIds: new Set([2002]), things: AUTO_NIGHT_VISION }),
+        ),
+      ).toThrow(/nightVision: 2 is not a valid value \(must be one of 0\/1\)/);
+    });
+
+    it("reads Infrared On on 1277 without a write for it", () => {
+      const dev = Device.fromRecord("TEST-SN", { model: "T8171", params: { 1277: "3" } });
+      expect(dev.getProperty("nightVision")?.value).toBe(NightVision.InfraredOn);
+      expect(() =>
+        buildCommand("nightVision", NightVision.InfraredOn, ctx(0, { model: "T8171", paramIds: new Set([1277]) })),
+      ).toThrow(/no verified write/);
+    });
+  });
+
+  describe("T8442 night vision (read alias + direct wire)", () => {
+    const t8442 = ctx(2, { model: "T8442", paramIds: new Set([2002]), things: AUTO_NIGHT_VISION });
+
+    it("keeps one nightVision property, reads 2002 and updates both ways", () => {
+      const dev = Device.fromRecord("TEST-SN", { model: "T8442", params: { 2002: "0" }, things: AUTO_NIGHT_VISION });
       const spec = dev.properties.find((p) => p.name === "nightVision");
       expect(spec).toMatchObject({
         paramType: 2002,
@@ -160,30 +235,28 @@ describe("camera capability module", () => {
       expect(dev.getProperty("nightVision")?.value).toBe(NightVision.Infrared);
       dev.applyParams({ 2002: "0" });
       expect(dev.getProperty("nightVision")?.value).toBe(NightVision.Off);
-      // Even if 1277 appears, the model-specific 2002 alias remains the source of truth.
-      const both = Device.fromRecord("TEST-SN", { model: "T8442", params: { 1277: "2", 2002: "1" } });
-      expect(both.properties.find((p) => p.name === "nightVision")?.paramType).toBe(2002);
-      expect(both.getProperty("nightVision")?.value).toBe(NightVision.Infrared);
+      dev.applyParams({ 2002: "true" });
+      expect(dev.getProperty("nightVision")?.value, "Auto Night Vision on").toBe(NightVision.Infrared);
     });
 
-    it("writes 1013 as level-1 int-string for T8442, on and off", () => {
+    it("writes 1013 as the bare level-1 pair for T8442, on and off", () => {
       expect(buildCommand("nightVision", NightVision.Infrared, t8442)).toEqual({
         kind: "set-param",
         param: CAMERA_CMD.IC_NIGHT_VISION_TYPE,
         value: 1,
-        form: "int-string",
+        form: "int-pair",
         channel: 2,
       });
       expect(buildCommand("nightVision", NightVision.Off, t8442)).toEqual({
         kind: "set-param",
         param: CAMERA_CMD.IC_NIGHT_VISION_TYPE,
         value: 0,
-        form: "int-string",
+        form: "int-pair",
         channel: 2,
       });
     });
 
-    it("the bound T8442 setter sends the literal 1013 int-string command", async () => {
+    it("the bound T8442 setter sends the literal 1013 int-pair command", async () => {
       const { acts, sent } = camera(t8442);
       await acts.setNightVision!(NightVision.Infrared);
       expect(sent).toEqual([
@@ -191,14 +264,14 @@ describe("camera capability module", () => {
           kind: "set-param",
           param: CAMERA_CMD.IC_NIGHT_VISION_TYPE,
           value: 1,
-          form: "int-string",
+          form: "int-pair",
           channel: 2,
         },
       ]);
     });
 
     it("rejects Full Color on T8442 with a model-specific error", async () => {
-      const message = /nightVision: Full Color is not supported on T8442 \(only Off\/Infrared\)/;
+      const message = /nightVision: 2 is not a valid value \(must be one of 0\/1\)/;
       expect(() => buildCommand("nightVision", NightVision.FullColor, t8442)).toThrow(message);
       await expect(camera(t8442).acts.setNightVision!(NightVision.FullColor)).rejects.toThrow(message);
     });
@@ -206,11 +279,11 @@ describe("camera capability module", () => {
     it("reads a 1277 value outside the published options as undefined, getter and announcement alike", () => {
       const params = { [CAMERA_CMD.NIGHT_VISION_TYPE]: "2" };
       const read = (value: string) => () => ({ value: Number(value) });
-      const reported = ctx(3, { model: "T8425", paramIds: new Set([CAMERA_CMD.NIGHT_VISION_TYPE]) });
+      const reported = ctx(3, { model: "T8425", paramIds: new Set([CAMERA_CMD.NIGHT_VISION_TYPE]), things: SPOTLIGHT });
       expect(bind<CameraActions>("camera", reported, { read: read("6") }).acts.nightVision).toBeUndefined();
       expect(bind<CameraActions>("camera", reported, { read: read("2") }).acts.nightVision).toBe(NightVision.FullColor);
 
-      const dev = Device.fromRecord("TEST-SN", { model: "T8425", params });
+      const dev = Device.fromRecord("TEST-SN", { model: "T8425", params, things: SPOTLIGHT });
       expect(dev.announcements(dev.applyParams({ [CAMERA_CMD.NIGHT_VISION_TYPE]: "6" }))).toEqual([
         { property: "nightVision" },
       ]);
@@ -224,8 +297,8 @@ describe("camera capability module", () => {
     });
 
     it("keeps the 1277 property and 1350 payload for T8425", () => {
-      const older = ctx(3, { model: "T8425", paramIds: new Set([CAMERA_CMD.NIGHT_VISION_TYPE]) });
-      const dev = Device.fromRecord("TEST-SN", { model: "T8425", params: { 1277: "2" } });
+      const older = ctx(3, { model: "T8425", paramIds: new Set([CAMERA_CMD.NIGHT_VISION_TYPE]), things: SPOTLIGHT });
+      const dev = Device.fromRecord("TEST-SN", { model: "T8425", params: { 1277: "2" }, things: SPOTLIGHT });
       expect(dev.properties.find((p) => p.name === "nightVision")).toMatchObject({
         paramType: CAMERA_CMD.NIGHT_VISION_TYPE,
         enumValues: { 0: "Off", 1: "Infrared", 2: "Full Color" },
@@ -385,7 +458,7 @@ describe("camera capability module", () => {
           /watermark: .+ is not a valid value \(must be one of 0\/1\/2\)/,
         );
         expect(() => buildCommand("nightVision", bad as number, ctx())).toThrow(
-          /nightVision: .+ is not a valid value \(must be one of 0\/1\/2\)/,
+          /nightVision: .+ is not a valid value \(must be one of 0\/1\/2\/3\)/,
         );
       }
       // Valid enum values still pass.
@@ -395,8 +468,8 @@ describe("camera capability module", () => {
 
     it("nightVision → 1350 set-payload, mChannel 0, {channel,night_sion} (verified)", () => {
       // Verified live: device channel goes INSIDE the payload; the envelope's mChannel is 0.
-      expect(NightVision).toEqual({ Off: 0, Infrared: 1, FullColor: 2 });
-      expect(buildCommand("nightVision", NightVision.FullColor, ctx(3))).toMatchObject({
+      expect(NightVision).toEqual({ Off: 0, Infrared: 1, FullColor: 2, InfraredOn: 3 });
+      expect(buildCommand("nightVision", NightVision.FullColor, ctx(3, { paramIds: new Set([1400]) }))).toMatchObject({
         kind: "set-payload",
         cmd: CAMERA_CMD.NIGHT_VISION_TYPE,
         payload: { channel: 3, night_sion: 2 },
@@ -748,7 +821,7 @@ describe("camera capability module", () => {
       expect(sent[1]).toMatchObject({ cmd: CAMERA_CMD.RECORDING_QUALITY_SET, payload: { quality: 3 } });
       await expect(acts.setWatermark!(5)).rejects.toThrow("watermark: 5 is not a valid value (must be one of 0/1/2)");
       await expect(acts.setNightVision!(9)).rejects.toThrow(
-        "nightVision: 9 is not a valid value (must be one of 0/1/2)",
+        "nightVision: 9 is not a valid value (must be one of 0/1/2/3)",
       );
       await expect(acts.setRecordingQuality!(0)).rejects.toThrow(
         "recordingQuality: 0 is not a valid value (must be one of 1/2/3)",

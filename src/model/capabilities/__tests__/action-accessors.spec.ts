@@ -32,6 +32,7 @@ const EXPECTED_ACCESSORS = [
   "mower",
   "info",
   "keypad",
+  "link",
   "leak",
   "light",
   "locate",

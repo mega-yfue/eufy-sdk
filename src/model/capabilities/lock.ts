@@ -207,18 +207,6 @@ export const LOCK_MEMBERS = {
     provenance: "verified",
     description: "Lock battery level 0-100 (verified: param 1101, alias 6001).",
   },
-  /**
-   * Link quality in dBm as the lock measures it, on the shared param 1141. On the `ff09` wire the
-   * actuations are fire-and-forget, so a weak link is silent rather than an error.
-   */
-  rssi: {
-    param: 1141,
-    type: "number",
-    unit: "dBm",
-    kind: "dbm",
-    provenance: "verified",
-    description: "Lock signal strength (verified: param 1141 = RSSI).",
-  },
 
   /**
    * Lock the deadbolt/door. Resolves after sending, without confirming physical state — except on the

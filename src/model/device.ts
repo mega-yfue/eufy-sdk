@@ -195,6 +195,8 @@ export class Device {
    * answers a caller has to be able to tell apart.
    */
   private bound = false;
+  /** The product's thing description resolved for this device, as {@link bindActions} was given it. */
+  private things?: CommandContext["things"];
 
   /**
    * Read-through freshness policy (injected by the facade via {@link setFreshnessPolicy}; the model
@@ -307,6 +309,7 @@ export class Device {
       ff09Settings,
       rawDp,
     });
+    this.things = ctx.things;
     this.bound = true;
   }
 
@@ -543,6 +546,7 @@ export class Device {
         capabilities: new Set(this.capabilities),
         homeBaseAttached: this.stationSn !== this.sn,
         stationSerial: this.stationSn,
+        things: this.things,
       }),
     };
   }

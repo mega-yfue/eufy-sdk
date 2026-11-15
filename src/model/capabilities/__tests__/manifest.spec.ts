@@ -5,6 +5,7 @@ import type { CapabilityModule, CommandContext } from "../types.js";
 import { borrowedBy } from "../members.js";
 import type { ValueMember } from "../members.js";
 import type { Command, CommandSink, MediaProvider } from "../../../core/contracts.js";
+import { parseThingsList, type ThingDescription } from "../thing-description.js";
 
 /**
  * The manifest is the SDK's answer to "what does this device expose" for a caller outside the package,
@@ -405,7 +406,7 @@ describe("describeCapabilities — events claimed on evidence", () => {
   /** Unclaimed rows are the common case and must not be touched by the claim resolution. */
   it("leaves an unclaimed detection on every device that binds the capability", () => {
     for (const events of [motionEvents([PIR]), motionEvents([PIR, AI_DETECT_TYPE], { homeBaseAttached: true })]) {
-      expect(events).toEqual(expect.arrayContaining(["motion", "petDetection", "soundDetected", "cryingDetected"]));
+      expect(events).toEqual(expect.arrayContaining(["motion", "petDetection"]));
     }
   });
 
@@ -416,6 +417,54 @@ describe("describeCapabilities — events claimed on evidence", () => {
   it("claims no AI classification for a device outside the camera families", () => {
     const sensor = motionEvents([PIR], { codec: "sensor", homeBaseAttached: true });
     expect(sensor).toEqual(["motion"]);
+  });
+});
+
+/**
+ * The sound detections are described on the product's own word: its resolved thing description lists
+ * the property for each. A doorbell whose description has neither announces neither, and a device
+ * described without a description keeps both.
+ */
+describe("describeCapabilities — sound detections claimed on the thing description", () => {
+  const things = (...identifiers: string[]) =>
+    parseThingsList({
+      things_list: [
+        { profile: { product_code: "T0000" }, properties: identifiers.map((identifier) => ({ identifier })) },
+      ],
+    }).T0000!;
+  const cameraEvents = (description?: ThingDescription): readonly string[] =>
+    describeCapabilities(
+      buildActions(["camera"], { ctx: { ...ctxWith(new Set()), things: description }, sink, read: () => undefined }),
+      { codec: "camera", capabilities: new Set<Capability>(["camera"]), things: description },
+    ).find((entry) => entry.capability === "camera")!.events;
+
+  it("claims each detection where the description lists its property", () => {
+    expect(cameraEvents(things("sound_detection_status"))).toContain("soundDetected");
+    expect(cameraEvents(things("sound_detection_status"))).not.toContain("cryingDetected");
+    expect(cameraEvents(things("notification_ai_crying_switch"))).toContain("cryingDetected");
+  });
+
+  it("claims both where the description offers sound detection through its type alone", () => {
+    expect(cameraEvents(things("sound_detection_type", "sound_detection_sensitivity"))).toEqual(
+      expect.arrayContaining(["soundDetected", "cryingDetected"]),
+    );
+  });
+
+  it("withholds both where the description lists neither", () => {
+    const events = cameraEvents(things("nightvision_type"));
+    expect(events).not.toContain("soundDetected");
+    expect(events).not.toContain("cryingDetected");
+  });
+
+  it("keeps both on a device described without a description", () => {
+    expect(cameraEvents()).toEqual(expect.arrayContaining(["soundDetected", "cryingDetected"]));
+  });
+
+  it("describes a bound device against the description it was bound with", () => {
+    const dev = Device.fromRecord("T8000P0000000000", { deviceType: 30, model: "T8114", params: {} });
+    dev.bindActions({ ...ctxWith(new Set(), "T8114"), things: things("nightvision_type") }, sink);
+    const camera = dev.describe().details.find((d) => d.capability === "camera");
+    expect(camera?.events ?? []).not.toContain("soundDetected");
   });
 });
 
