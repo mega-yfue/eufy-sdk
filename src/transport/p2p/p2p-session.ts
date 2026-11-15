@@ -830,7 +830,6 @@ export class P2PSession extends EventEmitter {
     const generation = this.connectionGeneration;
     const cipherId = gatewayInfoCipherId(gwPayload);
     this.gatewayCipherId = cipherId;
-    this.logger.debug(`[p2p] ${this.cfg.stationSn} level-2 gateway info v${version} (cipher_id ${cipherId})`);
     this.trace({ phase: "level2-negotiating", cipherId });
     void (async () => {
       try {
@@ -2663,14 +2662,13 @@ export class P2PSession extends EventEmitter {
         /* leave as-is; emit raw */
       }
     }
-    if (
-      header.commandId === CMD_GATEWAYINFO &&
-      header.signCode <= 1 &&
-      !this.level2KeyServes("set-payload") &&
-      !this.level2Negotiating &&
-      this.cfg.resolveCipherKey
-    ) {
-      this.negotiateLevel2Key(data, header.version);
+    if (header.commandId === CMD_GATEWAYINFO && header.signCode <= 1) {
+      this.logger.debug(
+        `[p2p] ${this.cfg.stationSn} level-2 gateway info v${header.version} ch ${header.channel} ${data.length}B (cipher_id ${gatewayInfoCipherId(data)})`,
+      );
+      // The app holds the ECC and the RSA key apart, so each version is negotiated until its own key is set.
+      const held = header.version === 8 ? this.level2Key : this.level2EcbKey;
+      if (!held && !this.level2Negotiating && this.cfg.resolveCipherKey) this.negotiateLevel2Key(data, header.version);
     }
     // CMD_DATABASE (1306) reply chunks are level-1 encrypted but NOT 16-aligned
     // (a trailing byte past the block boundary), so decrypt the block-aligned head

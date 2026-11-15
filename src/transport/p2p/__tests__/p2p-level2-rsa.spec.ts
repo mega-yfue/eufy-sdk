@@ -1,7 +1,7 @@
-import { constants, generateKeyPairSync, publicEncrypt } from "node:crypto";
+import { constants, createECDH, generateKeyPairSync, publicEncrypt } from "node:crypto";
 import { StationKeyUnavailableError } from "../../../core/contracts.js";
 import { P2PSession } from "../p2p-session.js";
-import { decryptP2PData, deriveLevel2KeyFromRsaGatewayInfo, parseDataFrameHeader } from "../codec.js";
+import { decryptP2PData, deriveLevel2KeyFromRsaGatewayInfo, eciesWrap, parseDataFrameHeader } from "../codec.js";
 import {
   DEVICE_SN,
   STATION_SN as ROUTER_STATION_SN,
@@ -160,6 +160,36 @@ describe("P2PSession level-2 over an RSA cipher", () => {
     expect(await session.awaitLevel2Key(1_000, "call", "set-payload")).toBe(true);
     expect(errors).toEqual([]);
     expect(traces.filter((trace) => trace.phase === "level2-set-payload-only")).toHaveLength(1);
+  });
+
+  /** The app holds both keys apart; an RSA key negotiated first must not stop the ECC one. */
+  test("a version-8 gateway info after a version-1 one still negotiates the ECC key", async () => {
+    const ecdh = createECDH("prime256v1");
+    ecdh.generateKeys();
+    const { logger } = traceCollector();
+    const session = new P2PSession({
+      stationSn: STATION_SN,
+      p2pDid: P2P_DID,
+      logger,
+      resolveCipherKey: async () => ({ ecc: ecdh.getPrivateKey("hex"), rsa: PKCS8_B64 }),
+    });
+    const ready: unknown[] = [];
+    session.on("level2Ready", (e) => ready.push(e));
+    const frame = (version: number, payload: Buffer) =>
+      (session as unknown as SessionInternals).handleFrame(
+        { commandId: 1100, bytesToRead: payload.length, version, channel: 0, signCode: 0, type: 0 },
+        payload,
+        1,
+      );
+
+    frame(1, gatewayInfo(wrapped()));
+    expect(await session.awaitLevel2Key(1_000, "call", "set-payload")).toBe(true);
+    const head = Buffer.alloc(4);
+    head.writeUInt16LE(CIPHER_ID, 0);
+    frame(8, Buffer.concat([head, eciesWrap(Buffer.alloc(32, 7), ecdh.getPublicKey())]));
+
+    await vi.waitFor(() => expect(ready).toEqual([{ cipherId: CIPHER_ID }]));
+    expect(session.hasLevel2Key).toBe(true);
   });
 
   test("an RSA key that does not unwrap the gateway info is traced and settled, not an error", async () => {
