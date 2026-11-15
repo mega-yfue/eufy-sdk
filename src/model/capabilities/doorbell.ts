@@ -9,25 +9,6 @@ import type { AvailabilityContext, CapabilityModule } from "./types.js";
 import type { MediaProvider } from "../../core/contracts.js";
 
 /**
- * The T-codes the app's model map files under a doorbell family (`DOORBELL`, `DOORBELL_2K_T8200`,
- * `WIRED_DOORBELL_*`, `BATTERY_DOORBELL_*`).
- */
-const DOORBELL_MODELS: ReadonlySet<string> = new Set([
-  "T820",
-  "T8200",
-  "T8201",
-  "T8202",
-  "T8203",
-  "T8210",
-  "T8212",
-  "T8213",
-  "T8214",
-  "T8220",
-  "T8221",
-  "T8222",
-]);
-
-/**
  * The app's doorbell device types (`TYPE_DEVICE_DOORBELL` 5, `TYPE_DEVICE_BATTERY_DOORBELL` 7,
  * `TYPE_DEVICE_BATTERY_DOORBELL_SMALL` 16, `TYPE_DEVICE_BATTERY_DOORBELL_DUAL_8213` 91,
  * `TYPE_DEVICE_DOORBELL_DUAL_8203` 93, `TYPE_DEVICE_BATTERY_DOORBELL_DUAL_8214` 94, and the C30/C31
@@ -533,14 +514,13 @@ export const DOORBELL: CapabilityModule = {
   members: DOORBELL_MEMBERS,
   properties: propertiesOf(DOORBELL_MEMBERS),
   /**
-   * Doorbells self-report no param of their own (the 1702-1719 settings also arrive from eufyCams), and
-   * the cloud record names no product, so detection keys off the app's own tables:
-   * {@link DOORBELL_MODELS} and {@link DOORBELL_TYPES}.
+   * Doorbells self-report no param of their own (the 1702-1719 settings also arrive from eufyCams), so a
+   * doorbell is one of {@link DOORBELL_TYPES} or a product whose description lists the ring notification
+   * switch `notification_ring_onoff`. Never the device's name: that is what its owner typed.
    */
   detection: {
-    detect: (rec) => DOORBELL_MODELS.has(rec.model ?? ""),
     deviceTypes: DOORBELL_TYPES,
-    modelHints: [/doorbell/i],
+    detect: (rec) => rec.things !== undefined && "notification_ring_onoff" in rec.things.properties,
   },
   /**
    * Inbound FCM doorbell events (`DoorbellPushEvent`): ring press and the package trio.
