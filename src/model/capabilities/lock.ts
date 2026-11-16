@@ -1,4 +1,5 @@
 import { isClassicWifiLock, isVideoSmartLock } from "../device-family.js";
+import { DeviceType } from "../device-types.js";
 import { asBool } from "../../core/util.js";
 import { LockPushEvent } from "../push-events.js";
 import { describeDevice } from "./access.js";
@@ -159,8 +160,12 @@ function nativeReport(signal: InboundSignal): Record<string, unknown> | undefine
  */
 const speaksFf09Settings = (ctx: CommandContext): boolean => !isClassicWifiLock(ctx);
 
-/** Rain Mode's gate: the P2P video lock, and only a device that takes the `ff09` settings frame. */
-const rainModeAvailable = (ctx: CommandContext): boolean => overP2p(ctx) && speaksFf09Settings(ctx);
+/**
+ * Rain Mode's gate: the P2P video lock, and only a device that takes the `ff09` settings frame. Not the
+ * LOCK_85V0: its description lists the switch, but the app's bundle builds no command for it.
+ */
+const rainModeAvailable = (ctx: CommandContext): boolean =>
+  overP2p(ctx) && speaksFf09Settings(ctx) && ctx.deviceType !== DeviceType.LOCK_85V0;
 
 /**
  * Every `lock` feature, declared once.

@@ -162,6 +162,11 @@ describe("lock capability module", () => {
     ]);
   });
 
+  it("setRainMode is absent on a LOCK_85V0, which the app offers no Rain Mode", () => {
+    const { acts } = lockOf({ ...p2pCtx, deviceType: DeviceType.LOCK_85V0 });
+    expect("setRainMode" in acts).toBe(false);
+  });
+
   it("setRainMode is absent on an MQTT-only device (no known Rain Mode on the garage door)", () => {
     const { acts } = lockOf(mqttCtx);
     expect(acts.setRainMode).toBeUndefined();
