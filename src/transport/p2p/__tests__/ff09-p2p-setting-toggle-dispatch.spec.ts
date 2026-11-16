@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { P2PCommandRouter, type P2PRouterDeps } from "../command-router.js";
 import { decryptFf09Frame, LOCK_API_COMMAND, FF09_SETTING_ID } from "../../ff09.js";
-import { connectedSession, type FakeP2PSession } from "./session-fixtures.js";
+import { connectedSession, onFakeTime, type FakeP2PSession } from "./session-fixtures.js";
 
 /**
  * `sendFf09SettingToggle` (the `ff09-setting-toggle` intent handler behind
@@ -49,13 +49,15 @@ function makeRouter() {
 describe("P2PCommandRouter.sendFf09SettingToggle (ff09-setting-toggle command-router branch)", () => {
   it("sends a single blind SET_SETTINGS frame encoding the setting id + value, no GET first", async () => {
     const { router, calls } = makeRouter();
-    await router.dispatchCommand(SN, {
-      kind: "ff09-setting-toggle",
-      adminUserId: ADMIN,
-      deviceSn: SN,
-      settingId: FF09_SETTING_ID.RAIN_MODE,
-      value: true,
-    });
+    await onFakeTime(() =>
+      router.dispatchCommand(SN, {
+        kind: "ff09-setting-toggle",
+        adminUserId: ADMIN,
+        deviceSn: SN,
+        settingId: FF09_SETTING_ID.RAIN_MODE,
+        value: true,
+      }),
+    );
 
     const setCalls = calls.filter((c) => c.payload.apiCommand === LOCK_API_COMMAND.SET_SETTINGS);
     expect(setCalls.length).toBeGreaterThan(0);
@@ -82,13 +84,15 @@ describe("P2PCommandRouter.sendFf09SettingToggle (ff09-setting-toggle command-ro
 
   it("encodes value=false as A4=0x00", async () => {
     const { router, calls } = makeRouter();
-    await router.dispatchCommand(SN, {
-      kind: "ff09-setting-toggle",
-      adminUserId: ADMIN,
-      deviceSn: SN,
-      settingId: FF09_SETTING_ID.RAIN_MODE,
-      value: false,
-    });
+    await onFakeTime(() =>
+      router.dispatchCommand(SN, {
+        kind: "ff09-setting-toggle",
+        adminUserId: ADMIN,
+        deviceSn: SN,
+        settingId: FF09_SETTING_ID.RAIN_MODE,
+        value: false,
+      }),
+    );
     const setCalls = calls.filter((c) => c.payload.apiCommand === LOCK_API_COMMAND.SET_SETTINGS);
     const last = setCalls[0]!.payload;
     const plain = decryptFf09Frame({
