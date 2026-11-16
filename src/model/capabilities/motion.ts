@@ -141,10 +141,11 @@ export const MOTION_CMD = {
    */
   INDOOR_SENSITIVITY_INDEX: 6041,
   /**
-   * Motion detection on-off on a T8410 (app `CMD_INDOOR_DET_SET_MOTION_DETECT_ENABLE`). `1700` control
-   * payload `{"commandType":6040,"data":{"enable":0,"quality":0,"status":0|1,"value":0}}`.
+   * Motion detection on-off on a camera reporting it (app `INDOOR_MOTION_ENABLE`). `1700` control payload
+   * `{"commandType":6040,"data":{"status":0|1}}`, the params the app's per-product bundle sends.
    *
-   * ⚠️ Replay + readback confirmed on a standalone and a HomeBase 3-attached T8410, NOT byte-captured.
+   * ✅ Write + cloud readback both ways on standalone T8410, T8442, T8400; on a T8170 the app showed the off
+   * and the cloud followed the on. A T8171 followed the on; its off was not observed. NOT byte-captured.
    */
   INDOOR_MOTION_ENABLE: 6040,
   /**
@@ -176,9 +177,14 @@ export const AiDetectType = {
  * 3101-3110 are drawn from the doorbell, indoor and HB3-paired vocabularies, every one of them a
  * camera family. A standalone motion sensor binds this capability — it IS motion detection by device
  * type — but announces itself under {@link CusPushEvent.MOTION_SENSOR_PIR}, and reports no AI
- * classification of any kind.
+ * classification of any kind. A camera whose thing description lists none of the AI-detection
+ * properties (the detection-type selector, the HomeBase 3 AI grant, the pet or vehicle notification
+ * switch) does not classify either.
  */
-const CAMERA_AI_CLAIM: EventClaim = { codecs: ["camera"] };
+const CAMERA_AI_CLAIM: EventClaim = {
+  codecs: ["camera"],
+  things: ["detection_type_set", "ai_empower", "notification_ai_pet_switch", "notification_ai_vehicle_switch"],
+};
 
 /**
  * Evidence a device classifies vehicles: it reports the AI-detection-type bitmask that HAS a vehicle
@@ -449,9 +455,13 @@ function sensitivityCommand(step: unknown, scale: SensitivityScale, ctx: Command
  */
 const EXIT_TEST_MODE_VALUE = 0x30303000;
 
-/** A T8410, whose motion switch is {@link MOTION_CMD.INDOOR_MOTION_ENABLE} rather than {@link MOTION_CMD.CAMERA_PIR}. */
-function isT8410(ctx: AvailabilityContext): boolean {
-  return ctx.model === "T8410";
+/**
+ * A device reporting {@link MOTION_CMD.INDOOR_MOTION_ENABLE}, whose motion switch is that param rather than
+ * {@link MOTION_CMD.CAMERA_PIR}. The app reads 6040 on a standalone camera and 1011 behind a HomeBase; a
+ * HomeBase 3-attached T8410 reports both and only 6040 follows the app.
+ */
+function reportsIndoorSwitch(ctx: AvailabilityContext): boolean {
+  return ctx.paramIds?.has(MOTION_CMD.INDOOR_MOTION_ENABLE) === true;
 }
 
 /**
@@ -461,9 +471,11 @@ function isT8410(ctx: AvailabilityContext): boolean {
  * answers a different id on each (see `MOTION_CMD.SENSOR_PIR_SENSITIVITY`), and the test-mode
  * pair exists only on sensors. Since P2P writes are fire-and-forget, a frame sent to the wrong family
  * is silently dropped while the call reports success — so an unverified pairing throws instead.
+ * A thing description names the sensor family by its `sensor_entry_test_mode` action; the codec
+ * answers only where no description is held.
  */
 function requireFamily(action: string, ctx: CommandContext, verifiedOn: "camera" | "sensor"): void {
-  const isSensor = ctx.codec === "sensor";
+  const isSensor = ctx.things ? "sensor_entry_test_mode" in ctx.things.actions : ctx.codec === "sensor";
   if (isSensor === (verifiedOn === "sensor")) return;
   throw new Error(
     `motion: ${action} write wire is verified only on a ${verifiedOn}, not this device [${describeDevice(ctx)}]`,
@@ -525,16 +537,16 @@ export const MOTION_MEMBERS = {
     type: "bool",
     kind: "boolean",
     provenance: "verified",
-    readAvailable: (ctx) => !isT8410(ctx),
-    readAliases: [{ paramType: MOTION_CMD.INDOOR_MOTION_ENABLE, available: isT8410 }],
+    readAvailable: (ctx) => !reportsIndoorSwitch(ctx),
+    readAliases: [{ paramType: MOTION_CMD.INDOOR_MOTION_ENABLE, available: reportsIndoorSwitch }],
     description:
-      "Motion/PIR detection enabled (verified: param 1011 = CAMERA_PIR; a T8410 reads and writes " +
-      "INDOOR_MOTION_ENABLE 6040 instead).",
+      "Motion/PIR detection enabled (verified: param 1011 = CAMERA_PIR; a device reporting " +
+      "INDOOR_MOTION_ENABLE 6040 reads and writes that instead).",
     write: (v, ctx) => {
       requireFamily("motionDetection", ctx, "camera");
       const on = asBool(v) ? 1 : 0;
-      if (!isT8410(ctx)) return setScalar(MOTION_CMD.CAMERA_PIR, on, ctx, "direct-binary");
-      return setJson(MOTION_CMD.INDOOR_MOTION_ENABLE, { enable: 0, quality: 0, status: on, value: 0 }, ctx);
+      if (!reportsIndoorSwitch(ctx)) return setScalar(MOTION_CMD.CAMERA_PIR, on, ctx, "direct-binary");
+      return setJson(MOTION_CMD.INDOOR_MOTION_ENABLE, { status: on }, ctx);
     },
     writeAs: "setDetection",
   },
@@ -791,14 +803,13 @@ export const MOTION: CapabilityModule = {
     return mode == null ? null : { params: { [MOTION_CMD.SENSOR_WORK_MODE]: String(mode) } };
   },
   /**
-   * A reported PIR switch (1011) proves it; glass-break is an acoustic motion-class event; every
-   * camera-codec device has motion in its baseline surface; and a standalone motion sensor IS the
-   * capability by device type — it reports no 1011, so evidence alone would miss the one device class
-   * named after the feature.
+   * A reported PIR switch (1011) proves it; every camera-codec device has motion in its baseline surface;
+   * and a standalone motion sensor IS the capability by device type — it reports no 1011, so evidence
+   * alone would miss the one device class named after the feature. Never the device's name: that is what
+   * its owner typed.
    */
   detection: {
     evidenceParams: [1011],
-    modelHints: [/glass/i],
     codecs: ["camera"],
     deviceTypes: [DeviceType.MOTION_SENSOR, DeviceType.PIR_SENSOR_E20],
   },

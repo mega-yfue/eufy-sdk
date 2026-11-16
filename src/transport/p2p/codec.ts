@@ -91,6 +91,8 @@ export const P2P_DATA_HEADER_BYTES = 16;
 export interface P2PDataFrameHeader {
   commandId: number;
   bytesToRead: number;
+  /** Byte 10: 8 when the station speaks level 2 over ECC, which decides the 1100 unwrap; 1 otherwise. */
+  version: number;
   channel: number;
   signCode: number;
   type: number;
@@ -564,6 +566,7 @@ export function parseDataFrameHeader(frame: Buffer): P2PDataFrameHeader {
   return {
     commandId: frame.subarray(4, 6).readUIntLE(0, 2),
     bytesToRead: frame.subarray(6, 10).readUIntLE(0, 4),
+    version: frame.readUInt8(10),
     channel: frame.readUInt8(12),
     signCode: frame.readUInt8(13),
     type: frame.readUInt8(14),

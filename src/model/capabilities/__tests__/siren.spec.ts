@@ -1,6 +1,7 @@
 import { SIREN, SIREN_PARAM, SIREN_CMD, SirenVolume, HubAlarmTone, type SirenActions } from "../siren.js";
 import { DeviceType } from "../../device-types.js";
 import { bind } from "./bind.js";
+import { parseThingsList } from "../thing-description.js";
 import { buildActions, detectCapabilities } from "../index.js";
 import type { CommandContext } from "../types.js";
 import type { Command } from "../../../core/contracts.js";
@@ -151,6 +152,36 @@ describe("siren capability module", () => {
       await expect(a.setAlarmDuration!(120)).rejects.toThrow(/60\/300\/600\/900/);
       await expect(a.setAlarmDuration!(0)).rejects.toThrow(/60\/300\/600\/900/);
       expect(sent).toEqual([]);
+    });
+
+    it("accepts only the volume, duration and tone the product's description lists", async () => {
+      const described = parseThingsList({
+        things_list: [
+          {
+            profile: { product_code: "T0000" },
+            properties: Object.entries({
+              audio_alert_volume: ["1", "3"],
+              sensor_alarm_timeout: ["60", "300"],
+              alarm_tones_mode: ["1"],
+            }).map(([identifier, wire]) => ({
+              identifier,
+              data_type: { type: "ienum", specs: { eunmList: wire.map((associatedValue) => ({ associatedValue })) } },
+            })),
+          },
+        ],
+      }).T0000!;
+      const { acts: a, sent } = sirenOf({ ...ctx(), things: described });
+      await expect(a.setVolume!(2)).rejects.toThrow(/must be one of 1\/3\)/);
+      await expect(a.setAlarmDuration!(600)).rejects.toThrow(/must be one of 60\/300\)/);
+      const hub = bind<SirenActions>("siren", {
+        channel: 0,
+        codec: "station",
+        deviceType: DeviceType.HB3,
+        paramIds: new Set([1281]),
+        things: described,
+      } as CommandContext);
+      await expect(hub.acts.setAlarmTone!(2)).rejects.toThrow(/must be one of 1\)/);
+      expect([...sent, ...hub.sent]).toEqual([]);
     });
   });
 

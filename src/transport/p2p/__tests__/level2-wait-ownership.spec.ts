@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { StationKeyUnavailableError } from "../../../core/contracts.js";
 import { P2PCommandRouter, type P2PRouterDeps } from "../command-router.js";
-import { connectedSession, type FakeP2PSession } from "./session-fixtures.js";
+import { connectedSession, onFakeTime, type FakeP2PSession } from "./session-fixtures.js";
 
 const DEVICE_SN = "T8000P0000000000";
 const STATION_SN = "T8000P0000000001";
@@ -87,9 +87,9 @@ describe("resolving a session defers the level-2 wait to the session", () => {
    */
   it("waits for the negotiation to settle before choosing a seal, session-scoped", async () => {
     const { router, session } = setup(false);
-    await router
-      .dispatchCommand(DEVICE_SN, { kind: "set-param", param: 6, value: 0, form: "auto", channel: 1 })
-      .catch(() => undefined);
+    await onFakeTime(() =>
+      router.dispatchCommand(DEVICE_SN, { kind: "set-param", param: 6, value: 0, form: "auto", channel: 1 }),
+    ).catch(() => undefined);
     expect(session.awaitLevel2Key).toHaveBeenCalledWith(SETTLE_GRACE_MS, "session");
   });
 
@@ -148,7 +148,7 @@ describe("a set-payload whose seal is the session's", () => {
   it("sends it level-1 to a keyless own-session station, replayed, without a per-call wait", async () => {
     const { router, session } = setup(false, false);
 
-    await router.dispatchCommand(DEVICE_SN, envelope("auto"));
+    await onFakeTime(() => router.dispatchCommand(DEVICE_SN, envelope("auto")));
 
     expect(session.sendSetPayload).toHaveBeenCalledTimes(REPLAYS);
     expect(session.sendControlLevel2).not.toHaveBeenCalled();
@@ -171,7 +171,7 @@ describe("a set-payload whose seal is the session's", () => {
   it("still seals it level-2 where the session holds a key", async () => {
     const { router, session } = setup(true, false);
 
-    await router.dispatchCommand(DEVICE_SN, envelope("auto"));
+    await onFakeTime(() => router.dispatchCommand(DEVICE_SN, envelope("auto")));
 
     expect(session.sendControlLevel2).toHaveBeenCalledTimes(REPLAYS);
     expect(session.sendSetPayload).not.toHaveBeenCalled();

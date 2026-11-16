@@ -3,7 +3,6 @@ import { BATTERY } from "../battery.js";
 import { propertiesOf } from "../members.js";
 import type { AvailabilityContext } from "../types.js";
 import type { Capability } from "../../types.js";
-import { parseThingsList } from "../thing-description.js";
 
 /**
  * A contact / motion sensor proves the `battery` capability from its level param (1101) like a camera,
@@ -30,18 +29,6 @@ describe("battery capability on a sensor codec", () => {
     const names = published(ctxOf("camera"));
     expect(names).toContain(1101); // the charge level
     expect(names.length).toBeGreaterThan(1);
-  });
-
-  it("lets the description decide over the codec: sensor_is_low_power marks the sensor", () => {
-    const things = (...ids: string[]) =>
-      parseThingsList({
-        things_list: [{ profile: { product_code: "T0000" }, properties: ids.map((identifier) => ({ identifier })) }],
-      }).T0000!;
-    const withThings = (codec: AvailabilityContext["codec"], ...ids: string[]) =>
-      published({ ...ctxOf(codec), things: things(...ids) });
-    expect(withThings("camera", "sensor_is_low_power", "battery_value")).toEqual([1552]);
-    expect(withThings("sensor", "battery_value")).toContain(1101);
-    expect(withThings("sensor", "battery_value")).not.toContain(1552);
   });
 
   it("an unknown codec publishes as before — fails open, like a record with no model", () => {

@@ -80,7 +80,6 @@ import { DOORBELL } from "./doorbell.js";
 import { CONTACT } from "./contact.js";
 import { LEAK } from "./leak.js";
 import { SMOKE } from "./smoke.js";
-import { CO } from "./co.js";
 import { LINK } from "./link.js";
 import { SIREN } from "./siren.js";
 import { LOCK } from "./lock.js";
@@ -104,7 +103,6 @@ export type {
 } from "./thing-description.js";
 import { DISPLAY } from "./display.js";
 import { LOCATE } from "./locate.js";
-import { SMART_DROP } from "./smart-drop.js";
 import { INFO } from "./info.js";
 
 // Per-capability typed action objects. Type-only — no runtime coupling. These feed the
@@ -123,7 +121,6 @@ import type { MotionActions } from "./motion.js";
 import type { ContactActions } from "./contact.js";
 import type { LeakActions } from "./leak.js";
 import type { SmokeActions } from "./smoke.js";
-import type { CoActions } from "./co.js";
 import type { LinkActions } from "./link.js";
 import type { KeypadActions } from "./keypad.js";
 import type { RtspActions } from "./rtsp.js";
@@ -133,7 +130,6 @@ import type { DisplayActions } from "./display.js";
 import type { SuctionActions } from "./suction.js";
 import type { MowerActions } from "./mower.js";
 import type { LocateActions } from "./locate.js";
-import type { SmartDropActions } from "./smart-drop.js";
 import type { DeviceInfo } from "./info.js";
 import type { CusPushAlarmType } from "../push-events.js";
 
@@ -154,7 +150,6 @@ const MODULES: CapabilityModule[] = [
   CONTACT,
   LEAK,
   SMOKE,
-  CO,
   SIREN,
   LOCK,
   KEYPAD,
@@ -165,7 +160,6 @@ const MODULES: CapabilityModule[] = [
   SUCTION,
   MOWER,
   LOCATE,
-  SMART_DROP,
   DISPLAY,
   LINK,
   INFO,
@@ -816,8 +810,6 @@ export interface DeviceActionMap {
   leak: LeakActions;
   /** Smoke-detector reads (read-only): `smokeDetected`. */
   smoke: SmokeActions;
-  /** CO-detector reads (read-only): `coDetected`. */
-  co: CoActions;
   /** Security-keypad reads (read-only): `charging`. */
   keypad: KeypadActions;
   /** Check-in and signal reads (read-only): `lastSeen`, `rssi`, each where the device reports it. */
@@ -834,8 +826,6 @@ export interface DeviceActionMap {
   mower: MowerActions;
   /** RoboVac locate (find-robot beep): `locating`; `locate(on?)`. */
   locate: LocateActions;
-  /** SmartDrop parcel box: `openLid()`. */
-  smartDrop: SmartDropActions;
   /** Smart Display (read-only): `battery`. No display write is captured. */
   display: DisplayActions;
   /** Identity metadata (read-only): `{ manufacturer, model, serialNumber, name, deviceType?, firmwareVersion?, hardwareVersion? }`. */
@@ -1059,7 +1049,6 @@ export type {
   ContactActions,
   LeakActions,
   SmokeActions,
-  CoActions,
   KeypadActions,
   LinkActions,
   RtspActions,
@@ -1067,7 +1056,6 @@ export type {
   SuctionActions,
   MowerActions,
   LocateActions,
-  SmartDropActions,
 };
 /**
  * The member table each `*Actions` type is DERIVED from (`LockActions = Surface<typeof LOCK_MEMBERS>`),
@@ -1081,7 +1069,6 @@ export { ARMING_MEMBERS } from "./arming.js";
 export { AUDIO_MEMBERS } from "./audio.js";
 export { BATTERY_MEMBERS } from "./battery.js";
 export { CAMERA_MEMBERS } from "./camera.js";
-export { CO_MEMBERS } from "./co.js";
 export { CONTACT_MEMBERS } from "./contact.js";
 export { DOORBELL_MEMBERS } from "./doorbell.js";
 export { KEYPAD_MEMBERS } from "./keypad.js";
@@ -1094,7 +1081,6 @@ export { MOTION_MEMBERS } from "./motion.js";
 export { PTZ_MEMBERS } from "./ptz.js";
 export { RTSP_MEMBERS } from "./rtsp.js";
 export { SIREN_MEMBERS } from "./siren.js";
-export { SMART_DROP_MEMBERS } from "./smart-drop.js";
 export { SMART_LIGHT_MEMBERS } from "./smart-light.js";
 export { SMOKE_MEMBERS } from "./smoke.js";
 export { DISPLAY_MEMBERS, type DisplayActions } from "./display.js";

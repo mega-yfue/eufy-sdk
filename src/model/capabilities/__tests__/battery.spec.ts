@@ -302,7 +302,7 @@ describe("battery capability module", () => {
     });
   });
 
-  it("writes powerSource with the builder the product's bundle runs, by product code and topology", () => {
+  it("writes powerSource only where the bundle sends {charge_mode}; the bundle-only {enable} has no setter", () => {
     const things = parseThingsList({
       things_list: [{ profile: { product_code: "T0000" }, properties: [{ identifier: "power_charge_mode" }] }],
     }).T0000!;
@@ -319,18 +319,15 @@ describe("battery capability module", () => {
     expect(Object.keys(bind<BatteryActions>("battery", at("T8171", false)).acts as object)).not.toContain(
       "setPowerSource",
     );
-    expect(buildCommand("powerSource", 1, at("T8150", true))).toEqual({
-      kind: "set-json",
-      param: 1293,
-      data: { enable: 1 },
-      channel: 0,
-    });
-    expect(buildCommand("powerSource", 1, at("T8124R", false))).toEqual({
-      kind: "set-json",
-      param: 1293,
-      data: { enable: 1 },
-      channel: 0,
-    });
+    for (const [model, attached] of [
+      ["T8150", true],
+      ["T8124R", false],
+    ] as const) {
+      expect(() => buildCommand("powerSource", 1, at(model, attached)), `${model} {enable}`).toThrow(/unverified/);
+      expect(Object.keys(bind<BatteryActions>("battery", at(model, attached)).acts as object)).not.toContain(
+        "setPowerSource",
+      );
+    }
     expect(buildCommand("powerSource", 1, at("T8124R", true))).toEqual(payload(1293, { charge_mode: 1 }));
     expect(buildCommand("powerSource", 0, at("T8140", false))).toEqual(payload(1293, { charge_mode: 0 }));
     const t9000 = Object.keys(bind<BatteryActions>("battery", at("T9000", false)).acts as object);
@@ -480,7 +477,7 @@ const _noSetCharging: Exact<"setCharging" extends keyof BatteryActions ? true : 
 // pinned here by both names it has carried.
 const _noCameraInfo: Exact<"cameraInfo" extends keyof BatteryActions ? true : false, false> = true;
 const _noPowerStats: Exact<"batteryPowerStats" extends keyof BatteryActions ? true : false, false> = true;
-// A sensor's low-battery flag: present only on a sensor, so optional on the surface.
+// A sensor's low-battery flag: present only on the `sensor` codec, so optional on the surface.
 const _batteryLow: Exact<undefined extends typeof bat.batteryLow ? true : false, true> = true;
 
 export const _surfaceAssertions = [

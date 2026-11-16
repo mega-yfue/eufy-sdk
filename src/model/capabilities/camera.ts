@@ -2,7 +2,7 @@ import { asBool, coerceEnumValue } from "../../core/util.js";
 import { DeviceType } from "../device-types.js";
 import { IndoorPushEvent } from "../push-events.js";
 import {
-  isCallDoorbell,
+  isUntriedDoorbell,
   isIndoorCamera,
   isIndoorCamMini,
   isIndoorPanTiltS350,
@@ -539,8 +539,8 @@ const LED_WIRE = bundleWires("led_on_off", "6014/1045", {
   "-": "T81A0 T84A1 T8790",
 });
 
-/** A C30/C31 has reported no 1716, so its LED is read on 1045 whatever it is written on. */
-const doorbellLed = (ctx: AvailabilityContext): boolean => hasCapability(ctx, "doorbell") && !isCallDoorbell(ctx);
+/** A C30/C31 or a video lock has reported no 1716, so its LED is read on 1045 whatever it is written on. */
+const doorbellLed = (ctx: AvailabilityContext): boolean => hasCapability(ctx, "doorbell") && !isUntriedDoorbell(ctx);
 
 /** Status LED on the wire {@link LED_WIRE} picks. */
 function statusLedCommand(on: boolean, ctx: CommandContext): Command {
@@ -595,7 +595,6 @@ const listedOptions =
     const listed = Object.keys(options);
     return listed.length && listed.length === members.length && !listed.includes("NaN") ? options : undefined;
   };
-const streamingOptions = listedOptions("live_streaming_resolution");
 const recordingOptions = listedOptions("record_resolution");
 
 /** `record_resolution`: 2731, 1023 `{quality}` or 1286 `{record_quality}`. Not built here: 1286 `param_data`. */
@@ -849,6 +848,7 @@ export const CAMERA_MEMBERS = {
     type: "enum",
     kind: "enum",
     enumValues: { 1: "Text Only", 2: "Included Thumbnail", 3: "Text First, Then Thumbnail" },
+    thing: ["notification_type"],
     provenance: "apk",
     available: offers("notification_type", NOTIFICATION_WIRE),
     description:
@@ -908,7 +908,7 @@ export const CAMERA_MEMBERS = {
     type: "number",
     kind: "enum",
     enumValues: STREAMING_QUALITY_TIERS,
-    enumValuesFor: streamingOptions,
+    thing: ["live_streaming_resolution"],
     provenance: "apk",
     available: offers("live_streaming_resolution", STREAMING_WIRE),
     unverifiedFor: (ctx) => STREAMING_WIRE(ctx) === CAMERA_CMD.STREAMING_QUALITY,
@@ -922,7 +922,7 @@ export const CAMERA_MEMBERS = {
       "camera's own resolution ladder — see CAMERA_CMD.STREAMING_QUALITY_SET. A value outside the tier set is REJECTED, not " +
       "clamped: every tier in range is a real quality, so a bad one would silently pick another.",
     write: (v, ctx) => {
-      const q = optionOf(v, streamingOptions(ctx) ?? STREAMING_QUALITY_TIERS);
+      const q = optionOf(v, STREAMING_QUALITY_TIERS);
       if (q == null) return undefined;
       return STREAMING_WIRE(ctx) === CAMERA_CMD.STREAMING_QUALITY
         ? setJson(CAMERA_CMD.STREAMING_QUALITY, { quality: q }, ctx)
