@@ -337,23 +337,20 @@ describe("lock capability — SmartDrop lid", () => {
   const things = parseThingsList({
     things_list: [{ profile: { product_code: "T8790" }, properties: [{ identifier: "smart_lock_onoff_status" }] }],
   }).T8790!;
-  const record = { model: "T8790", deviceType: DeviceType.SMART_DROP, params: { 2105: "1" }, things };
+  const record = { model: "T8790", deviceType: DeviceType.SMART_DROP, params: {}, things };
   const ctx: CommandContext = {
     channel: 0,
     codec: "camera",
     deviceType: DeviceType.SMART_DROP,
-    paramIds: new Set([2105]),
+    paramIds: new Set(),
     hasP2p: true,
   };
 
-  it("is a lock read on 2105 and opened with the level-2 set-payload 2100, never locked", async () => {
+  it("is a lock opened with the level-2 set-payload 2100, never locked", async () => {
     const sent: unknown[] = [];
     const dev = Device.fromRecord("T8790P0000000000", record);
     dev.bindActions(ctx, { dispatch: async (c) => void sent.push(c) });
     const lid = dev.lock!()!;
-    expect(lid.locked).toBe(false);
-    dev.applyParams({ 2105: "0" });
-    expect(lid.locked).toBe(true);
     await lid.unlock!();
     expect(sent).toEqual([
       {
@@ -372,30 +369,14 @@ describe("lock capability — SmartDrop lid", () => {
     expect("getAutoLockState" in lockOf(ctx, ff09).acts).toBe(false);
   });
 
-  it("reads 2105's 0/1 as its own apk evidence and leaves a lock's 6000 reading 4 alone as locked", () => {
-    const locked = resolveDevice(record).properties.find((p) => p.name === "locked")!;
-    expect(locked.provenance).toBe("verified");
-    expect(locked.readAliases).toEqual([expect.objectContaining({ paramType: 2105, provenance: "apk" })]);
-    const lock = Device.fromRecord("T8500P0000000000", { model: "T8500", params: { 6000: "0" } });
-    lock.bindActions({ channel: 0, codec: "lock", paramIds: new Set([6000]) }, { dispatch: async () => {} });
-    expect(lock.lock!()!.locked).toBe(false);
-  });
-
-  it("lands the lid's 2108 and status-update events as 2105, on a SmartDrop only", () => {
-    const frame = (cmd: number, payload: unknown, deviceType: number = DeviceType.SMART_DROP) =>
-      LOCK.decodeState!({
-        source: "p2p-frame",
-        stationSn: "T8790P0000000000",
-        commandId: 1351,
-        channel: 0,
-        deviceType,
-        json: { cmd, payload },
-      });
-    expect(frame(2108, { evt: 2 })).toEqual({ params: { 2105: "0" } });
-    expect(frame(2108, { evt: 1 })).toEqual({ params: { 2105: "1" } });
-    expect(frame(1946157057, { event_value: { type: 3, action: 0 } })).toEqual({ params: { 2105: "1" } });
-    expect(frame(1946157057, { event_value: { type: 3, action: 1 } })).toEqual({ params: { 2105: "0" } });
-    expect(frame(2108, { evt: 2 }, DeviceType.SOLO_CAMERA)).toBeNull();
+  it("reads no lid state: no wire seen on a standalone box fills it", () => {
+    const dev = Device.fromRecord("T8790P0000000000", record);
+    dev.bindActions(ctx, { dispatch: async () => {} });
+    dev.applyParams({ 2105: "0" });
+    expect(dev.lock!()!.locked).toBeUndefined();
+    const lid = { source: "p2p-frame", stationSn: "T8790P0000000000", commandId: 1351, channel: 0 } as const;
+    const evt = { cmd: 2108, payload: { evt: 2 } };
+    expect(LOCK.decodeState!({ ...lid, deviceType: DeviceType.SMART_DROP, json: evt })).toBeNull();
   });
 
   it("is opened standalone only", () => {

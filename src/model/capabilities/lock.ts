@@ -75,20 +75,6 @@ function openLid(ctx: CommandContext, sink: CommandSink): Promise<void> {
 }
 
 /**
- * The SmartDrop's lid reports as 2105 values, `"1"` open and `"0"` closed, the way the app's T8790 bundle
- * maps them: a 2108 event is closed when its `evt` is 2, a 1946157057 status update is open when its
- * `event_value` is `type` 3 with `action` 0.
- */
-function smartDropLid(signal: InboundSignal): string | undefined {
-  if (signal.source !== "p2p-frame" || !isSmartDrop(signal)) return undefined;
-  const p = signal.json?.payload as { evt?: unknown; event_value?: { type?: unknown; action?: unknown } } | undefined;
-  if (signal.json?.cmd === 2108 && p?.evt !== undefined) return Number(p.evt) === 2 ? "0" : "1";
-  const v = p?.event_value;
-  if (signal.json?.cmd === 1946157057 && v) return Number(v.type) === 3 && Number(v.action) === 0 ? "1" : "0";
-  return undefined;
-}
-
-/**
  * The actuation intent, or a refusal naming what is missing. Identity is a genuine precondition — the
  * frame carries the member fields — and a generated "not a valid value" message would misreport it.
  */
@@ -215,23 +201,18 @@ const rainModeAvailable = (ctx: CommandContext): boolean => overP2p(ctx) && spea
  */
 export const LOCK_MEMBERS = {
   /**
-   * The lock's own state, verified on param 6000: "4" = locked, "3" = unlocked. A SmartDrop reports its
-   * lid on 2105 instead, "1" = open and "0" = closed, which the app maps onto the same 3/4.
+   * The lock's own state, verified on param 6000: "4" = locked, "3" = unlocked.
    * `writtenElsewhere` points at the `lock`/`unlock` methods — a single `write` cannot express two
    * verbs that carry no value.
    */
   locked: {
     param: 6000,
-    readAliases: [
-      { paramType: 2105, available: isSmartDrop, decode: (raw) => String(raw).trim() === "0", provenance: "apk" },
-    ],
     type: "bool",
     kind: "boolean",
     provenance: "verified",
     writtenElsewhere: true,
     coerce: (raw) => String(raw).trim() === "4",
-    description:
-      "Lock state, true=locked (verified: param 6000, 4=locked, 3=unlocked; apk: SmartDrop lid on 2105, 1=open).",
+    description: "Lock state, true=locked (verified: param 6000, 4=locked, 3=unlocked).",
   },
   /**
    * Cell charge as a percentage, on param 1101 or smart-lock param 6001. Named `battery`
@@ -480,8 +461,6 @@ export const LOCK: CapabilityModule = {
   members: LOCK_MEMBERS,
   properties: propertiesOf(LOCK_MEMBERS),
   decodeState(signal) {
-    const lid = smartDropLid(signal);
-    if (lid !== undefined) return { params: { 2105: lid } };
     const report = nativeReport(signal);
     if (!report) return null;
     const params: Record<number, string> = {};

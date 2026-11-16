@@ -164,16 +164,11 @@ export interface ValueMember {
    * {@link aliases}, no value is supplied: it is the same write under a second name.
    */
   intentNames?: readonly string[];
-  /**
-   * Extra wire ids that also carry this value on some families, with their own polarity, family gate,
-   * value form and evidence.
-   */
+  /** Extra wire ids that also carry this value on some families, with their own polarity and family gate. */
   readAliases?: readonly {
     paramType: number;
     invert?: boolean;
     available?: (ctx: AvailabilityContext) => boolean;
-    decode?: PropertySpec["decode"];
-    provenance?: PropertySpec["provenance"];
   }[];
   /**
    * What the setter accepts, when the member's own kind and bounds do not say it well enough — an
@@ -657,15 +652,13 @@ export function propertiesOf(members: Members, ctx?: AvailabilityContext): Prope
         kind: dynamic ? "enum" : m.kind,
         unit: m.unit,
         enumValues,
-        provenance: promoted?.provenance ?? m.provenance,
+        provenance: m.provenance,
         invert: promoted?.invert ?? (ctx ? m.invertFor?.(ctx) : undefined) ?? m.invert,
-        decode: promoted?.decode ?? m.coerce,
+        decode: m.coerce,
         // A member with a getter-side `decode` reads a field out of a structured payload, so the
         // stored value is that payload — see `PropertySpec.raw`.
         raw: m.decode ? true : undefined,
-        readAliases: aliases
-          ?.slice(promoted ? 1 : 0)
-          .map(({ paramType, invert, decode, provenance }) => ({ paramType, invert, decode, provenance })),
+        readAliases: aliases?.slice(promoted ? 1 : 0).map(({ paramType, invert }) => ({ paramType, invert })),
         writable: (m.write !== undefined && !(ctx && m.unverifiedFor?.(ctx))) || m.writtenElsewhere === true,
         reported: ctx?.paramIds
           ? wasReported(m, borrowedBy(m, members), { ...ctx, paramIds: ctx.paramIds })
