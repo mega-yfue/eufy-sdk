@@ -162,7 +162,8 @@ export const CAMERA_CMD = {
    * SET_PAYLOAD envelope, signCode 8, plaintext `{"cmd":2730,"payload":{"transaction":"<epoch ms>",
    * "quality":N,"channel":0,"mode":0,"primary_view":0},"account_id":…}`. All four tiers captured
    * byte-exact and read back on parameter 1020; the station echoes the same payload back as a `1351`
-   * NOTIFY_PAYLOAD carrying the same `transaction`.
+   * NOTIFY_PAYLOAD carrying the same `transaction`. The current bundles send no `transaction` and put the
+   * camera's `device_channel` in `channel`.
    */
   STREAMING_QUALITY_SET: 2730,
 } as const;
@@ -302,15 +303,15 @@ export function resolveStreamingQuality(value: number): string | undefined {
  * accepted; anything outside the tier set is still refused rather than sent.
  */
 export function resolveStreamingQualityTier(value: number | string | boolean): number | undefined {
+  return optionOf(value, STREAMING_QUALITY_TIERS);
+}
+
+/** The option a value names: one of the option values, or a label in any case. Never a boolean. */
+function optionOf(value: number | string | boolean, options: Readonly<Record<number, string>>): number | undefined {
   if (typeof value === "boolean") return undefined;
-  if (typeof value === "string" && !/^\d+$/.test(value.trim())) {
-    const hit = Object.entries(STREAMING_QUALITY_TIERS).find(
-      ([, label]) => label.toLowerCase() === value.trim().toLowerCase(),
-    );
-    return hit ? Number(hit[0]) : undefined;
-  }
-  const tier = Number(value);
-  return Number.isInteger(tier) && STREAMING_QUALITY_TIERS[tier] != null ? tier : undefined;
+  const v = String(value).trim().toLowerCase();
+  const hit = Object.entries(options).find(([option, label]) => option === v || label.toLowerCase() === v);
+  return hit ? Number(hit[0]) : undefined;
 }
 
 /** Resolve a raw `quality` tier value to its resolution label — or `undefined`. */
@@ -334,10 +335,7 @@ export function resolveRecordingQualityValue(name: string): number | undefined {
  * string is looked up as a resolution name; a boolean is not a tier.
  */
 export function resolveRecordingQualityTier(value: number | string | boolean): number | undefined {
-  if (typeof value === "boolean") return undefined;
-  if (typeof value === "string" && !/^\d+$/.test(value.trim())) return resolveRecordingQualityValue(value);
-  const tier = Number(value);
-  return Number.isInteger(tier) && RECORDING_QUALITY_TIERS[tier] != null ? tier : undefined;
+  return optionOf(value, RECORDING_QUALITY_TIERS);
 }
 
 /**
@@ -349,15 +347,15 @@ export function resolveRecordingQualityTier(value: number | string | boolean): n
  * a tier.
  *
  * A device that reports a plain tier is still read (some models may); anything else — an unknown shape,
- * a mode with no entry, a tier not in {@link RECORDING_QUALITY_TIERS} — is `undefined` rather than a guess.
+ * a mode with no entry, a tier not among `options` — is `undefined` rather than a guess.
  */
-function decodeRecordingQualityTier(raw: unknown): number | undefined {
-  if (typeof raw === "number" || typeof raw === "string") return resolveRecordingQualityTier(raw);
+function decodeRecordingQualityTier(raw: unknown, options: Readonly<Record<number, string>>): number | undefined {
+  if (typeof raw === "number" || typeof raw === "string") return optionOf(raw, options);
   if (typeof raw !== "object" || raw === null) return undefined;
   const cfg = raw as Record<string, unknown>;
   const mode = cfg[`mode_${Number(cfg.cur_mode) || 0}`];
   const quality = typeof mode === "object" && mode !== null ? (mode as Record<string, unknown>).quality : undefined;
-  return typeof quality === "number" ? resolveRecordingQualityTier(quality) : undefined;
+  return typeof quality === "number" ? optionOf(quality, options) : undefined;
 }
 
 /**
@@ -494,7 +492,8 @@ const cameraThing =
  * description's `profile` names, corpus 2026-11-13) builds it. `groups` maps a wire to the product codes
  * sending it: `1045` on every topology, `6014/1045` standalone / HomeBase-attached (the bundle's
  * `getConnectType`), `-` nothing; `CODE__vN` where the bundle builds the resolved variant differently.
- * An unlisted product sends `fallback`. `undefined` is no wire.
+ * An unlisted product sends `fallback`. `undefined` is no wire. A station-only eufyCam (T811x, T814x,
+ * T816x) is never standalone, so it is listed only where its wire differs from the fallback's attached arm.
  */
 function bundleWires(identifier: string, fallback: string, groups: Readonly<Record<string, string>>) {
   const table = new Map<string, string>();
@@ -532,7 +531,7 @@ const cameraSwitch = offers("camera_on_off", POWER_WIRE);
  * level-2 only. ✅ 1716 verified live on a T8214, 1045 (level-1 int+string) on a HomeBase-attached T8425.
  */
 const LED_WIRE = bundleWires("led_on_off", "6014/1045", {
-  "1045": "T8028 T8111 T8112 T8113 T8114 T8140 T8142 T8144 T8160 T8160C T8161 T8162 T8420 T8423 T8452 T8453",
+  "1045": "T8028 T8420 T8423 T8452 T8453",
   "1716": "T8210 T8210C T8213 T8214 T8220 T8221 T8222 T8223 T8224",
   "1026": "T8200 T8200X T8201 T8201X T8202",
   "6014": "T8420X T8441 T8442",
@@ -565,7 +564,6 @@ function statusLedCommand(on: boolean, ctx: CommandContext): Command {
  */
 const NOTIFICATION_WIRE = bundleWires("notification_type", "6020/1289", {
   "6020": "T8122 T8123 T8124 T8124R T8130 T8131 T817L T8441 T8442",
-  "1289": "T8111 T8112 T8113 T8114 T8140 T8142 T8144 T8160 T8160C T8161 T8162",
   "6020/-": "T8150 T8151 T8214 T8223 T8224 T8420X T8422 T8423 T8424 T8425 T8426 T8452 T8453 T85M0 T85V0",
   "-":
     "T8203 T8210 T8210C T8213 T8220 T8221 T8222 T8530 T8200 T8201 T8202 T8200X T8201X T86P2 T8W11 T8531 " +
@@ -583,6 +581,22 @@ const STREAMING_WIRE = bundleWires("live_streaming_resolution", "2730", {
   "2730/-": "T85M0 T85V0",
   "-": "T8140 T8142 T8160 T8161 T8203 T8210 T8210C T8213 T8220 T8221 T8222 T8531 T81A0 T84A1 T8530 T8790",
 });
+
+/**
+ * The options a resolution identifier lists on this product, wire value (`associatedValue`) → its label,
+ * as the resolved description gives them: the values differ per wire and product (2K is 1 on a 1286
+ * product, 3 on a 2731 one). `undefined` where a listed wire value is missing or repeats.
+ */
+const listedOptions =
+  (identifier: string) =>
+  (ctx: AvailabilityContext): Record<number, string> | undefined => {
+    const members = ctx.things?.properties[identifier]?.members ?? [];
+    const options = Object.fromEntries(members.map((m) => [Number(m.wireValue), m.desc.trim()]));
+    const listed = Object.keys(options);
+    return listed.length && listed.length === members.length && !listed.includes("NaN") ? options : undefined;
+  };
+const streamingOptions = listedOptions("live_streaming_resolution");
+const recordingOptions = listedOptions("record_resolution");
 
 /** `record_resolution`: 2731, 1023 `{quality}` or 1286 `{record_quality}`. Not built here: 1286 `param_data`. */
 const RECORDING_WIRE = bundleWires("record_resolution", "2731", {
@@ -884,16 +898,16 @@ export const CAMERA_MEMBERS = {
    * dictionary already gives that id, and `Device` keys state by NAME — a member claiming 2730 under
    * this name would collide with it on a device reporting both.
    *
-   * `transaction` is part of the frame that was captured, so it is sent. The recording sibling's own
-   * confirmed frame carries no such field; neither is inferred from the other.
-   *
-   * Products whose bundle sends 1020 get the tier in the `1700` wrapper instead.
+   * 2730 and 2731 carry the camera channel and `mode` 0: the bundles derive `mode` from the reported
+   * 6243 value, which a command context does not carry. Products whose bundle sends 1020 get the tier in
+   * the `1700` wrapper instead. The options and their labels are the ones the description lists.
    */
   streamingQuality: {
     param: 1020,
     type: "number",
     kind: "enum",
     enumValues: STREAMING_QUALITY_TIERS,
+    enumValuesFor: streamingOptions,
     provenance: "apk",
     available: offers("live_streaming_resolution", STREAMING_WIRE),
     args: [{ name: "quality", kind: "enum", description: "A tier, or the name it maps to. 0 is Auto." }],
@@ -906,13 +920,13 @@ export const CAMERA_MEMBERS = {
       "camera's own resolution ladder — see CAMERA_CMD.STREAMING_QUALITY_SET. A value outside the tier set is REJECTED, not " +
       "clamped: every tier in range is a real quality, so a bad one would silently pick another.",
     write: (v, ctx) => {
-      const q = resolveStreamingQualityTier(v);
+      const q = optionOf(v, streamingOptions(ctx) ?? STREAMING_QUALITY_TIERS);
       if (q == null) return undefined;
       return STREAMING_WIRE(ctx) === CAMERA_CMD.STREAMING_QUALITY
         ? setJson(CAMERA_CMD.STREAMING_QUALITY, { quality: q }, ctx)
         : setPayload(
             CAMERA_CMD.STREAMING_QUALITY_SET,
-            { channel: 0, mode: 0, primary_view: 0, quality: q, transaction: String(Date.now()) },
+            { channel: ctx.channel, mode: 0, primary_view: 0, quality: q },
             ctx,
             0,
             undefined,
@@ -930,32 +944,30 @@ export const CAMERA_MEMBERS = {
     type: "string",
     provenance: "apk",
     available: offers("record_resolution", RECORDING_WIRE),
-    decode: (raw) => decodeRecordingQualityTier(raw),
+    decode: (raw, _codec, ctx) => decodeRecordingQualityTier(raw, recordingOptions(ctx) ?? RECORDING_QUALITY_TIERS),
     decodedKind: "enum",
     decodedValues: Object.keys(RECORDING_QUALITY_TIERS).map(Number),
-    // Label the decoded tiers so a host can render this as a labelled choice (a dropdown) rather than
-    // a bare number — same shape as `suction` and the sibling `streamingQuality`. `decode` still owns
-    // the value (a tier); these are only the tier→label map, keyed to match `decodedValues`.
     enumValues: RECORDING_QUALITY_TIERS,
+    enumValuesFor: recordingOptions,
     description:
       "RECORDING quality as a tier (2731) — distinct from streamingQuality, which is the live view. " +
       "The device reports the whole config — " +
       "`{cur_mode, mode_<n>:{quality}}`, read live off a T8170 — and the ACTIVE mode's tier is lifted out " +
       "of it on read. ✅ write wire verified live (T8425): 1350 SET_PAYLOAD " +
-      "{channel:0, mode:0, primary_view:0, quality:N}. Tier→label in RECORDING_QUALITY_TIERS / resolveRecordingQuality " +
-      "(verified on T8425). Where the product's bundle sends them instead: 1023 {quality} in the 1700 " +
+      "{channel, mode:0, primary_view:0, quality:N}. Tier→label in RECORDING_QUALITY_TIERS / resolveRecordingQuality " +
+      "(verified on T8425), or as the product's description lists them. Where the product's bundle sends them instead: 1023 {quality} in the 1700 " +
       "wrapper, or 1286 {record_quality} in the 1350 envelope.",
     args: [{ name: "quality", kind: "enum", description: "A tier; the resolution name it maps to is accepted too." }],
     ...accepts<RecordingQualityName>(),
     write: (v, ctx) => {
-      const q = resolveRecordingQualityTier(v);
+      const q = optionOf(v, recordingOptions(ctx) ?? RECORDING_QUALITY_TIERS);
       if (q == null) return undefined;
       const wire = RECORDING_WIRE(ctx);
       if (wire === CAMERA_CMD.VIDEO_RECORD_QUALITY) return setJson(wire, { quality: q }, ctx);
       if (wire === CAMERA_CMD.SET_RECORD_QUALITY) return setPayload(wire, { record_quality: q }, ctx);
       return setPayload(
         CAMERA_CMD.RECORDING_QUALITY_SET,
-        { channel: 0, mode: 0, primary_view: 0, quality: q },
+        { channel: ctx.channel, mode: 0, primary_view: 0, quality: q },
         ctx,
         0,
         undefined,

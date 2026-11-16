@@ -16,6 +16,7 @@ import {
 import type { RecordingQualityName } from "../camera.js";
 import { buildCommand } from "../index.js";
 import { actionSpecOf } from "../access.js";
+import { propertiesOf } from "../members.js";
 import { bind } from "./bind.js";
 import type { CameraActions } from "../camera.js";
 import { DeviceType } from "../../device-types.js";
@@ -38,7 +39,7 @@ const ctx = (channel = 0, extra: Partial<CommandContext> = {}): CommandContext =
 
 /**
  * A product's thing description as `get_things_list` returns it, each property's `eunmList` given by its
- * members' wire values, or `"bool"` for a boolean property. Parsed by the real parser.
+ * members' wire values (or `"wire=label"`), or `"bool"` for a boolean property. Parsed by the real parser.
  */
 const things = (props: Record<string, readonly string[] | "bool">): ThingDescription =>
   parseThingsList({
@@ -50,7 +51,12 @@ const things = (props: Record<string, readonly string[] | "bool">): ThingDescrip
           data_type:
             members === "bool"
               ? { type: "bool", specs: { defaultValue: "true" } }
-              : { type: "enum", specs: { eunmList: members.map((associatedValue) => ({ associatedValue })) } },
+              : {
+                  type: "enum",
+                  specs: {
+                    eunmList: members.map((m) => ({ associatedValue: m.split("=")[0], desc: m.split("=")[1] })),
+                  },
+                },
         })),
       },
     ],
@@ -474,6 +480,33 @@ describe("camera capability module", () => {
       });
     });
 
+    it("a station-only eufyCam has no entry: the fallback's attached arm is its wire", () => {
+      const led = (attached: boolean) =>
+        buildCommand("statusLed", true, at("T8111", attached, { paramIds: new Set([CAMERA_CMD.DEV_LED_SWITCH]) }));
+      expect(led(true)).toMatchObject({ param: CAMERA_CMD.DEV_LED_SWITCH });
+      expect(led(false), "the rule's standalone arm, no T8111 entry").toMatchObject({
+        param: CAMERA_CMD.IC_LED_STATUS,
+      });
+      expect(buildCommand("notificationStyle", 3, at("T8160", true))).toMatchObject({ cmd: CAMERA_CMD.PUSH_EFFECT });
+    });
+
+    it("recordingQuality: the description's options and labels, 2K being 1 on a 1286 product", () => {
+      const description = things({ record_resolution: ["1=2K HD", "2=Full HD(1080P)"] });
+      const c = at("T8140", true, { things: description, paramIds: new Set([CAMERA_CMD.RECORDING_QUALITY_SET]) });
+      expect(buildCommand("recordingQuality", "2K HD", c)).toMatchObject({
+        cmd: CAMERA_CMD.SET_RECORD_QUALITY,
+        payload: { record_quality: 1 },
+      });
+      expect(() => buildCommand("recordingQuality", 3, c)).toThrow(/must be one of 1\/2/);
+      const spec = actionSpecOf(camera(c).acts.setRecordingQuality)!;
+      expect(spec.args?.[0]).toMatchObject({ values: [1, 2] });
+      const property = propertiesOf(CAMERA_MEMBERS, c).find((p) => p.name === "recordingQuality");
+      expect(property?.enumValues).toEqual({ 1: "2K HD", 2: "Full HD(1080P)" });
+      const unnumbered = at("T8171", false, { things: things({ record_resolution: ["0", "0"] }) });
+      const tiers = propertiesOf(CAMERA_MEMBERS, unnumbered).find((p) => p.name === "recordingQuality");
+      expect(tiers?.enumValues, "a description numbering every option 0 says nothing").toEqual(RECORDING_QUALITY_TIERS);
+    });
+
     it("antiTheftDetection: 2735 where the v3 parser sends it, offered without a 1015 report", () => {
       expect(buildCommand("antiTheftDetection", true, at("T8172", false))).toMatchObject({
         kind: "set-payload",
@@ -633,7 +666,7 @@ describe("camera capability module", () => {
       expect(buildCommand("recordingQuality", 3, ctx(3))).toMatchObject({
         kind: "set-payload",
         cmd: CAMERA_CMD.RECORDING_QUALITY_SET,
-        payload: { channel: 0, mode: 0, primary_view: 0, quality: 3 },
+        payload: { channel: 3, mode: 0, primary_view: 0, quality: 3 },
         channel: 3,
         mValue3: 0,
       });
@@ -662,8 +695,8 @@ describe("camera capability module", () => {
       expect(buildCommand("recordingQuality", 3, ctx(0))).toMatchObject({
         cmd: CAMERA_CMD.RECORDING_QUALITY_SET,
       });
-      expect((cmd as { payload: Record<string, unknown> }).payload.transaction).toMatch(/^\d{13}$/);
-      expect(buildCommand("streamingQuality", "Max", ctx(2))).toMatchObject({ payload: { quality: 3 } });
+      expect((cmd as { payload: Record<string, unknown> }).payload.transaction).toBeUndefined();
+      expect(buildCommand("streamingQuality", "Max", ctx(2))).toMatchObject({ payload: { channel: 2, quality: 3 } });
     });
 
     it("streamingQuality is not offered where the product's bundle writes 1705, which the doorbell owns", () => {
