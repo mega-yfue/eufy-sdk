@@ -432,7 +432,7 @@ const _noSetCharging: Exact<"setCharging" extends keyof BatteryActions ? true : 
 // pinned here by both names it has carried.
 const _noCameraInfo: Exact<"cameraInfo" extends keyof BatteryActions ? true : false, false> = true;
 const _noPowerStats: Exact<"batteryPowerStats" extends keyof BatteryActions ? true : false, false> = true;
-// A sensor's low-battery flag: present only on the `sensor` codec, so optional on the surface.
+// A sensor's low-battery flag: present only on a sensor, so optional on the surface.
 const _batteryLow: Exact<undefined extends typeof bat.batteryLow ? true : false, true> = true;
 
 export const _surfaceAssertions = [

@@ -233,20 +233,21 @@ function cellGated<T extends Members>(members: T): T {
 }
 
 /**
- * False once the device resolved to the `sensor` codec. A contact / motion / entry sensor proves
- * `battery` from the level param (1101) just like a camera, but on a sensor 1101 is a NON-CELL sentinel,
- * not a fuel gauge — the field reports a fixed 0/30/32/33 cluster across every unit, not a varying charge
- * — and the sensor has none of the rest of this surface (no charge source or solar, no camera
- * working/recording mode, no cell health/temperature). A sensor's real battery is a BOOLEAN low-power
- * flag on its own param (`entrySensorBatState` 1552 / `motionSensorBatState` 1601), never a percentage,
- * which is the one member it gets (`batteryLow`). Keyed on the CODEC, not a model list: no security
- * sensor fuel-gauges a cell, so the whole family is covered the moment it resolves. Fails open — a record
- * with no resolved codec still publishes, the same safe direction as {@link notMainsCamera}.
+ * False on a sensor: a product whose description lists `sensor_is_low_power`, or, with no description
+ * fetched, one that resolved to the `sensor` codec. A contact / motion / entry sensor proves `battery`
+ * from the level param (1101) just like a camera, but on a sensor 1101 is a NON-CELL sentinel, not a fuel
+ * gauge — the field reports a fixed 0/30/32/33 cluster across every unit, not a varying charge — and the
+ * sensor has none of the rest of this surface (no charge source or solar, no camera working/recording
+ * mode, no cell health/temperature). A sensor's real battery is a BOOLEAN low-power flag on its own
+ * param (`entrySensorBatState` 1552 / `motionSensorBatState` 1601), which every bundle listing
+ * `sensor_is_low_power` reads into it, never a percentage. Fails open — a record with neither a
+ * description nor a resolved codec still publishes, the same safe direction as {@link notMainsCamera}.
  */
-const notSensor = (ctx: AvailabilityContext): boolean => ctx.codec !== "sensor";
+const notSensor = (ctx: AvailabilityContext): boolean =>
+  ctx.things ? !("sensor_is_low_power" in ctx.things.properties) : ctx.codec !== "sensor";
 
 /**
- * Withhold every battery member but `sensorOnly` on the `sensor` codec, composing with any gate a member
+ * Withhold every battery member but `sensorOnly` on a sensor ({@link notSensor}), composing with any gate a member
  * already carries (the cell gate's {@link notMainsCamera}, `level`'s lock check). A sensor
  * then exposes its low-battery flag and nothing else — rather than a bogus percentage plus a dozen
  * `unknown` camera-power reads for params it never speaks.
@@ -540,7 +541,7 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
   /**
    * A sensor's battery is low. The app reads the entry sensor's 1552 and the motion sensor's 1601 into the
    * same field (`sensor_is_low_power`, `asBoolean`), so one member reads whichever the sensor reports.
-   * Present on the `sensor` codec only: a camera or a lock reports a level instead.
+   * Present on a sensor only ({@link notSensor}): a camera or a lock reports a level instead.
    */
   batteryLow: {
     param: 1552,
@@ -554,8 +555,8 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
 } as const satisfies Members);
 
 /**
- * The published `battery` table: the full camera surface, minus every member but `batteryLow` on the
- * `sensor` codec — a sensor's 1101 is a non-cell sentinel and it has none of the camera power reads, so
+ * The published `battery` table: the full camera surface, minus every member but `batteryLow` on a
+ * sensor — a sensor's 1101 is a non-cell sentinel and it has none of the camera power reads, so
  * it exposes its low-battery flag alone (see {@link notOnSensor}). Every getter, setter and description derives from this.
  *
  * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
