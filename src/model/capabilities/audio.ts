@@ -187,8 +187,8 @@ export const AUDIO_MEMBERS = {
     available: (ctx: AvailabilityContext) =>
       isCameraCodec(ctx) && described("audio_recording_on_off")(ctx) && audioRecordingBundle(ctx) !== null,
     description:
-      "Record audio with video. HomeBase-attached: 1350/1288 `{channel, record_mute}` (inverted; readback " +
-      "verified on T8425). Standalone: 1700/6012 `{enable}`. The other AUDIO_RECORDING_BUNDLE wires are read, not written.",
+      "Record audio with video. HomeBase-attached: 1350/1288 `{channel, record_mute}` (inverted). " +
+      "Standalone: 1700/6012 `{enable}`. The other AUDIO_RECORDING_BUNDLE wires are read, not written.",
     write: (v, ctx) => audioRecordingCommand(asBool(v), ctx),
   },
   /**
