@@ -190,6 +190,33 @@ export class DeviceChannelUnresolvedError extends Error {
 }
 
 /**
+ * A command the device did not apply: it answered with a result code other than success (`0`), or it did not
+ * answer within `timeoutMs`.
+ *
+ * `code` is the device's answer carried unmapped (negative codes such as `-104` and `-108` are refusals); it
+ * is absent when no answer came, which says nothing about whether the command landed.
+ */
+export class CommandResultError extends Error {
+  constructor(
+    /** The device the command addressed. */
+    readonly sn: string,
+    /** The wire command the answer was awaited for. */
+    readonly commandId: number,
+    /** The device's result code, absent when it never answered. */
+    readonly code: number | undefined,
+    /** How long the answer was awaited. */
+    readonly timeoutMs: number,
+  ) {
+    super(
+      code === undefined
+        ? `${sn} did not answer command ${commandId} within ${timeoutMs}ms`
+        : `${sn} refused command ${commandId} with code ${code}`,
+    );
+    this.name = "CommandResultError";
+  }
+}
+
+/**
  * Why {@link MediaProvider.downloadRecording} returned no recording.
  *
  * - `invalid-recording` — the recording name is not one the camera's station could hold.
@@ -465,6 +492,27 @@ export function observeCommand(command: Command, observation: CommandObservation
 /** Read capability-owned observation policy at the client boundary. @internal */
 export function commandObservation(command: Command): CommandObservation | undefined {
   return (command as Command & { [COMMAND_OBSERVATION]?: CommandObservation })[COMMAND_OBSERVATION];
+}
+
+/**
+ * The raw value a write leaves under the param its member reads, which is what that param holds once the
+ * device answers the write with success. @internal
+ */
+export interface CommandReflection {
+  param: number;
+  raw: string;
+}
+
+const COMMAND_REFLECTION = Symbol("command-reflection");
+
+/** Attach the readback a write leaves on success, without changing its enumerable transport intent. @internal */
+export function reflectCommand(command: Command, reflection: CommandReflection): Command {
+  return Object.defineProperty(command, COMMAND_REFLECTION, { configurable: true, value: reflection });
+}
+
+/** Read the readback a write leaves on success at the client boundary. @internal */
+export function commandReflection(command: Command): CommandReflection | undefined {
+  return (command as Command & { [COMMAND_REFLECTION]?: CommandReflection })[COMMAND_REFLECTION];
 }
 
 /**

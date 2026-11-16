@@ -17,12 +17,14 @@
  */
 import {
   observeCommand,
+  reflectCommand,
   type Command,
   type CommandSink,
   type Ff09SettingsReader,
   type MediaProvider,
   type RawDpCodec,
 } from "../../core/contracts.js";
+import { asBool } from "../../core/util.js";
 import { describedAction, readBool, readNum, readStr } from "./access.js";
 import type { ActionArgSpec, ActionSpec, AvailabilityContext, CapabilityStateReader, CommandContext } from "./types.js";
 import type { Capability } from "../types.js";
@@ -695,9 +697,11 @@ export function memberWrite(
   ctx: CommandContext,
 ): Command {
   if (!inDomain(m, value, ctx)) throw new Error(rejection(name, m, value, ctx));
-  const cmd = m.write?.(value, ctx);
-  if (!cmd) throw new Error(rejection(name, m, value, ctx));
+  const written = m.write?.(value, ctx);
+  if (!written) throw new Error(rejection(name, m, value, ctx));
   const reflected = m.observation?.reflects(value, ctx);
+  const readback = reflected ? { param: reflected.param, raw: String(reflected.expected) } : readbackOf(m, value, ctx);
+  const cmd = readback ? reflectCommand(written, readback) : written;
   return m.observation && reflected
     ? observeCommand(cmd, {
         event: m.observation.event,
@@ -709,6 +713,30 @@ export function memberWrite(
         timeoutMs: m.observation.timeoutMs,
       })
     : cmd;
+}
+
+/**
+ * The param this member's getter reads on this device and the raw value that reads back as `value`: what
+ * that param holds once the device answers the write with success, as the vendor app records it after a
+ * successful write (`UpdateParams.doUpdateParams`). The read param, not the written one — the two differ
+ * where a family reports under an alias. Absent where the getter decodes or coerces the raw value, which
+ * has no inverse here, where this device reads the member from no param, or where its read does not follow
+ * the write, which an observation that named no readback states.
+ */
+function readbackOf(
+  m: ValueMember,
+  value: boolean | number | string,
+  ctx: CommandContext,
+): { param: number; raw: string } | undefined {
+  if (m.param === undefined || m.writeOnly || m.decode || m.coerce || m.observation) return undefined;
+  const primary = !m.readAvailable || m.readAvailable(ctx);
+  const alias = primary ? undefined : m.readAliases?.find((a) => !a.available || a.available(ctx));
+  if (!primary && !alias) return undefined;
+  const invert = (alias?.invert ?? m.invertFor?.(ctx) ?? m.invert) === true;
+  return {
+    param: alias?.paramType ?? m.param,
+    raw: m.type === "bool" ? String(Number(asBool(value) !== invert)) : String(value),
+  };
 }
 
 /**
