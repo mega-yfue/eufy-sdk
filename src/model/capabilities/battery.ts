@@ -3,6 +3,7 @@ import { asBool } from "../../core/util.js";
 import { setStationScalar, setPayload, setScalar, hasCapability } from "./access.js";
 import type { AvailabilityContext, CapabilityModule, CommandContext } from "./types.js";
 import { accepts, propertiesOf, type Members, type Surface } from "./members.js";
+import { described } from "./thing-description.js";
 import type { Command } from "../../core/contracts.js";
 
 /**
@@ -330,7 +331,7 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
     provenance: "verified",
     coerce: decodePowerSource,
     requires: [BATTERY_PARAM.POWER_CHARGE],
-    available: (ctx: AvailabilityContext) => !ctx.things || "power_charge_mode" in ctx.things.properties,
+    available: described("power_charge_mode"),
     args: [{ name: "source", kind: "enum", description: "The raw value, or the name `battery`/`external`." }],
     ...accepts<PowerSourceName>(),
     description:
