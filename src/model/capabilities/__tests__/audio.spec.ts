@@ -1,4 +1,5 @@
 import { AUDIO, AUDIO_CMD, type AudioActions } from "../audio.js";
+import { parseThingsList } from "../thing-description.js";
 import { bind } from "./bind.js";
 import { DeviceType } from "../../device-types.js";
 import { buildCommand, detectCapabilities } from "../index.js";
@@ -19,6 +20,11 @@ const ctx = (channel = 0, extra: Partial<CommandContext> = {}): CommandContext =
   paramIds: new Set<number>(),
   ...extra,
 });
+/** A description listing `ids`, as the things service gives one per product. */
+const things = (...ids: string[]) =>
+  parseThingsList({
+    things_list: [{ profile: { product_code: "T0000" }, properties: ids.map((identifier) => ({ identifier })) }],
+  }).T0000!;
 
 describe("audio capability module", () => {
   it("declares the mic/speaker/volume schema", () => {
@@ -106,6 +112,18 @@ describe("audio capability module", () => {
       { kind: "set-param", param: 1241, value: 1, form: "direct-binary", channel: 3 },
       { kind: "set-param", param: 1230, value: 40, form: "direct-binary", channel: 3 },
     ]);
+  });
+
+  it("offers each camera control only where the product's description lists it", () => {
+    const ids = ["microphone_on_off", "speaker_on_off", "speaker_volume", "audio_recording_on_off"];
+    const setters = (c: CommandContext) => {
+      const a = bind<AudioActions>("audio", c).acts;
+      return [a.setMicrophone, a.setSpeaker, a.setVolume, a.setAudioRecording].map((f) => typeof f);
+    };
+    expect(setters(ctx(0, { things: things() }))).toEqual(Array(4).fill("undefined"));
+    expect(setters(ctx(0, { things: things(...ids) }))).toEqual(Array(4).fill("function"));
+    expect(setters(ctx(0, { codec: "lock", things: things(...ids) }))).toEqual(Array(4).fill("undefined"));
+    expect(setters(ctx())).toEqual(Array(4).fill("function"));
   });
 
   describe("station (HomeBase) voice-prompt audio", () => {

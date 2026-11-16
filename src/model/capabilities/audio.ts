@@ -1,6 +1,7 @@
 import { asBool } from "../../core/util.js";
 import { isCallDoorbell, isHomeBase, HOMEBASE_TYPES } from "../device-family.js";
 import { setScalar, setPayload, isCameraCodec, hasCapability } from "./access.js";
+import { described } from "./thing-description.js";
 import { propertiesOf, type Members, type Surface } from "./members.js";
 import type { AvailabilityContext, CapabilityModule, CommandContext } from "./types.js";
 import type { Command } from "../../core/contracts.js";
@@ -80,7 +81,7 @@ export const AUDIO_MEMBERS = {
     type: "bool",
     kind: "boolean",
     provenance: "verified",
-    available: isCameraCodec,
+    available: (ctx: AvailabilityContext) => isCameraCodec(ctx) && described("microphone_on_off")(ctx),
     description: "Microphone on/off (1240 AUDIO_MICROPHONE_SWITCH; 1=on/0=off). Wire verified live on T8214.",
     write: (v, ctx) => audioCommand(AUDIO_CMD.AUDIO_MICROPHONE, asBool(v) ? 1 : 0, ctx),
   },
@@ -94,7 +95,7 @@ export const AUDIO_MEMBERS = {
     type: "bool",
     kind: "boolean",
     provenance: "verified",
-    available: isCameraCodec,
+    available: (ctx: AvailabilityContext) => isCameraCodec(ctx) && described("speaker_on_off")(ctx),
     description: "Speaker on/off (1241 AUDIO_SPEAKER_SWITCH; 1=on/0=off). Wire verified live on T8214.",
     write: (v, ctx) => audioCommand(AUDIO_CMD.AUDIO_SPEAKER, asBool(v) ? 1 : 0, ctx),
   },
@@ -109,7 +110,7 @@ export const AUDIO_MEMBERS = {
     unit: "%",
     kind: "percent",
     provenance: "verified",
-    available: isCameraCodec,
+    available: (ctx: AvailabilityContext) => isCameraCodec(ctx) && described("speaker_volume")(ctx),
     min: 0,
     max: 100,
     intentNames: ["volume"],
@@ -124,7 +125,7 @@ export const AUDIO_MEMBERS = {
     kind: "boolean",
     invert: true,
     provenance: "verified",
-    available: isCameraCodec,
+    available: (ctx: AvailabilityContext) => isCameraCodec(ctx) && described("audio_recording_on_off")(ctx),
     description:
       "Record audio with video (1288 record_mute, inverted). ✅ HW-verified on T8425: readback flips " +
       "(on→1288=0, off→1288=1). The write is a 1350 SET_PAYLOAD on the device channel with " +
