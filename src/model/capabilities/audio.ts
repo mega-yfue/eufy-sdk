@@ -63,40 +63,49 @@ function audioCommand(param: number, value: number, ctx: CommandContext): Comman
 }
 
 /**
- * Products whose bundle sends audio recording on a wire neither arm below speaks: T8200/T8201 `1700`/1029
- * `{status}`, T81A0/T84A1 1288 inside `1700`, T8441/T8442/T8452/T8453 a non-inverted `record_mute`. The T8790
- * bundle builds no command for it.
+ * Where a product's bundle departs from `AudioRecordingOnOffParser` v1. `status`: T8200/T8201 send `1700`/1029
+ * `{status}`, 1 = on, and read it on 2042. `flc`: the T8420's `AudioRecordingOnOffParser1366`. `plain`: T8441/T8442
+ * keep 6012 standalone but send `record_mute` NOT inverted on a HomeBase. `plainEnable`: T8452/T8453 send
+ * `{record_mute, channel, enable}`, not inverted, on every topology. `null` withholds the setter: T81A0/T84A1 send
+ * 1288 inside `1700` `param_data`, which no SDK shape carries, and the T8790 bundle builds no command.
  */
-const UNSPOKEN_AUDIO_RECORDING: ReadonlySet<string> = new Set([
-  "T8200",
-  "T8201",
-  "T81A0",
-  "T84A1",
-  "T8441",
-  "T8442",
-  "T8452",
-  "T8453",
-  "T8790",
-]);
+const AUDIO_RECORDING_BUNDLE: Readonly<Record<string, "status" | "flc" | "plain" | "plainEnable" | null>> = {
+  T8200: "status",
+  T8201: "status",
+  T8420: "flc",
+  T8441: "plain",
+  T8442: "plain",
+  T8452: "plainEnable",
+  T8453: "plainEnable",
+  T81A0: null,
+  T84A1: null,
+  T8790: null,
+};
+const audioRecordingBundle = (ctx: AvailabilityContext) => AUDIO_RECORDING_BUNDLE[ctx.model ?? ""];
+/** v1's connect-type split, which `plain` keeps: a standalone camera sends and reads 6012 `{enable}`. */
+const sendsEnable = (ctx: AvailabilityContext) => {
+  const bundle = audioRecordingBundle(ctx);
+  return !ctx.homeBaseAttached && (bundle === undefined || bundle === "plain");
+};
 
 /**
  * Audio recording as the product's bundle sends it (`AudioRecordingOnOffParser` v1, its connect type
  * deciding): 1288 `{channel, record_mute}` inverted when the camera hangs off a HomeBase, `1700`/6012
- * `{enable}` when it stands alone. The T8420 bundle's `AudioRecordingOnOffParser1366` sends 1366 on every
- * topology.
+ * `{enable}` when it stands alone, unless {@link AUDIO_RECORDING_BUNDLE} says otherwise.
  */
 function audioRecordingCommand(on: boolean, ctx: CommandContext): Command {
-  if (ctx.model === "T8420")
+  const bundle = audioRecordingBundle(ctx);
+  if (bundle === "status") return setJson(1029, { status: on ? 1 : 0 }, ctx);
+  if (bundle === "flc")
     return setPayload(AUDIO_CMD.AUDIO_RECORDING_FLC, { storage_audio_switch: on ? 0 : 1 }, ctx, 0, undefined, "auto");
-  if (!ctx.homeBaseAttached) return setJson(AUDIO_CMD.AUDIO_RECORDING_STANDALONE, { enable: on ? 1 : 0 }, ctx);
-  return setPayload(
-    AUDIO_CMD.AUDIO_RECORDING,
-    { channel: ctx.channel, record_mute: on ? 0 : 1 },
-    ctx,
-    0,
-    undefined,
-    "auto",
-  );
+  if (sendsEnable(ctx)) return setJson(AUDIO_CMD.AUDIO_RECORDING_STANDALONE, { enable: on ? 1 : 0 }, ctx);
+  const flag = on ? 1 : 0;
+  const payload = {
+    channel: ctx.channel,
+    record_mute: bundle ? flag : 1 - flag,
+    ...(bundle === "plainEnable" && { enable: flag }),
+  };
+  return setPayload(AUDIO_CMD.AUDIO_RECORDING, payload, ctx, 0, undefined, "auto");
 }
 
 /**
@@ -165,16 +174,23 @@ export const AUDIO_MEMBERS = {
     type: "bool",
     kind: "boolean",
     invert: true,
+    invertFor: (ctx) => (audioRecordingBundle(ctx)?.startsWith("plain") ? false : undefined),
+    readAvailable: (ctx) => !["status", "flc"].includes(audioRecordingBundle(ctx) ?? ""),
     readAliases: [
-      { paramType: AUDIO_CMD.AUDIO_RECORDING_STANDALONE, available: (ctx) => !ctx.homeBaseAttached },
-      { paramType: AUDIO_CMD.AUDIO_RECORDING_FLC, invert: true, available: (ctx) => ctx.model === "T8420" },
+      { paramType: 2042, invert: false, available: (ctx) => audioRecordingBundle(ctx) === "status" },
+      { paramType: AUDIO_CMD.AUDIO_RECORDING_STANDALONE, available: sendsEnable },
+      {
+        paramType: AUDIO_CMD.AUDIO_RECORDING_FLC,
+        invert: true,
+        available: (ctx) => audioRecordingBundle(ctx) === "flc",
+      },
     ],
     provenance: "apk",
     available: (ctx: AvailabilityContext) =>
-      isCameraCodec(ctx) && described("audio_recording_on_off")(ctx) && !UNSPOKEN_AUDIO_RECORDING.has(ctx.model ?? ""),
+      isCameraCodec(ctx) && described("audio_recording_on_off")(ctx) && audioRecordingBundle(ctx) !== null,
     description:
       "Record audio with video. HomeBase-attached: 1350/1288 `{channel, record_mute}` (inverted; readback " +
-      "verified on T8425). Standalone: 1700/6012 `{enable}`. T8420: 1350/1366 `{storage_audio_switch}` (inverted).",
+      "verified on T8425). Standalone: 1700/6012 `{enable}`. Per-product bundle wires in AUDIO_RECORDING_BUNDLE.",
     write: (v, ctx) => audioRecordingCommand(asBool(v), ctx),
   },
   /**

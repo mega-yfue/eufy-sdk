@@ -1,9 +1,10 @@
-import { AUDIO, AUDIO_CMD, type AudioActions } from "../audio.js";
+import { AUDIO, AUDIO_CMD, AUDIO_MEMBERS, type AudioActions } from "../audio.js";
+import { propertiesOf } from "../members.js";
 import { parseThingsList } from "../thing-description.js";
 import { bind } from "./bind.js";
 import { DeviceType } from "../../device-types.js";
 import { buildCommand, detectCapabilities } from "../index.js";
-import type { CommandContext } from "../types.js";
+import type { AvailabilityContext, CommandContext } from "../types.js";
 import type { Command } from "../../../core/contracts.js";
 
 /**
@@ -105,9 +106,39 @@ describe("audio capability module", () => {
         payload: { storage_audio_switch: 0 },
       });
     });
-    it("audioRecording is withheld where the bundle sends a wire neither arm speaks, or none", () => {
+    it.each([
+      ["T8200", false, { kind: "set-json", param: 1029, data: { status: 1 } }, { paramType: 2042, readAliases: [] }],
+      ["T8441", true, { cmd: 1288, payload: { channel: 2, record_mute: 1 } }, { paramType: 1288 }],
+      [
+        "T8452",
+        false,
+        { cmd: 1288, payload: { channel: 2, record_mute: 1, enable: 1 } },
+        { paramType: 1288, readAliases: [] },
+      ],
+    ])(
+      "audioRecording on %s (attached %s) sends and reads its bundle's wire, not inverted",
+      async (model, homeBaseAttached, wire, read) => {
+        const b = bind<AudioActions>(
+          "audio",
+          ctx(2, { model, homeBaseAttached, things: things("audio_recording_on_off") }),
+        );
+        await b.acts.setAudioRecording!(true);
+        expect(b.sent[0]).toMatchObject(wire);
+        const props = propertiesOf(AUDIO_MEMBERS, { codec: "camera", model, homeBaseAttached } as AvailabilityContext);
+        expect(props.find((p) => p.name === "audioRecording")).toMatchObject({ ...read, invert: false });
+      },
+    );
+    it("audioRecording on T8420 reads only 1366, inverted", () => {
+      const props = propertiesOf(AUDIO_MEMBERS, { codec: "camera", model: "T8420" } as AvailabilityContext);
+      expect(props.find((p) => p.name === "audioRecording")).toMatchObject({
+        paramType: 1366,
+        invert: true,
+        readAliases: [],
+      });
+    });
+    it("audioRecording is withheld where the bundle sends 1288 inside 1700, or nothing", () => {
       const desc = things("audio_recording_on_off");
-      for (const model of ["T8200", "T84A1", "T8441", "T8790"])
+      for (const model of ["T81A0", "T84A1", "T8790"])
         expect(bind<AudioActions>("audio", ctx(0, { model, things: desc })).acts.setAudioRecording).toBeUndefined();
     });
     it("audioRecording property is inverted (raw 1288 = record_mute)", () => {
