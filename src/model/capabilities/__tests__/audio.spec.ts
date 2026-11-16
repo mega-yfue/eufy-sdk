@@ -93,48 +93,32 @@ describe("audio capability module", () => {
         (buildCommand("audioRecording", false, attached) as Extract<Command, { kind: "set-payload" }>).payload,
       ).toEqual({ channel: 3, record_mute: 1 });
     });
-    it("audioRecording standalone → 1700/6012 {enable}; T8420 → 1350/1366 {storage_audio_switch} inverted", () => {
+    it("audioRecording standalone → 1700/6012 {enable}", () => {
       expect(buildCommand("audioRecording", true, ctx(0, { homeBaseAttached: false }))).toEqual({
         kind: "set-json",
         param: 6012,
         data: { enable: 1 },
         channel: 0,
       });
-      expect(buildCommand("audioRecording", true, ctx(2, { model: "T8420", homeBaseAttached: true }))).toMatchObject({
-        kind: "set-payload",
-        cmd: 1366,
-        payload: { storage_audio_switch: 0 },
-      });
     });
     it.each([
-      ["T8200", false, { kind: "set-json", param: 1029, data: { status: 1 } }, { paramType: 2042, readAliases: [] }],
-      ["T8441", true, { cmd: 1288, payload: { channel: 2, record_mute: 1 } }, { paramType: 1288 }],
-      [
-        "T8452",
-        false,
-        { cmd: 1288, payload: { channel: 2, record_mute: 1, enable: 1 } },
-        { paramType: 1288, readAliases: [] },
-      ],
+      ["T8200", false, { paramType: 2042, readAliases: [] }],
+      ["T8420", true, { paramType: 1366, invert: true, readAliases: [] }],
+      ["T8441", true, { paramType: 1288, invert: false }],
+      ["T8452", false, { paramType: 1288, invert: false, readAliases: [] }],
     ])(
-      "audioRecording on %s (attached %s) sends and reads its bundle's wire, not inverted",
-      async (model, homeBaseAttached, wire, read) => {
-        const b = bind<AudioActions>(
-          "audio",
-          ctx(2, { model, homeBaseAttached, things: things("audio_recording_on_off") }),
-        );
-        await b.acts.setAudioRecording!(true);
-        expect(b.sent[0]).toMatchObject(wire);
+      "audioRecording on %s (attached %s) reads its bundle's wire but has no setter until a device confirms it",
+      (model, homeBaseAttached, read) => {
+        const c = ctx(2, { model, homeBaseAttached, things: things("audio_recording_on_off") });
+        expect(bind<AudioActions>("audio", c).acts.setAudioRecording).toBeUndefined();
+        expect(() => buildCommand("audioRecording", true, c)).toThrow(/audioRecording write wire unverified/);
         const props = propertiesOf(AUDIO_MEMBERS, { codec: "camera", model, homeBaseAttached } as AvailabilityContext);
-        expect(props.find((p) => p.name === "audioRecording")).toMatchObject({ ...read, invert: false });
+        expect(props.find((p) => p.name === "audioRecording")).toMatchObject(read);
       },
     );
-    it("audioRecording on T8420 reads only 1366, inverted", () => {
-      const props = propertiesOf(AUDIO_MEMBERS, { codec: "camera", model: "T8420" } as AvailabilityContext);
-      expect(props.find((p) => p.name === "audioRecording")).toMatchObject({
-        paramType: 1366,
-        invert: true,
-        readAliases: [],
-      });
+    it("audioRecording on a standalone T8441 keeps its 6012 setter", () => {
+      const c = ctx(2, { model: "T8441", homeBaseAttached: false, things: things("audio_recording_on_off") });
+      expect(buildCommand("audioRecording", true, c)).toMatchObject({ param: 6012, data: { enable: 1 } });
     });
     it("audioRecording is withheld where the bundle sends 1288 inside 1700, or nothing", () => {
       const desc = things("audio_recording_on_off");

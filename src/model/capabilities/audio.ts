@@ -89,23 +89,20 @@ const sendsEnable = (ctx: AvailabilityContext) => {
 };
 
 /**
- * Audio recording as the product's bundle sends it (`AudioRecordingOnOffParser` v1, its connect type
- * deciding): 1288 `{channel, record_mute}` inverted when the camera hangs off a HomeBase, `1700`/6012
- * `{enable}` when it stands alone, unless {@link AUDIO_RECORDING_BUNDLE} says otherwise.
+ * Audio recording as `AudioRecordingOnOffParser` v1 sends it, its connect type deciding: `1700`/6012 `{enable}`
+ * when the camera stands alone, 1288 `{channel, record_mute}` inverted when it hangs off a HomeBase. The other
+ * {@link AUDIO_RECORDING_BUNDLE} wires are bundle-only, so the member is `unverifiedFor` them.
  */
 function audioRecordingCommand(on: boolean, ctx: CommandContext): Command {
-  const bundle = audioRecordingBundle(ctx);
-  if (bundle === "status") return setJson(1029, { status: on ? 1 : 0 }, ctx);
-  if (bundle === "flc")
-    return setPayload(AUDIO_CMD.AUDIO_RECORDING_FLC, { storage_audio_switch: on ? 0 : 1 }, ctx, 0, undefined, "auto");
   if (sendsEnable(ctx)) return setJson(AUDIO_CMD.AUDIO_RECORDING_STANDALONE, { enable: on ? 1 : 0 }, ctx);
-  const flag = on ? 1 : 0;
-  const payload = {
-    channel: ctx.channel,
-    record_mute: bundle ? flag : 1 - flag,
-    ...(bundle === "plainEnable" && { enable: flag }),
-  };
-  return setPayload(AUDIO_CMD.AUDIO_RECORDING, payload, ctx, 0, undefined, "auto");
+  return setPayload(
+    AUDIO_CMD.AUDIO_RECORDING,
+    { channel: ctx.channel, record_mute: on ? 0 : 1 },
+    ctx,
+    0,
+    undefined,
+    "auto",
+  );
 }
 
 /**
@@ -186,11 +183,12 @@ export const AUDIO_MEMBERS = {
       },
     ],
     provenance: "apk",
+    unverifiedFor: (ctx) => audioRecordingBundle(ctx) != null && !sendsEnable(ctx),
     available: (ctx: AvailabilityContext) =>
       isCameraCodec(ctx) && described("audio_recording_on_off")(ctx) && audioRecordingBundle(ctx) !== null,
     description:
       "Record audio with video. HomeBase-attached: 1350/1288 `{channel, record_mute}` (inverted; readback " +
-      "verified on T8425). Standalone: 1700/6012 `{enable}`. Per-product bundle wires in AUDIO_RECORDING_BUNDLE.",
+      "verified on T8425). Standalone: 1700/6012 `{enable}`. The other AUDIO_RECORDING_BUNDLE wires are read, not written.",
     write: (v, ctx) => audioRecordingCommand(asBool(v), ctx),
   },
   /**
