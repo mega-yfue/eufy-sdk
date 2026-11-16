@@ -103,7 +103,6 @@ export type {
 } from "./thing-description.js";
 import { DISPLAY } from "./display.js";
 import { LOCATE } from "./locate.js";
-import { SMART_DROP } from "./smart-drop.js";
 import { INFO } from "./info.js";
 
 // Per-capability typed action objects. Type-only — no runtime coupling. These feed the
@@ -131,7 +130,6 @@ import type { DisplayActions } from "./display.js";
 import type { SuctionActions } from "./suction.js";
 import type { MowerActions } from "./mower.js";
 import type { LocateActions } from "./locate.js";
-import type { SmartDropActions } from "./smart-drop.js";
 import type { DeviceInfo } from "./info.js";
 import type { CusPushAlarmType } from "../push-events.js";
 
@@ -162,7 +160,6 @@ const MODULES: CapabilityModule[] = [
   SUCTION,
   MOWER,
   LOCATE,
-  SMART_DROP,
   DISPLAY,
   LINK,
   INFO,
@@ -829,8 +826,6 @@ export interface DeviceActionMap {
   mower: MowerActions;
   /** RoboVac locate (find-robot beep): `locating`; `locate(on?)`. */
   locate: LocateActions;
-  /** SmartDrop parcel box: `openLid()`. */
-  smartDrop: SmartDropActions;
   /** Smart Display (read-only): `battery`. No display write is captured. */
   display: DisplayActions;
   /** Identity metadata (read-only): `{ manufacturer, model, serialNumber, name, deviceType?, firmwareVersion?, hardwareVersion? }`. */
@@ -1061,7 +1056,6 @@ export type {
   SuctionActions,
   MowerActions,
   LocateActions,
-  SmartDropActions,
 };
 /**
  * The member table each `*Actions` type is DERIVED from (`LockActions = Surface<typeof LOCK_MEMBERS>`),
@@ -1087,7 +1081,6 @@ export { MOTION_MEMBERS } from "./motion.js";
 export { PTZ_MEMBERS } from "./ptz.js";
 export { RTSP_MEMBERS } from "./rtsp.js";
 export { SIREN_MEMBERS } from "./siren.js";
-export { SMART_DROP_MEMBERS } from "./smart-drop.js";
 export { SMART_LIGHT_MEMBERS } from "./smart-light.js";
 export { SMOKE_MEMBERS } from "./smoke.js";
 export { DISPLAY_MEMBERS, type DisplayActions } from "./display.js";

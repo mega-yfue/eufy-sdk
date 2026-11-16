@@ -245,7 +245,6 @@ describe("lock capability module", () => {
     ).not.toContain("lock");
     expect(caps({ params: {}, name: "Front Door Lock", things: things("nightvision_type") })).not.toContain("lock");
     expect(caps({ params: {}, name: "Smart Safe" })).not.toContain("lock");
-    expect(caps({ model: "T8790", params: {}, things: things("smart_lock_onoff_status") })).not.toContain("lock");
     expect(caps({ deviceType: DeviceType.LOCK_WIFI, params: {} })).toContain("lock");
     expect(caps({ params: { 6000: "3" } })).toContain("lock");
   });
@@ -336,6 +335,57 @@ describe("lock capability module", () => {
       });
       expect(dev.capabilities).toContain("lock");
     });
+  });
+});
+
+describe("lock capability — SmartDrop lid", () => {
+  const things = parseThingsList({
+    things_list: [{ profile: { product_code: "T8790" }, properties: [{ identifier: "smart_lock_onoff_status" }] }],
+  }).T8790!;
+  const record = { model: "T8790", deviceType: DeviceType.SMART_DROP, params: {}, things };
+  const ctx: CommandContext = {
+    channel: 0,
+    codec: "camera",
+    deviceType: DeviceType.SMART_DROP,
+    paramIds: new Set(),
+    hasP2p: true,
+  };
+
+  it("is a lock opened with the level-2 set-payload 2100, never locked", async () => {
+    const sent: unknown[] = [];
+    const dev = Device.fromRecord("T8790P0000000000", record);
+    dev.bindActions(ctx, { dispatch: async (c) => void sent.push(c) });
+    const lid = dev.lock!()!;
+    await lid.unlock!();
+    expect(sent).toEqual([
+      {
+        kind: "set-payload",
+        cmd: 2100,
+        payload: { isOpen: 1, userIndex: 0 },
+        channel: 0,
+        mValue3: 0,
+        level2Sender: "set-payload",
+      },
+    ]);
+    expect(lid.lock).toBeUndefined();
+    expect(lid.setAutoLock).toBeUndefined();
+    expect(lid.setRainMode).toBeUndefined();
+    const ff09 = { getAutoLockState: vi.fn() } as unknown as Ff09SettingsReader;
+    expect("getAutoLockState" in lockOf(ctx, ff09).acts).toBe(false);
+  });
+
+  it("reads no lid state: no wire seen on a standalone box fills it", () => {
+    const dev = Device.fromRecord("T8790P0000000000", record);
+    dev.bindActions(ctx, { dispatch: async () => {} });
+    dev.applyParams({ 2105: "0" });
+    expect(dev.lock!()!.locked).toBeUndefined();
+    const lid = { source: "p2p-frame", stationSn: "T8790P0000000000", commandId: 1351, channel: 0 } as const;
+    const evt = { cmd: 2108, payload: { evt: 2 } };
+    expect(LOCK.decodeState!({ ...lid, deviceType: DeviceType.SMART_DROP, json: evt })).toBeNull();
+  });
+
+  it("is opened standalone only", () => {
+    expect(lockOf({ ...ctx, stationSerial: "T8030P0000000000" }).acts.unlock).toBeUndefined();
   });
 });
 
