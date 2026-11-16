@@ -209,13 +209,13 @@ export const CELL_PARAMS: readonly number[] = [
   BATTERY_PARAM.BATTERY_POWER_DATAS,
 ];
 
-/** `COMMAND_APP_TEST_WIRING`, the probe whose answer the v2 bundles read `power_charge_mode` from (-505 = Battery). */
+/** `COMMAND_APP_TEST_WIRING`, the probe answer the v2 bundles read `power_charge_mode` from: -505 = Battery. */
 const TEST_WIRING = 6254;
 
 /**
  * The products whose settings bundle builds `power_charge_mode` as something other than the 1350
  * SET_PAYLOAD `{charge_mode}` on 1293 every other bundle sends (corpus 2026-11-13). `PowerChargeModeParser("v2")`
- * sends 1350 {@link TEST_WIRING} with no payload whatever the value; `PowerChargeModeParser1700` sends the
+ * sends 1350 {@link TEST_WIRING} with no payload whatever the value, so it sets nothing; `PowerChargeModeParser1700` sends the
  * 1700 wrapper `{enable}` on 1293; the SoloCam bundle's inline case sends that `{enable}` unless the camera
  * hangs off a HomeBase (`connectHB`). The description has no variant that tells them apart.
  */
@@ -227,6 +227,7 @@ const POWER_CHARGE_BUILDER: Readonly<Partial<Record<string, "test-wiring" | "ena
       (c) => [c, "standalone-enable"] as const,
     ),
   ]);
+const readsTestWiring = (ctx: AvailabilityContext) => POWER_CHARGE_BUILDER[ctx.model ?? ""] === "test-wiring";
 
 /**
  * Apply {@link notMainsCamera} to every member reading a {@link CELL_PARAMS} param, as the table is built.
@@ -338,7 +339,8 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
    * report 5) read as `undefined` — `enumValues` holds only the two that are confirmed.
    *
    * The write is the product's settings-bundle builder for `power_charge_mode`, {@link POWER_CHARGE_BUILDER};
-   * the setter accepts a NAME as well as the index the getter answers.
+   * the setter accepts a NAME as well as the index the getter answers. A v2 product has no setter and reads
+   * the value off {@link TEST_WIRING}, decoded as its bundle does.
    *
    * Offered where the product's description lists `power_charge_mode`. No description hides nothing. The
    * T9000 description lists it and its bundle builds no command.
@@ -351,17 +353,22 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
     provenance: "apk",
     coerce: decodePowerSource,
     requires: [BATTERY_PARAM.POWER_CHARGE],
+    readAvailable: (ctx) => !readsTestWiring(ctx),
+    readAliases: [
+      { paramType: TEST_WIRING, available: readsTestWiring, coerce: (raw) => (Number(raw) === -505 ? 0 : 1) },
+    ],
+    unverifiedFor: readsTestWiring,
     available: (ctx: AvailabilityContext) => ctx.model !== "T9000" && described("power_charge_mode")(ctx),
     args: [{ name: "source", kind: "enum", description: "The raw value, or the name `battery`/`external`." }],
     ...accepts<PowerSourceName>(),
     description:
       "Configured power source (1293): 0 = Battery, 1 = External Solar Panel. Read verified live on T8124R. " +
+      "Where the app probes the wiring instead, read-only from 6254 (-505 = Battery). " +
       "The richer raw APP_CMD_SET_POWER_SOURCE blob is surfaced separately as `powerSourceInfo` (6445). " +
       "Format varies by model (plain int or JSON {power_source:N}); a value beyond 0/1 reads undefined.",
     write: (v, ctx) => {
       const mode = v === "external" ? 1 : v === "battery" ? 0 : asBool(v) ? 1 : 0;
       const builder = POWER_CHARGE_BUILDER[ctx.model ?? ""];
-      if (builder === "test-wiring") return setPayload(TEST_WIRING, {}, ctx, 0, undefined, "auto");
       if (builder === "enable" || (builder === "standalone-enable" && !ctx.homeBaseAttached))
         return setJson(BATTERY_PARAM.POWER_CHARGE, { enable: mode }, ctx);
       return setPayload(BATTERY_PARAM.POWER_CHARGE, { charge_mode: mode }, ctx, 0, undefined, "auto");

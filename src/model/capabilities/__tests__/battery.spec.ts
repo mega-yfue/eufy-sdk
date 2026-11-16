@@ -315,8 +315,10 @@ describe("battery capability module", () => {
       mValue3: 0,
       form: "auto",
     });
-    expect(buildCommand("powerSource", 1, at("T8171", false))).toEqual(payload(6254, {}));
-    expect(buildCommand("powerSource", 0, at("T8171", false))).toEqual(payload(6254, {}));
+    expect(() => buildCommand("powerSource", 1, at("T8171", false)), "v2 sets nothing").toThrow(/unverified/);
+    expect(Object.keys(bind<BatteryActions>("battery", at("T8171", false)).acts as object)).not.toContain(
+      "setPowerSource",
+    );
     expect(buildCommand("powerSource", 1, at("T8150", true))).toEqual({
       kind: "set-json",
       param: 1293,
@@ -333,6 +335,19 @@ describe("battery capability module", () => {
     expect(buildCommand("powerSource", 0, at("T8140", false))).toEqual(payload(1293, { charge_mode: 0 }));
     const t9000 = Object.keys(bind<BatteryActions>("battery", at("T9000", false)).acts as object);
     expect(t9000, "lists it, builds no command").not.toContain("setPowerSource");
+  });
+
+  it("reads a v2 product's powerSource off the 6254 probe answer, -505 = Battery, as its bundle does", () => {
+    const of = (model: string, probe: string) =>
+      Device.fromRecord(`${model}P0000000000`, {
+        deviceType: 30,
+        model,
+        category: "eufy_security",
+        params: { 1101: "88", 1293: "1", 6254: probe },
+      } as never).getProperty("powerSource")?.value;
+    expect(of("T8171", "-505")).toBe(0);
+    expect(of("T8171", "0")).toBe(1);
+    expect(of("T8140", "-505"), "everyone else keeps 1293").toBe(1);
   });
 
   /**
