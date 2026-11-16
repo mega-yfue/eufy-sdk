@@ -28,7 +28,10 @@ function connectedAgo(target: P2PSession, ms: number): void {
 }
 
 function negotiate(target: P2PSession, cipherId = 3): void {
-  (target as unknown as { negotiateLevel2Key(payload: Buffer): void }).negotiateLevel2Key(gatewayInfo(cipherId));
+  (target as unknown as { negotiateLevel2Key(payload: Buffer, version: number): void }).negotiateLevel2Key(
+    gatewayInfo(cipherId),
+    8,
+  );
 }
 
 /**

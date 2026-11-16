@@ -862,6 +862,11 @@ export const SECURITY_PARAMS: Record<number, ParamDef> = {
     type: "bool",
     provenance: "apk",
   },
+  1823: {
+    name: "smokeSensorLastSmokeEvt",
+    type: "number",
+    provenance: "apk",
+  },
   1825: {
     name: "sirenSensorSetAlarmVol",
     type: "number",

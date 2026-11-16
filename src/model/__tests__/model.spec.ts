@@ -23,6 +23,13 @@ import { isHomeBase } from "../device-family.js";
 // VACUUM_DP is the capability's own wire vocabulary (internal — not on the barrel), so a spec imports
 // it by direct path, the same way the P2P command specs import `CAMERA_CMD`.
 import { VACUUM_DP } from "../capabilities/vacuum-clean.js";
+import { parseThingsList } from "../capabilities/thing-description.js";
+
+/** A description of product `code` listing only the given identifiers. */
+const described = (code: string, ...identifiers: string[]) =>
+  parseThingsList({
+    things_list: [{ profile: { product_code: code }, properties: identifiers.map((identifier) => ({ identifier })) }],
+  })[code]!;
 
 describe("classify (device_type → codec)", () => {
   it("maps known DeviceType numbers to their codec family", () => {
@@ -150,7 +157,8 @@ describe("resolveDevice — 3-tier composition", () => {
   it("does not advertise a spotlight from the params reported by T8171", () => {
     // Three T8171 units on firmware 1.2.1.6 reported precisely these light-detection params.
     const params = { 1400: "0", 1401: "80", 1403: "1" };
-    const e30 = resolveDevice({ model: "T8171", deviceType: DeviceType.SOLO_CAMERA_E30, params });
+    const things = described("T8171", "nightvision_type");
+    const e30 = resolveDevice({ model: "T8171", deviceType: DeviceType.SOLO_CAMERA_E30, params, things });
     expect(e30.capabilities).not.toContain("light");
     const properties = e30.properties.map((p) => p.name);
     for (const name of ["light", "brightness", "spotlightEnabled", "colorTemp"]) {
@@ -159,7 +167,7 @@ describe("resolveDevice — 3-tier composition", () => {
     expect(resolveDevice({ model: "T8170", deviceType: 48, params }).capabilities).toContain("light");
     for (const [param, value] of Object.entries(params)) {
       expect(
-        resolveDevice({ model: "T8171", deviceType: DeviceType.SOLO_CAMERA_E30, params: { [param]: value } })
+        resolveDevice({ model: "T8171", deviceType: DeviceType.SOLO_CAMERA_E30, params: { [param]: value }, things })
           .capabilities,
       ).not.toContain("light");
     }
@@ -167,7 +175,8 @@ describe("resolveDevice — 3-tier composition", () => {
 
   it("does not advertise a spotlight from the params reported by an Indoor Cam S350 (T8416)", () => {
     const params = { 1400: "0", 1401: "70", 1403: "1", 1410: "100" };
-    const s350 = resolveDevice({ model: "T8416", deviceType: DeviceType.INDOOR_PT_CAMERA_S350, params });
+    const things = described("T8416", "nightvision_type");
+    const s350 = resolveDevice({ model: "T8416", deviceType: DeviceType.INDOOR_PT_CAMERA_S350, params, things });
     expect(s350.capabilities).not.toContain("light");
     const properties = s350.properties.map((p) => p.name);
     for (const name of ["light", "brightness", "spotlightEnabled", "colorTemp"]) {
@@ -175,22 +184,21 @@ describe("resolveDevice — 3-tier composition", () => {
     }
   });
 
-  it.each([undefined, DeviceType.CAMERA_POE_S4])(
-    "recognizes PoE S4 pan-tilt without reported preset parameters (device type %s)",
-    (deviceType) => {
-      expect(
-        resolveDevice({ model: "T8E00", category: "eufy_security", deviceType, params: {} }).capabilities,
-      ).toContain("ptz");
-    },
-  );
+  it("recognizes PoE S4 pan-tilt without reported preset parameters, from its device type or its description", () => {
+    const things = parseThingsList({
+      things_list: [{ profile: { product_code: "T0000" }, actions: [{ identifier: "ptz_action_control" }] }],
+    }).T0000!;
+    const caps = (rec: object) =>
+      resolveDevice({ model: "T0000", category: "eufy_security", params: {}, ...rec }).capabilities;
+    expect(caps({ deviceType: DeviceType.CAMERA_POE_S4 })).toContain("ptz");
+    expect(caps({ things })).toContain("ptz");
+  });
 
   it("a normal solar cam (T8124R) is NOT pan-tilt — the mistaken model hint is gone", () => {
     // T8124R (deviceType 62 = SOLO_CAMERA_SPOTLIGHT_SOLAR) is a FIXED solar cam: it reports no PT param
     // and isn't a PT deviceType. An unfounded `\bT8124R\b` model hint used to grant it ptz anyway;
     // confirmed on a real owned unit that it does not pan/tilt, so the hint was removed.
     expect(resolveDevice({ model: "T8124R", deviceType: 62 }).capabilities).not.toContain("ptz");
-    // Genuine PT models still resolve via their real signals — a name hint (S340) and a PT deviceType.
-    expect(resolveDevice({ model: "SoloCam S340" }).capabilities).toContain("ptz");
     expect(resolveDevice({ deviceType: 48 }).capabilities).toContain("ptz"); // OUTDOOR_PT_CAMERA
   });
 
@@ -367,10 +375,6 @@ describe("doorbell — confirmed against real T8214", () => {
 
   it.each([5, 7, 16, 91, 93, 94])("types any record of the app's doorbell deviceType %i as a doorbell", (t) => {
     expect(resolveDevice({ model: "T8299", deviceType: t }).capabilities).toContain("doorbell");
-  });
-
-  it.each(["T8201", "T8212", "T8220", "T8222"])("types the app's doorbell model %s as a doorbell", (model) => {
-    expect(resolveDevice({ model }).capabilities).toContain("doorbell");
   });
 
   it("types the T8210C variant as a doorbell, like the T8210", () => {

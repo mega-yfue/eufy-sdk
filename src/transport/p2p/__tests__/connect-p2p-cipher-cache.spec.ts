@@ -131,7 +131,10 @@ describe("P2PCommandRouter.ensureStation — resolveCipherKey cache", () => {
     const gatewayInfo = Buffer.alloc(64);
     gatewayInfo.writeUInt16LE(10, 0);
 
-    (session as unknown as { negotiateLevel2Key(payload: Buffer): void }).negotiateLevel2Key(gatewayInfo);
+    (session as unknown as { negotiateLevel2Key(payload: Buffer, version: number): void }).negotiateLevel2Key(
+      gatewayInfo,
+      8,
+    );
 
     expect(await session.awaitLevel2Key(1_000)).toBe(false);
     expect(getCiphers).toHaveBeenCalledTimes(1);

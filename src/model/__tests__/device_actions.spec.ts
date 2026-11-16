@@ -1,7 +1,8 @@
 import { Device } from "../device.js";
 import { buildCommand } from "../capabilities/index.js";
 import { LIGHT_CMD } from "../capabilities/light.js";
-import { PTZ, PtzDirection } from "../capabilities/ptz.js";
+import { PtzDirection } from "../capabilities/ptz.js";
+import { DeviceType } from "../device-types.js";
 import type { CommandContext, CloudRecord } from "../types.js";
 import type { Command, CommandSink } from "../../core/contracts.js";
 
@@ -15,7 +16,7 @@ import type { Command, CommandSink } from "../../core/contracts.js";
  * Test values are read straight from the modules (not hardcoded ids), so a module change can't
  * leave a stale copy here.
  */
-const PT_DEVICE_TYPE = PTZ.detection!.deviceTypes![0]; // vendor-guaranteed pan-tilt
+const PT_DEVICE_TYPE = DeviceType.OUTDOOR_PT_CAMERA;
 const SPOTLIGHT_PARAM = LIGHT_CMD.FLOODLIGHT_SWITCH; // presence ⇒ `light`
 const makeDevice = (rec: Parameters<typeof Device.fromRecord>[1]) => Device.fromRecord("SN1", rec);
 
