@@ -135,10 +135,6 @@ export const CAMERA_CMD = {
    *
    * Wire from the app's own JS: a scalar `params:{value:0|1}`. Emitted with the **adaptive** form so
    * topology picks the level — level-2/direct on a HomeBase-attached device, level-1 on a standalone.
-   *
-   * ⚠️ Replay + readback on a **HomeBase-attached** T8425 (1015 read `0` → write → `1` → restore): the
-   * frame is accepted and persisted, NOT byte-compared to the app's, and the T8425's description does
-   * not list the switch, so it shows the device stores 1015, not that the product has the feature.
    */
   EAS_SWITCH: 1015,
   /**
@@ -441,8 +437,8 @@ function readsNightVisionOn2002(ctx: AvailabilityContext): boolean {
 }
 
 /**
- * A privacy-mode power write does not reliably move the enablement report: measured on a T8410 behind a
- * HomeBase 3, which still reflects it under 2001, and on an attached S350, which does not.
+ * A privacy-mode power write does not reliably move the enablement report: a device reporting 2001
+ * reflects it there, the HomeBase-attached S350 ({@link hasPrivacyPower}) does not.
  */
 function hasUnreflectedPower(ctx: CommandContext): boolean {
   return POWER_WIRE(ctx) === CAMERA_CMD.PRIVACY_MODE && (hasPrivacyPower(ctx) || !ctx.paramIds.has(2001));
@@ -459,8 +455,7 @@ function hasPrivacyPower(ctx: CommandContext): boolean {
 /**
  * Camera power on the wire {@link POWER_WIRE} picks: 1035 with the family polarity, or privacy mode
  * (6250 `{switch}`, 6090 `{value}`) carrying the inverse. The 6250 envelope keeps mValue3=0 and the camera
- * channel; ✅ a T8410 behind a HomeBase 3 switched on and off with it. The HomeBase-attached S350
- * ({@link hasPrivacyPower}) takes the same id as {@link privacyCommand}'s burst, ✅ observed live on a T8416.
+ * channel. The HomeBase-attached S350 ({@link hasPrivacyPower}) takes the same id as {@link privacyCommand}'s burst.
  */
 function powerCommand(on: boolean, ctx: CommandContext): Command {
   const wire = POWER_WIRE(ctx);
@@ -533,7 +528,7 @@ const privacyStatusPower = (ctx: AvailabilityContext): boolean => POWER_WIRE(ctx
 
 /**
  * `led_on_off`. 1716 rides the `1350` envelope `{light_enable}` with its default mValue3, so it stays
- * level-2 only. ✅ 1716 verified live on a T8214, 1045 (level-1 int+string) on a HomeBase-attached T8425.
+ * level-2 only; 1045 is level-1 int+string.
  */
 const LED_WIRE = bundleWires("led_on_off", "6014/1045", {
   "1045": "T8028 T8420 T8423 T8452 T8453",
@@ -858,8 +853,8 @@ export const CAMERA_MEMBERS = {
     available: offers("notification_type", NOTIFICATION_WIRE),
     description:
       "How much a detection push carries: text only, a thumbnail, or text then a thumbnail. Standalone " +
-      "on CMD_INDOOR_PUSH_NOTIFY_TYPE 6020 (all three values wire-verified live on a standalone T8171, " +
-      "1700 wrapper, read back on the cloud param); HomeBase-attached on SET_PUSH_EFFECT 1289 " +
+      "on CMD_INDOOR_PUSH_NOTIFY_TYPE 6020 in the 1700 wrapper, read back on the cloud param; " +
+      "HomeBase-attached on SET_PUSH_EFFECT 1289 " +
       "{notification_style}, from the product's bundle. A value outside the enum is REJECTED, not " +
       "clamped: every neighbouring value is a real style, so a bad one would silently select the wrong notification.",
     write: (v, ctx) => {
@@ -962,8 +957,8 @@ export const CAMERA_MEMBERS = {
       "The device reports the whole config — " +
       "`{cur_mode, mode_<n>:{quality}}`, read live off a T8170 — and the ACTIVE mode's tier is lifted out " +
       "of it on read. ✅ write wire verified live (T8425): 1350 SET_PAYLOAD " +
-      "{channel, mode:0, primary_view:0, quality:N}. Tier→label in RECORDING_QUALITY_TIERS / resolveRecordingQuality " +
-      "(verified on T8425), or as the product's description lists them. Where the product's bundle sends them instead: 1023 {quality} in the 1700 " +
+      "{channel, mode:0, primary_view:0, quality:N}. Tier→label in RECORDING_QUALITY_TIERS / resolveRecordingQuality, " +
+      "or as the product's description lists them. Where the product's bundle sends them instead: 1023 {quality} in the 1700 " +
       "wrapper, or 1286 {record_quality} in the 1350 envelope.",
     args: [{ name: "quality", kind: "enum", description: "A tier; the resolution name it maps to is accepted too." }],
     ...accepts<RecordingQualityName>(),
@@ -999,8 +994,7 @@ export const CAMERA_MEMBERS = {
     description:
       "Anti-theft detection on/off (1015 APP_CMD_EAS_SWITCH; the app parses it as " +
       "anti_theft_detection_switch). Adaptive scalar {value:0|1}, or 2735 APP_CMD_NEW_EAS_SWITCH {value} " +
-      "in the 1350 envelope where the product's bundle sends it. ⚠️ 1015 replay+readback confirmed on a " +
-      "HomeBase-attached T8425 only — see CAMERA_CMD.EAS_SWITCH.",
+      "in the 1350 envelope where the product's bundle sends it.",
     write: (v, ctx) =>
       ANTI_THEFT_WIRE(ctx) === CAMERA_CMD.NEW_EAS_SWITCH
         ? setPayload(CAMERA_CMD.NEW_EAS_SWITCH, { value: asBool(v) ? 1 : 0 }, ctx)
