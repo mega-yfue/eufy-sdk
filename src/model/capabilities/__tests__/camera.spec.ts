@@ -392,7 +392,7 @@ describe("camera capability module", () => {
       expect(buildCommand("notificationStyle", 3, at("T8425", true))).toBeUndefined();
     });
 
-    it("statusLed: 6014 standalone, 1045 attached, 1716 and 1026 on the doorbells that send them", () => {
+    it("statusLed: 6014 standalone, 1045 attached, 1716 on the doorbells that send it, 1026 unverified", () => {
       const led = (model: string, attached: boolean) =>
         buildCommand("statusLed", true, at(model, attached, { paramIds: new Set([CAMERA_CMD.DEV_LED_SWITCH]) }));
       expect(led("T8171", false)).toMatchObject({
@@ -406,14 +406,10 @@ describe("camera capability module", () => {
         form: "int-string",
       });
       expect(led("T8223", false)).toMatchObject({ kind: "set-payload", cmd: CAMERA_CMD.DOORBELL_LED });
-      expect(led("T8200", false)).toMatchObject({
-        kind: "set-json",
-        param: CAMERA_CMD.DOORBELL_LED_NIGHT,
-        data: { status: 1 },
-      });
+      expect(() => led("T8200", false), "1026 is bundle-only").toThrow(/unverified/);
     });
 
-    it("power: privacy mode while attached, 6090 standalone where the bundle sends it", () => {
+    it("power: privacy mode while attached, 6090 unverified standalone where the bundle sends it", () => {
       expect(buildCommand("on", true, at("T8400", true))).toMatchObject({
         kind: "set-payload",
         cmd: CAMERA_CMD.PRIVACY_MODE,
@@ -425,27 +421,24 @@ describe("camera capability module", () => {
         kind: "set-param",
         param: CAMERA_CMD.CAMERA_ENABLE,
       });
-      expect(buildCommand("off", false, at("T8414", false))).toMatchObject({
-        kind: "set-json",
-        param: CAMERA_CMD.PRIVACY_MODE_STATUS,
-        data: { value: 1 },
-      });
+      expect(() => buildCommand("off", false, at("T8414", false)), "6090 is bundle-only").toThrow(/unverified/);
+      const t8414 = camera(at("T8414", false)).acts;
+      expect([t8414.off, t8414.setEnabled, t8414.setPrivacy]).toEqual([undefined, undefined, undefined]);
       expect(buildCommand("on", true, at("T8110", false))).toMatchObject({ cmd: CAMERA_CMD.PRIVACY_MODE });
     });
 
-    it("streamingQuality: 1020 standalone where the bundle sends it, 2730 attached", () => {
-      expect(buildCommand("streamingQuality", 2, at("T8410", false))).toMatchObject({
-        kind: "set-json",
-        param: CAMERA_CMD.STREAMING_QUALITY,
-        data: { quality: 2 },
-      });
+    it("streamingQuality: 1020 unverified where the bundle sends it, 2730 attached", () => {
+      expect(() => buildCommand("streamingQuality", 2, at("T8410", false)), "1020 is bundle-only").toThrow(
+        /unverified/,
+      );
+      expect(() => buildCommand("streamingQuality", 2, at("T8150", false))).toThrow(/unverified/);
       expect(buildCommand("streamingQuality", 2, at("T8410", true))).toMatchObject({
         cmd: CAMERA_CMD.STREAMING_QUALITY_SET,
       });
       expect(buildCommand("streamingQuality", 2, at("T8122", true))).toBeUndefined();
     });
 
-    it("recordingQuality: 1023, and 1286 on the variant the bundle builds it for", () => {
+    it("recordingQuality: 1023 and 1286 unverified where the bundle sends them, 2731 attached", () => {
       const variant = resolveThing(
         parseThingsList({
           things_list: [
@@ -465,16 +458,13 @@ describe("camera capability module", () => {
         }).T0000!,
         { firmwareVersion: "2.0" },
       );
-      expect(buildCommand("recordingQuality", 2, at("T8123", false))).toMatchObject({
-        kind: "set-json",
-        param: CAMERA_CMD.VIDEO_RECORD_QUALITY,
-        data: { quality: 2 },
-      });
-      expect(buildCommand("recordingQuality", 2, at("T8123", false, { things: variant }))).toMatchObject({
-        kind: "set-payload",
-        cmd: CAMERA_CMD.SET_RECORD_QUALITY,
-        payload: { record_quality: 2 },
-      });
+      expect(() => buildCommand("recordingQuality", 2, at("T8123", false)), "1023 is bundle-only").toThrow(
+        /unverified/,
+      );
+      expect(() => buildCommand("recordingQuality", 2, at("T8123", false, { things: variant })), "1286").toThrow(
+        /unverified/,
+      );
+      expect(() => buildCommand("recordingQuality", 2, at("T8140", true)), "1286 attached").toThrow(/unverified/);
       expect(buildCommand("recordingQuality", 2, at("T8410", true))).toMatchObject({
         cmd: CAMERA_CMD.RECORDING_QUALITY_SET,
       });
@@ -490,12 +480,12 @@ describe("camera capability module", () => {
       expect(buildCommand("notificationStyle", 3, at("T8160", true))).toMatchObject({ cmd: CAMERA_CMD.PUSH_EFFECT });
     });
 
-    it("recordingQuality: the description's options and labels, 2K being 1 on a 1286 product", () => {
+    it("recordingQuality: the description's options and labels", () => {
       const description = things({ record_resolution: ["1=2K HD", "2=Full HD(1080P)"] });
-      const c = at("T8140", true, { things: description, paramIds: new Set([CAMERA_CMD.RECORDING_QUALITY_SET]) });
+      const c = at("T8410", true, { things: description, paramIds: new Set([CAMERA_CMD.RECORDING_QUALITY_SET]) });
       expect(buildCommand("recordingQuality", "2K HD", c)).toMatchObject({
-        cmd: CAMERA_CMD.SET_RECORD_QUALITY,
-        payload: { record_quality: 1 },
+        cmd: CAMERA_CMD.RECORDING_QUALITY_SET,
+        payload: { quality: 1 },
       });
       expect(() => buildCommand("recordingQuality", 3, c)).toThrow(/must be one of 1\/2/);
       const spec = actionSpecOf(camera(c).acts.setRecordingQuality)!;
@@ -507,12 +497,11 @@ describe("camera capability module", () => {
       expect(tiers?.enumValues, "a description numbering every option 0 says nothing").toEqual(RECORDING_QUALITY_TIERS);
     });
 
-    it("antiTheftDetection: 2735 where the v3 parser sends it, offered without a 1015 report", () => {
-      expect(buildCommand("antiTheftDetection", true, at("T8172", false))).toMatchObject({
-        kind: "set-payload",
-        cmd: CAMERA_CMD.NEW_EAS_SWITCH,
-        payload: { value: 1 },
-      });
+    it("antiTheftDetection: 2735 unverified where the v3 parser sends it", () => {
+      expect(() => buildCommand("antiTheftDetection", true, at("T8172", false)), "2735 is bundle-only").toThrow(
+        /unverified/,
+      );
+      expect(camera(at("T8172", false)).acts.setAntiTheftDetection).toBeUndefined();
       expect(buildCommand("antiTheftDetection", true, at("T8171", false))).toBeUndefined();
     });
 
@@ -666,7 +655,7 @@ describe("camera capability module", () => {
       expect(buildCommand("recordingQuality", 3, ctx(3))).toMatchObject({
         kind: "set-payload",
         cmd: CAMERA_CMD.RECORDING_QUALITY_SET,
-        payload: { channel: 3, mode: 0, primary_view: 0, quality: 3 },
+        payload: { channel: 0, mode: 0, primary_view: 0, quality: 3 },
         channel: 3,
         mValue3: 0,
       });
@@ -695,8 +684,8 @@ describe("camera capability module", () => {
       expect(buildCommand("recordingQuality", 3, ctx(0))).toMatchObject({
         cmd: CAMERA_CMD.RECORDING_QUALITY_SET,
       });
-      expect((cmd as { payload: Record<string, unknown> }).payload.transaction).toBeUndefined();
-      expect(buildCommand("streamingQuality", "Max", ctx(2))).toMatchObject({ payload: { channel: 2, quality: 3 } });
+      expect((cmd as { payload: Record<string, unknown> }).payload.transaction).toMatch(/^\d{13}$/);
+      expect(buildCommand("streamingQuality", "Max", ctx(2))).toMatchObject({ payload: { channel: 0, quality: 3 } });
     });
 
     it("streamingQuality is not offered where the product's bundle writes 1705, which the doorbell owns", () => {

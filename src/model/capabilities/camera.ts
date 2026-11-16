@@ -162,8 +162,7 @@ export const CAMERA_CMD = {
    * SET_PAYLOAD envelope, signCode 8, plaintext `{"cmd":2730,"payload":{"transaction":"<epoch ms>",
    * "quality":N,"channel":0,"mode":0,"primary_view":0},"account_id":…}`. All four tiers captured
    * byte-exact and read back on parameter 1020; the station echoes the same payload back as a `1351`
-   * NOTIFY_PAYLOAD carrying the same `transaction`. The current bundles send no `transaction` and put the
-   * camera's `device_channel` in `channel`.
+   * NOTIFY_PAYLOAD carrying the same `transaction`.
    */
   STREAMING_QUALITY_SET: 2730,
 } as const;
@@ -527,6 +526,12 @@ const POWER_WIRE = bundleWires("camera_on_off", "1035", {
 const cameraSwitch = offers("camera_on_off", POWER_WIRE);
 
 /**
+ * Bundle-only frames (6090 here; 1026, 1020, 1023, 1286 and 2735 below) stay `unverifiedFor` until a device
+ * answers one.
+ */
+const privacyStatusPower = (ctx: AvailabilityContext): boolean => POWER_WIRE(ctx) === CAMERA_CMD.PRIVACY_MODE_STATUS;
+
+/**
  * `led_on_off`. 1716 rides the `1350` envelope `{light_enable}` with its default mValue3, so it stays
  * level-2 only. ✅ 1716 verified live on a T8214, 1045 (level-1 int+string) on a HomeBase-attached T8425.
  */
@@ -720,6 +725,7 @@ export const CAMERA_MEMBERS = {
     kind: "boolean",
     provenance: "apk",
     available: cameraSwitch,
+    unverifiedFor: privacyStatusPower,
     invert: true,
     invertFor: (ctx) => (isT8410HomeBase3(ctx) ? false : undefined),
     readAliases: [{ paramType: 2001, invert: false }],
@@ -898,9 +904,9 @@ export const CAMERA_MEMBERS = {
    * dictionary already gives that id, and `Device` keys state by NAME — a member claiming 2730 under
    * this name would collide with it on a device reporting both.
    *
-   * 2730 and 2731 carry the camera channel and `mode` 0: the bundles derive `mode` from the reported
-   * 6243 value, which a command context does not carry. Products whose bundle sends 1020 get the tier in
-   * the `1700` wrapper instead. The options and their labels are the ones the description lists.
+   * `transaction` is part of the frame that was captured, so it is sent. The recording sibling's own
+   * confirmed frame carries no such field; neither is inferred from the other. The options and their
+   * labels are the ones the description lists.
    */
   streamingQuality: {
     param: 1020,
@@ -910,6 +916,7 @@ export const CAMERA_MEMBERS = {
     enumValuesFor: streamingOptions,
     provenance: "apk",
     available: offers("live_streaming_resolution", STREAMING_WIRE),
+    unverifiedFor: (ctx) => STREAMING_WIRE(ctx) === CAMERA_CMD.STREAMING_QUALITY,
     args: [{ name: "quality", kind: "enum", description: "A tier, or the name it maps to. 0 is Auto." }],
     ...accepts<StreamingQualityName>(),
     description:
@@ -926,7 +933,7 @@ export const CAMERA_MEMBERS = {
         ? setJson(CAMERA_CMD.STREAMING_QUALITY, { quality: q }, ctx)
         : setPayload(
             CAMERA_CMD.STREAMING_QUALITY_SET,
-            { channel: ctx.channel, mode: 0, primary_view: 0, quality: q },
+            { channel: 0, mode: 0, primary_view: 0, quality: q, transaction: String(Date.now()) },
             ctx,
             0,
             undefined,
@@ -944,6 +951,7 @@ export const CAMERA_MEMBERS = {
     type: "string",
     provenance: "apk",
     available: offers("record_resolution", RECORDING_WIRE),
+    unverifiedFor: (ctx) => RECORDING_WIRE(ctx) !== CAMERA_CMD.RECORDING_QUALITY_SET,
     decode: (raw, _codec, ctx) => decodeRecordingQualityTier(raw, recordingOptions(ctx) ?? RECORDING_QUALITY_TIERS),
     decodedKind: "enum",
     decodedValues: Object.keys(RECORDING_QUALITY_TIERS).map(Number),
@@ -967,7 +975,7 @@ export const CAMERA_MEMBERS = {
       if (wire === CAMERA_CMD.SET_RECORD_QUALITY) return setPayload(wire, { record_quality: q }, ctx);
       return setPayload(
         CAMERA_CMD.RECORDING_QUALITY_SET,
-        { channel: ctx.channel, mode: 0, primary_view: 0, quality: q },
+        { channel: 0, mode: 0, primary_view: 0, quality: q },
         ctx,
         0,
         undefined,
@@ -987,6 +995,7 @@ export const CAMERA_MEMBERS = {
     available: (ctx: AvailabilityContext) =>
       offers("anti_theft_detection_switch", ANTI_THEFT_WIRE)(ctx) &&
       (ANTI_THEFT_WIRE(ctx) === CAMERA_CMD.NEW_EAS_SWITCH || hasReportedEasSwitch(ctx)),
+    unverifiedFor: (ctx) => ANTI_THEFT_WIRE(ctx) === CAMERA_CMD.NEW_EAS_SWITCH,
     description:
       "Anti-theft detection on/off (1015 APP_CMD_EAS_SWITCH; the app parses it as " +
       "anti_theft_detection_switch). Adaptive scalar {value:0|1}, or 2735 APP_CMD_NEW_EAS_SWITCH {value} " +
@@ -1012,6 +1021,7 @@ export const CAMERA_MEMBERS = {
     writeOnly: true,
     provenance: "verified",
     available: (ctx: AvailabilityContext) => cameraSwitch(ctx) && POWER_WIRE(ctx) !== CAMERA_CMD.CAMERA_ENABLE,
+    unverifiedFor: privacyStatusPower,
     description:
       "Privacy mode: camera power written inverted, on the product's privacy wire (6250, or 6090 standalone).",
     write: (v, ctx) => powerCommand(!asBool(v), ctx),
@@ -1027,6 +1037,7 @@ export const CAMERA_MEMBERS = {
     kind: "boolean",
     provenance: "apk",
     available: offers("led_on_off", LED_WIRE),
+    unverifiedFor: (ctx) => LED_WIRE(ctx) === CAMERA_CMD.DOORBELL_LED_NIGHT,
     readAvailable: (ctx) => !doorbellLed(ctx),
     readAliases: [{ paramType: CAMERA_CMD.DOORBELL_LED, available: doorbellLed }],
     requiresRead: true,
@@ -1176,7 +1187,7 @@ export const CAMERA: CapabilityModule = {
   ],
   /** Only the no-argument power verbs, which carry no value for a member to hold. */
   actions({ ctx, sink }: MemberDeps): CapabilityActions {
-    if (!cameraSwitch(ctx)) return {};
+    if (!cameraSwitch(ctx) || privacyStatusPower(ctx)) return {};
     return {
       on: () => sink.dispatch(powerCommand(true, ctx)),
       off: () => sink.dispatch(powerCommand(false, ctx)),
