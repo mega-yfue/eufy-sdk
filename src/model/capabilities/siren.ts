@@ -265,8 +265,8 @@ export const SIREN_MEMBERS = {
       "test on a T90R0 pushed 1 (sounding) then 0 (silent).",
   },
   /**
-   * Rejected, not clamped, outside the 1-3 set: the write is fire-and-forget, so an out-of-range level
-   * would look like it worked.
+   * The levels the product's description lists (`audio_alert_volume`), else 1-3. Rejected, not clamped,
+   * outside them: the write is fire-and-forget, so an out-of-range level would look like it worked.
    */
   volume: {
     param: SIREN_PARAM.ALARM_VOLUME,
@@ -277,6 +277,7 @@ export const SIREN_MEMBERS = {
     available: isSensorCodec,
     requires: [SIREN_PARAM.ALARM_VOLUME],
     enumValues: enumLabels(SirenVolume),
+    thing: ["audio_alert_volume"],
     args: [{ name: "level", kind: "scalar", description: "A device level 1-3 (Low/Mid/High), not a percentage." }],
     description:
       "Alarm volume (1825 APP_CMD_SIREN_SENSOR_SET_ALARM_VOL), a device level 1-3 (Low/Mid/High), NOT " +
@@ -286,7 +287,7 @@ export const SIREN_MEMBERS = {
       return level === undefined ? undefined : sirenPayload(SIREN_PARAM.ALARM_VOLUME, { volume: level }, ctx);
     },
   },
-  /** Only the four captured presets are accepted: no capture supports an arbitrary duration. */
+  /** The presets the product's description lists (`sensor_alarm_timeout`), else the four captured ones. */
   alarmDuration: {
     param: SIREN_PARAM.ALARM_TIMEOUT,
     type: "number",
@@ -296,6 +297,7 @@ export const SIREN_MEMBERS = {
     available: isSensorCodec,
     requires: [SIREN_PARAM.ALARM_TIMEOUT],
     enumValues: enumLabels(SirenAlarmDuration),
+    thing: ["sensor_alarm_timeout"],
     args: [{ name: "seconds", kind: "seconds", description: "One of the app's presets: 60/300/600/900." }],
     description:
       "How long an alarm sounds before stopping itself (61006 APP_CMD_DEV_ALARM_TIMEOUT), seconds. " +
@@ -334,13 +336,14 @@ export const SIREN_MEMBERS = {
     description: "HomeBase alarm volume 0..100 (1235 CMD_SET_HUB_SPK_VOLUME). Verified audible on a T8030.",
     write: (v) => setStationScalar(SIREN_CMD.HUB_SPK_VOLUME, Number(v), STATION_CHANNEL),
   },
-  /** HomeBase alarm tone keeps its independently verified two-option domain. */
+  /** HomeBase alarm tones, the ones the product's description lists (`alarm_tones_mode`), else both. */
   alarmTone: {
     param: SIREN_CMD.HUB_ALARM_TONE,
     property: "hubAlarmTone",
     type: "number",
     kind: "enum",
     enumValues: enumLabels(HubAlarmTone),
+    thing: ["alarm_tones_mode"],
     provenance: "verified",
     available: isHomeBase,
     requires: HUB_ALARM_EVIDENCE,
