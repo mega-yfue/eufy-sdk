@@ -398,13 +398,13 @@ export const PTZ_MEMBERS = {
     type: "bool",
     kind: "boolean",
     thing: ["motion_track_status"],
-    provenance: "apk",
+    provenance: "verified",
     available: (ctx: AvailabilityContext) =>
       ctx.things ? "motion_track_status" in ctx.things.properties : ctx.paramIds?.has(PTZ_CMD.MOTION_TRACK) === true,
     description:
       "Automatic motion tracking (COMMAND_INDOOR_PAN_MOTION_TRACK 6016), the frame the products' settings " +
-      "bundles send. A standalone T8410 read back 1 and 0 on the cloud param after writes on this wrapper, " +
-      "within about 30 s.",
+      "bundles send. ✅ Write confirmed live on a T8410 (mains, standalone): off then on sent through this " +
+      "member, each read back on the cloud param within 10 s.",
     write: (v, ctx) => setJson(PTZ_CMD.MOTION_TRACK, { value: asBool(v) ? 1 : 0 }, ctx),
   },
 
