@@ -1,5 +1,8 @@
 import { LOCK, LOCK_SETTING_ID, type LockActions } from "../lock.js";
 import { isClassicWifiLock } from "../../device-family.js";
+import { parseThingsList } from "../thing-description.js";
+import { resolveDevice } from "../../registry.js";
+import { DeviceType } from "../../device-types.js";
 import { bind } from "./bind.js";
 import { Device } from "../../device.js";
 import type { CommandContext } from "../types.js";
@@ -159,6 +162,11 @@ describe("lock capability module", () => {
     ]);
   });
 
+  it("setRainMode is absent on a LOCK_85V0, which the app offers no Rain Mode", () => {
+    const { acts } = lockOf({ ...p2pCtx, deviceType: DeviceType.LOCK_85V0 });
+    expect("setRainMode" in acts).toBe(false);
+  });
+
   it("setRainMode is absent on an MQTT-only device (no known Rain Mode on the garage door)", () => {
     const { acts } = lockOf(mqttCtx);
     expect(acts.setRainMode).toBeUndefined();
@@ -222,12 +230,24 @@ describe("lock capability module", () => {
     expect("getAutoLockState" in acts).toBe(false);
   });
 
-  it("detects via the lock and safe model-name regexes", () => {
-    const [lockRe, safeRe] = LOCK.detection!.modelHints!;
-    expect(lockRe.test("Smart Lock")).toBe(true);
-    expect(lockRe.test("Indoor Cam")).toBe(false);
-    expect(safeRe.test("Smart Safe")).toBe(true);
-    expect(safeRe.test("Indoor Cam")).toBe(false);
+  it("detects from the product's description over codec and params, never the owner's name", () => {
+    const things = (...ids: string[]) =>
+      parseThingsList({
+        things_list: [{ profile: { product_code: "T0000" }, properties: ids.map((identifier) => ({ identifier })) }],
+      }).T0000!;
+    const caps = (rec: object) => resolveDevice({ category: "eufy_security", model: "T0000", ...rec }).capabilities;
+    const video = { deviceType: DeviceType.LOCK_85V0, params: {} };
+    expect(caps({ ...video, things: things("smart_lock_onoff_status", "live_streaming_resolution") })).toContain(
+      "lock",
+    );
+    expect(
+      caps({ deviceType: DeviceType.LOCK_WIFI, params: { 6000: "4" }, things: things("battery_value") }),
+    ).not.toContain("lock");
+    expect(caps({ params: {}, name: "Front Door Lock", things: things("nightvision_type") })).not.toContain("lock");
+    expect(caps({ params: {}, name: "Smart Safe" })).not.toContain("lock");
+    expect(caps({ model: "T8790", params: {}, things: things("smart_lock_onoff_status") })).not.toContain("lock");
+    expect(caps({ deviceType: DeviceType.LOCK_WIFI, params: {} })).toContain("lock");
+    expect(caps({ params: { 6000: "3" } })).toContain("lock");
   });
 
   it("maps locked property to verified param 6000 and battery to param 1101 with alias 6001", () => {
@@ -248,10 +268,6 @@ describe("lock capability module", () => {
       provenance: "verified",
       readAliases: [{ paramType: 6001 }],
     });
-  });
-
-  it("proves lock capability via param 6000", () => {
-    expect(LOCK.detection?.evidenceParams).toContain(6000);
   });
 
   describe("device integration: state and battery properties", () => {
