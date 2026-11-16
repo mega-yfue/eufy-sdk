@@ -80,7 +80,6 @@ import { DOORBELL } from "./doorbell.js";
 import { CONTACT } from "./contact.js";
 import { LEAK } from "./leak.js";
 import { SMOKE } from "./smoke.js";
-import { CO } from "./co.js";
 import { LINK } from "./link.js";
 import { SIREN } from "./siren.js";
 import { LOCK } from "./lock.js";
@@ -123,7 +122,6 @@ import type { MotionActions } from "./motion.js";
 import type { ContactActions } from "./contact.js";
 import type { LeakActions } from "./leak.js";
 import type { SmokeActions } from "./smoke.js";
-import type { CoActions } from "./co.js";
 import type { LinkActions } from "./link.js";
 import type { KeypadActions } from "./keypad.js";
 import type { RtspActions } from "./rtsp.js";
@@ -154,7 +152,6 @@ const MODULES: CapabilityModule[] = [
   CONTACT,
   LEAK,
   SMOKE,
-  CO,
   SIREN,
   LOCK,
   KEYPAD,
@@ -816,8 +813,6 @@ export interface DeviceActionMap {
   leak: LeakActions;
   /** Smoke-detector reads (read-only): `smokeDetected`. */
   smoke: SmokeActions;
-  /** CO-detector reads (read-only): `coDetected`. */
-  co: CoActions;
   /** Security-keypad reads (read-only): `charging`. */
   keypad: KeypadActions;
   /** Check-in and signal reads (read-only): `lastSeen`, `rssi`, each where the device reports it. */
@@ -1059,7 +1054,6 @@ export type {
   ContactActions,
   LeakActions,
   SmokeActions,
-  CoActions,
   KeypadActions,
   LinkActions,
   RtspActions,
@@ -1081,7 +1075,6 @@ export { ARMING_MEMBERS } from "./arming.js";
 export { AUDIO_MEMBERS } from "./audio.js";
 export { BATTERY_MEMBERS } from "./battery.js";
 export { CAMERA_MEMBERS } from "./camera.js";
-export { CO_MEMBERS } from "./co.js";
 export { CONTACT_MEMBERS } from "./contact.js";
 export { DOORBELL_MEMBERS } from "./doorbell.js";
 export { KEYPAD_MEMBERS } from "./keypad.js";
