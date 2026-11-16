@@ -295,7 +295,8 @@ export interface ValueMember {
   /**
    * The option set of a decoded `enum` — the counterpart to a property schema's `enumValues`, for a
    * getter whose value that schema cannot express. Legal only alongside {@link decode}, since without
-   * one the property's own set is the answer and a second copy could only drift.
+   * one the property's own set is the answer and a second copy could only drift. A device whose context
+   * resolves its own enum domain is offered that domain instead.
    */
   decodedValues?: readonly (string | number)[];
 }
@@ -727,7 +728,13 @@ export function memberWrite(
  */
 function writeDomain(m: ValueMember, ctx: CommandContext): readonly (string | number)[] | undefined {
   const values = resolvedEnum(m, ctx).values;
-  return m.args?.[0]?.values ?? m.decodedValues ?? (values && Object.keys(values).map(Number));
+  return m.args?.[0]?.values ?? decodedDomain(m, ctx) ?? (values && Object.keys(values).map(Number));
+}
+
+/** A decoded read's option set on this device: the domain its context resolves, else `decodedValues`. */
+export function decodedDomain(m: ValueMember, ctx?: AvailabilityContext): readonly (string | number)[] | undefined {
+  const { values, dynamic } = resolvedEnum(m, ctx);
+  return m.decodedValues && dynamic && values ? Object.keys(values).map(Number) : m.decodedValues;
 }
 
 /**
@@ -795,14 +802,15 @@ function rejection(name: string, m: ValueMember, value: unknown, ctx: CommandCon
  * stands where it has one and the read's otherwise — the same precedence {@link writeDomain} enforces
  * with, which is what makes a stated `values` a NARROWING of the read rather than an unrelated second list.
  */
-function describeWrite(name: string, m: ValueMember, reported: boolean): ActionSpec {
+function describeWrite(name: string, m: ValueMember, reported: boolean, ctx: AvailabilityContext): ActionSpec {
   const stateful = !m.writeOnly && reported;
+  const values = decodedDomain(m, ctx);
   const derived: ActionArgSpec = {
     name,
     kind: m.decodedKind ?? m.kind ?? "text",
     ...(m.min === undefined ? {} : { min: m.min }),
     ...(m.max === undefined ? {} : { max: m.max }),
-    ...(m.decodedValues ? { values: m.decodedValues } : {}),
+    ...(values ? { values } : {}),
   };
   return {
     form: stateful ? "stateful" : "momentary",
@@ -1064,7 +1072,7 @@ export function bindMembers<M extends Members>(members: M, deps: MemberDeps): Su
     if (m.writeOnly) unobservable.push(name);
     else if (m.readReflectsWrite && !m.readReflectsWrite(ctx)) unreflected.push(name);
     const setter = m.writeAs ?? `set${name[0].toUpperCase()}${name.slice(1)}`;
-    out[setter] = describedAction(describeWrite(name, m, reported), (value: boolean | number | string) => {
+    out[setter] = describedAction(describeWrite(name, m, reported, ctx), (value: boolean | number | string) => {
       try {
         return sink.dispatch(memberWrite(name, m, value, ctx));
       } catch (e) {
