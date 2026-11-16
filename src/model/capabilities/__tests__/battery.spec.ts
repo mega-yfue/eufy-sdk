@@ -302,6 +302,39 @@ describe("battery capability module", () => {
     });
   });
 
+  it("writes powerSource with the builder the product's bundle runs, by product code and topology", () => {
+    const things = parseThingsList({
+      things_list: [{ profile: { product_code: "T0000" }, properties: [{ identifier: "power_charge_mode" }] }],
+    }).T0000!;
+    const at = (model: string, homeBaseAttached: boolean) => evidenced({ channel: 0, model, homeBaseAttached, things });
+    const payload = (cmd: number, payload: object) => ({
+      kind: "set-payload",
+      cmd,
+      payload,
+      channel: 0,
+      mValue3: 0,
+      form: "auto",
+    });
+    expect(buildCommand("powerSource", 1, at("T8171", false))).toEqual(payload(6254, {}));
+    expect(buildCommand("powerSource", 0, at("T8171", false))).toEqual(payload(6254, {}));
+    expect(buildCommand("powerSource", 1, at("T8150", true))).toEqual({
+      kind: "set-json",
+      param: 1293,
+      data: { enable: 1 },
+      channel: 0,
+    });
+    expect(buildCommand("powerSource", 1, at("T8124R", false))).toEqual({
+      kind: "set-json",
+      param: 1293,
+      data: { enable: 1 },
+      channel: 0,
+    });
+    expect(buildCommand("powerSource", 1, at("T8124R", true))).toEqual(payload(1293, { charge_mode: 1 }));
+    expect(buildCommand("powerSource", 0, at("T8140", false))).toEqual(payload(1293, { charge_mode: 0 }));
+    const t9000 = Object.keys(bind<BatteryActions>("battery", at("T9000", false)).acts as object);
+    expect(t9000, "lists it, builds no command").not.toContain("setPowerSource");
+  });
+
   /**
    * `powerSource`'s own lambda maps anything that isn't `"external"`/`1` onto charge_mode 0, so before
    * the domain was enforced for it, `5` dispatched a real frame that set the source to Battery — a
