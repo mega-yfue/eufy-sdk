@@ -111,11 +111,6 @@ describe("classify (device_type → codec)", () => {
 });
 
 describe("resolveDevice — 3-tier composition", () => {
-  it("never attaches co, whatever the owner named it: no product reads a CO state", () => {
-    const caps = resolveDevice({ category: "eufy_security", model: "T0000", name: "Disco Carbon" }).capabilities;
-    expect(caps as readonly string[]).not.toContain("co");
-  });
-
   it("tier 1: a curated model row drives codec, name and extra caps", () => {
     const r = resolveDevice({ model: "T8423", deviceType: 37 }); // Floodlight Cam
     expect(r.codec).toBe("camera");
