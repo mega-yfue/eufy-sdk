@@ -1,4 +1,5 @@
 import { isClassicWifiLock, isVideoSmartLock } from "../device-family.js";
+import { DeviceType } from "../device-types.js";
 import { asBool } from "../../core/util.js";
 import { LockPushEvent } from "../push-events.js";
 import { describeDevice } from "./access.js";
@@ -159,8 +160,12 @@ function nativeReport(signal: InboundSignal): Record<string, unknown> | undefine
  */
 const speaksFf09Settings = (ctx: CommandContext): boolean => !isClassicWifiLock(ctx);
 
-/** Rain Mode's gate: the P2P video lock, and only a device that takes the `ff09` settings frame. */
-const rainModeAvailable = (ctx: CommandContext): boolean => overP2p(ctx) && speaksFf09Settings(ctx);
+/**
+ * Rain Mode's gate: the P2P video lock, and only a device that takes the `ff09` settings frame. Not the
+ * LOCK_85V0: its description lists the switch, but the app's bundle builds no command for it.
+ */
+const rainModeAvailable = (ctx: CommandContext): boolean =>
+  overP2p(ctx) && speaksFf09Settings(ctx) && ctx.deviceType !== DeviceType.LOCK_85V0;
 
 /**
  * Every `lock` feature, declared once.
@@ -445,9 +450,19 @@ export const LOCK: CapabilityModule = {
     if (report.slBattery !== undefined) params[6001] = String(report.slBattery);
     return { params };
   },
-  // Lock state is reported via param 6000 (verified: 4=locked, 3=unlocked); the model name (lock/safe) is a
-  // signal, and every lock-codec device has the lock capability as its baseline.
-  detection: { evidenceParams: [6000], modelHints: [/lock/i, /safe/i], codecs: ["lock"] },
+  /**
+   * The app offers a lock where the product's thing description lists `smart_lock_onoff_status`, video
+   * locks included. The T8790 lists it for its lid on another wire, read on 2105 and opened only, with
+   * the `SET_PAYLOAD` 2100 frame `smart_drop` sends, so none of this module's frames apply to it.
+   * Without a description, the lock codec or a reported 6000 is the evidence. Never the device's name:
+   * that is what its owner typed.
+   */
+  detection: {
+    detect: (record, codec) =>
+      record.things
+        ? "smart_lock_onoff_status" in record.things.properties && record.model !== "T8790"
+        : codec === "lock" || Object.hasOwn(record.params ?? {}, 6000),
+  },
   // Inbound FCM lock events (LockPushEvent 257..771: (un)lock actions + alarms) → one "lockState", whose
   // payload carries a decoded `locked` boolean for the (un)lock actions (see decodeLockTransition).
   events: [{ source: "push", match: [257, 771], emit: "lockState", derive: decodeLockTransition }],

@@ -108,7 +108,7 @@ dev.arming?.()?.mode; // number | undefined — current guard mode
 ```
 
 Read getters live on every capability that has readable state (`battery`, `contact`, `lock`, `camera`,
-`light`, `motion`, `arming`, `siren`, the `leak`/`smoke`/`co`/`keypad` sensors, `storage`, `audio`,
+`light`, `motion`, `arming`, `siren`, the `leak`/`smoke`/`keypad` sensors, `storage`, `audio`,
 `doorbell`, `ptz`, RoboVac `vacuumClean`/`suction`, `personDetection`).
 
 A getter narrows the value's **type**; what the value **means** — a percentage, a temperature, an

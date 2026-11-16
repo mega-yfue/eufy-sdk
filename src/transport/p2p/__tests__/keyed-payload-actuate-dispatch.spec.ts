@@ -8,6 +8,7 @@ import {
   DEVICE_SN,
   STATION_SN,
   connectedSession,
+  onFakeTime,
   routerWithSession,
   type FakeP2PSession,
 } from "./session-fixtures.js";
@@ -260,7 +261,7 @@ describe("P2PCommandRouter.sendKeyedPayloadActuate (keyed-payload-actuate comman
   it("rejects when the resend at mark + 1 is refused too", async () => {
     // Two refusals and the command gives up with the device's code — it does not keep resending.
     const { sent, actuate } = harness((sent) => refusedAt(sent.inner.seq_num + 100));
-    await expect(actuate(true)).rejects.toThrow(`code ${KEYED_PAYLOAD_SEQ_ERROR}`);
+    await expect(onFakeTime(() => actuate(true))).rejects.toThrow(`code ${KEYED_PAYLOAD_SEQ_ERROR}`);
     expect(sent).toHaveLength(2);
   });
 

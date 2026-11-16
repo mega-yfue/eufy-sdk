@@ -216,6 +216,38 @@ describe("camera capability module", () => {
     });
   });
 
+  describe("options from the thing description", () => {
+    const options = (name: string, params: Record<number, string>, description?: ThingDescription) =>
+      Device.fromRecord("TEST-SN", { model: "T8170", params, things: description }).properties.find(
+        (p) => p.name === name,
+      )?.enumValues;
+
+    it("offers the notification styles notification_type lists", () => {
+      const style = (description?: ThingDescription) => options("notificationStyle", { 6020: "1" }, description);
+      expect(style(things({ notification_type: ["1", "2"] }))).toEqual({ 1: "Text Only", 2: "Included Thumbnail" });
+      expect(style(things({ notification_type: ["0", "0", "0"] })), "one wire value for all").toEqual(style());
+      expect(() =>
+        buildCommand("notificationStyle", 3, ctx(0, { things: things({ notification_type: ["1", "2"] }) })),
+      ).toThrow(/notificationStyle: 3 is not a valid value \(must be one of 1\/2\)/);
+    });
+
+    it("offers the live-view tiers live_streaming_resolution lists", () => {
+      const quality = (description?: ThingDescription) => options("streamingQuality", { 1020: "0" }, description);
+      expect(quality(things({ live_streaming_resolution: ["0", "3", "2"] }))).toEqual({
+        0: "Auto",
+        2: "Full HD (1080P)",
+        3: "Max",
+      });
+      expect(quality(things({ live_streaming_resolution: ["0", "0", "0", "0"] })), "one wire value for all").toEqual(
+        quality(),
+      );
+      expect(quality(), "no description").toEqual({ 0: "Auto", 1: "HD (720P)", 2: "Full HD (1080P)", 3: "Max" });
+      expect(() =>
+        buildCommand("streamingQuality", 1, ctx(0, { things: things({ live_streaming_resolution: ["0", "3", "2"] }) })),
+      ).toThrow(/streamingQuality: 1 is not a valid value \(must be one of 0\/2\/3\)/);
+    });
+  });
+
   describe("T8442 night vision (read alias + direct wire)", () => {
     const t8442 = ctx(2, { model: "T8442", paramIds: new Set([2002]), things: AUTO_NIGHT_VISION });
 
