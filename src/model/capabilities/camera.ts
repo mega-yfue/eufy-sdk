@@ -2,7 +2,7 @@ import { asBool, coerceEnumValue } from "../../core/util.js";
 import { DeviceType } from "../device-types.js";
 import { IndoorPushEvent } from "../push-events.js";
 import {
-  isCallDoorbell,
+  isUntriedDoorbell,
   isIndoorCamera,
   isIndoorCamMini,
   isIndoorPanTiltS350,
@@ -473,8 +473,8 @@ function privacyCommand(enabled: boolean, channel: number): Command {
   return { kind: "p2p-privacy-burst", enabled, channel };
 }
 
-/** A C30/C31 has reported no 1716 and no doorbell LED write was tried on it, so it keeps 1045. */
-const doorbellLed = (ctx: AvailabilityContext): boolean => hasCapability(ctx, "doorbell") && !isCallDoorbell(ctx);
+/** No doorbell LED write was tried on a C30/C31 or a video lock, so it keeps 1045. */
+const doorbellLed = (ctx: AvailabilityContext): boolean => hasCapability(ctx, "doorbell") && !isUntriedDoorbell(ctx);
 
 /**
  * Status LED — family-variant, like camera power above. A **Video Doorbell**'s user-facing LED (the
