@@ -134,6 +134,10 @@ function autoSpotlightCommand(on: boolean, ctx: CommandContext, opts: AutoSpotli
  *    live), indoor pan/tilt (31/35) and CAMERA_4G_S330.
  *  - `"int-string"`: level-1 int+string — indoor/outdoor 1080p/2K siblings, outdoor-PT/solo-E30,
  *    E330 Pro (T8600, deviceType 24, confirmed live), and the Cam2C/Cam2/Cam3 families.
+ *  - The Video Doorbell E340 (T8214, deviceType 94) switches by topology: the app's product bundle sends
+ *    `spotlight_switch` as the bare 1400 `{value,open,type:2}` command the Cam2/Cam3 bundles send
+ *    when the doorbell hangs off a HomeBase, and wraps it in 1700 when it stands alone. Only the
+ *    attached form is `"int-string"`; the standalone form has no confirmed frame.
  * NOTE: this is FRAME SHAPE only, not encryption LEVEL. The level (L1 vs L2) is a runtime topology
  * trait resolved at send time — never fixed by family here. The switch shape happens to be L1 for
  * both branches; brightness/colorTemp (below) are a separate, pinned case.
@@ -145,6 +149,7 @@ function lightSwitchWire(ctx: AvailabilityContext): "json" | "int-string" | unde
   if (t === undefined) return undefined;
   if (LIGHT_SWITCH_JSON_TYPES.has(t)) return "json";
   if (LIGHT_SWITCH_INT_STRING_TYPES.has(t)) return "int-string";
+  if (t === DeviceType.BATTERY_DOORBELL_PLUS_E340 && ctx.homeBaseAttached === true) return "int-string";
   return undefined;
 }
 
