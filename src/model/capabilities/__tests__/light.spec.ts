@@ -140,6 +140,18 @@ describe("light capability module", () => {
       });
     });
 
+    it("on/off on a HomeBase-attached Video Doorbell E340 (T8214) → set-param pinned to int-string (1400)", () => {
+      const e340 = { ...ctx(1), deviceType: DeviceType.BATTERY_DOORBELL_PLUS_E340, homeBaseAttached: true };
+      expect(intent("on", true, e340)).toEqual({
+        kind: "set-param",
+        param: LIGHT_CMD.FLOODLIGHT_SWITCH,
+        value: 1,
+        form: "int-string",
+        channel: 1,
+      });
+      expect(intent("off", false, e340)).toMatchObject({ form: "int-string", value: 0 });
+    });
+
     it("does not assign a spotlight switch wire to SoloCam E30", () => {
       expect(() => intent("on", true, { ...ctx(), deviceType: DeviceType.SOLO_CAMERA_E30 })).toThrow(
         /light: isOn write wire unverified/,
