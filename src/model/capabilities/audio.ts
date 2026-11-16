@@ -1,6 +1,6 @@
 import { asBool } from "../../core/util.js";
 import { isCallDoorbell, isHomeBase, HOMEBASE_TYPES } from "../device-family.js";
-import { setScalar, setPayload, isCameraCodec, hasCapability } from "./access.js";
+import { setScalar, setJson, setPayload, isCameraCodec, hasCapability } from "./access.js";
 import { described } from "./thing-description.js";
 import { propertiesOf, type Members, type Surface } from "./members.js";
 import type { AvailabilityContext, CapabilityModule, CommandContext } from "./types.js";
@@ -30,6 +30,10 @@ export const AUDIO_CMD = {
    * `record_mute:1` = muted (recording OFF), `record_mute:0` = recording ON.
    */
   AUDIO_RECORDING: 1288,
+  /** Audio recording on a standalone camera (app `AUDIO_RECORDING_SWITCH`): `1700` with `{enable:0|1}`, 1 = on. */
+  AUDIO_RECORDING_STANDALONE: 6012,
+  /** Audio recording on the T8420 (app `FLC_AUDIO_RECORDING_SWITCH`): `1350` with `{storage_audio_switch}`, inverted. */
+  AUDIO_RECORDING_FLC: 1366,
   /**
    * Doorbell ringtone/chime volume 0..100 (app `DOORBELL_RINGTONE_VOLUME`). ✅ Wire verified live on
    * T8214 — same direct-binary 136-byte struct, signCode 8. Doorbell-only: this capability adds it when
@@ -56,6 +60,43 @@ export type AudioActions = Surface<typeof AUDIO_MEMBERS>;
 /** Camera/doorbell audio write — the direct-binary 136-byte struct (signCode 8), wire-verified on T8214. */
 function audioCommand(param: number, value: number, ctx: CommandContext): Command {
   return setScalar(param, value, ctx, "direct-binary");
+}
+
+/**
+ * Products whose bundle sends audio recording on a wire neither arm below speaks: T8200/T8201 `1700`/1029
+ * `{status}`, T81A0/T84A1 1288 inside `1700`, T8441/T8442/T8452/T8453 a non-inverted `record_mute`. The T8790
+ * bundle builds no command for it.
+ */
+const UNSPOKEN_AUDIO_RECORDING: ReadonlySet<string> = new Set([
+  "T8200",
+  "T8201",
+  "T81A0",
+  "T84A1",
+  "T8441",
+  "T8442",
+  "T8452",
+  "T8453",
+  "T8790",
+]);
+
+/**
+ * Audio recording as the product's bundle sends it (`AudioRecordingOnOffParser` v1, its connect type
+ * deciding): 1288 `{channel, record_mute}` inverted when the camera hangs off a HomeBase, `1700`/6012
+ * `{enable}` when it stands alone. The T8420 bundle's `AudioRecordingOnOffParser1366` sends 1366 on every
+ * topology.
+ */
+function audioRecordingCommand(on: boolean, ctx: CommandContext): Command {
+  if (ctx.model === "T8420")
+    return setPayload(AUDIO_CMD.AUDIO_RECORDING_FLC, { storage_audio_switch: on ? 0 : 1 }, ctx, 0, undefined, "auto");
+  if (!ctx.homeBaseAttached) return setJson(AUDIO_CMD.AUDIO_RECORDING_STANDALONE, { enable: on ? 1 : 0 }, ctx);
+  return setPayload(
+    AUDIO_CMD.AUDIO_RECORDING,
+    { channel: ctx.channel, record_mute: on ? 0 : 1 },
+    ctx,
+    0,
+    undefined,
+    "auto",
+  );
 }
 
 /**
@@ -118,27 +159,23 @@ export const AUDIO_MEMBERS = {
       "Speaker volume 0..100 (1230 DOORBELL_AUDIO_VOLUME). Write verified live on T8214 (set 60 → param 60).",
     write: (v, ctx) => audioCommand(AUDIO_CMD.SPEAKER_VOLUME, Number(v), ctx),
   },
-  /** Raw param 1288 is `record_mute` (1 = muted / recording OFF), so audioRecording = NOT record_mute. */
+  /** Raw 1288 is `record_mute` (1 = recording OFF), so audioRecording = NOT record_mute; 6012 and 1366 per the write. */
   audioRecording: {
     param: AUDIO_CMD.AUDIO_RECORDING,
     type: "bool",
     kind: "boolean",
     invert: true,
-    provenance: "verified",
-    available: (ctx: AvailabilityContext) => isCameraCodec(ctx) && described("audio_recording_on_off")(ctx),
+    readAliases: [
+      { paramType: AUDIO_CMD.AUDIO_RECORDING_STANDALONE, available: (ctx) => !ctx.homeBaseAttached },
+      { paramType: AUDIO_CMD.AUDIO_RECORDING_FLC, invert: true, available: (ctx) => ctx.model === "T8420" },
+    ],
+    provenance: "apk",
+    available: (ctx: AvailabilityContext) =>
+      isCameraCodec(ctx) && described("audio_recording_on_off")(ctx) && !UNSPOKEN_AUDIO_RECORDING.has(ctx.model ?? ""),
     description:
-      "Record audio with video (1288 record_mute, inverted). ✅ HW-verified on T8425: readback flips " +
-      "(on→1288=0, off→1288=1). The write is a 1350 SET_PAYLOAD on the device channel with " +
-      "`{channel, record_mute}` — the key is record_mute and it is INVERTED.",
-    write: (v, ctx) =>
-      setPayload(
-        AUDIO_CMD.AUDIO_RECORDING,
-        { channel: ctx.channel, record_mute: asBool(v) ? 0 : 1 },
-        ctx,
-        0,
-        undefined,
-        "auto",
-      ),
+      "Record audio with video. HomeBase-attached: 1350/1288 `{channel, record_mute}` (inverted; readback " +
+      "verified on T8425). Standalone: 1700/6012 `{enable}`. T8420: 1350/1366 `{storage_audio_switch}` (inverted).",
+    write: (v, ctx) => audioRecordingCommand(asBool(v), ctx),
   },
   /**
    * Doorbell ring/chime loudness — WRITE-ONLY here on purpose. The READ property `ringtoneVolume` (1708)

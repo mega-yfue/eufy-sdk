@@ -78,9 +78,10 @@ describe("audio capability module", () => {
       );
     });
 
-    it("audioRecording → 1350 set-payload {channel, record_mute} on the device ch, INVERTED (on ⇒ mute 0)", () => {
+    it("audioRecording on a HomeBase → 1350 set-payload {channel, record_mute}, INVERTED (on ⇒ mute 0)", () => {
       // Reversed from a live capture on T8425 (ch3): key is `record_mute`, inverted.
-      expect(buildCommand("audioRecording", true, ctx(3))).toMatchObject({
+      const attached = ctx(3, { homeBaseAttached: true });
+      expect(buildCommand("audioRecording", true, attached)).toMatchObject({
         kind: "set-payload",
         cmd: AUDIO_CMD.AUDIO_RECORDING, // 1288
         channel: 3,
@@ -88,8 +89,26 @@ describe("audio capability module", () => {
         payload: { channel: 3, record_mute: 0 },
       });
       expect(
-        (buildCommand("audioRecording", false, ctx(3)) as Extract<Command, { kind: "set-payload" }>).payload,
+        (buildCommand("audioRecording", false, attached) as Extract<Command, { kind: "set-payload" }>).payload,
       ).toEqual({ channel: 3, record_mute: 1 });
+    });
+    it("audioRecording standalone → 1700/6012 {enable}; T8420 → 1350/1366 {storage_audio_switch} inverted", () => {
+      expect(buildCommand("audioRecording", true, ctx(0, { homeBaseAttached: false }))).toEqual({
+        kind: "set-json",
+        param: 6012,
+        data: { enable: 1 },
+        channel: 0,
+      });
+      expect(buildCommand("audioRecording", true, ctx(2, { model: "T8420", homeBaseAttached: true }))).toMatchObject({
+        kind: "set-payload",
+        cmd: 1366,
+        payload: { storage_audio_switch: 0 },
+      });
+    });
+    it("audioRecording is withheld where the bundle sends a wire neither arm speaks, or none", () => {
+      const desc = things("audio_recording_on_off");
+      for (const model of ["T8200", "T84A1", "T8441", "T8790"])
+        expect(bind<AudioActions>("audio", ctx(0, { model, things: desc })).acts.setAudioRecording).toBeUndefined();
     });
     it("audioRecording property is inverted (raw 1288 = record_mute)", () => {
       const p = AUDIO.properties.find((x) => x.name === "audioRecording");
