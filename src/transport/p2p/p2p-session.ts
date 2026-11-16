@@ -568,8 +568,8 @@ export class P2PSession extends EventEmitter {
   private level2Key?: Buffer;
   /**
    * Negotiated 16-byte level-2 key of a cipher with no ECC key (RSA-encrypted in `CMD_GATEWAYINFO`). Only
-   * {@link sendControlLevel2} seals with it, AES-128-ECB in the level-1 layout at encryption type 2; never
-   * held beside {@link level2Key}.
+   * {@link sendControlLevel2} seals with it, AES-128-ECB in the level-1 layout at encryption type 2, and only
+   * while no {@link level2Key} is held; a connection may hold both, one per gateway-info version.
    */
   private level2EcbKey?: Buffer;
   private level2Seq = 0;
@@ -2636,8 +2636,9 @@ export class P2PSession extends EventEmitter {
    * Decrypt and dispatch one inbound data frame.
    *
    * A `CMD_GATEWAYINFO` (1100) reply carries the ECIES envelope for the level-2 session key. When a
-   * cipher-key resolver is configured, no key that seals a set-payload is held and no negotiation is in
-   * flight, the reply starts one (async, fire-and-forget); a reply landing while one is in flight is ignored.
+   * cipher-key resolver is configured, the key of the reply's own header version is not held (the app holds the
+   * ECC and the RSA key apart) and no negotiation is in flight, the reply starts one (async, fire-and-forget);
+   * a reply landing while one is in flight is ignored.
    */
   private handleFrame(header: P2PDataFrameHeader, payload: Buffer, dataType: number): void {
     let data = payload;
@@ -2666,7 +2667,6 @@ export class P2PSession extends EventEmitter {
       this.logger.debug(
         `[p2p] ${this.cfg.stationSn} level-2 gateway info v${header.version} ch ${header.channel} ${data.length}B (cipher_id ${gatewayInfoCipherId(data)})`,
       );
-      // The app holds the ECC and the RSA key apart, so each version is negotiated until its own key is set.
       const held = header.version === 8 ? this.level2Key : this.level2EcbKey;
       if (!held && !this.level2Negotiating && this.cfg.resolveCipherKey) this.negotiateLevel2Key(data, header.version);
     }
