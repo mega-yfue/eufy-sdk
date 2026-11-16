@@ -88,9 +88,9 @@ describe("Video Doorbell C30/C31 (call route, no doorbell write tried)", () => {
     expect(bind<AudioActions>("audio", c30).acts.setRingtoneVolume).toBeUndefined();
   });
 
-  it("keeps the status LED on the generic 1045 wire", async () => {
+  it("writes the status LED on 1716, as its bundle does", async () => {
     const { acts, sent } = bind<CameraActions>("camera", c30);
     await acts.setStatusLed!(true);
-    expect(sent).toEqual([expect.objectContaining({ param: CAMERA_CMD.DEV_LED_SWITCH, value: 1 })]);
+    expect(sent).toEqual([expect.objectContaining({ cmd: CAMERA_CMD.DOORBELL_LED, payload: { light_enable: 1 } })]);
   });
 });
