@@ -349,8 +349,8 @@ function isDirection(v: unknown): v is PtzDirection {
  *
  * Movement is command-driven, so almost every entry is a `method`: `rotate` takes a direction plus an
  * optional speed, the four compass verbs take nothing, `preset()` returns a whole sub-API, and `zoom`
- * is gated on the device having a second lens. `rotationSpeed` is the one value member — the camera's
- * own step speed, which it stores. There is no position member: no device reports where it is pointed
+ * is gated on the device having a second lens. The value members are `rotationSpeed`, the camera's own
+ * step speed, and `motionTracking`. There is no position member: no device reports where it is pointed
  * as a parameter. Position arrives only while the camera moves, as the `ptzNotify` event {@link PTZ}
  * decodes from a live frame.
  *
@@ -388,10 +388,7 @@ export const PTZ_MEMBERS = {
     },
   },
 
-  /**
-   * Whether the camera turns to follow a moving subject, independent of motion detection. Offered where
-   * the description lists `motion_track_status`; without a description, once the camera reported 6016.
-   */
+  /** Offered where the description lists `motion_track_status`; with none, once the camera reported 6016. */
   motionTracking: {
     param: PTZ_CMD.MOTION_TRACK,
     type: "bool",

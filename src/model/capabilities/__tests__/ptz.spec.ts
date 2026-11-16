@@ -39,7 +39,6 @@ const described = (...identifiers: string[]) =>
 describe("ptz capability module", () => {
   it("declares the capability + schema", () => {
     expect(PTZ.capability).toBe("ptz");
-    // Position is an event, not a parameter.
     expect(PTZ.properties.map((p) => p.name)).toEqual(["rotationSpeed", "motionTracking"]);
     expect(PTZ.properties[0].paramType).toBe(6015);
   });
