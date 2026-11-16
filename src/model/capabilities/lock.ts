@@ -60,9 +60,8 @@ export type LockActions = Surface<typeof LOCK_MEMBERS>;
 const VIDEO_LOCK_CMD = { ACTUATE: 1961, STATUS: 1955, NOTIFY: 1351 } as const;
 
 /**
- * Opens a SmartDrop lid with `SET_PAYLOAD` 2100 at level 2, the only direction its wire has. Verified on a
- * standalone unit, whose cipher has only an RSA key: the frame sealed AES-128-ECB opened the lid, the same
- * frame at level 1 did not.
+ * Opens a SmartDrop lid with `SET_PAYLOAD` 2100 at level 2, the only direction its wire has; the lid does not
+ * open on the same frame at level 1.
  */
 function openLid(ctx: CommandContext, sink: CommandSink): Promise<void> {
   return sink.dispatch({
@@ -134,8 +133,8 @@ const overP2p = (ctx: AvailabilityContext): boolean =>
   ctx.hasP2p === true && !isVideoSmartLock(ctx) && !isSmartDrop(ctx);
 
 /**
- * Native actuation is verified only on the HomeBase 3 route, and a SmartDrop lid only standalone and only
- * to open; other lock families retain their controls.
+ * Native actuation is verified only on the HomeBase 3 route; a SmartDrop lid opens only standalone and never
+ * engages. Other lock families retain their controls.
  */
 function actuationAvailable(ctx: CommandContext, engage: boolean): boolean {
   if (isSmartDrop(ctx)) return !engage && ctx.stationSerial === undefined;
