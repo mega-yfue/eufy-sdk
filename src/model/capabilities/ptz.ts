@@ -1,7 +1,8 @@
 import { DeviceType } from "../device-types.js";
+import { asBool } from "../../core/util.js";
 import { setJson, setPayload } from "./access.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
-import type { CapabilityModule, InboundSignal, CapabilityEvent, CommandContext } from "./types.js";
+import type { AvailabilityContext, CapabilityModule, InboundSignal, CapabilityEvent, CommandContext } from "./types.js";
 import type { Command } from "../../core/contracts.js";
 
 /**
@@ -47,6 +48,10 @@ export const PTZ_CMD = {
    * inside the smart lock's `601x` block, so the shared param dictionary labels it `lockParam` — an id
    * reused across product lines, and the camera's meaning is the observed one. */
   PTZ_ROTATE_SPEED: 6015,
+  /** Automatic motion tracking. 1700 wrapper, `{value:0|1}`, read back on the same param: the
+   * `motion_track_status` property of the T8410, T8410C and T8414 settings bundles
+   * (`COMMAND_INDOOR_PAN_MOTION_TRACK`). */
+  MOTION_TRACK: 6016,
 } as const;
 
 /**
@@ -382,6 +387,25 @@ export const PTZ_MEMBERS = {
       if (!Number.isInteger(n) || n < 1 || n > 5) return undefined;
       return setJson(PTZ_CMD.PTZ_ROTATE_SPEED, { value: n }, ctx);
     },
+  },
+
+  /**
+   * Whether the camera turns to follow a moving subject, independent of motion detection. Offered where
+   * the description lists `motion_track_status`; without a description, once the camera reported 6016.
+   */
+  motionTracking: {
+    param: PTZ_CMD.MOTION_TRACK,
+    type: "bool",
+    kind: "boolean",
+    thing: ["motion_track_status"],
+    provenance: "apk",
+    available: (ctx: AvailabilityContext) =>
+      ctx.things ? "motion_track_status" in ctx.things.properties : ctx.paramIds?.has(PTZ_CMD.MOTION_TRACK) === true,
+    description:
+      "Automatic motion tracking (COMMAND_INDOOR_PAN_MOTION_TRACK 6016), the frame the products' settings " +
+      "bundles send. A standalone T8410 read back 1 and 0 on the cloud param after writes on this wrapper, " +
+      "within about 30 s.",
+    write: (v, ctx) => setJson(PTZ_CMD.MOTION_TRACK, { value: asBool(v) ? 1 : 0 }, ctx),
   },
 
   /** Rotate a step in a direction; `zoom` scales the step size (1.0 = the default step). */
