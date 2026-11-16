@@ -220,8 +220,8 @@ export class TuyaClient {
    * ({@link buildPublishDpsAction}) is derived, NOT pinned against a confirmed exchange,
    * and the login round-trip that yields a real `sid` is unproven too. A wrong shape comes back as a
    * generic Tuya error indistinguishable from a real device rejection, so blindly sending would hide
-   * that ambiguity. Pass `{ allowUnverified: true }` to send anyway; the gate drops when the write is
-   * captured + confirmed against a device.
+   * that ambiguity. Pass `{ allowUnverified: true }` to send anyway; the gate drops once the shape is
+   * pinned against the app's own exchange.
    */
   async publishDps<T = unknown>(
     devId: string,

@@ -180,10 +180,9 @@ export interface EufyMegaOptions extends MegaClientConfig {
    * Opt into unverified Tuya DP writes for `eufy_home_tuya` clean-line devices (G-series / X8).
    *
    * By default `TuyaCommandRouter` refuses to send `dp.publish` because the request shape
-   * has been reversed but not yet confirmed from a live on-device capture — a wrong shape comes back
-   * as a generic Tuya error indistinguishable from an actual device rejection. `true` sends it anyway,
-   * which is sound only where the full round-trip has been confirmed on a real device, or that
-   * ambiguity is accepted.
+   * has been reversed but not pinned against the app's exchange — a wrong shape comes back as a
+   * generic Tuya error indistinguishable from an actual device rejection. `true` sends it anyway and
+   * accepts that ambiguity.
    */
   tuyaAllowUnverified?: boolean;
   /**
@@ -373,8 +372,8 @@ export type EufyMegaEventMap = {
    *
    * This is the answer to the question `dispatch` deliberately does not wait for. A command resolves once the
    * transport has carried it, and the observation a member declares decides separately whether the device
-   * applied it; where that observation times out, the wire accepted the write and the device ignored it — seen
-   * on a battery camera whose power write is acknowledged and never acted on. It is reported here rather than
+   * applied it; where that observation times out, the wire accepted the write and the device ignored it — a
+   * battery camera can acknowledge a power write and never act on it. It is reported here rather than
    * on `error` because it is an outcome and not a fault, for the same reason `commandAck` has its own
    * channel. `observed` is what the param read when the deadline passed, absent where the
    * device reported none at all.

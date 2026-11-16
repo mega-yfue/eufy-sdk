@@ -9,7 +9,7 @@
  * Same reason `ff09.ts` sits here. It builds FIELDS, not a frame — the DP framing + envelope stay in
  * `mqtt/dp-codec.ts`, and nothing here names a capability or a transport.
  *
- * Header + trailer are byte-exact vs. real captures; colours run through {@link rgbcwBlock}, a
+ * Header + trailer are byte-exact to the app's frames; colours run through {@link rgbcwBlock}, a
  * physically-grounded approximation of the device's on-device 5-channel (R,G,B,WarmWhite,ColdWhite)
  * mixing engine — EXACT on pure red and blue, ~18/255 mean on mixed colours, because the engine's
  * nonlinear gamut expansion isn't fully reversed.

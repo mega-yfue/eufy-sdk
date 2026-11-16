@@ -1,8 +1,7 @@
 /**
  * Eufy "mega" (Anker AIoT) cloud crypto — algo_ecdh.
  *
- * The full request scheme, reverse-engineered + verified against live traffic
- * (2026-06). Three layers:
+ * The full request scheme, reverse-engineered from the app. Three layers:
  *
  *  A. Key exchange (bootstrap, per region):
  *       client_public_key = base64( IV(16) || AES-128-CBC(pubkeyHex, localKey) )
