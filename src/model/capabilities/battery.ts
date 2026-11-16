@@ -3,6 +3,7 @@ import { asBool } from "../../core/util.js";
 import { setStationScalar, setPayload, setScalar, hasCapability } from "./access.js";
 import type { AvailabilityContext, CapabilityModule, CommandContext } from "./types.js";
 import { accepts, propertiesOf, type Members, type Surface } from "./members.js";
+import { described } from "./thing-description.js";
 import type { Command } from "../../core/contracts.js";
 
 /**
@@ -193,12 +194,7 @@ const notMainsCamera = (ctx: AvailabilityContext): boolean => {
  *    it, and a mains camera genuinely has them. They are the reason the capability stays attached.
  *  - `cameraInfo` (1103) is a number whose meaning is unevidenced. Gating it would assert it is a
  *    battery fact, which is the kind of claim this guard exists to stop making.
- *  - `powerSource` (1293) is the open one. Both values it names — `Battery` and `External Solar Panel` —
- *    describe how a CELL is fed, so by this list's own rule it arguably belongs here. It is out because
- *    every param above is one a live mains camera was observed to publish and 1293 was not among them,
- *    and because it is `requires`-gated on its own param, so it appears only where the device reports
- *    it. Gating it would also withhold a described WRITE rather than a read, which is a different class
- *    of change. Unresolved rather than decided: see the note in the pull request.
+ *  - `powerSource` (1293) is gated on the product's description instead (`power_charge_mode`).
  *
  * The two solar params ARE here: a panel exists to charge a cell, so a device without one has no solar
  * harvest to report either.
@@ -212,6 +208,34 @@ export const CELL_PARAMS: readonly number[] = [
   BATTERY_PARAM.SOLAR_CONNECT_24H,
   BATTERY_PARAM.BATTERY_POWER_DATAS,
 ];
+
+/** `COMMAND_APP_TEST_WIRING`, the probe answer the v2 bundles read `power_charge_mode` from: -505 = Battery. */
+const TEST_WIRING = 6254;
+
+/**
+ * The products whose settings bundle builds `power_charge_mode` as something other than the 1350
+ * SET_PAYLOAD `{charge_mode}` on 1293 every other bundle sends (corpus 2026-11-13). `PowerChargeModeParser("v2")`
+ * sends 1350 {@link TEST_WIRING} with no payload whatever the value, so it sets nothing; `PowerChargeModeParser1700` sends the
+ * 1700 wrapper `{enable}` on 1293; the SoloCam bundle's inline case sends that `{enable}` unless the camera
+ * hangs off a HomeBase (`connectHB`). The description has no variant that tells them apart. The `{enable}`
+ * frame is known from the bundle alone, so where it would be sent no setter is installed until a device
+ * run confirms it.
+ */
+const POWER_CHARGE_BUILDER: Readonly<Partial<Record<string, "test-wiring" | "enable" | "standalone-enable">>> =
+  Object.fromEntries([
+    ...["T8110", "T8110E", "T814X", "T8171", "T86P2"].map((c) => [c, "test-wiring"] as const),
+    ...["T8150", "T8151"].map((c) => [c, "enable"] as const),
+    ...["T8122", "T8123", "T8124R", "T8130", "T8131", "T8134", "T8170", "T8172", "T8B00"].map(
+      (c) => [c, "standalone-enable"] as const,
+    ),
+  ]);
+const readsTestWiring = (ctx: AvailabilityContext) => POWER_CHARGE_BUILDER[ctx.model ?? ""] === "test-wiring";
+const unverifiedPowerSource = (ctx: AvailabilityContext): boolean => {
+  const builder = POWER_CHARGE_BUILDER[ctx.model ?? ""];
+  return (
+    builder === "test-wiring" || builder === "enable" || (builder === "standalone-enable" && !ctx.homeBaseAttached)
+  );
+};
 
 /**
  * Apply {@link notMainsCamera} to every member reading a {@link CELL_PARAMS} param, as the table is built.
@@ -251,7 +275,7 @@ const notSensor = (ctx: AvailabilityContext): boolean => ctx.codec !== "sensor";
 
 /**
  * Withhold every battery member but `sensorOnly` on the `sensor` codec, composing with any gate a member
- * already carries (the cell gate's {@link notMainsCamera}, `level`/`powerSource`'s lock check). A sensor
+ * already carries (the cell gate's {@link notMainsCamera}, `level`'s lock check). A sensor
  * then exposes its low-battery flag and nothing else — rather than a bogus percentage plus a dozen
  * `unknown` camera-power reads for params it never speaks.
  */
@@ -321,21 +345,32 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
    * app-toggle before/after diff: 0 = Battery, 1 = External Solar Panel. Values beyond 0/1 (some models
    * report 5) read as `undefined` — `enumValues` holds only the two that are confirmed.
    *
-   * The write is a `1350` SET_PAYLOAD, inner cmd 1293, `{charge_mode:N}`, `mValue3` 0 (the app uses 0,
-   * not the cmd id), and the setter accepts a NAME as well as the index the getter answers.
+   * The write is the product's settings-bundle builder for `power_charge_mode`, {@link POWER_CHARGE_BUILDER};
+   * the setter accepts a NAME as well as the index the getter answers. Only the 1350 `{charge_mode}` is
+   * installed; a v2 product reads the value off {@link TEST_WIRING}, decoded as its bundle does.
+   *
+   * Offered where the product's description lists `power_charge_mode`. No description hides nothing. The
+   * T9000 description lists it and its bundle builds no command.
    */
   powerSource: {
     param: BATTERY_PARAM.POWER_CHARGE,
     type: "enum",
     kind: "enum",
     enumValues: { 0: "Battery", 1: "External Solar Panel" },
-    provenance: "verified",
+    provenance: "apk",
     coerce: decodePowerSource,
     requires: [BATTERY_PARAM.POWER_CHARGE],
+    readAvailable: (ctx) => !readsTestWiring(ctx),
+    readAliases: [
+      { paramType: TEST_WIRING, available: readsTestWiring, coerce: (raw) => (Number(raw) === -505 ? 0 : 1) },
+    ],
+    unverifiedFor: unverifiedPowerSource,
+    available: (ctx: AvailabilityContext) => ctx.model !== "T9000" && described("power_charge_mode")(ctx),
     args: [{ name: "source", kind: "enum", description: "The raw value, or the name `battery`/`external`." }],
     ...accepts<PowerSourceName>(),
     description:
-      "Configured power source (1293): 0 = Battery, 1 = External Solar Panel. Verified live on T8124R. " +
+      "Configured power source (1293): 0 = Battery, 1 = External Solar Panel. Read verified live on T8124R. " +
+      "Where the app probes the wiring instead, read-only from 6254 (-505 = Battery). " +
       "The richer raw APP_CMD_SET_POWER_SOURCE blob is surfaced separately as `powerSourceInfo` (6445). " +
       "Format varies by model (plain int or JSON {power_source:N}); a value beyond 0/1 reads undefined.",
     write: (v, ctx) =>

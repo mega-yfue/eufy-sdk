@@ -164,10 +164,14 @@ export interface ValueMember {
    * {@link aliases}, no value is supplied: it is the same write under a second name.
    */
   intentNames?: readonly string[];
-  /** Extra wire ids that also carry this value on some families, with their own polarity and family gate. */
+  /**
+   * Extra wire ids that also carry this value on some families, with their own polarity and family gate,
+   * and their own {@link coerce} where the alias stands in for an unavailable primary.
+   */
   readAliases?: readonly {
     paramType: number;
     invert?: boolean;
+    coerce?: ValueMember["coerce"];
     available?: (ctx: AvailabilityContext) => boolean;
   }[];
   /**
@@ -656,7 +660,7 @@ export function propertiesOf(members: Members, ctx?: AvailabilityContext): Prope
         enumValues,
         provenance: m.provenance,
         invert: promoted?.invert ?? (ctx ? m.invertFor?.(ctx) : undefined) ?? m.invert,
-        decode: m.coerce,
+        decode: promoted?.coerce ?? m.coerce,
         // A member with a getter-side `decode` reads a field out of a structured payload, so the
         // stored value is that payload — see `PropertySpec.raw`.
         raw: m.decode ? true : undefined,

@@ -25,6 +25,8 @@
  * @module model/capabilities/thing-description
  */
 
+import type { AvailabilityContext } from "./types.js";
+
 /** One condition of a condition list: `type` compared by `qualifier` against `value`. */
 export interface ThingCondition {
   /** What is compared: `device_version`, `parent_sn`, `parent_version`, `device_sn`, `associated_field`, `user_country`, `sdk_version`, … */
@@ -492,3 +494,12 @@ export function parseThingsList(raw: unknown): Readonly<Record<string, ThingDesc
   }
   return out;
 }
+
+/**
+ * Whether the product's description lists `identifier`. With no description fetched the member stays,
+ * so a missing cloud reply never hides what the device reports.
+ */
+export const described =
+  (identifier: string) =>
+  (ctx: AvailabilityContext): boolean =>
+    !ctx.things || identifier in ctx.things.properties;
