@@ -9,6 +9,7 @@ import {
   isVideoSmartLock,
 } from "../device-family.js";
 import { setScalar, setPayload, setJson, isCameraCodec, hasCapability } from "./access.js";
+import { described } from "./thing-description.js";
 import { AUDIO_CMD } from "./audio.js";
 import { DOORBELL_CMD } from "./doorbell.js";
 import { cameraPowerTier } from "./battery.js";
@@ -120,8 +121,9 @@ export const CAMERA_CMD = {
    * Wire from the app's own JS: a scalar `params:{value:0|1}`. Emitted with the **adaptive** form so
    * topology picks the level — level-2/direct on a HomeBase-attached device, level-1 on a standalone.
    *
-   * ⚠️ Replay + readback confirmed on a **HomeBase-attached** T8425 only (1015 read `0` → write → `1`
-   * → restore): the frame is confirmed accepted and persisted, NOT byte-compared to the app's. The
+   * ⚠️ Replay + readback on a **HomeBase-attached** T8425 (1015 read `0` → write → `1` → restore): the
+   * frame is accepted and persisted, NOT byte-compared to the app's, and the T8425's description does
+   * not list the switch, so it shows the device stores 1015, not that the product has the feature. The
    * **standalone** path is unverified, and newer (v3) devices use a *different* id for the same
    * switch — `APP_CMD_NEW_EAS_SWITCH` (2735) — which has no path here; don't assume 1015 drives them.
    */
@@ -473,6 +475,18 @@ function privacyCommand(enabled: boolean, channel: number): Command {
   return { kind: "p2p-privacy-burst", enabled, channel };
 }
 
+/**
+ * A camera-codec device whose product description, when fetched, lists one of `identifiers`: a video
+ * lock is camera codec too, and its description leaves out the settings it does not have.
+ */
+const cameraThing =
+  (...identifiers: string[]) =>
+  (ctx: AvailabilityContext): boolean =>
+    isCameraCodec(ctx) && identifiers.some((identifier) => described(identifier)(ctx));
+
+/** Power and privacy: the bundles map `camera_on_off` to 1035 and to the 6250 privacy burst. */
+const cameraSwitch = cameraThing("camera_on_off");
+
 /** A C30/C31 has reported no 1716 and no doorbell LED write was tried on it, so it keeps 1045. */
 const doorbellLed = (ctx: AvailabilityContext): boolean => hasCapability(ctx, "doorbell") && !isCallDoorbell(ctx);
 
@@ -594,7 +608,7 @@ export const CAMERA_MEMBERS = {
     type: "bool",
     kind: "boolean",
     provenance: "verified",
-    available: isCameraCodec,
+    available: cameraSwitch,
     invert: true,
     invertFor: (ctx) => (isT8410HomeBase3(ctx) ? false : undefined),
     readAliases: [{ paramType: 2001, invert: false }],
@@ -622,7 +636,7 @@ export const CAMERA_MEMBERS = {
     type: "bool",
     kind: "boolean",
     provenance: "apk",
-    available: isCameraCodec,
+    available: cameraThing("rotate_image_180_on_off"),
     description:
       "Rotate the image 180° (ROTATE_IMAGE 1207): false = normal, true = flipped. " +
       "For ceiling/upside-down mounts. Write is a direct param; wire from the app parser (unverified live).",
@@ -640,7 +654,7 @@ export const CAMERA_MEMBERS = {
     kind: "enum",
     enumValues: { 0: "Off", 1: "Timestamp", 2: "Timestamp + Logo" },
     provenance: "verified",
-    available: isCameraCodec,
+    available: cameraThing("watermark_set"),
     description:
       "On-screen watermark/OSD overlay (CMD_SET_DEVS_OSD 1214). ✅ wire verified live (T8425 ch3): " +
       "direct-binary [ch][value 0/1/2] — a 3-value enum, not a bool. Enum labels are best-guess.",
@@ -659,7 +673,7 @@ export const CAMERA_MEMBERS = {
     type: "bool",
     kind: "boolean",
     provenance: "verified",
-    available: isCameraCodec,
+    available: cameraThing("sound_detection_status"),
     description:
       "Trigger on sound as well as motion (SOUND_DETECTION 6043). ✅ Write confirmed live on a T8410 " +
       "(mains, standalone, own channel): both directions sent through this member and read back on " +
@@ -678,7 +692,7 @@ export const CAMERA_MEMBERS = {
     type: "number",
     kind: "scalar",
     provenance: "verified",
-    available: isCameraCodec,
+    available: cameraThing("sound_detection_sensitivity"),
     description:
       "Sound-detection sensitivity: 1 = lowest, 3 = mid, 5 = highest (SOUND_DETECTION_SENSITIVITY " +
       "6044). ✅ Write confirmed live on a T8410: 1 and 5 sent consecutively through this member and " +
@@ -700,7 +714,7 @@ export const CAMERA_MEMBERS = {
     kind: "enum",
     enumValues: { 1: "Crying", 2: "All Sound" },
     provenance: "verified",
-    available: isCameraCodec,
+    available: cameraThing("sound_detection_type"),
     description:
       "Which sounds trigger a detection: crying alone, or any sound (SOUND_DETECTION_TYPE 6046). ✅ " +
       "Write confirmed live on a T8410: both values sent consecutively through this member and read " +
@@ -724,7 +738,7 @@ export const CAMERA_MEMBERS = {
     kind: "enum",
     enumValues: { 1: "Text Only", 2: "Included Thumbnail", 3: "Text First, Then Thumbnail" },
     provenance: "verified",
-    available: isCameraCodec,
+    available: cameraThing("notification_type"),
     description:
       "How much a detection push carries: text only, a thumbnail, or text then a thumbnail " +
       "(CMD_INDOOR_PUSH_NOTIFY_TYPE 6020). All three values wire-verified live on a standalone " +
@@ -746,7 +760,7 @@ export const CAMERA_MEMBERS = {
     enumValues: { 0: "Off", 1: "Infrared", 2: "Full Color", 3: "Infrared On" },
     thing: ["nightvision_type_new", "nightvision_type"],
     provenance: "verified",
-    available: isCameraCodec,
+    available: cameraThing("nightvision_type_new", "nightvision_type"),
     readAvailable: (ctx) => !readsNightVisionOn2002(ctx),
     readAliases: [{ paramType: 2002, available: readsNightVisionOn2002 }],
     coerce: (raw) => (raw === "true" ? 1 : raw === "false" ? 0 : Number(raw)),
@@ -784,7 +798,7 @@ export const CAMERA_MEMBERS = {
     enumValues: STREAMING_QUALITY_TIERS,
     provenance: "verified",
     available: (ctx: AvailabilityContext) =>
-      isCameraCodec(ctx) && !(ctx.paramIds?.has(DOORBELL_CMD.VIDEO_QUALITY) ?? false),
+      cameraThing("live_streaming_resolution")(ctx) && !(ctx.paramIds?.has(DOORBELL_CMD.VIDEO_QUALITY) ?? false),
     args: [{ name: "quality", kind: "enum", description: "A tier, or the name it maps to. 0 is Auto." }],
     ...accepts<StreamingQualityName>(),
     description:
@@ -817,7 +831,7 @@ export const CAMERA_MEMBERS = {
     param: CAMERA_CMD.RECORDING_QUALITY_SET,
     type: "string",
     provenance: "verified",
-    available: isCameraCodec,
+    available: cameraThing("record_resolution"),
     decode: (raw) => decodeRecordingQualityTier(raw),
     decodedKind: "enum",
     decodedValues: Object.keys(RECORDING_QUALITY_TIERS).map(Number),
@@ -857,7 +871,7 @@ export const CAMERA_MEMBERS = {
     type: "bool",
     kind: "boolean",
     provenance: "apk",
-    available: isCameraCodec,
+    available: cameraThing("anti_theft_detection_switch"),
     description:
       "Anti-theft detection on/off (1015 APP_CMD_EAS_SWITCH; the app parses it as " +
       "anti_theft_detection_switch). Adaptive scalar {value:0|1}. ⚠️ Replay+readback confirmed on a " +
@@ -880,7 +894,7 @@ export const CAMERA_MEMBERS = {
     kind: "boolean",
     writeOnly: true,
     provenance: "verified",
-    available: isCameraCodec,
+    available: cameraSwitch,
     description: "Privacy mode (PRIVACY_MODE 6250) — the multi-frame burst the sink plays.",
     write: (v, ctx) => privacyCommand(asBool(v), ctx.channel),
   },
@@ -894,7 +908,7 @@ export const CAMERA_MEMBERS = {
     type: "bool",
     kind: "boolean",
     provenance: "verified",
-    available: isCameraCodec,
+    available: cameraThing("led_on_off"),
     readAvailable: (ctx) => !doorbellLed(ctx),
     readAliases: [{ paramType: CAMERA_CMD.DOORBELL_LED, available: doorbellLed }],
     requiresRead: true,
@@ -1044,7 +1058,7 @@ export const CAMERA: CapabilityModule = {
   ],
   /** Only the no-argument power verbs, which carry no value for a member to hold. */
   actions({ ctx, sink }: MemberDeps): CapabilityActions {
-    if (!isCameraCodec(ctx)) return {};
+    if (!cameraSwitch(ctx)) return {};
     return {
       on: () => sink.dispatch(powerCommand(true, ctx)),
       off: () => sink.dispatch(powerCommand(false, ctx)),

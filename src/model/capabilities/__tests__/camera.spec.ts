@@ -348,6 +348,25 @@ describe("camera capability module", () => {
     expect(CAMERA.detection?.codecs).toEqual(["camera"]);
   });
 
+  it("offers a camera-codec setting only where the product's description lists it", () => {
+    const acts = (description?: ThingDescription) => camera(ctx(0, { things: description })).acts;
+    const described = acts(things({ camera_on_off: "bool", watermark_set: ["0", "1"] }));
+    expect(described.setImageFlipped, "rotate_image_180_on_off unlisted").toBeUndefined();
+    expect(described.setSoundDetection, "sound_detection_status unlisted").toBeUndefined();
+    expect(described.setRecordingQuality, "record_resolution unlisted").toBeUndefined();
+    expect(described.setWatermark).toBeTypeOf("function");
+    expect(described.setPrivacy).toBeTypeOf("function");
+    expect(described.on).toBeTypeOf("function");
+    const unlisted = acts(things({ watermark_set: ["0", "1"] }));
+    expect([unlisted.on, unlisted.setEnabled, unlisted.setPrivacy], "camera_on_off unlisted").toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    expect(acts().setImageFlipped, "no description").toBeTypeOf("function");
+    expect(acts().on, "no description").toBeTypeOf("function");
+  });
+
   describe("buildCommand — emits transport-neutral intents (wire chosen by the resolver)", () => {
     it("on/off → a set-param 'auto' scalar for CAMERA_ENABLE (wire decided downstream)", () => {
       expect(buildCommand("on", true, ctx(1))).toEqual({
