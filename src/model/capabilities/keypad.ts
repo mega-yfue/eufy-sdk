@@ -9,7 +9,7 @@ import type { CapabilityModule } from "./types.js";
  * `batteryLow` is `unexposed`: the app maps its param to the same low-battery field the entry and motion
  * sensors feed, but its value decode is absent from the app's parser, so the polarity is not evidenced.
  *
- * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * Exported but NOT published: each entry states its wire id and its gate,
  * which the reference site does not carry.
  * @internal
  */

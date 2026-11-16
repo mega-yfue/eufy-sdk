@@ -20,7 +20,7 @@ const LEGACY_LOCATE_DP = TUYA_VACUUM_DP.LOOK_FOR_SWEEPER;
  * common call is a bare `locate()` meaning "start beeping" — and a derived setter always takes its
  * value. Dispatches DP 103 (legacy Tuya) or DP 160 (AIoT) based on which DP the device has reported.
  *
- * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * Exported but NOT published: each entry states its wire id and its gate,
  * which the reference site does not carry.
  * @internal
  */

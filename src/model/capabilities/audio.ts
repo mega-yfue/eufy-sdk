@@ -10,22 +10,21 @@ import type { Command } from "../../core/contracts.js";
  * The P2P **feature-command ids** this audio capability drives — the outer-cmd IS the param id on the
  * camera side (direct-binary struct), or the inner cmd of a `1350` SET_PAYLOAD on the station side.
  * Capability-owned wire vocabulary (transport forwards `cmd.param` opaquely; full id→name catalog in
- * the generated `transport/p2p/commands.ts`). All ✅ wire-verified live — see the module JSDoc below.
+ * the generated `transport/p2p/commands.ts`). Wire shapes are in the module JSDoc below.
  */
 export const AUDIO_CMD = {
   /**
-   * Microphone on/off (app `AUDIO_MICROPHONE_SWITCH`). ✅ Wire verified live on T8214: direct-binary
+   * Microphone on/off (app `AUDIO_MICROPHONE_SWITCH`): direct-binary
    * 136-byte struct, signCode 8, 1=on/0=off (a switch, not a mute).
    */
   AUDIO_MICROPHONE: 1240,
-  /** Speaker on/off (app `AUDIO_SPEAKER_SWITCH`). ✅ Wire verified live on T8214 — direct-binary, 1=on/0=off. */
+  /** Speaker on/off (app `AUDIO_SPEAKER_SWITCH`): direct-binary, 1=on/0=off. */
   AUDIO_SPEAKER: 1241,
-  /** Speaker volume 0..100 (app `DOORBELL_AUDIO_VOLUME`). ✅ Same direct-binary wire; write verified live on T8214 (set 60 → param 60). */
+  /** Speaker volume 0..100 (app `DOORBELL_AUDIO_VOLUME`). Same direct-binary wire. */
   SPEAKER_VOLUME: 1230,
   /**
    * Audio recording on/off (app `DOORBELL_AUDIO_RECORDING_SWITCH`) — whether the camera records audio
-   * with video. Reported by every camera. ✅ Wire reversed from a live outbound capture + L2 decrypt on
-   * T8425 (ch3): `1350` SET_PAYLOAD on the device channel (mChannel = device ch, mValue3 0), payload
+   * with video. Reported by every camera. `1350` SET_PAYLOAD on the device channel (mChannel = device ch, mValue3 0), payload
    * `{channel:<deviceCh>, record_mute:0|1}`. The key is `record_mute` and it is **INVERTED** —
    * `record_mute:1` = muted (recording OFF), `record_mute:0` = recording ON.
    */
@@ -35,14 +34,12 @@ export const AUDIO_CMD = {
   /** Audio recording on the T8420 (app `FLC_AUDIO_RECORDING_SWITCH`): `1350` with `{storage_audio_switch}`, inverted. */
   AUDIO_RECORDING_FLC: 1366,
   /**
-   * Doorbell ringtone/chime volume 0..100 (app `DOORBELL_RINGTONE_VOLUME`). ✅ Wire verified live on
-   * T8214 — same direct-binary 136-byte struct, signCode 8. Doorbell-only: this capability adds it when
+   * Doorbell ringtone/chime volume 0..100 (app `DOORBELL_RINGTONE_VOLUME`): same direct-binary 136-byte struct, signCode 8. Doorbell-only: this capability adds it when
    * the device is a doorbell.
    */
   DOORBELL_RINGTONE_VOLUME: 1708,
   /**
-   * HomeBase voice **prompt** volume 0..100 (app `APP_CMD_SET_PROMPT_VOLUME`). ✅ Wire verified live on
-   * T8030 (audible): the `1350` SET_PAYLOAD wrapper on ch0 with `payload:{value}`. Station-only.
+   * HomeBase voice **prompt** volume 0..100 (app `APP_CMD_SET_PROMPT_VOLUME`): the `1350` SET_PAYLOAD wrapper on ch0 with `payload:{value}`. Station-only.
    */
   HUB_PROMPT_VOLUME: 1292,
 } as const;
@@ -57,7 +54,7 @@ export const AUDIO_CMD = {
  */
 export type AudioActions = Surface<typeof AUDIO_MEMBERS>;
 
-/** Camera/doorbell audio write — the direct-binary 136-byte struct (signCode 8), wire-verified on T8214. */
+/** Camera/doorbell audio write — the direct-binary 136-byte struct (signCode 8). */
 function audioCommand(param: number, value: number, ctx: CommandContext): Command {
   return setScalar(param, value, ctx, "direct-binary");
 }
@@ -108,12 +105,12 @@ function audioRecordingCommand(on: boolean, ctx: CommandContext): Command {
 /**
  * Every general audio feature, declared once and family-gated across cameras, doorbells, and HomeBases.
  *
- * Camera side (Doorbell T8214): outer-cmd = the param id
+ * Camera side: outer-cmd = the param id
  * (1240/1241/1230/1708), signCode 8, device channel, 168B→136B direct-binary struct
  * `[u32 channel][u32 value][account_id pad→128]`; polarity is 1=on. HomeBase prompt volume `1292`
  * rides the `1350` SET_PAYLOAD wrapper on channel 0 with `payload:{value}` and is not cloud-reflected.
  *
- * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * Exported but NOT published: each entry states its wire id and its gate,
  * which the reference site does not carry.
  * @internal
  */
@@ -129,7 +126,7 @@ export const AUDIO_MEMBERS = {
     kind: "boolean",
     provenance: "verified",
     available: (ctx: AvailabilityContext) => isCameraCodec(ctx) && described("microphone_on_off")(ctx),
-    description: "Microphone on/off (1240 AUDIO_MICROPHONE_SWITCH; 1=on/0=off). Wire verified live on T8214.",
+    description: "Microphone on/off (1240 AUDIO_MICROPHONE_SWITCH; 1=on/0=off).",
     write: (v, ctx) => audioCommand(AUDIO_CMD.AUDIO_MICROPHONE, asBool(v) ? 1 : 0, ctx),
   },
   /**
@@ -143,7 +140,7 @@ export const AUDIO_MEMBERS = {
     kind: "boolean",
     provenance: "verified",
     available: (ctx: AvailabilityContext) => isCameraCodec(ctx) && described("speaker_on_off")(ctx),
-    description: "Speaker on/off (1241 AUDIO_SPEAKER_SWITCH; 1=on/0=off). Wire verified live on T8214.",
+    description: "Speaker on/off (1241 AUDIO_SPEAKER_SWITCH; 1=on/0=off).",
     write: (v, ctx) => audioCommand(AUDIO_CMD.AUDIO_SPEAKER, asBool(v) ? 1 : 0, ctx),
   },
   /**
@@ -161,8 +158,7 @@ export const AUDIO_MEMBERS = {
     min: 0,
     max: 100,
     intentNames: ["volume"],
-    description:
-      "Speaker volume 0..100 (1230 DOORBELL_AUDIO_VOLUME). Write verified live on T8214 (set 60 → param 60).",
+    description: "Speaker volume 0..100 (1230 DOORBELL_AUDIO_VOLUME).",
     write: (v, ctx) => audioCommand(AUDIO_CMD.SPEAKER_VOLUME, Number(v), ctx),
   },
   /** Raw 1288 is `record_mute` (1 = recording OFF), so audioRecording = NOT record_mute; 6012 and 1366 per the write. */
@@ -206,7 +202,7 @@ export const AUDIO_MEMBERS = {
     available: (ctx: AvailabilityContext) => hasCapability(ctx, "doorbell") && !isUntriedDoorbell(ctx),
     min: 0,
     max: 100,
-    description: "Doorbell ring/chime volume 0..100 (1708 DOORBELL_RINGTONE_VOLUME). Wire verified live on T8214.",
+    description: "Doorbell ring/chime volume 0..100 (1708 DOORBELL_RINGTONE_VOLUME).",
     write: (v, ctx) => audioCommand(AUDIO_CMD.DOORBELL_RINGTONE_VOLUME, Number(v), ctx),
   },
   /** HomeBase voice-prompt volume uses the 1350 SET_PAYLOAD wrapper on channel 0 and has no cloud readback. */
@@ -220,7 +216,7 @@ export const AUDIO_MEMBERS = {
     available: isHomeBase,
     min: 0,
     max: 100,
-    description: "HomeBase voice-prompt volume 0..100 (1292 APP_CMD_SET_PROMPT_VOLUME). Verified audible on a T8030.",
+    description: "HomeBase voice-prompt volume 0..100 (1292 APP_CMD_SET_PROMPT_VOLUME).",
     write: (v, ctx) => setPayload(AUDIO_CMD.HUB_PROMPT_VOLUME, { value: Number(v) }, ctx),
   },
 } as const satisfies Members;

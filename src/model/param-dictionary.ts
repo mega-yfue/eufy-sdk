@@ -1,10 +1,10 @@
 /**
- * AUTHORITATIVE param dictionary — the app's own decompiled constant names joined with a live
- * param-sweep of real owned devices.
+ * AUTHORITATIVE param dictionary — the app's own decompiled constant names joined with the
+ * param ids devices report.
  *
  * Two namespaces (params are per-transport, NOT globally unique):
- *  - SECURITY_PARAMS — eufy P2P param space (ids 1000+). **Membership is the observation**: an id is
- *    listed only because the sweep saw it on a real owned device, so the id is real/accepted.
+ *  - SECURITY_PARAMS — eufy P2P param space (ids 1000+). **Membership is the evidence**: an id is
+ *    listed only because a device reports it, so the id is real/accepted.
  *    `provenance` is the trust of the NAME/meaning; the tiers are defined on `PropertySource` in
  *    `types.ts`.
  *  - CLEAN_PARAMS — RoboVac Tuya DP space (ids 1 and above), names from the cloud
@@ -1645,7 +1645,7 @@ export const CLEAN_PARAMS: Record<number, ParamDef> = {
     type: "string",
     provenance: "mega",
   },
-  // X8 Pro (T2266, eufy_home_tuya) Tuya DP schema — live-confirmed via getCurrentDps.
+  // X8 Pro (T2266, eufy_home_tuya) Tuya DP schema, as reported by getCurrentDps.
   // Source: thing.m.device.ref.info.list v5.4, product wahqax6ifjgs1c4n, schemaInfo.schema.
   1: {
     name: "power",
@@ -1761,12 +1761,11 @@ export const CLEAN_PARAMS: Record<number, ParamDef> = {
  * meaning, so reading these ids there would decode a future security param assigned in this range as
  * whatever it means on a camera.
  *
- * Every id here was reported by a live T87A0 (captured 2026-09-04). That the device SENT an id is what
+ * Every id here is reported by the T87A0. That the device sends an id is what
  * earns it a place in this table; the provenance label beside each one rates something narrower — how far
  * its NAME is trusted. `modelName` and `modelCode` are `mega`, their values matching what the cloud
- * record already carried. `battery` is `verified`: the id is real and the reading consistent, but the
- * name came from the maintainer's own knowledge of the hardware rather than from the cloud data-point
- * list, and `"100"` fits brightness, volume or charge equally.
+ * record already carried. `battery` is `verified`, not `mega`: the name is not
+ * in the cloud data-point list, and `"100"` fits brightness, volume or charge equally.
  *
  * A dictionary entry is what makes a param readable by name off `getProperties()`. `capabilities/display.ts`
  * decides separately which of them reach the typed surface, and only `battery` does.
@@ -1802,7 +1801,7 @@ export const DISPLAY_PARAMS: Record<number, ParamDef> = {
 
 /**
  * Robot-mower Tuya DP space — names from the E15's Tuya product schema (`schemaInfo.schema`), each id
- * also reported by a live E15. Only the scalar data points the `mower` capability reads are listed.
+ * also reported by the E15. Only the scalar data points the `mower` capability reads are listed.
  */
 export const MOWER_PARAMS: Record<number, ParamDef> = {
   8: {

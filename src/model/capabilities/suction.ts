@@ -82,7 +82,7 @@ export type SuctionActions = Surface<typeof SUCTION_MEMBERS> & {
  * Every `suction` read and write — `setSuctionLevel` (DP 158, via `writeAs`) and `setBoostIq`
  * (DP 159) are both derived from this table.
  *
- * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * Exported but NOT published: each entry states its wire id and its gate,
  * which the reference site does not carry.
  * @internal
  */

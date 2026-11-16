@@ -53,19 +53,18 @@ export const CAMERA_CMD = {
   /**
    * Camera status LED on/off — the "power/recording" indicator. The
    * app JS has a sibling param `1056` (`APP_CMD_LIVEVIEW_LED_SWITCH`) for the SAME UI "Status Light"
-   * setting on some other model/generation — confirmed real (a full parser class exists) but tested
-   * live with no effect on a T8425 (which uses 1045, shipped here); which model actually uses 1056
-   * is unconfirmed. Don't wire 1056 as an alias of this without per-model evidence.
+   * setting on some other model/generation; it does not drive the 1045 LED, and which model uses 1056
+   * is unknown. Don't wire 1056 as an alias of this without per-model evidence.
    */
   DEV_LED_SWITCH: 1045,
   /**
    * Rotate the image 180° on/off. Direct param, value 0 = normal, 1 = flipped. The app's constant is
-   * `INDOOR_ROTATE_IMAGE`, but it is NOT indoor-only — ✅ verified live on an OUTDOOR floodlight cam
-   * (T8425), so we drop the misleading "indoor". App parser: `{cmd:1207, params:{enable:0|1}}`.
+   * `INDOOR_ROTATE_IMAGE`, but it is NOT indoor-only — outdoor cameras take it too, so the misleading
+   * "indoor" is dropped. App parser: `{cmd:1207, params:{enable:0|1}}`.
    */
   ROTATE_IMAGE: 1207,
   /**
-   * On-screen watermark / OSD overlay (app `CMD_SET_DEVS_OSD`). ✅ Wire verified live on T8425 (ch3):
+   * On-screen watermark / OSD overlay (app `CMD_SET_DEVS_OSD`):
    * a **3-value enum**, not a bool — 0 = off, 1 = timestamp, 2 = timestamp + logo. Direct-binary
    * `[channel][value]`. (Labels/enum in {@link Watermark}.)
    */
@@ -73,13 +72,13 @@ export const CAMERA_CMD = {
   /**
    * Video-doorbell status-LED on/off. Rides the `1350` SET_PAYLOAD envelope
    * (`{account_id,cmd:1716,mChannel,mValue3:1716,payload:{light_enable:0|1}}`),
-   * signCode 8. ✅ verified live on Doorbell Dual T8214. Family-specific wire for the same semantic
+   * signCode 8. Family-specific wire for the same semantic
    * status LED setting ordinary cameras report under 1045.
    */
   DOORBELL_LED: 1716,
   /**
    * Night-vision mode (app `NIGHT_VISION_TYPE`). Enum: 0 = off, 1 = infrared/auto (B&W), 2 = full colour.
-   * ✅ All three verified live on T8425: `1350` SET_PAYLOAD, inner cmd 1277, `payload:{channel:<deviceCh>,
+   * `1350` SET_PAYLOAD, inner cmd 1277, `payload:{channel:<deviceCh>,
    * night_sion:N}`, mChannel 0, mValue3 0. Standalone (SINGLE-connect) uses direct `IC_NIGHT_VISION_TYPE`
    * (1013). (Some models omit full colour; enum in {@link NightVision}.)
    */
@@ -88,15 +87,13 @@ export const CAMERA_CMD = {
   IC_NIGHT_VISION_TYPE: 1013,
   /**
    * Push-notification STYLE — how much a detection push carries: text alone, a thumbnail, or text
-   * followed by a thumbnail. App `CMD_INDOOR_PUSH_NOTIFY_TYPE`, and the "indoor" is a misnomer: the
-   * wire is confirmed on an OUTDOOR standalone camera (T8171). The app's id→name table carries TWO
-   * aliases for this id, `ENTER_OTA` and `INDOOR_PUSH_NOTIFY_TYPE`; the confirmed behaviour is the
-   * notification style.
+   * followed by a thumbnail. App `CMD_INDOOR_PUSH_NOTIFY_TYPE`, and the "indoor" is a misnomer: outdoor
+   * standalone cameras take it too. The app's id→name table carries TWO aliases for this id,
+   * `ENTER_OTA` and `INDOOR_PUSH_NOTIFY_TYPE`; the behaviour is the notification style.
    *
-   * Wire verified live on a T8171 (standalone, own channel, reached over the cloud/WAN path): the
-   * `1700` CONTROL_PAYLOAD wrapper, signCode 8, plaintext
-   * `{"commandType":6020,"data":{"value":N,"transaction":"<epoch ms>"}}`. All three values captured
-   * byte-exact, each read back on the cloud param within ~10s. The station answers on the same wrapper
+   * Wire: the `1700` CONTROL_PAYLOAD wrapper, signCode 8, plaintext
+   * `{"commandType":6020,"data":{"value":N,"transaction":"<epoch ms>"}}`, reported back on the cloud
+   * param. The station answers on the same wrapper
    * ~600ms later with a 4-byte body — the command's int32 result — so this write is not
    * fire-and-forget, unlike the direct-binary switches.
    * (Values in {@link NotificationStyle}.)
@@ -106,16 +103,15 @@ export const CAMERA_CMD = {
    * **Sound detection** switch — whether the camera triggers on what it hears, beside the motion
    * trigger it triggers on what it sees.
    *
-   * Wire observed live on an indoor pan-tilt (standalone, mains, own channel): the `1700`
-   * CONTROL_PAYLOAD wrapper, plaintext `{"commandType":6043,"data":{"status":0|1}}`. Both directions
-   * captured byte-exact and read back on the cloud param, twice each; no other parameter moved.
+   * Wire: the `1700` CONTROL_PAYLOAD wrapper, plaintext `{"commandType":6043,"data":{"status":0|1}}`,
+   * reported back on the cloud param.
    */
   SOUND_DETECTION: 6043,
   /**
    * How loud a sound has to be to trigger {@link CAMERA_CMD.SOUND_DETECTION} — the app's three-position
    * control writes `1` lowest, `3` mid, `5` highest.
    *
-   * Wire observed live on the same camera: `{"commandType":6044,"data":{"index":N}}` in the `1700`
+   * Wire: `{"commandType":6044,"data":{"index":N}}` in the `1700`
    * wrapper. The payload field is `index`, NOT the `value` its neighbours use — each of these
    * commands names its field differently, so there is no generic setter for the family.
    */
@@ -123,8 +119,8 @@ export const CAMERA_CMD = {
   /**
    * WHICH sounds trigger {@link CAMERA_CMD.SOUND_DETECTION} — all sound, or crying alone.
    *
-   * Wire observed live: `{"commandType":6046,"data":{"type":N}}` in the `1700` wrapper, both values
-   * captured and read back. (Values in {@link SoundDetectionType}.)
+   * Wire: `{"commandType":6046,"data":{"type":N}}` in the `1700` wrapper, reported back on the cloud
+   * param. (Values in {@link SoundDetectionType}.)
    */
   SOUND_DETECTION_TYPE: 6046,
   /**
@@ -140,24 +136,24 @@ export const CAMERA_CMD = {
   /**
    * RECORDING quality — what gets stored, not the live view; {@link CAMERA_CMD.STREAMING_QUALITY_SET}
    * below is the live one, and the app's name for this id is `multicamSetRecordQuailty`.
-   * Wire confirmed on a T8425 ch3: `1350` SET_PAYLOAD, inner cmd 2731,
+   * Wire: `1350` SET_PAYLOAD, inner cmd 2731,
    * `payload:{channel:0, mode:0, primary_view:0, quality:N}`, mValue3 0, on the device channel. Tiers
    * 1/2/3, named in {@link RECORDING_QUALITY_TIERS} — no tier 0 on this wire, where streaming has one.
-   * That is a fact about 2731 on the cameras it was confirmed on, not about recording everywhere. A
+   * That is a fact about 2731, not about recording everywhere. A
    * doorbell has no recording-quality setting at all, and its live-view quality rides neither 2730 nor
-   * 2731 but 1705, on a domain of its own (5 = Auto, 6/7/8 = Low/Medium/High, all four observed).
+   * 2731 but 1705, on a domain of its own (5 = Auto, 6/7/8 = Low/Medium/High).
    */
   RECORDING_QUALITY_SET: 2731,
   /**
    * LIVE-VIEW quality — a separate setting from {@link CAMERA_CMD.RECORDING_QUALITY_SET}, and the app's
    * names for the two invert what they suggest: 2730 is `multicamSetVideoQuailty` and drives the
    * Streaming Quality picker, while 2731 is `multicamSetRecordQuailty` and drives Recording Quality.
-   * Changing one leaves the other's parameter untouched, which is how they were told apart.
+   * Changing one leaves the other's parameter untouched.
    *
-   * Unlike recording it offers a tier 0, `Auto`. Wire verified live on a T8170 (standalone): the `1350`
+   * Unlike recording it offers a tier 0, `Auto`. Wire: the `1350`
    * SET_PAYLOAD envelope, signCode 8, plaintext `{"cmd":2730,"payload":{"transaction":"<epoch ms>",
-   * "quality":N,"channel":0,"mode":0,"primary_view":0},"account_id":…}`. All four tiers captured
-   * byte-exact and read back on parameter 1020; the station echoes the same payload back as a `1351`
+   * "quality":N,"channel":0,"mode":0,"primary_view":0},"account_id":…}`, reported back on parameter
+   * 1020; the station echoes the same payload back as a `1351`
    * NOTIFY_PAYLOAD carrying the same `transaction`.
    */
   STREAMING_QUALITY_SET: 2730,
@@ -180,7 +176,7 @@ export function hasReportedEasSwitch(source: {
 // Deliberately NOT JSDoc: `Watermark` is re-exported publicly, and TypeDoc publishes a JSDoc block
 // verbatim — the publication guard rejects wire detail on the generated page. The wire itself is
 // documented on CAMERA_CMD.SET_DEVS_OSD, which stays internal.
-// Wire: CMD_SET_DEVS_OSD 1214 — verified live (T8425).
+// Wire: CMD_SET_DEVS_OSD 1214.
 export const Watermark = {
   /** No timestamp or logo. */
   Off: 0,
@@ -195,7 +191,7 @@ export type WatermarkValue = (typeof Watermark)[keyof typeof Watermark];
 // Deliberately NOT JSDoc: `NotificationStyle` is re-exported publicly, and TypeDoc publishes a JSDoc
 // block verbatim — the publication guard rejects wire detail on the generated page. The wire itself is
 // documented on CAMERA_CMD.PUSH_NOTIFY_TYPE, which stays internal.
-// Wire: CMD_INDOOR_PUSH_NOTIFY_TYPE 6020 — all three values verified live (T8171 standalone).
+// Wire: CMD_INDOOR_PUSH_NOTIFY_TYPE 6020.
 export const NotificationStyle = {
   /** The push carries text alone. */
   TextOnly: 1,
@@ -207,8 +203,7 @@ export const NotificationStyle = {
 /** A notification style — the value side of {@link NotificationStyle}. */
 export type NotificationStyleValue = (typeof NotificationStyle)[keyof typeof NotificationStyle];
 
-// Wire: CMD_INDOOR_DET_SET_SOUND_DETECT_TYPE 6046 — both values observed live on an indoor pan-tilt,
-// each read back on the cloud param. `Crying` is the value the camera shipped configured with.
+// Wire: CMD_INDOOR_DET_SET_SOUND_DETECT_TYPE 6046, reported back on the cloud param.
 export const SoundDetectionType = {
   /** Crying alone triggers a detection. */
   Crying: 1,
@@ -237,13 +232,13 @@ export const NightVision = {
 export type NightVisionValue = (typeof NightVision)[keyof typeof NightVision];
 
 /**
- * Video record-quality names. The stored value is a quality TIER; the two lower tiers are the same
- * resolution on every camera confirmed so far, and the top tier is whatever the camera's sensor gives —
- * 2K on a T8171, 3K on a T8170 and a T8425 — so it is named for its RANK, not for a resolution.
+ * Video record-quality names. The stored value is a quality TIER; the two lower tiers are 720P and
+ * 1080P, and the top tier is whatever the camera's sensor gives (2K or 3K), so it is named for its RANK,
+ * not for a resolution.
  *
  * Naming it "3K HD" would be a claim the SDK cannot ground: a camera does not report its top
  * resolution (the cloud record's `product` is null and no parameter carries it), and the app's own model
- * registry spells a resolution into only some older families, neither of the confirmed ones among them.
+ * registry spells a resolution into only some older families.
  * A resolution label is presentation, and one that cannot be derived is presentation the SDK would get
  * wrong; `Max` is a fact about the tier.
  */
@@ -256,8 +251,8 @@ export const RecordingQuality = {
 export type RecordingQualityName = (typeof RecordingQuality)[keyof typeof RecordingQuality];
 
 /**
- * Quality tier → name. Tiers confirmed on real devices: 1 = 720P, 2 = 1080P, 3 = the sensor's maximum
- * (observed as 2K on a T8171 and 3K on a T8170 and a T8425, hence the rank rather than a resolution).
+ * Quality tier → name: 1 = 720P, 2 = 1080P, 3 = the sensor's maximum (2K or 3K, hence the rank rather
+ * than a resolution).
  * The vendor names by rank itself where a resolution would not travel: a doorbell's live-view picker
  * reads Auto/Low/Medium/High.
  */
@@ -279,8 +274,8 @@ export const StreamingQuality = {
 export type StreamingQualityName = (typeof StreamingQuality)[keyof typeof StreamingQuality];
 
 /**
- * Live-view quality tier → name. Tier 0 is `Auto`; 1, 2 and 3 are the recording tiers, confirmed to
- * carry the same names on a T8170 and a T8171.
+ * Live-view quality tier → name. Tier 0 is `Auto`; 1, 2 and 3 are the recording tiers under the
+ * same names.
  */
 export const STREAMING_QUALITY_TIERS: Readonly<Record<number, string>> = {
   0: "Auto",
@@ -336,7 +331,7 @@ export function resolveRecordingQualityTier(value: number | string | boolean): n
 /**
  * Lift the ACTIVE tier out of the quality config the device reports.
  *
- * 2731 is not a scalar: a T8170 reports `{cur_mode:0, mode_0:{quality:3}, mode_1:{quality:3}}` — one
+ * 2731 is not a scalar: the device reports `{cur_mode:0, mode_0:{quality:3}, mode_1:{quality:3}}` — one
  * entry per capture mode, with `cur_mode` selecting which is live. Read as a bare number it would
  * coerce to a non-numeric string and the getter would answer the whole object, typed as though it were
  * a tier.
@@ -394,14 +389,12 @@ export type CameraActions = Surface<typeof CAMERA_MEMBERS> & {
  * NOTE: this is polarity only (which value = ON). The WIRE LEVEL is NOT decided here nor by family — it
  * is resolved at send time from the session, so power is emitted `"auto"` and the transport picks.
  *
- * ✅ Polarity confirmed against the current app's own frames: it wrote `1` to turn a camera on and `0` to
- * turn it off, on cameras of two device types whose enable-bit convention this returns.
+ * The polarity is the app's own: it writes `1` to turn a camera on and `0` to turn it off on the device
+ * types whose enable-bit convention this returns.
  *
  * An indoor camera (type 30) that reports its state under 1035 itself is the exception: there 1035 carries
  * the disable bit the read already decodes, so the write takes that polarity and both sides agree.
- * ✅ Verified live on a HomeBase-attached T8400 reporting 1035="0" while on and the eufy app enabled.
- * Only that type was measured — other indoor types reporting 1035 keep the enable bit until one is captured
- * (#304 reports a T8030-attached T8410, type 31, whose 1035 reads as an enable bit).
+ * Other indoor types reporting 1035 keep the enable bit.
  */
 function isEnableBitPolarity(ctx: CommandContext): boolean {
   const t = ctx.deviceType;
@@ -445,7 +438,7 @@ function hasUnreflectedPower(ctx: CommandContext): boolean {
 }
 
 /**
- * Whether this camera is powered through the privacy burst: an S350 riding a HomeBase, the only topology run.
+ * Whether this camera is powered through the privacy burst: an S350 riding a HomeBase.
  * A standalone S350 stays on the auto-sealed 1035, which a keyless session can still send.
  */
 function hasPrivacyPower(ctx: CommandContext): boolean {
@@ -619,7 +612,7 @@ const WATERMARK_WIRE = bundleWires("watermark_set", "1214", {
 
 /**
  * How this camera is powered, as every media egress needs to be told: a battery device is streamed
- * under a budget, a wired one unbounded. Read off the resolved capabilities, except that a confirmed
+ * under a budget, a wired one unbounded. Read off the resolved capabilities, except that a
  * mains-only model (see `cameraPowerTier` in battery.ts) is wired even with `battery` resolved. Given
  * to EVERY egress, since any of them may be the call that creates the shared source.
  */
@@ -632,8 +625,7 @@ function poweredOf(ctx: CommandContext): "wired" | "battery" {
  *
  * Written wire and reported wire are not necessarily the same one. Scalar power is written on
  * {@link CAMERA_CMD.CAMERA_ENABLE}, but the standalone indoor/outdoor cameras report their state under the
- * `2001` read alias and never the param that was written — measured on one account, 5 cameras report the
- * enablement param and never `2001`, 3 report `2001` and never the enablement param, and none reported both.
+ * `2001` read alias and never the param that was written.
  * So the readback follows the reported param, chosen from the evidence the device gave: `2001` is direct.
  * T8410/HomeBase 3 retains a useful startup enable bit, but it does not reliably reflect the privacy write.
  * Do not poll that bit to confirm the wrapped command. Other routes retain their existing readback.
@@ -686,7 +678,7 @@ function refuseUnsupportedSelection(media: MediaProvider, opts?: MediaSourceSele
  * No `reboot`: it is a STATION operation with an unproven wire, shipped as the device-level
  * `EufyMega.reboot(sn)` (wire-confirmed station-scalar RESTART_HUB) rather than guessed at here.
  *
- * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * Exported but NOT published: each entry states its wire id and its gate,
  * which the reference site does not carry.
  * @internal
  */
@@ -703,13 +695,13 @@ export const CAMERA_MEMBERS = {
    * The default READ is the *disable*-bit convention (1035 "0" ⇒ ON, 2001 direct); the WRITE polarity is
    * family-dependent — see `powerValue` / `isEnableBitPolarity`. Battery/solo cams report the state under
    * 1035, standalone indoor/outdoor cams under 2001 OPEN_DEVICE with direct polarity, so 2001 is a
-   * read-alias. Both verified live, and the write polarity is confirmed against the app's own frames.
+   * read-alias. The write polarity is the app's own.
    *
    * T8410 on HomeBase 3 reports 1035 as an enable bit ("1" ⇒ ON). That reported state does not reliably
    * reflect the privacy command. `readReflectsWrite` states this distinction.
    *
-   * The privacy param (6250) is reported by the outdoor-PT family and by no other camera measured, and both
-   * of its polarities are observed. It is deliberately NOT aliased here: it moved in the same step as 1035, so
+   * The privacy param (6250) is reported by the outdoor-PT family. It is deliberately NOT aliased here: it
+   * moves in the same step as 1035, so
    * the reading cannot say whether power and privacy are one state or two — so
    * aliasing a second param could only fold two possible states into one getter for no gain.
    */
@@ -767,7 +759,7 @@ export const CAMERA_MEMBERS = {
     provenance: "verified",
     available: offers("watermark_set", WATERMARK_WIRE),
     description:
-      "On-screen watermark/OSD overlay (CMD_SET_DEVS_OSD 1214). ✅ wire verified live (T8425 ch3): " +
+      "On-screen watermark/OSD overlay (CMD_SET_DEVS_OSD 1214): " +
       "direct-binary [ch][value 0/1/2] — a 3-value enum, not a bool. Enum labels are best-guess.",
     write: (v, ctx) => {
       const w = coerceEnumValue(Watermark, v);
@@ -785,16 +777,13 @@ export const CAMERA_MEMBERS = {
     kind: "boolean",
     provenance: "verified",
     available: cameraThing("sound_detection_status"),
-    description:
-      "Trigger on sound as well as motion (SOUND_DETECTION 6043). ✅ Write confirmed live on a T8410 " +
-      "(mains, standalone, own channel): both directions sent through this member and read back on " +
-      "the cloud param, and the app's own frame captured byte-exact for the same body.",
+    description: "Trigger on sound as well as motion (SOUND_DETECTION 6043, 1700 control-payload {status:0|1}).",
     write: (v, ctx) => setJson(CAMERA_CMD.SOUND_DETECTION, { status: asBool(v) ? 1 : 0 }, ctx),
   },
   /**
    * How loud a sound must be to trigger: `1` lowest, `3` mid, `5` highest, on the app's own
-   * three-position control. A `scalar` rather than an enum — the endpoints and the midpoint are
-   * observed, so 2 and 4 are a prediction of the scale's shape rather than values the wire is known to
+   * three-position control. A `scalar` rather than an enum — the app writes the endpoints and the
+   * midpoint, so 2 and 4 are a prediction of the scale's shape rather than values the wire is known to
    * take. Independent of {@link CAMERA_MEMBERS.soundDetection}: the camera stores it whether sound
    * detection is on or off.
    */
@@ -806,8 +795,7 @@ export const CAMERA_MEMBERS = {
     available: cameraThing("sound_detection_sensitivity"),
     description:
       "Sound-detection sensitivity: 1 = lowest, 3 = mid, 5 = highest (SOUND_DETECTION_SENSITIVITY " +
-      "6044). ✅ Write confirmed live on a T8410: 1 and 5 sent consecutively through this member and " +
-      "read back on the cloud param. 2 and 4 are the scale's shape, not observed values.",
+      "6044). 2 and 4 are the scale's shape, not values the app writes.",
     write: (v, ctx) => {
       const n = Number(v);
       if (!Number.isInteger(n) || n < 1 || n > 5) return undefined;
@@ -826,10 +814,7 @@ export const CAMERA_MEMBERS = {
     enumValues: { 1: "Crying", 2: "All Sound" },
     provenance: "verified",
     available: cameraThing("sound_detection_type"),
-    description:
-      "Which sounds trigger a detection: crying alone, or any sound (SOUND_DETECTION_TYPE 6046). ✅ " +
-      "Write confirmed live on a T8410: both values sent consecutively through this member and read " +
-      "back on the cloud param.",
+    description: "Which sounds trigger a detection: crying alone, or any sound (SOUND_DETECTION_TYPE 6046).",
     write: (v, ctx) => {
       const type = coerceEnumValue(SoundDetectionType, v);
       return type == null ? undefined : setJson(CAMERA_CMD.SOUND_DETECTION_TYPE, { type }, ctx);
@@ -840,7 +825,7 @@ export const CAMERA_MEMBERS = {
    * neighbouring value is itself a real style, so a coerced one selects the wrong notification and
    * reports success.
    *
-   * `transaction` is part of the verified frame — a decimal epoch-in-milliseconds string, fresh per
+   * `transaction` is part of the frame — a decimal epoch-in-milliseconds string, fresh per
    * command.
    */
   notificationStyle: {
@@ -917,8 +902,7 @@ export const CAMERA_MEMBERS = {
     description:
       "Live-view quality as a tier, 0 = Auto (1020; the write rides 2730 " +
       "APP_CMD_MULTI_CAM_SET_VIDEO_QUALITY, or 1020 itself where the product's bundle sends it). Distinct from recordingQuality, which is what gets stored. " +
-      "All four tiers wire-verified live on a T8170 and read back on 1020. Sent from this SDK to a " +
-      "standalone T8170 and T8171, tier 1 holds the live stream at 1280x720 and tier 0 restores the " +
+      "The written tier is reported back on 1020; tier 1 holds the live stream at 1280x720 and tier 0 restores the " +
       "camera's own resolution ladder — see CAMERA_CMD.STREAMING_QUALITY_SET. A value outside the tier set is REJECTED, not " +
       "clamped: every tier in range is a real quality, so a bad one would silently pick another.",
     write: (v, ctx) => {
@@ -955,8 +939,8 @@ export const CAMERA_MEMBERS = {
     description:
       "RECORDING quality as a tier (2731) — distinct from streamingQuality, which is the live view. " +
       "The device reports the whole config — " +
-      "`{cur_mode, mode_<n>:{quality}}`, read live off a T8170 — and the ACTIVE mode's tier is lifted out " +
-      "of it on read. ✅ write wire verified live (T8425): 1350 SET_PAYLOAD " +
+      "`{cur_mode, mode_<n>:{quality}}` — and the ACTIVE mode's tier is lifted out " +
+      "of it on read. Write: 1350 SET_PAYLOAD " +
       "{channel, mode:0, primary_view:0, quality:N}. Tier→label in RECORDING_QUALITY_TIERS / resolveRecordingQuality, " +
       "or as the product's description lists them. Where the product's bundle sends them instead: 1023 {quality} in the 1700 " +
       "wrapper, or 1286 {record_quality} in the 1350 envelope.",

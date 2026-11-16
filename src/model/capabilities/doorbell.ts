@@ -36,40 +36,34 @@ const writable = (ctx: AvailabilityContext): boolean => !isUntriedDoorbell(ctx);
 export const DOORBELL_CMD = {
   /**
    * Doorbell "quick response" — make the doorbell PLAY a stored voice reply. Same 136-byte
-   * direct-binary shape as the camera setters: `value` = the `voice_id` to play. Reversed from a
-   * live capture (outer-cmd 1706, signCode 8, on the doorbell's `device_channel`) + the app's
-   * `PlayQuickResponseParser` (`{cmd:1706,voice_id}`).
+   * direct-binary shape as the camera setters: `value` = the `voice_id` to play. Outer cmd 1706,
+   * signCode 8, on the doorbell's `device_channel`; app `PlayQuickResponseParser` (`{cmd:1706,voice_id}`).
    */
   QUICK_RESPONSE: 1706,
   /**
    * Mechanical (wired) chime enable/disable — whether the doorbell drives an existing wired chime box,
    * the app's "existing doorbell chime" (as opposed to / in addition to the HomeBase acting as the chime,
-   * param 1702 `chimeSwitch` above; toggling each switch alone wrote one parameter and named the pair). Same
+   * param 1702 `chimeSwitch`). Same
    * 136-byte direct-binary shape as `QUICK_RESPONSE`/camera on-off: `[u32 channel][u32 value][account_id
    * ASCII, zero-padded to 128 bytes]`, outer P2P cmd = 1703 itself, signCode 8, on the device's own
-   * channel. Reversed from a live capture (outer-cmd 1703, signCode 8, captured on the doorbell's
-   * `device_channel` — channel 2 for that unit, NOT a wire constant, always use `ctx.channel`):
-   * turning ON sent `value=1`, turning OFF sent `value=0` — a plain boolean, 1=on/0=off.
+   * channel (NOT a wire constant, always use `ctx.channel`). `value` is a plain boolean, 1=on/0=off.
    * App `APP_CMD_BAT_DOORBELL_MECHANICAL_CHIME_SWITCH`.
    */
   MECHANICAL_CHIME_SWITCH: 1703,
   /**
    * Whether the HOMEBASE acts as the doorbell's chime — the app's "HomeBase as chime" switch, as opposed
    * to the wired chime box {@link DOORBELL_CMD.MECHANICAL_CHIME_SWITCH} drives. The app constant reads
-   * `CHIME_SWITCH`, which is why this was long described as a separate plug-in chime; toggling that one
-   * switch alone on a T8210 behind a HomeBase wrote 1702 and nothing else, and the account has no
-   * plug-in chime at all. Same 136-byte direct-binary shape as
+   * `CHIME_SWITCH`, but it is not a plug-in chime. Same 136-byte direct-binary shape as
    * that sibling: `[u32 channel][u32 value][account_id ASCII, zero-padded to 128 bytes]`, outer P2P cmd
-   * 1702 itself, signCode 8, on the device's own channel. Reversed from a live capture (outer-cmd 1702,
-   * signCode 8, on the doorbell's `device_channel` — 2 for that unit, NOT a wire constant, always use
-   * `ctx.channel`): turning OFF sent `value=0`, turning ON sent `value=1` — a plain boolean.
+   * 1702 itself, signCode 8, on the device's own channel (NOT a wire constant, always use `ctx.channel`).
+   * `value` is a plain boolean, 1=on/0=off.
    * App `APP_CMD_BAT_DOORBELL_CHIME_SWITCH`.
    */
   CHIME_SWITCH: 1702,
   /**
    * Wide Dynamic Range (WDR) image switch — a video/image tone-mapping setting that widens the
    * exposure range in high-contrast scenes (bright sky behind a visitor, etc). SAME 136-byte
-   * direct-binary shape/polarity/capture session as `MECHANICAL_CHIME_SWITCH` immediately above: outer
+   * direct-binary shape/polarity as `MECHANICAL_CHIME_SWITCH` immediately above: outer
    * P2P cmd 1704, signCode 8, device channel, `value` 1=on/0=off.
    * App `APP_CMD_BAT_DOORBELL_WDR_SWITCH`.
    */
@@ -77,11 +71,10 @@ export const DOORBELL_CMD = {
   /**
    * Doorbell chime ("ding-dong") volume — app `APP_CMD_BAT_DOORBELL_SET_DINGDONG_VOLUME`. UNLIKE the 1703/1704 direct-binary switches above, this rides the
    * `SET_PAYLOAD` (1350) JSON envelope: `{account_id,cmd:1717,mChannel:<deviceCh>,mValue3:0,
-   * payload:{dingdong_volume:N}}`, GCM signCode 8, on the doorbell's `device_channel` (2 for the
-   * captured unit — always use `ctx.channel`, don't hardcode). `mValue3` is an EXPLICIT `0`, not the
-   * `SET_PAYLOAD` default of `mValue3:cmd` (see {@link module:./intent setPayload}'s doc comment) —
-   * both live frames captured showed `mValue3:0`. Reversed from a live capture (values 3 and 25
-   * observed) — a 0-100 loudness level, distinct from the already-shipped `ringtoneVolume` (1708,
+   * payload:{dingdong_volume:N}}`, GCM signCode 8, on the doorbell's `device_channel` (always use
+   * `ctx.channel`, don't hardcode). `mValue3` is an EXPLICIT `0`, not the
+   * `SET_PAYLOAD` default of `mValue3:cmd` (see {@link module:./intent setPayload}'s doc comment).
+   * A 0-100 loudness level, distinct from the already-shipped `ringtoneVolume` (1708,
    * direct-binary, `audio.ts`), which is a DIFFERENT control.
    */
   DINGDONG_VOLUME: 1717,
@@ -90,7 +83,7 @@ export const DOORBELL_CMD = {
    * SAME `SET_PAYLOAD` (1350) JSON envelope shape as
    * `DINGDONG_VOLUME` immediately above: `{account_id,cmd:1718,mChannel:<deviceCh>,mValue3:0,
    * payload:{dingdong_ringtone:N}}`, GCM signCode 8, doorbell `device_channel`, explicit `mValue3:0`.
-   * Reversed from a live capture (values 4 and 0 observed) — `N` is an INTEGER INDEX picking one of
+   * `N` is an INTEGER INDEX picking one of
    * several stored chime tones, NOT a boolean.
    */
   DINGDONG_RINGTONE: 1718,
@@ -101,36 +94,25 @@ export const DOORBELL_CMD = {
    * separate menus and each write carries both, so setting either requires the other's current value —
    * which is why neither is a derived setter.
    *
-   * The encoding is reversed from writing every option in the app and reading the parameter back: High
-   * on high compression is 8 and on low compression 3, Low on low compression 1, Auto on high
-   * compression 5. Six of the eight combinations were observed that way; `0` (Auto, low compression) and
-   * `2` (Medium, low compression) follow the same arithmetic but were not individually written.
-   *
-   * Wire captured byte-exact from the app on a T8210 behind a HomeBase: outer P2P cmd 1705 itself — no
+   * Outer P2P cmd 1705 itself — no
    * wrapper — signCode 8, on the doorbell's own channel, the same 136-byte direct-binary
    * `[u32 channel][u32 value][account_id ASCII pad 128]` struct as its 1703/1704 siblings. The station
    * answers with an unencrypted level-1 frame carrying 0.
-   *
-   * Replayed from this SDK and confirmed on that device: three writes in one session, each read back off
-   * the parameter — quality alone, then the encoding format with the quality held, then a restore.
    */
   VIDEO_QUALITY: 1705,
   /**
    * Doorbell quick-response LIST fetch — the sub-command carried inside a `SET_PAYLOAD` (1350)
    * wrapper (app `APP_CMD_GET_CUSTOMIZE_VICOE_LIST`). The station replies with a `NOTIFY_PAYLOAD`
    * (1351) frame whose JSON is `{cmd:6237, payload:{voice_list:[{voice_id,voice_name,voice_path}]}}`.
-   * Reversed from the app's `GetQuickResponseListP2pParser` + the capture heap. NOTE: 6238
+   * App `GetQuickResponseListP2pParser`. NOTE: 6238
    * (`APP_CMD_GET_QUICK_RESPONSE`) is the single-file DOWNLOAD, not the list.
    */
   GET_QUICK_RESPONSE_LIST: 6237,
 } as const;
 
 /**
- * Doorbell chime ("ding-dong") ringtone selection, as a 0-indexed list. Three indices were confirmed
- * on-device (`0→Default`, `7→Ding`, `8→Hillside`) and land exactly on a plain top-to-bottom order, so
- * the remaining indices follow that same linear order rather than being individually tested. Full name list
- * (10 entries) read off the app's own picker UI. `Circuit` (index 5) is a BEST-EFFORT spelling — its
- * index was not individually wire-tested, only its position in the read-off list.
+ * Doorbell chime ("ding-dong") ringtone selection, as a 0-indexed list in the app picker's
+ * top-to-bottom order (10 entries). `Circuit` (index 5) is a BEST-EFFORT spelling.
  */
 export const DoorbellRingtone = {
   Default: 0,
@@ -223,9 +205,8 @@ export function parseQuickResponses(
 }
 
 /**
- * `doorbell` — chime / ringtone configuration. CONFIRMED against a real Video Doorbell (T8214):
- * the live ids are the `1702-1719` `CMD_BAT_DOORBELL_*` range, observed on that device. The
- * legacy `2015/2022/1306` ids are excluded — they appear on NO owned device. The button-
+ * `doorbell` — chime / ringtone configuration on the `1702-1719`
+ * `CMD_BAT_DOORBELL_*` range. The legacy `2015/2022/1306` ids are excluded. The button-
  * press *event* (ring) is delivered out-of-band via `CMD_DOORBELL_NOTIFY_PAYLOAD` (1701) /
  * push/MQTT — it is handled by the Phase-1 event normalizers, not as a device-list param.
  */
@@ -238,16 +219,15 @@ export function parseQuickResponses(
  *    onto non-doorbell cameras, so `audio` gates its setter on the doorbell capability instead.
  *  - `notificationMode` (1710) — a config JSON the device reports whole; no write is captured.
  *
- * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * Exported but NOT published: each entry states its wire id and its gate,
  * which the reference site does not carry.
  * @internal
  */
 export const DOORBELL_MEMBERS = {
   /**
    * The HOMEBASE as the doorbell's chime — the hub plays the ring, not the wired chime box
-   * `mechanicalChimeSwitch` drives. `provenance` is "verified" on our own decrypt of the app's frame:
-   * direct-binary `[ch][value][acct]`, 1=on/0=off, the same shape as its 1703 sibling — captured, not
-   * inferred from the shared param range.
+   * `mechanicalChimeSwitch` drives. Direct-binary `[ch][value][acct]`, 1=on/0=off, the same shape as its
+   * 1703 sibling.
    */
   chimeSwitch: {
     param: DOORBELL_CMD.CHIME_SWITCH,
@@ -255,35 +235,27 @@ export const DOORBELL_MEMBERS = {
     type: "bool",
     kind: "boolean",
     provenance: "verified",
-    description:
-      "The HomeBase plays the doorbell's chime (1702; the app's \"HomeBase as chime\" switch — write " +
-      "wire-confirmed live on T8210).",
+    description: "The HomeBase plays the doorbell's chime (1702; the app's \"HomeBase as chime\" switch).",
     write: (v, ctx) => setScalar(DOORBELL_CMD.CHIME_SWITCH, asBool(v) ? 1 : 0, ctx, "direct-binary"),
   },
-  /**
-   * `provenance` is "verified" on our own P2P decrypt of the write wire: direct-binary
-   * `[ch][value][acct]`, 1=on/0=off, verified live on a T8214 (ON then OFF).
-   */
+  /** Direct-binary `[ch][value][acct]`, 1=on/0=off. */
   mechanicalChimeSwitch: {
     param: DOORBELL_CMD.MECHANICAL_CHIME_SWITCH,
     available: writable,
     type: "bool",
     kind: "boolean",
     provenance: "verified",
-    description:
-      'The existing wired chime box rings (1703; the app\'s "existing doorbell chime" switch — ' +
-      "confirmed on T8214, and that pairing confirmed by toggling it alone on a T8210).",
+    description: 'The existing wired chime box rings (1703; the app\'s "existing doorbell chime" switch).',
     write: (v, ctx) => setScalar(DOORBELL_CMD.MECHANICAL_CHIME_SWITCH, asBool(v) ? 1 : 0, ctx, "direct-binary"),
   },
-  /** Same reasoning and the same capture session as {@link DOORBELL_MEMBERS.mechanicalChimeSwitch}. */
+  /** Same wire shape as {@link DOORBELL_MEMBERS.mechanicalChimeSwitch}. */
   wdrSwitch: {
     param: DOORBELL_CMD.WDR_SWITCH,
     available: writable,
     type: "bool",
     kind: "boolean",
     provenance: "verified",
-    description:
-      "Wide Dynamic Range (WDR) image switch (1704; write wire-confirmed live on T8214 — see DOORBELL_CMD.WDR_SWITCH).",
+    description: "Wide Dynamic Range (WDR) image switch (1704; see DOORBELL_CMD.WDR_SWITCH).",
     write: (v, ctx) => setScalar(DOORBELL_CMD.WDR_SWITCH, asBool(v) ? 1 : 0, ctx, "direct-binary"),
   },
   /**
@@ -301,14 +273,12 @@ export const DOORBELL_MEMBERS = {
     provenance: "verified",
     writtenElsewhere: true,
     description:
-      "Ringtone volume (1708; confirmed on T8214, observed value 80). The WRITE is `audio`'s " +
-      "setRingtoneVolume — that capability owns every volume wire.",
+      "Ringtone volume (1708). The WRITE is `audio`'s " + "setRingtoneVolume — that capability owns every volume wire.",
   },
   /**
-   * A `1350` SET_PAYLOAD envelope (NOT direct-binary) with an explicit `mValue3` 0 — both live frames
-   * captured that value. Bounded 0-100 like every sibling volume setter: the write is fire-and-forget,
-   * so an out-of-range value would otherwise be sent as-is and look like it worked. `provenance` is
-   * "verified" on our own capture, not merely an observed param id.
+   * A `1350` SET_PAYLOAD envelope (NOT direct-binary) with an explicit `mValue3` 0. Bounded 0-100 like
+   * every sibling volume setter: the write is fire-and-forget, so an out-of-range value would otherwise
+   * be sent as-is and look like it worked.
    */
   dingdongVolume: {
     param: DOORBELL_CMD.DINGDONG_VOLUME,
@@ -321,16 +291,14 @@ export const DOORBELL_MEMBERS = {
     max: 100,
     description:
       "Doorbell chime volume, 0-100 (1717 APP_CMD_BAT_DOORBELL_SET_DINGDONG_VOLUME; SET_PAYLOAD " +
-      "envelope, distinct from the direct-binary ringtoneVolume/1708 — see DOORBELL_CMD.DINGDONG_VOLUME). " +
-      "Write wire-confirmed live on T8214, observed values 3 and 25.",
+      "envelope, distinct from the direct-binary ringtoneVolume/1708 — see DOORBELL_CMD.DINGDONG_VOLUME).",
     write: (v, ctx) =>
       setPayload(DOORBELL_CMD.DINGDONG_VOLUME, { dingdong_volume: Number(v) }, ctx, 0, undefined, "auto"),
   },
   /**
-   * The same `1350` SET_PAYLOAD shape and capture session as {@link DOORBELL_MEMBERS.dingdongVolume},
+   * The same `1350` SET_PAYLOAD shape as {@link DOORBELL_MEMBERS.dingdongVolume},
    * but an INDEX rather than a level. Clamping a bad index would land on a real-but-wrong tone (garbage
-   * → 0, too-big → 9) instead of failing, and only 3 of the 10 indices (0, 7, 8) are wire-tested — so
-   * anything outside {@link DoorbellRingtone} is refused.
+   * → 0, too-big → 9) instead of failing, so anything outside {@link DoorbellRingtone} is refused.
    */
   dingdongRingtone: {
     param: DOORBELL_CMD.DINGDONG_RINGTONE,
@@ -342,8 +310,8 @@ export const DOORBELL_MEMBERS = {
     args: [{ name: "ringtone", kind: "enum", description: "A tone INDEX, not a volume." }],
     description:
       "Doorbell chime ringtone SELECTION INDEX, not a bool (1718 APP_CMD_BAT_DOORBELL_SET_DINGDONG_RINGTONE; " +
-      "SET_PAYLOAD envelope — see DOORBELL_CMD.DINGDONG_RINGTONE). Write wire-confirmed live on T8214, " +
-      "observed values 4 and 0. Named options: see the {@link DoorbellRingtone} enum. A write outside " +
+      "SET_PAYLOAD envelope — see DOORBELL_CMD.DINGDONG_RINGTONE). " +
+      "Named options: see the {@link DoorbellRingtone} enum. A write outside " +
       "that enum is REJECTED, not clamped into range — this is a " +
       "selection, not a volume, so a bad index would otherwise land on a real-but-wrong tone.",
     write: (v, ctx) => {
@@ -375,14 +343,13 @@ export const DOORBELL_MEMBERS = {
       "Live-view quality: 0 Auto / 1 Low / 2 Medium / 3 High (1705 CMD_BAT_DOORBELL_VIDEO_QUALITY). " +
       "The parameter also carries the video encoding format, so this is the remainder mod 5 — see " +
       "highCompressionEncoding for the other half. Ranks, not resolutions: the app's picker reads " +
-      "Auto/Low/Medium/High. Written by setVideoQuality, which takes the encoding format too — " +
-      "hardware-confirmed on a T8210.",
+      "Auto/Low/Medium/High. Written by setVideoQuality, which takes the encoding format too.",
   },
   /**
    * The encoding half of the SAME integer, so it declares no param of its own and reaches into the
    * owner's value — two members claiming 1705 would leave the second reading a name nothing is stored
    * under, and a paramless member publishes no schema entry at all, which is what keeps that from
-   * happening structurally. High compression is the app's default on the captured device.
+   * happening structurally.
    */
   highCompressionEncoding: {
     readsFrom: "videoQuality",
@@ -402,10 +369,9 @@ export const DOORBELL_MEMBERS = {
    * Set both halves of {@link DOORBELL_CMD.VIDEO_QUALITY} at once, because the wire has no way to set
    * one alone: every frame carries the whole integer.
    *
-   * Taking both is not a convenience choice. An earlier shape took one and preserved the other by
-   * reading it back, and it failed on hardware: the state reader is the snapshot the device was bound
-   * with, so a second write in the same session composed against the value from before the first and
-   * silently reverted it. Requiring both puts that decision where it can be made correctly — a caller
+   * Taking both is not a convenience choice: the state reader is the snapshot the device was bound with,
+   * so preserving the other half from it would compose a second write in the same session against the
+   * value from before the first and silently revert it. Requiring both puts that decision where it can be made correctly — a caller
    * reads {@link DOORBELL_MEMBERS.videoQuality} and {@link DOORBELL_MEMBERS.highCompressionEncoding}
    * and passes what it wants, instead of the SDK guessing from a stale copy.
    */
@@ -435,8 +401,7 @@ export const DOORBELL_MEMBERS = {
     kind: "text",
     provenance: "verified",
     description:
-      "Notification config JSON {notification_motion_onoff,notification_ring_onoff," +
-      "notification_style} (1710; confirmed on T8214).",
+      "Notification config JSON {notification_motion_onoff,notification_ring_onoff," + "notification_style} (1710).",
   },
   /**
    * Play one of the doorbell's quick responses at the visitor. `voiceId` comes from
