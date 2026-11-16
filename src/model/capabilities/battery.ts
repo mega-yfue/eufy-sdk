@@ -1,6 +1,6 @@
 import { CusPushEvent } from "../push-events.js";
 import { asBool } from "../../core/util.js";
-import { setStationScalar, setPayload, setScalar, setJson, hasCapability } from "./access.js";
+import { setStationScalar, setPayload, setScalar, hasCapability } from "./access.js";
 import type { AvailabilityContext, CapabilityModule, CommandContext } from "./types.js";
 import { accepts, propertiesOf, type Members, type Surface } from "./members.js";
 import { described } from "./thing-description.js";
@@ -217,7 +217,9 @@ const TEST_WIRING = 6254;
  * SET_PAYLOAD `{charge_mode}` on 1293 every other bundle sends (corpus 2026-11-13). `PowerChargeModeParser("v2")`
  * sends 1350 {@link TEST_WIRING} with no payload whatever the value, so it sets nothing; `PowerChargeModeParser1700` sends the
  * 1700 wrapper `{enable}` on 1293; the SoloCam bundle's inline case sends that `{enable}` unless the camera
- * hangs off a HomeBase (`connectHB`). The description has no variant that tells them apart.
+ * hangs off a HomeBase (`connectHB`). The description has no variant that tells them apart. The `{enable}`
+ * frame is known from the bundle alone, so where it would be sent no setter is installed until a device
+ * run confirms it.
  */
 const POWER_CHARGE_BUILDER: Readonly<Partial<Record<string, "test-wiring" | "enable" | "standalone-enable">>> =
   Object.fromEntries([
@@ -228,6 +230,12 @@ const POWER_CHARGE_BUILDER: Readonly<Partial<Record<string, "test-wiring" | "ena
     ),
   ]);
 const readsTestWiring = (ctx: AvailabilityContext) => POWER_CHARGE_BUILDER[ctx.model ?? ""] === "test-wiring";
+const unverifiedPowerSource = (ctx: AvailabilityContext): boolean => {
+  const builder = POWER_CHARGE_BUILDER[ctx.model ?? ""];
+  return (
+    builder === "test-wiring" || builder === "enable" || (builder === "standalone-enable" && !ctx.homeBaseAttached)
+  );
+};
 
 /**
  * Apply {@link notMainsCamera} to every member reading a {@link CELL_PARAMS} param, as the table is built.
@@ -253,21 +261,20 @@ function cellGated<T extends Members>(members: T): T {
 }
 
 /**
- * False on a sensor: a product whose description lists `sensor_is_low_power`, or, with no description
- * fetched, one that resolved to the `sensor` codec. A contact / motion / entry sensor proves `battery`
- * from the level param (1101) just like a camera, but on a sensor 1101 is a NON-CELL sentinel, not a fuel
- * gauge — the field reports a fixed 0/30/32/33 cluster across every unit, not a varying charge — and the
- * sensor has none of the rest of this surface (no charge source or solar, no camera working/recording
- * mode, no cell health/temperature). A sensor's real battery is a BOOLEAN low-power flag on its own
- * param (`entrySensorBatState` 1552 / `motionSensorBatState` 1601), which every bundle listing
- * `sensor_is_low_power` reads into it, never a percentage. Fails open — a record with neither a
- * description nor a resolved codec still publishes, the same safe direction as {@link notMainsCamera}.
+ * False once the device resolved to the `sensor` codec. A contact / motion / entry sensor proves
+ * `battery` from the level param (1101) just like a camera, but on a sensor 1101 is a NON-CELL sentinel,
+ * not a fuel gauge — the field reports a fixed 0/30/32/33 cluster across every unit, not a varying charge
+ * — and the sensor has none of the rest of this surface (no charge source or solar, no camera
+ * working/recording mode, no cell health/temperature). A sensor's real battery is a BOOLEAN low-power
+ * flag on its own param (`entrySensorBatState` 1552 / `motionSensorBatState` 1601), never a percentage,
+ * which is the one member it gets (`batteryLow`). Keyed on the CODEC, not a model list: no security
+ * sensor fuel-gauges a cell, so the whole family is covered the moment it resolves. Fails open — a record
+ * with no resolved codec still publishes, the same safe direction as {@link notMainsCamera}.
  */
-const notSensor = (ctx: AvailabilityContext): boolean =>
-  ctx.things ? !("sensor_is_low_power" in ctx.things.properties) : ctx.codec !== "sensor";
+const notSensor = (ctx: AvailabilityContext): boolean => ctx.codec !== "sensor";
 
 /**
- * Withhold every battery member but `sensorOnly` on a sensor ({@link notSensor}), composing with any gate a member
+ * Withhold every battery member but `sensorOnly` on the `sensor` codec, composing with any gate a member
  * already carries (the cell gate's {@link notMainsCamera}, `level`'s lock check). A sensor
  * then exposes its low-battery flag and nothing else — rather than a bogus percentage plus a dozen
  * `unknown` camera-power reads for params it never speaks.
@@ -339,8 +346,8 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
    * report 5) read as `undefined` — `enumValues` holds only the two that are confirmed.
    *
    * The write is the product's settings-bundle builder for `power_charge_mode`, {@link POWER_CHARGE_BUILDER};
-   * the setter accepts a NAME as well as the index the getter answers. A v2 product has no setter and reads
-   * the value off {@link TEST_WIRING}, decoded as its bundle does.
+   * the setter accepts a NAME as well as the index the getter answers. Only the 1350 `{charge_mode}` is
+   * installed; a v2 product reads the value off {@link TEST_WIRING}, decoded as its bundle does.
    *
    * Offered where the product's description lists `power_charge_mode`. No description hides nothing. The
    * T9000 description lists it and its bundle builds no command.
@@ -357,7 +364,7 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
     readAliases: [
       { paramType: TEST_WIRING, available: readsTestWiring, coerce: (raw) => (Number(raw) === -505 ? 0 : 1) },
     ],
-    unverifiedFor: readsTestWiring,
+    unverifiedFor: unverifiedPowerSource,
     available: (ctx: AvailabilityContext) => ctx.model !== "T9000" && described("power_charge_mode")(ctx),
     args: [{ name: "source", kind: "enum", description: "The raw value, or the name `battery`/`external`." }],
     ...accepts<PowerSourceName>(),
@@ -366,13 +373,15 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
       "Where the app probes the wiring instead, read-only from 6254 (-505 = Battery). " +
       "The richer raw APP_CMD_SET_POWER_SOURCE blob is surfaced separately as `powerSourceInfo` (6445). " +
       "Format varies by model (plain int or JSON {power_source:N}); a value beyond 0/1 reads undefined.",
-    write: (v, ctx) => {
-      const mode = v === "external" ? 1 : v === "battery" ? 0 : asBool(v) ? 1 : 0;
-      const builder = POWER_CHARGE_BUILDER[ctx.model ?? ""];
-      if (builder === "enable" || (builder === "standalone-enable" && !ctx.homeBaseAttached))
-        return setJson(BATTERY_PARAM.POWER_CHARGE, { enable: mode }, ctx);
-      return setPayload(BATTERY_PARAM.POWER_CHARGE, { charge_mode: mode }, ctx, 0, undefined, "auto");
-    },
+    write: (v, ctx) =>
+      setPayload(
+        BATTERY_PARAM.POWER_CHARGE,
+        { charge_mode: v === "external" ? 1 : v === "battery" ? 0 : asBool(v) ? 1 : 0 },
+        ctx,
+        0,
+        undefined,
+        "auto",
+      ),
   },
   /**
    * A DEVICE-SPECIFIC mode index: the app maps value→mode through a per-model config (Hermes
@@ -566,7 +575,7 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
   /**
    * A sensor's battery is low. The app reads the entry sensor's 1552 and the motion sensor's 1601 into the
    * same field (`sensor_is_low_power`, `asBoolean`), so one member reads whichever the sensor reports.
-   * Present on a sensor only ({@link notSensor}): a camera or a lock reports a level instead.
+   * Present on the `sensor` codec only: a camera or a lock reports a level instead.
    */
   batteryLow: {
     param: 1552,
@@ -580,8 +589,8 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
 } as const satisfies Members);
 
 /**
- * The published `battery` table: the full camera surface, minus every member but `batteryLow` on a
- * sensor — a sensor's 1101 is a non-cell sentinel and it has none of the camera power reads, so
+ * The published `battery` table: the full camera surface, minus every member but `batteryLow` on the
+ * `sensor` codec — a sensor's 1101 is a non-cell sentinel and it has none of the camera power reads, so
  * it exposes its low-battery flag alone (see {@link notOnSensor}). Every getter, setter and description derives from this.
  *
  * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
