@@ -2648,11 +2648,15 @@ export class P2PSession extends EventEmitter {
     const isMedia = header.commandId === CMD_VIDEO_FRAME || header.commandId === CMD_AUDIO_FRAME;
     // signCode 2/8 → level-2 gateway frame (AES-256-GCM, negotiated key). Try that first
     // when a level-2 key is set; otherwise fall through to the level-1 path.
+    let openedLevel2 = false;
     if (isMedia) {
       /* leave raw */
     } else if ((header.signCode === 2 || header.signCode === 8) && this.level2Key) {
       const dec = this.decryptLevel2(payload, header.signCode);
-      if (dec) data = dec;
+      if (dec) {
+        data = dec;
+        openedLevel2 = true;
+      }
     } else if (header.signCode > 0 && data.length > 0 && data.length % 16 === 0) {
       // signCode 1 → AES-128-ECB with the derivable Level-1 key (control notifications,
       // and many DATA notifications).
@@ -2671,10 +2675,14 @@ export class P2PSession extends EventEmitter {
     ) {
       this.negotiateLevel2Key(data);
     }
-    // CMD_DATABASE (1306) reply chunks are level-1 encrypted but NOT 16-aligned
-    // (a trailing byte past the block boundary), so decrypt the block-aligned head
-    // and emit the JSON-ish text fragment for the caller to accumulate/parse.
-    if (header.commandId === CMD_DATABASE && header.signCode > 0) {
+    if (header.commandId === CMD_DATABASE && openedLevel2) {
+      // A CMD_DATABASE (1306) reply sealed under the session key was opened above. A level-1 pass over
+      // its raw bytes would hand the caller noise, so emit the text that was opened.
+      this.emit("dbChunk", { stationSn: this.cfg.stationSn, text: data.toString("latin1") });
+    } else if (header.commandId === CMD_DATABASE && header.signCode > 0) {
+      // Otherwise the reply chunks are level-1 encrypted but NOT 16-aligned
+      // (a trailing byte past the block boundary), so decrypt the block-aligned head
+      // and emit the JSON-ish text fragment for the caller to accumulate/parse.
       const n = payload.length - (payload.length % 16);
       if (n >= 16) {
         try {
