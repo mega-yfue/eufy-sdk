@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { asBool, coerceEnumValue, enumLabels } from "../../core/util.js";
 import { DeviceType } from "../device-types.js";
-import { isCallDoorbell } from "../device-family.js";
+import { isUntriedDoorbell } from "../device-family.js";
 import { DoorbellPushEvent } from "../push-events.js";
 import { setPayload, setScalar } from "./access.js";
 import { method, propertiesOf, provided, type Members, type Surface } from "./members.js";
@@ -25,8 +25,8 @@ const DOORBELL_TYPES: number[] = [
   DeviceType.BATTERY_DOORBELL_C31,
 ];
 
-/** No doorbell write has been tried on a C30/C31, so only their ring event binds. */
-const writable = (ctx: AvailabilityContext): boolean => !isCallDoorbell(ctx);
+/** No doorbell write has been tried on a C30/C31 or a video lock, so only their ring event binds. */
+const writable = (ctx: AvailabilityContext): boolean => !isUntriedDoorbell(ctx);
 
 /**
  * The P2P **feature-command ids** this doorbell capability drives. Capability-owned wire vocabulary
