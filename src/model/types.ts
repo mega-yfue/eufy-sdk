@@ -56,7 +56,6 @@ export type Capability =
   | "contact"
   | "leak"
   | "smoke"
-  | "co"
   | "siren"
   | "lock"
   | "keypad"

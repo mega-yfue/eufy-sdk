@@ -72,24 +72,28 @@ describe("doorbell actions", () => {
   });
 });
 
-describe("Video Doorbell C30/C31 (call route, no doorbell write tried)", () => {
-  const c30: CommandContext = {
+describe.each([
+  ["T8224", 95],
+  ["T85V0", 203],
+  ["T85M0", undefined],
+])("%s: gets doorbell, no doorbell write tried", (model, deviceType) => {
+  const dev: CommandContext = {
     channel: 0,
     codec: "camera",
-    deviceType: 95,
-    model: "T8224",
+    deviceType,
+    model,
     paramIds: new Set([CAMERA_CMD.DEV_LED_SWITCH]),
     capabilities: new Set(["camera", "audio", "doorbell"]),
   };
 
   it("binds no doorbell write and no ringtone volume", () => {
-    const { acts } = bind<Record<string, unknown>>("doorbell", c30);
+    const { acts } = bind<Record<string, unknown>>("doorbell", dev);
     expect(Object.keys(acts).filter((k) => /^(set|play)/.test(k))).toEqual([]);
-    expect(bind<AudioActions>("audio", c30).acts.setRingtoneVolume).toBeUndefined();
+    expect(bind<AudioActions>("audio", dev).acts.setRingtoneVolume).toBeUndefined();
   });
 
   it("keeps the status LED on the generic 1045 wire", async () => {
-    const { acts, sent } = bind<CameraActions>("camera", c30);
+    const { acts, sent } = bind<CameraActions>("camera", dev);
     await acts.setStatusLed!(true);
     expect(sent).toEqual([expect.objectContaining({ param: CAMERA_CMD.DEV_LED_SWITCH, value: 1 })]);
   });
