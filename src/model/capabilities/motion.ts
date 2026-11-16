@@ -177,9 +177,14 @@ export const AiDetectType = {
  * 3101-3110 are drawn from the doorbell, indoor and HB3-paired vocabularies, every one of them a
  * camera family. A standalone motion sensor binds this capability — it IS motion detection by device
  * type — but announces itself under {@link CusPushEvent.MOTION_SENSOR_PIR}, and reports no AI
- * classification of any kind.
+ * classification of any kind. A camera whose thing description lists none of the AI-detection
+ * properties (the detection-type selector, the HomeBase 3 AI grant, the pet or vehicle notification
+ * switch) does not classify either.
  */
-const CAMERA_AI_CLAIM: EventClaim = { codecs: ["camera"] };
+const CAMERA_AI_CLAIM: EventClaim = {
+  codecs: ["camera"],
+  things: ["detection_type_set", "ai_empower", "notification_ai_pet_switch", "notification_ai_vehicle_switch"],
+};
 
 /**
  * Evidence a device classifies vehicles: it reports the AI-detection-type bitmask that HAS a vehicle
@@ -466,9 +471,11 @@ function reportsIndoorSwitch(ctx: AvailabilityContext): boolean {
  * answers a different id on each (see `MOTION_CMD.SENSOR_PIR_SENSITIVITY`), and the test-mode
  * pair exists only on sensors. Since P2P writes are fire-and-forget, a frame sent to the wrong family
  * is silently dropped while the call reports success — so an unverified pairing throws instead.
+ * A thing description names the sensor family by its `sensor_entry_test_mode` action; the codec
+ * answers only where no description is held.
  */
 function requireFamily(action: string, ctx: CommandContext, verifiedOn: "camera" | "sensor"): void {
-  const isSensor = ctx.codec === "sensor";
+  const isSensor = ctx.things ? "sensor_entry_test_mode" in ctx.things.actions : ctx.codec === "sensor";
   if (isSensor === (verifiedOn === "sensor")) return;
   throw new Error(
     `motion: ${action} write wire is verified only on a ${verifiedOn}, not this device [${describeDevice(ctx)}]`,
