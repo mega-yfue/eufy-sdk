@@ -2638,6 +2638,9 @@ export class P2PSession extends EventEmitter {
    * A `CMD_GATEWAYINFO` (1100) reply carries the ECIES envelope for the level-2 session key. When a
    * cipher-key resolver is configured, no key that seals a set-payload is held and no negotiation is in
    * flight, the reply starts one (async, fire-and-forget); a reply landing while one is in flight is ignored.
+   *
+   * A `CMD_DATABASE` (1306) reply opened with the session key is emitted as that opened text; a level-1 pass
+   * over its raw bytes would be noise.
    */
   private handleFrame(header: P2PDataFrameHeader, payload: Buffer, dataType: number): void {
     let data = payload;
@@ -2676,8 +2679,6 @@ export class P2PSession extends EventEmitter {
       this.negotiateLevel2Key(data);
     }
     if (header.commandId === CMD_DATABASE && openedLevel2) {
-      // A CMD_DATABASE (1306) reply sealed under the session key was opened above. A level-1 pass over
-      // its raw bytes would hand the caller noise, so emit the text that was opened.
       this.emit("dbChunk", { stationSn: this.cfg.stationSn, text: data.toString("latin1") });
     } else if (header.commandId === CMD_DATABASE && header.signCode > 0) {
       // Otherwise the reply chunks are level-1 encrypted but NOT 16-aligned
