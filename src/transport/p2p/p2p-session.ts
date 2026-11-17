@@ -323,7 +323,7 @@ const LEVEL2_SEQ_BASE = 0x01020300;
 export interface P2PSessionConfig {
   stationSn: string;
   p2pDid: string;
-  /** Cloud lookup servers (decodeP2PCloudIPs of the station's p2p_conn/app_conn). */
+  /** Cloud lookup servers (the station record's `app_conn`, else `p2p_conn`: {@link stationCloudAddresses}). */
   cloudAddresses?: Address[];
   /** DSK key for the cloud-lookup payload. Optional — local lookup needs none. */
   dskKey?: string;

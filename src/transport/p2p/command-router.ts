@@ -58,7 +58,7 @@ import {
   ff09TransferPayload,
   CMD_TRANSFER_PAYLOAD,
 } from "../ff09.js";
-import { decodeP2PCloudIPs } from "./codec.js";
+import { stationCloudAddresses } from "./codec.js";
 import { P2P_ENVELOPE } from "./envelope.js";
 import { freshestLanIp } from "./lan-ip.js";
 import { captureSnapshotFromShared, recordClip } from "./media.js";
@@ -628,12 +628,11 @@ export class P2PCommandRouter {
     key: string,
     announces: boolean,
   ): P2PSession {
-    const conn = (raw?.p2p_conn ?? raw?.app_conn) as string | undefined;
     const adminUserId = ((raw?.member as any)?.admin_user_id as string) || this.deps.mega.auth?.userId || "";
     const session: P2PSession = new P2PSession({
       stationSn,
       p2pDid: did,
-      cloudAddresses: conn ? decodeP2PCloudIPs(conn) : undefined,
+      cloudAddresses: stationCloudAddresses(raw),
       localAddress,
       dskKey,
       noBroadcast: this.deps.noBroadcast,

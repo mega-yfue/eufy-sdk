@@ -3,6 +3,7 @@ import {
   buildLookupWithKeyPayload,
   buildLookupWithKeyPayload2,
   decodeP2PCloudIPs,
+  stationCloudAddresses,
   decryptP2PData,
   p2pCommandEncryptionKey,
   p2pDidToBuffer,
@@ -35,6 +36,17 @@ describe("P2P codec primitives", () => {
       { host: "18.197.1.2", port: 32100 },
       { host: "3.69.4.5", port: 32100 },
     ]);
+  });
+
+  it("reads a station's lookup servers from app_conn as the app does, p2p_conn only where app_conn is absent", () => {
+    const app = encodeP2PCloudIPs("192.0.2.1,192.0.2.2,192.0.2.3");
+    const p2p = encodeP2PCloudIPs("192.0.2.9");
+    const hosts = (raw: Parameters<typeof stationCloudAddresses>[0]) => stationCloudAddresses(raw)?.map((a) => a.host);
+    expect(hosts({ app_conn: app, p2p_conn: p2p })).toEqual(["192.0.2.1", "192.0.2.2", "192.0.2.3"]);
+    expect(hosts({ app_conn: app, p2p_conn: "" })).toEqual(["192.0.2.1", "192.0.2.2", "192.0.2.3"]);
+    expect(hosts({ app_conn: "", p2p_conn: p2p })).toEqual(["192.0.2.9"]);
+    expect(stationCloudAddresses({ app_conn: "", p2p_conn: "" })).toBeUndefined();
+    expect(stationCloudAddresses(undefined)).toBeUndefined();
   });
 
   it("derives the 16-byte Level-1 command key from sn + p2p_did", () => {
