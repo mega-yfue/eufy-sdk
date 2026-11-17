@@ -113,6 +113,8 @@ export interface RtcCommandRouterDeps {
   identity: () => RtcIdentity | undefined;
   /** The signing shard for the route (`"ie-pr"`, `"eu-pr"`, `"us-pr"`); picks the smart host. */
   shard: (route: RtcRoute) => string | Promise<string>;
+  /** Both `estimate_domain` shards, named in a refused sign. */
+  estimates?: RtcSessionOptions["estimates"];
   /** ISO country sent on the sign request (default `US`). */
   country?: string;
   logger?: Logger;
@@ -687,6 +689,7 @@ export class RtcCommandRouter {
       stationSn: route.stationSn,
       adminUserId,
       shard,
+      estimates: this.deps.estimates,
       country: this.deps.country ?? "US",
       logger: this.deps.logger,
       signalingMode: route.signalingMode,
