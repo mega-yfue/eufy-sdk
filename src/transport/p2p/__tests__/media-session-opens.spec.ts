@@ -265,7 +265,7 @@ describe("a second live camera on a claimed station session", () => {
   });
 
   /**
-   * A relay connect lands about 25 s after `connect()` resolves, so a key wait begun at the open would run
+   * A connect can land many seconds after `connect()` resolves, so a key wait begun at the open would run
    * out on the connect rather than on the key. The media session is handed over once it connects and holds
    * its key.
    */
