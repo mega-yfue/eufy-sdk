@@ -104,6 +104,8 @@ export const MOTION_CMD = {
    * the DEVICE channel — which is set by NOT passing `setPayload`'s explicit-channel arg, and is
    * independent of what keys the payload carries. (Contrast 1277/1298, which DO carry a `channel`
    * payload key AND pass mChannel 0 explicitly; the two are separate choices, not linked.)
+   *
+   * ⚠️ Replay + readback confirmed (1719 `0`→`1`→`0`), NOT byte-captured.
    */
   HUMAN_ONLY_AT_NIGHT: 1719,
   /**
@@ -116,6 +118,8 @@ export const MOTION_CMD = {
    * `{radar_wd_switch,…}` OR a bare scalar — a plain bool coercion reports `false` for the object
    * form, so a feature that is on reads as off.
    * Decoded by {@link decodeRadarWdSwitch} to match the app.
+   *
+   * ⚠️ Replay + readback confirmed (2706 `0`→`1`→`0`), NOT byte-captured.
    */
   LOITERING_DETECTION: 2706,
   /**
@@ -132,6 +136,7 @@ export const MOTION_CMD = {
   /**
    * Motion detection on-off on a camera reporting it (app `INDOOR_MOTION_ENABLE`). `1700` control payload
    * `{"commandType":6040,"data":{"status":0|1}}`, the params the app's per-product bundle sends.
+   * Write + cloud readback confirmed both ways, NOT byte-captured.
    */
   INDOOR_MOTION_ENABLE: 6040,
   /**
