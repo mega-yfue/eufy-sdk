@@ -1,7 +1,8 @@
 import { DeviceType } from "../device-types.js";
+import { asBool } from "../../core/util.js";
 import { setJson, setPayload } from "./access.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
-import type { CapabilityModule, InboundSignal, CapabilityEvent, CommandContext } from "./types.js";
+import type { AvailabilityContext, CapabilityModule, InboundSignal, CapabilityEvent, CommandContext } from "./types.js";
 import type { Command } from "../../core/contracts.js";
 
 /**
@@ -47,6 +48,9 @@ export const PTZ_CMD = {
    * inside the smart lock's `601x` block, so the shared param dictionary labels it `lockParam` — an id
    * reused across product lines, and the camera's meaning is the observed one. */
   PTZ_ROTATE_SPEED: 6015,
+  /** Automatic motion tracking, the description's `motion_track_status`. 1700 wrapper, `{value:0|1}`,
+   * read back on the same param. */
+  MOTION_TRACK: 6016,
 } as const;
 
 /**
@@ -345,8 +349,8 @@ function isDirection(v: unknown): v is PtzDirection {
  *
  * Movement is command-driven, so almost every entry is a `method`: `rotate` takes a direction plus an
  * optional speed, the four compass verbs take nothing, `preset()` returns a whole sub-API, and `zoom`
- * is gated on the device having a second lens. `rotationSpeed` is the one value member — the camera's
- * own step speed, which it stores. There is no position member: no device reports where it is pointed
+ * is gated on the device having a second lens. The value members are `rotationSpeed`, the camera's own
+ * step speed, and `motionTracking`. There is no position member: no device reports where it is pointed
  * as a parameter. Position arrives only while the camera moves, as the `ptzNotify` event {@link PTZ}
  * decodes from a live frame.
  *
@@ -382,6 +386,21 @@ export const PTZ_MEMBERS = {
       if (!Number.isInteger(n) || n < 1 || n > 5) return undefined;
       return setJson(PTZ_CMD.PTZ_ROTATE_SPEED, { value: n }, ctx);
     },
+  },
+
+  /** Offered where the description lists `motion_track_status`; with none, once the camera reported 6016. */
+  motionTracking: {
+    param: PTZ_CMD.MOTION_TRACK,
+    type: "bool",
+    kind: "boolean",
+    thing: ["motion_track_status"],
+    provenance: "verified",
+    available: (ctx: AvailabilityContext) =>
+      ctx.things ? "motion_track_status" in ctx.things.properties : ctx.paramIds?.has(PTZ_CMD.MOTION_TRACK) === true,
+    description:
+      "Whether the camera turns to follow a moving subject, independent of motion detection " +
+      "(COMMAND_INDOOR_PAN_MOTION_TRACK 6016).",
+    write: (v, ctx) => setJson(PTZ_CMD.MOTION_TRACK, { value: asBool(v) ? 1 : 0 }, ctx),
   },
 
   /** Rotate a step in a direction; `zoom` scales the step size (1.0 = the default step). */

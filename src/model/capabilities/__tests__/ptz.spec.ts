@@ -39,8 +39,7 @@ const described = (...identifiers: string[]) =>
 describe("ptz capability module", () => {
   it("declares the capability + schema", () => {
     expect(PTZ.capability).toBe("ptz");
-    // rotationSpeed is the only value member: position is an event, not a parameter.
-    expect(PTZ.properties.map((p) => p.name)).toEqual(["rotationSpeed"]);
+    expect(PTZ.properties.map((p) => p.name)).toEqual(["rotationSpeed", "motionTracking"]);
     expect(PTZ.properties[0].paramType).toBe(6015);
   });
 
@@ -80,6 +79,41 @@ describe("ptz capability module", () => {
         param: 6015,
         data: { value: 5 },
         channel: 0,
+      });
+    });
+  });
+
+  describe("motionTracking (6016)", () => {
+    const listing = (...identifiers: string[]) =>
+      parseThingsList({
+        things_list: [
+          {
+            profile: { product_code: "T0000" },
+            properties: identifiers.map((identifier) => ({ identifier, data_type: { type: "bool" } })),
+          },
+        ],
+      }).T0000!;
+    const available = PTZ_MEMBERS.motionTracking.available!;
+
+    it("is offered where the description lists motion_track_status", () => {
+      expect(available({ ...ctx(), things: listing("motion_track_status") })).toBe(true);
+      expect(available({ ...ctx(0, [6016]), things: listing("ptz_action_control") })).toBe(false);
+    });
+
+    it("without a description, once the camera reported 6016", () => {
+      expect(available(ctx(0, [6016]))).toBe(true);
+      expect(available(ctx())).toBe(false);
+    });
+
+    it.each([
+      [true, 1],
+      [false, 0],
+    ])("writes %s as the app's set-json {value: %i}", (on, value) => {
+      expect(buildCommand("motionTracking", on, ctx(1, [6016]))).toEqual({
+        kind: "set-json",
+        param: 6016,
+        data: { value },
+        channel: 1,
       });
     });
   });
