@@ -226,7 +226,7 @@ describe("P2PCommandRouter.sendFf09Autolock (ff09-autolock command-router branch
       enabled: true,
     });
     await vi.advanceTimersByTimeAsync(2500);
-    await expect(p).resolves.toBeUndefined();
+    await expect(p).resolves.toBe(false);
     expect(calls.some((c) => c.payload.apiCommand === LOCK_API_COMMAND.SET_SETTINGS)).toBe(true);
   });
 });
