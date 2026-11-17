@@ -15,8 +15,8 @@
  * invariant.
  *
  * Two connection strategies live here, matched to what each wire was verified over:
- *  - **ff09** opens its OWN one-shot, explicitly non-reconnecting `SecureMqtt` pinned to the broker
- *    instance that holds the device's session (see {@link ensureSecurityMqttFor}) and tears it down
+ *  - **ff09** opens its OWN one-shot, explicitly non-reconnecting `SecureMqtt` pinned to a broker
+ *    instance that grants the device's topic (see {@link ensureSecurityMqttFor}) and tears it down
  *    right after — the lock/garage path needs the SUBSCRIBE-and-wait ack machinery.
  *  - **eufy_life DP** (lights) publishes fire-and-forget over the facade's persistent account-wide
  *    `this.transport` via the injected {@link MqttRouterDeps.publishSecure} — that persistent connection
@@ -337,24 +337,20 @@ export class MqttCommandRouter {
   ];
 
   /**
-   * Connect a fresh **security-scoped** (`eufy_security`) MQTT client PINNED to whichever broker
-   * instance currently holds `dev`'s live session. `aiot-mqtt-{region}.anker.com` fronts multiple
-   * independent backend instances (an AWS NLB, one target per AZ) that do NOT share subscribe/publish
-   * routing — a plain DNS connect can silently land on an instance that will accept the TLS CONNECT but
-   * never route to this device (looks exactly like an authorization wall, isn't one). This probes every
-   * candidate with a SUBSCRIBE-only connection (never publishes during discovery — see
-   * `transport/mqtt/broker-discovery.ts`), then opens one real connection pinned to the first instance
-   * that granted the SUBSCRIBE, for the caller to actually publish on.
+   * Connect a fresh **security-scoped** (`eufy_security`) MQTT client pinned to a broker instance that
+   * grants the device's `/res` SUBSCRIBE (probed SUBSCRIBE-only, never publishing — see
+   * `transport/mqtt/broker-discovery.ts`), for the caller to publish on.
+   *
+   * The `security-mqtt-{region}` cluster is probed first, and the `aiot-mqtt-{region}` endpoint with
+   * {@link KNOWN_AIOT_BROKER_IPS} when no security instance grants.
    *
    * Which cert is used does NOT change the outcome — the account's own `get_user_mqtt_info` cert and a
    * cert extracted from a real phone's keystore produce the identical grant/deny pattern across every
-   * candidate IP. Only the instance matters, which is why this probes instances and not credentials.
-   * One exception is known: a single garage unit whose own-cert SUBSCRIBE was denied on every candidate
-   * while a phone-extracted cert granted on the same one, with a sibling of the same model on the same
-   * account granting fine. That is a per-device authorization gap on the vendor's backend, not a
-   * broker-instance problem and not something this SDK works around — the throw below names each
-   * candidate's outcome (its SUBACK deny code, a timeout or a connection error) until the backend grants
-   * the account's own credentials.
+   * candidate IP. One exception is known: a single garage unit whose own-cert SUBSCRIBE was denied on
+   * every candidate while a phone-extracted cert granted on the same one, with a sibling of the same
+   * model on the same account granting fine. That is a per-device authorization gap on the vendor's
+   * backend, not something this SDK works around — the throw below names each candidate's outcome (its
+   * SUBACK deny code, a timeout or a connection error).
    *
    * One fresh, explicitly non-reconnecting (`reconnectPeriod: 0`) connection per call — it repays the
    * full mTLS handshake every command and tears the socket down right after (see
@@ -365,30 +361,39 @@ export class MqttCommandRouter {
    * with a scope-bounded wildcard (`cmd/{app}/+/+/res`) instead of per-call subscribe/unsubscribe.
    */
   private async ensureSecurityMqttFor(dev: EufyDevice): Promise<{ mqtt: SecureMqtt; instanceIp: string }> {
-    const creds: SecureMqttCredentials = await this.deps.mega.getUserMqttInfo("eufy_security");
+    const account: SecureMqttCredentials = await this.deps.mega.getUserMqttInfo("eufy_security");
+    let creds: SecureMqttCredentials = {
+      ...account,
+      endpoint_addr: account.endpoint_addr.replace(/^aiot-mqtt-/, "security-mqtt-"),
+    };
     const mqttUuid = mqttUuidFrom(this.deps.mega.openudid);
     const clientIdFor = () => buildAppShapedClientId({ appName: "eufy_security", uid: creds.user_id ?? "", mqttUuid });
-    const results = await discoverReachableInstance(
-      {
-        hostname: creds.endpoint_addr,
-        port: creds.endpoint_port,
-        certificate_pem: creds.certificate_pem,
-        private_key: creds.private_key,
-        aws_root_ca1_pem: creds.aws_root_ca1_pem,
-      },
-      {
-        clientIdFor,
-        topic: secureTopic(dev, "res"),
-        candidateIps: MqttCommandRouter.KNOWN_AIOT_BROKER_IPS,
-        stopOnFirstGrant: true,
-        perAttemptTimeoutMs: 8000,
-      },
-    );
+    const probe = (on: SecureMqttCredentials, candidateIps?: string[]) =>
+      discoverReachableInstance(
+        {
+          hostname: on.endpoint_addr,
+          port: on.endpoint_port,
+          certificate_pem: on.certificate_pem,
+          private_key: on.private_key,
+          aws_root_ca1_pem: on.aws_root_ca1_pem,
+        },
+        {
+          clientIdFor,
+          topic: secureTopic(dev, "res"),
+          candidateIps,
+          stopOnFirstGrant: true,
+          perAttemptTimeoutMs: 8000,
+        },
+      );
+    let results = await probe(creds);
+    if (!results.some((r) => r.granted)) {
+      creds = account;
+      results = await probe(account, MqttCommandRouter.KNOWN_AIOT_BROKER_IPS);
+    }
     const winner = results.find((res) => res.granted);
-
     if (!winner) {
       throw new Error(
-        `ensureSecurityMqttFor(${dev.sn}): no broker instance currently holds this device's session ` +
+        `ensureSecurityMqttFor(${dev.sn}): no broker instance grants this device's topic ` +
           `(probed ${results.length} candidate IPs: ` +
           results
             .map(
