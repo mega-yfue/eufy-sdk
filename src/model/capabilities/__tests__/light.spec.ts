@@ -140,6 +140,26 @@ describe("light capability module", () => {
       });
     });
 
+    it.each(["T8214", "T8217"])(
+      "on/off on a HomeBase-attached %s doorbell → set-param pinned to int-string (1400)",
+      (model) => {
+        const e340 = { ...ctx(1), deviceType: undefined, model, homeBaseAttached: true };
+        expect(intent("on", true, e340)).toEqual({
+          kind: "set-param",
+          param: LIGHT_CMD.FLOODLIGHT_SWITCH,
+          value: 1,
+          form: "int-string",
+          channel: 1,
+        });
+        expect(intent("off", false, e340)).toMatchObject({ form: "int-string", value: 0 });
+      },
+    );
+
+    it.each(["T8214", "T8217"])("leaves a standalone %s doorbell without a switch wire", (model) => {
+      const standalone = { ...ctx(), deviceType: undefined, model, homeBaseAttached: false };
+      expect(() => intent("on", true, standalone)).toThrow(/light: isOn write wire unverified/);
+    });
+
     it("does not assign a spotlight switch wire to SoloCam E30", () => {
       expect(() => intent("on", true, { ...ctx(), deviceType: DeviceType.SOLO_CAMERA_E30 })).toThrow(
         /light: isOn write wire unverified/,

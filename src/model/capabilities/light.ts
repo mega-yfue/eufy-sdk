@@ -134,6 +134,7 @@ function autoSpotlightCommand(on: boolean, ctx: CommandContext, opts: AutoSpotli
  *    live), indoor pan/tilt (31/35) and CAMERA_4G_S330.
  *  - `"int-string"`: level-1 int+string — indoor/outdoor 1080p/2K siblings, outdoor-PT/solo-E30,
  *    E330 Pro (T8600, deviceType 24, confirmed live), and the Cam2C/Cam2/Cam3 families.
+ *  - {@link ATTACHED_INT_STRING_MODELS} switch by topology: `"int-string"` only on a HomeBase.
  * NOTE: this is FRAME SHAPE only, not encryption LEVEL. The level (L1 vs L2) is a runtime topology
  * trait resolved at send time — never fixed by family here. The switch shape happens to be L1 for
  * both branches; brightness/colorTemp (below) are a separate, pinned case.
@@ -141,6 +142,7 @@ function autoSpotlightCommand(on: boolean, ctx: CommandContext, opts: AutoSpotli
  * both report 1400 yet send it differently — T8442 confirmed int-string by live capture).
  */
 function lightSwitchWire(ctx: AvailabilityContext): "json" | "int-string" | undefined {
+  if (ATTACHED_INT_STRING_MODELS.has(ctx.model ?? "") && ctx.homeBaseAttached === true) return "int-string";
   const t = ctx.deviceType;
   if (t === undefined) return undefined;
   if (LIGHT_SWITCH_JSON_TYPES.has(t)) return "json";
@@ -160,6 +162,9 @@ const LIGHT_SWITCH_JSON_TYPES: ReadonlySet<number> = new Set<number>([
   DeviceType.INDOOR_PT_CAMERA_1080,
   DeviceType.CAMERA_4G_S330,
 ]);
+
+/** Models whose switch frame follows topology: bare 1400 `"int-string"` on a HomeBase, 1700-wrapped standalone. */
+const ATTACHED_INT_STRING_MODELS: ReadonlySet<string> = new Set(["T8214", "T8217"]);
 
 /** DeviceTypes whose floodlight switch (1400) uses the level-1 int+string wire. */
 const LIGHT_SWITCH_INT_STRING_TYPES: ReadonlySet<number> = new Set<number>([
