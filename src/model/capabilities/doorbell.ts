@@ -94,7 +94,10 @@ export const DOORBELL_CMD = {
    * separate menus and each write carries both, so setting either requires the other's current value —
    * which is why neither is a derived setter.
    *
-   * Outer P2P cmd 1705 itself — no
+   * Six of the eight values were written and read back; `0` (Auto, low compression) and `2` (Medium,
+   * low compression) follow the same arithmetic but were not individually written.
+   *
+   * Captured byte-exact from the app: outer P2P cmd 1705 itself — no
    * wrapper — signCode 8, on the doorbell's own channel, the same 136-byte direct-binary
    * `[u32 channel][u32 value][account_id ASCII pad 128]` struct as its 1703/1704 siblings. The station
    * answers with an unencrypted level-1 frame carrying 0.
@@ -112,7 +115,9 @@ export const DOORBELL_CMD = {
 
 /**
  * Doorbell chime ("ding-dong") ringtone selection, as a 0-indexed list in the app picker's
- * top-to-bottom order (10 entries). `Circuit` (index 5) is a BEST-EFFORT spelling.
+ * top-to-bottom order (10 entries). Only `0→Default`, `7→Ding` and `8→Hillside` are confirmed; the
+ * other indices follow that order without being individually tested. `Circuit` (index 5) is a
+ * BEST-EFFORT spelling.
  */
 export const DoorbellRingtone = {
   Default: 0,

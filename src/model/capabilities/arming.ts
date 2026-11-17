@@ -71,7 +71,9 @@ export const ARMING_CMD = {
   /**
    * Guard/arming mode (app `GUARD_MODE`). `1350` SET_PAYLOAD, cmd 1224 (SAME id as the read param),
    * mChannel 0, explicit mValue3:0, `payload:{mode_type:<int>, user_name:<string>}`. All nine
-   * {@link ARMING_MODE_WIRE} values are settable; each write is answered by a MODE_SWITCH push.
+   * {@link ARMING_MODE_WIRE} values are settable; each write is answered by a MODE_SWITCH push. Only
+   * `away` 0, `home` 1 and `disarmed` 63 are byte-captured; the other six are confirmed live, not
+   * byte-captured.
    *
    * The ENCRYPTION LEVEL is the session's to pick (`"auto"`), not this command's: a station holding a
    * level-2 key seals it level-2, while an own-session camera that never
@@ -188,7 +190,9 @@ function actionTable(read: CapabilityStateReader, mode: DeviceNotificationMode):
  *
  * **The names and integers are the V6 app's own** (`SecurityGuardConstants`, mirrored by `GuardConstant`),
  * so the mapping is APK ground truth rather than a borrowed label. Every value is accepted on
- * {@link ARMING_CMD.SET_ARMING} and answered by MODE_SWITCH; the client emits `armingModeChanged` only once
+ * {@link ARMING_CMD.SET_ARMING} and answered by MODE_SWITCH. Byte-captured: `away` 0, `home` 1,
+ * `disarmed` 63. Confirmed live, not byte-captured: `custom1` 3, `schedule` 2, `custom2` 4, `custom3` 5,
+ * `off` 6, `geo` 47. The client emits `armingModeChanged` only once
  * its bounded readback has CONVERGED on the mode asked for, so an ignored write produces silence.
  */
 const ARMING_MODE_WIRE: Record<ArmingMode, number> = {

@@ -394,7 +394,8 @@ export type CameraActions = Surface<typeof CAMERA_MEMBERS> & {
  *
  * An indoor camera (type 30) that reports its state under 1035 itself is the exception: there 1035 carries
  * the disable bit the read already decodes, so the write takes that polarity and both sides agree.
- * Other indoor types reporting 1035 keep the enable bit.
+ * Only type 30 was measured: other indoor types reporting 1035 keep the enable bit as the default, not
+ * as a measurement, until one is captured.
  */
 function isEnableBitPolarity(ctx: CommandContext): boolean {
   const t = ctx.deviceType;
