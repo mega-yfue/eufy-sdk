@@ -5,9 +5,8 @@ import type { EufyDevice } from "../../../core/types.js";
  * `MqttCommandRouter.ensureSecurityMqttFor` — the broker-instance probe. A lock's session lives on the
  * region's `security-mqtt-*` cluster, not the `aiot-mqtt-*` endpoint the credential names, so the router
  * probes that cluster's instances with a SUBSCRIBE-only connection and pins the real connection to the
- * first that grants. A device the security cluster refuses outright is not on it, and is probed on the
- * `aiot` endpoint instead. A device no instance grants is reported rather than connected to a broker that
- * will never route to it.
+ * first that grants. A device no security instance grants is probed on the `aiot` endpoint instead. A
+ * device no instance grants is reported rather than connected to a broker that will never route to it.
  *
  * The account's own credentials are the ONLY credentials used — there is no cert override, so the
  * router does no filesystem access at all. `discoverReachableInstance` and `SecureMqtt` are mocked (no
@@ -27,10 +26,8 @@ vi.mock("../secure-mqtt.js", async () => {
     }
     connect = connectMock;
   }
-  const actual = await vi.importActual<typeof import("../secure-mqtt.js")>("../secure-mqtt.js");
   return {
     SecureMqtt: FakeSecureMqtt,
-    isSubackFailure: actual.isSubackFailure,
     secureTopic: (d: EufyDevice, leg: string = "res") => `cmd/${d.category}/${d.model}/${d.sn}/${leg}`,
   };
 });
@@ -104,22 +101,6 @@ describe("MqttCommandRouter.ensureSecurityMqttFor — broker-instance probe", ()
     });
   });
 
-  it("refuses an endpoint whose region it cannot read, without probing", async () => {
-    const router = new MqttCommandRouter({
-      mega: {
-        getUserMqttInfo: vi.fn().mockResolvedValue({ ...OWN_CREDS, endpoint_addr: "mqtt.example.com" }),
-        openudid: OPENUDID,
-      } as any,
-      listDevices: () => [DEV],
-      ensureDevices: async () => {},
-      onCommandAck: () => {},
-      onError: () => {},
-    });
-
-    await expect((router as any).ensureSecurityMqttFor(DEV)).rejects.toThrow(/no security broker known/);
-    expect(discoverReachableInstance).not.toHaveBeenCalled();
-  });
-
   it("identifies itself the same way on every run, being built from the install's own identity", async () => {
     discoverReachableInstance.mockResolvedValue(granted("192.0.2.30"));
 
@@ -131,14 +112,14 @@ describe("MqttCommandRouter.ensureSecurityMqttFor — broker-instance probe", ()
     expect(lastConstructedWith.clientId.split("-")[3]).toBe(first.split("-")[3]);
   });
 
-  it("throws after one probe round when every candidate denies", async () => {
-    discoverReachableInstance.mockResolvedValueOnce(allDenied());
+  it("throws after the security and aiot rounds when every candidate denies", async () => {
+    discoverReachableInstance.mockResolvedValue(allDenied());
     const router = makeRouter();
 
     await expect((router as any).ensureSecurityMqttFor(DEV)).rejects.toThrow(
       /no broker instance grants this device's topic/,
     );
-    expect(discoverReachableInstance).toHaveBeenCalledTimes(1);
+    expect(discoverReachableInstance).toHaveBeenCalledTimes(2);
   });
 
   it("probes the aiot endpoint when the security host resolves to no instance", async () => {
@@ -163,8 +144,22 @@ describe("MqttCommandRouter.ensureSecurityMqttFor — broker-instance probe", ()
     expect(lastConstructedWith.credentials.endpoint_addr).toBe("aiot-mqtt-us.anker.com");
   });
 
+  it("probes the aiot endpoint when no security instance grants, a timeout among the denies", async () => {
+    discoverReachableInstance
+      .mockResolvedValueOnce([
+        { ip: "192.0.2.10", granted: false, grantedQos: 0x80, error: "Subscribe error: Unspecified error", ms: 10 },
+        { ip: "198.51.100.20", granted: false, error: "timeout", ms: 8000 },
+      ])
+      .mockResolvedValueOnce(granted("192.0.2.40"));
+
+    const { instanceIp } = await (makeRouter() as any).ensureSecurityMqttFor(DEV);
+
+    expect(instanceIp).toBe("192.0.2.40");
+    expect(discoverReachableInstance.mock.calls[1]![0].hostname).toBe("aiot-mqtt-us.anker.com");
+  });
+
   it("names each candidate's reason when none grants, a SUBACK deny code included", async () => {
-    discoverReachableInstance.mockResolvedValueOnce([
+    discoverReachableInstance.mockResolvedValue([
       { ip: "192.0.2.10", granted: false, grantedQos: 0x80, error: "Subscribe error: Unspecified error", ms: 10 },
       { ip: "198.51.100.20", granted: false, error: "timeout", ms: 8000 },
     ]);

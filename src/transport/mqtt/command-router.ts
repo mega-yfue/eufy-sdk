@@ -41,7 +41,7 @@ import {
   type Ff09FrameInput,
   type Ff09TransferPayload,
 } from "../ff09.js";
-import { SecureMqtt, isSubackFailure, type SecureMqttCredentials } from "./secure-mqtt.js";
+import { SecureMqtt, type SecureMqttCredentials } from "./secure-mqtt.js";
 import { secureTopic } from "./topics.js";
 import { buildAppShapedClientId, mqttUuidFrom } from "./app-client-id.js";
 import { discoverReachableInstance } from "./broker-discovery.js";
@@ -209,18 +209,6 @@ export function buildFf09MqttEnvelope(input: {
 }
 
 /**
- * The security broker cluster for the region an `aiot-mqtt-{region}.anker.com` endpoint names —
- * `security-mqtt-{region}.anker.com`, where `eufy_security` lock sessions live (see
- * `MqttCommandRouter.ensureSecurityMqttFor`). Throws on an endpoint of any other shape rather than
- * dialling a host derived from a guess.
- */
-function securityBrokerHost(aiotEndpoint: string): string {
-  const region = /^aiot-mqtt-([a-z]+)\.anker\.com$/.exec(aiotEndpoint)?.[1];
-  if (!region) throw new Error(`no security broker known for MQTT endpoint "${aiotEndpoint}"`);
-  return `security-mqtt-${region}.anker.com`;
-}
-
-/**
  * The facade-side dependencies the router needs. It owns the one-shot MQTT connection lifecycle + all
  * command wire logic, but defers device-list access + lifecycle event fan-out to the client (which owns
  * the typed EventEmitter).
@@ -349,23 +337,12 @@ export class MqttCommandRouter {
   ];
 
   /**
-   * Connect a fresh **security-scoped** (`eufy_security`) MQTT client to the broker cluster `dev`'s
-   * session lives on, pinned to one of its instances that grants the device's `/res` SUBSCRIBE (probed
-   * SUBSCRIBE-only, never publishing — see `transport/mqtt/broker-discovery.ts`), for the caller to
-   * publish on.
+   * Connect a fresh **security-scoped** (`eufy_security`) MQTT client pinned to a broker instance that
+   * grants the device's `/res` SUBSCRIBE (probed SUBSCRIBE-only, never publishing — see
+   * `transport/mqtt/broker-discovery.ts`), for the caller to publish on.
    *
-   * That cluster is `security-mqtt-{region}.anker.com` ({@link securityBrokerHost}) for a lock whose
-   * session lives there, not the `aiot-mqtt-{region}.anker.com` endpoint `get_user_mqtt_info` names: the
-   * two are separate clusters that share no routing, and the `aiot` one grants such a lock's topics too.
-   * Verified on US-region Smart Lock C33, C30 and FamiLock S3 units: the vendor app's commands and the
-   * lock's replies cross the security cluster; a frame published on any of its instances is answered,
-   * and the same frame published on any `aiot` instance is not. Both serve the same `*.anker.com`
-   * certificate, so the account's credentials and TLS checks carry over unchanged.
-   *
-   * The security cluster refuses the topic of a device whose session is not there (every instance
-   * answers a C220's with a SUBACK deny). Such a device is probed on the `aiot` endpoint instead, with
-   * {@link KNOWN_AIOT_BROKER_IPS}, where an unlock of a T85D0 has been answered, as is any device when the
-   * security host resolves to no instance.
+   * The `security-mqtt-{region}` cluster is probed first, and the `aiot-mqtt-{region}` endpoint with
+   * {@link KNOWN_AIOT_BROKER_IPS} when no security instance grants.
    *
    * Which cert is used does NOT change the outcome — the account's own `get_user_mqtt_info` cert and a
    * cert extracted from a real phone's keystore produce the identical grant/deny pattern across every
@@ -385,7 +362,10 @@ export class MqttCommandRouter {
    */
   private async ensureSecurityMqttFor(dev: EufyDevice): Promise<{ mqtt: SecureMqtt; instanceIp: string }> {
     const account: SecureMqttCredentials = await this.deps.mega.getUserMqttInfo("eufy_security");
-    let creds: SecureMqttCredentials = { ...account, endpoint_addr: securityBrokerHost(account.endpoint_addr) };
+    let creds: SecureMqttCredentials = {
+      ...account,
+      endpoint_addr: account.endpoint_addr.replace(/^aiot-mqtt-/, "security-mqtt-"),
+    };
     const mqttUuid = mqttUuidFrom(this.deps.mega.openudid);
     const clientIdFor = () => buildAppShapedClientId({ appName: "eufy_security", uid: creds.user_id ?? "", mqttUuid });
     const probe = (on: SecureMqttCredentials, candidateIps?: string[]) =>
@@ -406,8 +386,7 @@ export class MqttCommandRouter {
         },
       );
     let results = await probe(creds);
-    const refused = results.length > 0 && results.every((r) => isSubackFailure(r.grantedQos));
-    if (refused || results.length === 0) {
+    if (!results.some((r) => r.granted)) {
       creds = account;
       results = await probe(account, MqttCommandRouter.KNOWN_AIOT_BROKER_IPS);
     }

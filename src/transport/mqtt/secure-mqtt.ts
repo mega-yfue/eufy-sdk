@@ -34,15 +34,7 @@ const SUBACK_FAILURE = 0x80;
  */
 function isRefusal(err: unknown): boolean {
   const granted = (err as { packet?: { granted?: unknown } } | null)?.packet?.granted;
-  return Array.isArray(granted) && granted.some(isSubackFailure);
-}
-
-/**
- * Whether a SUBACK return code is the broker refusing the filter ({@link SUBACK_FAILURE} set).
- * @internal
- */
-export function isSubackFailure(code: unknown): boolean {
-  return typeof code === "number" && (code & SUBACK_FAILURE) !== 0;
+  return Array.isArray(granted) && granted.some((g) => typeof g === "number" && (g & SUBACK_FAILURE) !== 0);
 }
 
 /**
