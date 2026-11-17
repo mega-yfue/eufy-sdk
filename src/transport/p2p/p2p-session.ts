@@ -76,8 +76,6 @@ import { CMD_DATABASE, CMD_DATABASE_IMAGE, DB_QUERY, DB_TABLE_TIMEOUT_MS, fullTa
 import { StationUnreachableError } from "../../core/contracts.js";
 
 const LOCAL_LOOKUP_PORT = 32108;
-/** The highest UDP port. */
-const MAX_UDP_PORT = 65535;
 const HEARTBEAT_MS = 5_000;
 /**
  * How long a path may go without answering a heartbeat before it stops being committed to.
@@ -1270,8 +1268,7 @@ export class P2PSession extends EventEmitter {
     // Hole-punch the reported port and a small neighbourhood (NAT remapping).
     this.send(addr, RequestMessageType.CHECK_CAM, payload, socket);
     for (let p = addr.port - 3; p <= addr.port + 3; p++)
-      if (p !== addr.port && p > 0)
-        this.send({ host: addr.host, port: p }, RequestMessageType.CHECK_CAM, payload, socket);
+      if (p !== addr.port) this.send({ host: addr.host, port: p }, RequestMessageType.CHECK_CAM, payload, socket);
   }
 
   /** Bind additional UDP source ports before the first cloud lookup. */
@@ -2729,14 +2726,10 @@ export class P2PSession extends EventEmitter {
     this.emit("data", frame);
   }
 
-  /**
-   * Send one message to `addr`. A port Node's dgram `send` refuses — outside 1..{@link MAX_UDP_PORT} — is
-   * skipped like a failed send instead of thrown: a peer-reported address reaches here from inside the
-   * socket's `message` listener, where a throw is uncaught.
-   */
+  /** Skips a port outside 1..65535 like a failed send; dgram would throw on it, uncaught in the message listener. */
   private send(addr: Address, type: Buffer, payload?: Buffer, socket = this.socket, done?: () => void): void {
     if (!socket) return;
-    if (!Number.isInteger(addr.port) || addr.port < 1 || addr.port > MAX_UDP_PORT) {
+    if (addr.port < 1 || addr.port > 65535) {
       this.logger.debug(`[p2p] send skipped ${addr.host}:${addr.port}: not a UDP port`);
       done?.();
       return;

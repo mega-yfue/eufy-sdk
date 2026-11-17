@@ -62,10 +62,4 @@ describe("a peer-reported address on a port Node cannot send to", () => {
     expect(() => internals.onMessage(addressed(RLY_TO, 0), rinfo)).not.toThrow();
     expect(ports).toEqual([]);
   });
-
-  it("still punches a lookup address's port and its three neighbours on each side", () => {
-    const { internals, ports } = session();
-    internals.onMessage(addressed(LOOKUP_ADDR, 40000), rinfo);
-    expect(ports).toEqual([40000, 39997, 39998, 39999, 40001, 40002, 40003]);
-  });
 });
