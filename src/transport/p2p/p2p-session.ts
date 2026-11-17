@@ -2556,6 +2556,14 @@ export class P2PSession extends EventEmitter {
     if (!isMedia && !frame.json && (data.length === 4 || paddedResult)) {
       this.emit("commandResult", { code: data.readInt32LE(0), channel: header.channel });
     }
+    if (
+      header.commandId === CommandType.CMD_GET_DEVICE_PING &&
+      dataType === P2PDataType.CONTROL &&
+      payload.length === 8 &&
+      payload.every((byte) => byte === 0)
+    ) {
+      this.sendCommand(CommandType.CMD_GET_DEVICE_PING, header.channel);
+    }
     this.emit("data", frame);
   }
 
