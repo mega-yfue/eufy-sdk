@@ -1268,8 +1268,7 @@ export class P2PSession extends EventEmitter {
     // Hole-punch the reported port and a small neighbourhood (NAT remapping).
     this.send(addr, RequestMessageType.CHECK_CAM, payload, socket);
     for (let p = addr.port - 3; p <= addr.port + 3; p++)
-      if (p !== addr.port && p > 0)
-        this.send({ host: addr.host, port: p }, RequestMessageType.CHECK_CAM, payload, socket);
+      if (p !== addr.port) this.send({ host: addr.host, port: p }, RequestMessageType.CHECK_CAM, payload, socket);
   }
 
   /** Bind additional UDP source ports before the first cloud lookup. */
@@ -2761,8 +2760,14 @@ export class P2PSession extends EventEmitter {
     this.emit("data", frame);
   }
 
+  /** Skips a port outside 1..65535 like a failed send; dgram would throw on it, uncaught in the message listener. */
   private send(addr: Address, type: Buffer, payload?: Buffer, socket = this.socket, done?: () => void): void {
     if (!socket) return;
+    if (addr.port < 1 || addr.port > 65535) {
+      this.logger.debug(`[p2p] send skipped ${addr.host}:${addr.port}: not a UDP port`);
+      done?.();
+      return;
+    }
     const packet = frameMessage(type, payload);
     socket.send(packet, addr.port, addr.host, (err) => {
       if (err) this.logger.warn(`[p2p] send err ${addr.host}:${addr.port}`, err.message);
