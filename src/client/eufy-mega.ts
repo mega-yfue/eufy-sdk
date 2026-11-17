@@ -2400,8 +2400,8 @@ export class EufyMega extends EventEmitter {
    * `(name, value)` — the module owns how THIS device applies it. No `(name, value)` recipe → the
    * device doesn't support the property, so we throw {@link CapabilityNotSupportedError} rather than
    * a silent no-op. On success the device echoes the new state back as a param update — read it with
-   * {@link getDevice} to confirm. A level-2 P2P write settles on the device's answer and rejects with a
-   * `CommandResultError` when the device refuses it or does not answer.
+   * {@link getDevice} to confirm. A P2P write the router awaits, at either level, settles on the device's
+   * answer and rejects with a `CommandResultError` when the device refuses it or does not answer.
    *
    * @param sn device serial.
    * @param name property name (e.g. "light", "brightness", "enabled").
