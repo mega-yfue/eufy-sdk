@@ -29,7 +29,7 @@ function session(): { session: P2PSession; sent: Buffer[] } {
 function negotiate(target: P2PSession, cipherId: number): void {
   const payload = Buffer.alloc(64);
   payload.writeInt32LE(cipherId, 0);
-  (target as unknown as { negotiateLevel2Key(payload: Buffer): void }).negotiateLevel2Key(payload);
+  (target as unknown as { negotiateLevel2Key(payload: Buffer, version: number): void }).negotiateLevel2Key(payload, 8);
 }
 
 /** The command frame of a sent datagram: its header fields and body. */

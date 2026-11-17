@@ -35,6 +35,24 @@ export interface FakeP2PSession extends EventEmitter {
 }
 
 /**
+ * Run `call` on fake timers, every timed wait in it expired at once, then hand back its outcome.
+ *
+ * The router replays an unacknowledged command five times 200 ms apart; on real timers each such spec
+ * sleeps through it. A rejection that lands while the timers run is the caller's to assert.
+ */
+export async function onFakeTime<T>(call: () => Promise<T>): Promise<T> {
+  vi.useFakeTimers();
+  try {
+    const outcome = call();
+    outcome.catch(() => {});
+    await vi.runAllTimersAsync();
+    return await outcome;
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
+/**
  * A connected session that either has a level-2 key or has settled that it will not get one.
  *
  * The re-prompt belongs to the same set of answers: a session that settled without a key may still be worth

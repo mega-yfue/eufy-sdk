@@ -4,7 +4,7 @@ import { gatewayInfoCipherId, gatewayInfoRefused } from "../codec.js";
 import { P2PSession } from "../p2p-session.js";
 import { P2PCommandRouter, type P2PRouterDeps } from "../command-router.js";
 import { decryptFf09Frame, LOCK_API_COMMAND } from "../../ff09.js";
-import { connectedSession, traceCollector, type FakeP2PSession } from "./session-fixtures.js";
+import { connectedSession, onFakeTime, traceCollector, type FakeP2PSession } from "./session-fixtures.js";
 
 const LOCK_SN = "T8506K0000000000";
 const HOMEBASE_SN = "T8010P0000000000";
@@ -27,7 +27,7 @@ function cipherGatewayInfo(cipherId: number): Buffer {
 
 /** Hand a `CMD_GATEWAYINFO` reply to the session's negotiation. */
 function negotiate(session: P2PSession, payload: Buffer): void {
-  (session as unknown as { negotiateLevel2Key(payload: Buffer): void }).negotiateLevel2Key(payload);
+  (session as unknown as { negotiateLevel2Key(payload: Buffer, version: number): void }).negotiateLevel2Key(payload, 8);
 }
 
 /** Give the session an address and collect what it sends there. */
@@ -218,7 +218,7 @@ describe("an ff09 lock command on a station that refused level-2", () => {
   it("replays the unlock on the lock's channel, as every other unacknowledged command", async () => {
     const { router, session } = makeRouter(true);
 
-    await router.dispatchCommand(LOCK_SN, unlock);
+    await onFakeTime(() => router.dispatchCommand(LOCK_SN, unlock));
 
     expect(session.sendControlLevel2).toHaveBeenCalledTimes(5);
     const [cmd, channel, , payload, mValue3, clearOnRefusal] = session.sendControlLevel2.mock.calls[0]!;

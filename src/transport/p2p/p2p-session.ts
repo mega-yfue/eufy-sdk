@@ -568,8 +568,8 @@ export class P2PSession extends EventEmitter {
   private level2Key?: Buffer;
   /**
    * Negotiated 16-byte level-2 key of a cipher with no ECC key (RSA-encrypted in `CMD_GATEWAYINFO`). Only
-   * {@link sendControlLevel2} seals with it, AES-128-ECB in the level-1 layout at encryption type 2; never
-   * held beside {@link level2Key}.
+   * {@link sendControlLevel2} seals with it, AES-128-ECB in the level-1 layout at encryption type 2, and only
+   * while no {@link level2Key} is held; a connection may hold both, one per gateway-info version.
    */
   private level2EcbKey?: Buffer;
   private level2Seq = 0;
@@ -806,9 +806,9 @@ export class P2PSession extends EventEmitter {
   /**
    * Negotiate the level-2 session key from the decrypted CMD_GATEWAYINFO payload: read its
    * `cipher_id`, resolve that cipher's private keys once (cloud `get_ciphers`, via the configured
-   * `resolveCipherKey`), run the ECIES unwrap with the ECC key, and `setLevel2Key()`. A cipher with no
-   * ECC key uses its RSA key instead and holds the RSA-decrypted 16-byte key as the AES-128-ECB level-2
-   * key. Emits `level2Ready` only when the AES-256-GCM key is negotiated, traces
+   * `resolveCipherKey`), run the ECIES unwrap with the ECC key, and `setLevel2Key()`. The frame's header
+   * `version` picks the key, as the app's `NotifyInterceptor` does: 8 takes the ECC key, any other takes the
+   * RSA key and holds the RSA-decrypted 16-byte key as the AES-128-ECB level-2 key. Emits `level2Ready` only when the AES-256-GCM key is negotiated, traces
    * `level2-set-payload-only` instead for the AES-128-ECB key, and emits `error` when the ECC unwrap
    * fails; an RSA unwrap failure is only traced (non-fatal either way — level-1 traffic keeps working).
    *
@@ -818,7 +818,7 @@ export class P2PSession extends EventEmitter {
    * generation ended settles nothing. A {@link gatewayInfoRefused} reply names no cipher, so it settles at once
    * with no cloud lookup, and a later reply naming a cipher withdraws the refusal.
    */
-  private negotiateLevel2Key(gwPayload: Buffer): void {
+  private negotiateLevel2Key(gwPayload: Buffer, version: number): void {
     this.gatewayRefused = gatewayInfoRefused(gwPayload);
     if (this.gatewayRefused) {
       this.logger.debug(`[p2p] ${this.cfg.stationSn} gateway info refused level-2`);
@@ -836,8 +836,8 @@ export class P2PSession extends EventEmitter {
         const resolved = await this.cfg.resolveCipherKey?.(cipherId);
         if (this.closed || generation !== this.connectionGeneration) return;
         const keys = typeof resolved === "string" ? { ecc: resolved } : resolved;
-        const eccPrivHex = keys?.ecc;
-        const rsaPrivKey = eccPrivHex ? undefined : keys?.rsa;
+        const eccPrivHex = version === 8 ? keys?.ecc : undefined;
+        const rsaPrivKey = version === 8 ? undefined : keys?.rsa;
         if (!eccPrivHex && !rsaPrivKey) {
           this.logger.debug(`[p2p] ${this.cfg.stationSn} no ECC or RSA key for cipher_id ${cipherId}`);
           this.trace({ phase: "level2-unavailable", reason: "no-cipher-key", cipherId });
@@ -2636,8 +2636,9 @@ export class P2PSession extends EventEmitter {
    * Decrypt and dispatch one inbound data frame.
    *
    * A `CMD_GATEWAYINFO` (1100) reply carries the ECIES envelope for the level-2 session key. When a
-   * cipher-key resolver is configured, no key that seals a set-payload is held and no negotiation is in
-   * flight, the reply starts one (async, fire-and-forget); a reply landing while one is in flight is ignored.
+   * cipher-key resolver is configured, the key of the reply's own header version is not held (the app holds the
+   * ECC and the RSA key apart) and no negotiation is in flight, the reply starts one (async, fire-and-forget);
+   * a reply landing while one is in flight is ignored.
    *
    * A `CMD_DATABASE` (1306) reply opened with the session key is emitted as that opened text; a level-1 pass
    * over its raw bytes would be noise.
@@ -2669,14 +2670,12 @@ export class P2PSession extends EventEmitter {
         /* leave as-is; emit raw */
       }
     }
-    if (
-      header.commandId === CMD_GATEWAYINFO &&
-      header.signCode <= 1 &&
-      !this.level2KeyServes("set-payload") &&
-      !this.level2Negotiating &&
-      this.cfg.resolveCipherKey
-    ) {
-      this.negotiateLevel2Key(data);
+    if (header.commandId === CMD_GATEWAYINFO && header.signCode <= 1) {
+      this.logger.debug(
+        `[p2p] ${this.cfg.stationSn} level-2 gateway info v${header.version} ch ${header.channel} ${data.length}B (cipher_id ${gatewayInfoCipherId(data)})`,
+      );
+      const held = header.version === 8 ? this.level2Key : this.level2EcbKey;
+      if (!held && !this.level2Negotiating && this.cfg.resolveCipherKey) this.negotiateLevel2Key(data, header.version);
     }
     if (header.commandId === CMD_DATABASE && openedLevel2) {
       this.emit("dbChunk", { stationSn: this.cfg.stationSn, text: data.toString("latin1") });

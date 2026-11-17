@@ -184,22 +184,21 @@ describe("resolveDevice — 3-tier composition", () => {
     }
   });
 
-  it.each([undefined, DeviceType.CAMERA_POE_S4])(
-    "recognizes PoE S4 pan-tilt without reported preset parameters (device type %s)",
-    (deviceType) => {
-      expect(
-        resolveDevice({ model: "T8E00", category: "eufy_security", deviceType, params: {} }).capabilities,
-      ).toContain("ptz");
-    },
-  );
+  it("recognizes PoE S4 pan-tilt without reported preset parameters, from its device type or its description", () => {
+    const things = parseThingsList({
+      things_list: [{ profile: { product_code: "T0000" }, actions: [{ identifier: "ptz_action_control" }] }],
+    }).T0000!;
+    const caps = (rec: object) =>
+      resolveDevice({ model: "T0000", category: "eufy_security", params: {}, ...rec }).capabilities;
+    expect(caps({ deviceType: DeviceType.CAMERA_POE_S4 })).toContain("ptz");
+    expect(caps({ things })).toContain("ptz");
+  });
 
   it("a normal solar cam (T8124R) is NOT pan-tilt — the mistaken model hint is gone", () => {
     // T8124R (deviceType 62 = SOLO_CAMERA_SPOTLIGHT_SOLAR) is a FIXED solar cam: it reports no PT param
     // and isn't a PT deviceType. An unfounded `\bT8124R\b` model hint used to grant it ptz anyway;
     // confirmed on a real owned unit that it does not pan/tilt, so the hint was removed.
     expect(resolveDevice({ model: "T8124R", deviceType: 62 }).capabilities).not.toContain("ptz");
-    // Genuine PT models still resolve via their real signals — a name hint (S340) and a PT deviceType.
-    expect(resolveDevice({ model: "SoloCam S340" }).capabilities).toContain("ptz");
     expect(resolveDevice({ deviceType: 48 }).capabilities).toContain("ptz"); // OUTDOOR_PT_CAMERA
   });
 
@@ -376,10 +375,6 @@ describe("doorbell — confirmed against real T8214", () => {
 
   it.each([5, 7, 16, 91, 93, 94])("types any record of the app's doorbell deviceType %i as a doorbell", (t) => {
     expect(resolveDevice({ model: "T8299", deviceType: t }).capabilities).toContain("doorbell");
-  });
-
-  it.each(["T8201", "T8212", "T8220", "T8222"])("types the app's doorbell model %s as a doorbell", (model) => {
-    expect(resolveDevice({ model }).capabilities).toContain("doorbell");
   });
 
   it("types the T8210C variant as a doorbell, like the T8210", () => {

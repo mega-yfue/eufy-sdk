@@ -2,15 +2,15 @@ import { asBool, coerceEnumValue } from "../../core/util.js";
 import { DeviceType } from "../device-types.js";
 import { IndoorPushEvent } from "../push-events.js";
 import {
-  isCallDoorbell,
+  isUntriedDoorbell,
   isIndoorCamera,
   isIndoorCamMini,
   isIndoorPanTiltS350,
   isVideoSmartLock,
 } from "../device-family.js";
 import { setScalar, setPayload, setJson, isCameraCodec, hasCapability } from "./access.js";
+import { described } from "./thing-description.js";
 import { AUDIO_CMD } from "./audio.js";
-import { DOORBELL_CMD } from "./doorbell.js";
 import { cameraPowerTier } from "./battery.js";
 import { accepts, propertiesOf, provided, type Members, type Surface, type MemberDeps } from "./members.js";
 import type { AvailabilityContext, CapabilityModule, CapabilityActions, CommandContext } from "./types.js";
@@ -32,8 +32,24 @@ export const CAMERA_CMD = {
   WIFI_RSSI: 1142,
   /** Camera on/off. Read and write polarity depend on the family and topology. */
   CAMERA_ENABLE: 1035,
-  /** Wrapped T8410 power switch on HomeBase 3. */
+  /** Camera power as privacy mode in the `1350` envelope, `{switch}` 1 = privacy on (app `COMMAND_APP_PRIVACY`). */
   PRIVACY_MODE: 6250,
+  /** Standalone power as privacy mode in the `1700` wrapper, `{value}` 1 = privacy on (app `COMMAND_INDOOR_PRIVACY_MODE_STATUS`). */
+  PRIVACY_MODE_STATUS: 6090,
+  /** Standalone status LED in the `1700` wrapper, `{value:0|1}` (app `IC_LED_STATUS`). */
+  IC_LED_STATUS: 6014,
+  /** Wired-doorbell status LED in the `1700` wrapper, `{status:0|1}` (app `DOORBELL_COMMAND_LED_NIGHT_OPEN`). */
+  DOORBELL_LED_NIGHT: 1026,
+  /** Station-attached notification style in the `1350` envelope, `{notification_style}` (app `SET_PUSH_EFFECT`). */
+  PUSH_EFFECT: 1289,
+  /** Live-view quality tier in the `1700` wrapper, `{quality}` (app `STREAMING_QUALITY`). */
+  STREAMING_QUALITY: 1020,
+  /** Recording quality tier in the `1700` wrapper, `{quality}` (app `COMMAND_VIDEO_RECORD_QUALITY`). */
+  VIDEO_RECORD_QUALITY: 1023,
+  /** Recording quality tier in the `1350` envelope, `{record_quality}` (app `APP_CMD_SET_RECORD_QUALITY`). */
+  SET_RECORD_QUALITY: 1286,
+  /** Anti-theft switch in the `1350` envelope, `{value:0|1}` (app `APP_CMD_NEW_EAS_SWITCH`). */
+  NEW_EAS_SWITCH: 2735,
   /**
    * Camera status LED on/off — the "power/recording" indicator. The
    * app JS has a sibling param `1056` (`APP_CMD_LIVEVIEW_LED_SWITCH`) for the SAME UI "Status Light"
@@ -119,11 +135,6 @@ export const CAMERA_CMD = {
    *
    * Wire from the app's own JS: a scalar `params:{value:0|1}`. Emitted with the **adaptive** form so
    * topology picks the level — level-2/direct on a HomeBase-attached device, level-1 on a standalone.
-   *
-   * ⚠️ Replay + readback confirmed on a **HomeBase-attached** T8425 only (1015 read `0` → write → `1`
-   * → restore): the frame is confirmed accepted and persisted, NOT byte-compared to the app's. The
-   * **standalone** path is unverified, and newer (v3) devices use a *different* id for the same
-   * switch — `APP_CMD_NEW_EAS_SWITCH` (2735) — which has no path here; don't assume 1015 drives them.
    */
   EAS_SWITCH: 1015,
   /**
@@ -287,15 +298,15 @@ export function resolveStreamingQuality(value: number): string | undefined {
  * accepted; anything outside the tier set is still refused rather than sent.
  */
 export function resolveStreamingQualityTier(value: number | string | boolean): number | undefined {
+  return optionOf(value, STREAMING_QUALITY_TIERS);
+}
+
+/** The option a value names: one of the option values, or a label in any case. Never a boolean. */
+function optionOf(value: number | string | boolean, options: Readonly<Record<number, string>>): number | undefined {
   if (typeof value === "boolean") return undefined;
-  if (typeof value === "string" && !/^\d+$/.test(value.trim())) {
-    const hit = Object.entries(STREAMING_QUALITY_TIERS).find(
-      ([, label]) => label.toLowerCase() === value.trim().toLowerCase(),
-    );
-    return hit ? Number(hit[0]) : undefined;
-  }
-  const tier = Number(value);
-  return Number.isInteger(tier) && STREAMING_QUALITY_TIERS[tier] != null ? tier : undefined;
+  const v = String(value).trim().toLowerCase();
+  const hit = Object.entries(options).find(([option, label]) => option === v || label.toLowerCase() === v);
+  return hit ? Number(hit[0]) : undefined;
 }
 
 /** Resolve a raw `quality` tier value to its resolution label — or `undefined`. */
@@ -319,10 +330,7 @@ export function resolveRecordingQualityValue(name: string): number | undefined {
  * string is looked up as a resolution name; a boolean is not a tier.
  */
 export function resolveRecordingQualityTier(value: number | string | boolean): number | undefined {
-  if (typeof value === "boolean") return undefined;
-  if (typeof value === "string" && !/^\d+$/.test(value.trim())) return resolveRecordingQualityValue(value);
-  const tier = Number(value);
-  return Number.isInteger(tier) && RECORDING_QUALITY_TIERS[tier] != null ? tier : undefined;
+  return optionOf(value, RECORDING_QUALITY_TIERS);
 }
 
 /**
@@ -334,15 +342,15 @@ export function resolveRecordingQualityTier(value: number | string | boolean): n
  * a tier.
  *
  * A device that reports a plain tier is still read (some models may); anything else — an unknown shape,
- * a mode with no entry, a tier not in {@link RECORDING_QUALITY_TIERS} — is `undefined` rather than a guess.
+ * a mode with no entry, a tier not among `options` — is `undefined` rather than a guess.
  */
-function decodeRecordingQualityTier(raw: unknown): number | undefined {
-  if (typeof raw === "number" || typeof raw === "string") return resolveRecordingQualityTier(raw);
+function decodeRecordingQualityTier(raw: unknown, options: Readonly<Record<number, string>>): number | undefined {
+  if (typeof raw === "number" || typeof raw === "string") return optionOf(raw, options);
   if (typeof raw !== "object" || raw === null) return undefined;
   const cfg = raw as Record<string, unknown>;
   const mode = cfg[`mode_${Number(cfg.cur_mode) || 0}`];
   const quality = typeof mode === "object" && mode !== null ? (mode as Record<string, unknown>).quality : undefined;
-  return typeof quality === "number" ? resolveRecordingQualityTier(quality) : undefined;
+  return typeof quality === "number" ? optionOf(quality, options) : undefined;
 }
 
 /**
@@ -367,15 +375,14 @@ export type CameraActions = Surface<typeof CAMERA_MEMBERS> & {
  * framing); this is the feature.
  *
  * ## Command variance (absorbed here)
- * - **on/off** = `CAMERA_SWITCH` (1035), except the HomeBase 3 indoor firmware route below. This
+ * - **on/off** = `CAMERA_SWITCH` (1035), or the privacy wire {@link POWER_WIRE} picks. This
  *   module owns the *semantic* part — the value
  *   polarity, which is family-dependent (enable-bit ON ⇒ 1 for indoor cams + the 8422/8424
  *   floodlight-cams, disable-bit ON ⇒ 0 for battery/solo and for an indoor camera (type 30) that
  *   reports 1035 itself — see `isEnableBitPolarity`). The WIRE (level-1 int-string vs level-2
  *   direct-binary) is NOT decided here: it emits a `"auto"` scalar intent and the transport resolver
  *   picks the level by session (standalone ⇒ L1, HomeBase ⇒ L2).
- * - **privacy** = a multi-frame burst (`PRIVACY_MODE` 6250) — see the `p2p-privacy-burst` command;
- *   the sink plays the exact frame sequence.
+ * - **privacy** = power inverted, on the privacy wire {@link POWER_WIRE} picks (6250 / 6090).
  */
 
 /**
@@ -429,21 +436,12 @@ function readsNightVisionOn2002(ctx: AvailabilityContext): boolean {
   return ctx.paramIds?.has(2002) === true && !ctx.paramIds.has(CAMERA_CMD.NIGHT_VISION_TYPE);
 }
 
-/** T8410 on HomeBase 3 firmware >= 2.3.1.0 uses the wrapped disable-bit power switch. */
-function usesHomeBasePowerPayload(ctx: CommandContext): boolean {
-  if (!isT8410HomeBase3(ctx) || !ctx.firmwareVersion || !/^\d+(?:\.\d+){2,3}$/.test(ctx.firmwareVersion)) return false;
-  const version = ctx.firmwareVersion.split(".").map(Number);
-  const minimum = [2, 3, 1, 0];
-  for (let i = 0; i < minimum.length; i++) {
-    const difference = (version[i] ?? 0) - minimum[i];
-    if (difference !== 0) return difference > 0;
-  }
-  return true;
-}
-
-/** The T8410 privacy write does not reliably move its startup enablement report on HomeBase 3. */
-function hasUnreflectedHomeBasePower(ctx: CommandContext): boolean {
-  return usesHomeBasePowerPayload(ctx) && !ctx.paramIds.has(2001);
+/**
+ * A privacy-mode power write does not reliably move the enablement report: a device reporting 2001
+ * reflects it there, the HomeBase-attached S350 ({@link hasPrivacyPower}) does not.
+ */
+function hasUnreflectedPower(ctx: CommandContext): boolean {
+  return POWER_WIRE(ctx) === CAMERA_CMD.PRIVACY_MODE && (hasPrivacyPower(ctx) || !ctx.paramIds.has(2001));
 }
 
 /**
@@ -455,16 +453,17 @@ function hasPrivacyPower(ctx: CommandContext): boolean {
 }
 
 /**
- * Camera power: T8410 on HomeBase 3 uses the wrapped disable-bit switch when its firmware selects
- * that route. Other cameras retain the captured 1035 scalar command and family polarity.
- * The payload retains mValue3=0 and the camera channel; the transport injects the account identity.
- *
- * - The HomeBase-attached S350 ({@link hasPrivacyPower}) is written through {@link privacyCommand}, which is
- *   level-2 only. ✅ Observed live on a HomeBase-attached T8416.
+ * Camera power on the wire {@link POWER_WIRE} picks: 1035 with the family polarity, or privacy mode
+ * (6250 `{switch}`, 6090 `{value}`) carrying the inverse. The 6250 envelope keeps mValue3=0 and the camera
+ * channel. The HomeBase-attached S350 ({@link hasPrivacyPower}) takes the same id as {@link privacyCommand}'s burst.
  */
 function powerCommand(on: boolean, ctx: CommandContext): Command {
-  if (hasPrivacyPower(ctx)) return privacyCommand(!on, ctx.channel);
-  if (usesHomeBasePowerPayload(ctx)) return setPayload(CAMERA_CMD.PRIVACY_MODE, { switch: on ? 0 : 1 }, ctx, 0);
+  const wire = POWER_WIRE(ctx);
+  if (wire === CAMERA_CMD.PRIVACY_MODE && hasPrivacyPower(ctx)) return privacyCommand(!on, ctx.channel);
+  if (wire === CAMERA_CMD.PRIVACY_MODE)
+    return setPayload(CAMERA_CMD.PRIVACY_MODE, { switch: on ? 0 : 1 }, ctx, 0, undefined, "auto");
+  if (wire === CAMERA_CMD.PRIVACY_MODE_STATUS)
+    return setJson(CAMERA_CMD.PRIVACY_MODE_STATUS, { value: on ? 0 : 1 }, ctx);
   return setScalar(CAMERA_CMD.CAMERA_ENABLE, powerValue(on, ctx), ctx, "auto");
 }
 
@@ -473,25 +472,150 @@ function privacyCommand(enabled: boolean, channel: number): Command {
   return { kind: "p2p-privacy-burst", enabled, channel };
 }
 
-/** A C30/C31 has reported no 1716 and no doorbell LED write was tried on it, so it keeps 1045. */
-const doorbellLed = (ctx: AvailabilityContext): boolean => hasCapability(ctx, "doorbell") && !isCallDoorbell(ctx);
+/**
+ * A camera-codec device whose product description, when fetched, lists one of `identifiers`: a video
+ * lock is camera codec too, and its description leaves out the settings it does not have.
+ */
+const cameraThing =
+  (...identifiers: string[]) =>
+  (ctx: AvailabilityContext): boolean =>
+    isCameraCodec(ctx) && identifiers.some((identifier) => described(identifier)(ctx));
 
 /**
- * Status LED — family-variant, like camera power above. A **Video Doorbell**'s user-facing LED (the
- * button ring) is `DOORBELL_LED` (1716) carried in the `SET_PAYLOAD` (1350) envelope
- * `{light_enable}` — ✅ verified live on T8214; the firmware ignores the generic camera LED there.
- * Every other camera uses `DEV_LED_SWITCH` (1045), level-1 int+string, value 0/1. The doorbell is a
- * `camera`-codec device, so its LED belongs to this one `setStatusLed` surface (swap the wire by
- * family) rather than a duplicate action on the doorbell capability.
- *
- * The doorbell branch stays level-2 only: it carries the envelope's default `mValue3` (the sub-command),
- * which the level-1 form writes as 0 — so `"auto"` here would send an uncaptured object rather than the
- * same one under a different seal. See `setPayload`'s two conditions.
+ * The param one identifier is written on, per product, as its settings bundle (the per-product code the
+ * description's `profile` names, corpus 2026-11-13) builds it. `groups` maps a wire to the product codes
+ * sending it: `1045` on every topology, `6014/1045` standalone / HomeBase-attached (the bundle's
+ * `getConnectType`), `-` nothing; `CODE__vN` where the bundle builds the resolved variant differently.
+ * An unlisted product sends `fallback`. `undefined` is no wire. A station-only eufyCam (T811x, T814x,
+ * T816x) is never standalone, so it is listed only where its wire differs from the fallback's attached arm.
  */
-function statusLedCommand(on: boolean, ctx: CommandContext): Command {
-  if (doorbellLed(ctx)) return setPayload(CAMERA_CMD.DOORBELL_LED, { light_enable: on ? 1 : 0 }, ctx);
-  return setScalar(CAMERA_CMD.DEV_LED_SWITCH, on ? 1 : 0, ctx, "int-string");
+function bundleWires(identifier: string, fallback: string, groups: Readonly<Record<string, string>>) {
+  const table = new Map<string, string>();
+  for (const [wire, codes] of Object.entries(groups)) for (const code of codes.split(" ")) table.set(code, wire);
+  return (ctx: AvailabilityContext): number | undefined => {
+    const model = ctx.model ?? "";
+    const variant = ctx.things?.properties[identifier]?.identifier.slice(identifier.length) ?? "";
+    const arms = (table.get(model + variant) ?? table.get(model) ?? fallback).split("/");
+    const wire = arms[ctx.homeBaseAttached === true ? arms.length - 1 : 0];
+    return wire === "-" ? undefined : Number(wire);
+  };
 }
+
+/** A camera member offered where its identifier is described and the product's bundle writes it. */
+const offers =
+  (identifier: string, wire: (ctx: AvailabilityContext) => number | undefined) =>
+  (ctx: AvailabilityContext): boolean =>
+    cameraThing(identifier)(ctx) && wire(ctx) !== undefined;
+
+/** `camera_on_off`: 1035, or privacy mode while attached. The T84A1/T81A0 `param_data` wire is not built here. */
+const POWER_WIRE = bundleWires("camera_on_off", "1035", {
+  "1035/6250": "T6310 T8352 T8354 T8400 T8401 T8410 T8411 T8416 T8417 T8419 T8441 T8442 T85M0 T85V0 T8W11 T8W11C",
+  "6250": "T8110 T8110E T814X T8162 T8172",
+  "6090/6250": "T8410C T8414",
+  "1035/-": "T8420 T8452 T8453",
+  "-/1035": "T81A0 T8531",
+  "-": "T7401 T84A1 T8790",
+});
+
+/** Power, privacy and the on/off verbs. */
+const cameraSwitch = offers("camera_on_off", POWER_WIRE);
+
+/**
+ * Bundle-only frames (6090 here; 1026, 1020, 1023, 1286 and 2735 below) stay `unverifiedFor` until a device
+ * answers one.
+ */
+const privacyStatusPower = (ctx: AvailabilityContext): boolean => POWER_WIRE(ctx) === CAMERA_CMD.PRIVACY_MODE_STATUS;
+
+/**
+ * `led_on_off`. 1716 rides the `1350` envelope `{light_enable}` with its default mValue3, so it stays
+ * level-2 only; 1045 is level-1 int+string.
+ */
+const LED_WIRE = bundleWires("led_on_off", "6014/1045", {
+  "1045": "T8028 T8420 T8423 T8452 T8453",
+  "1716": "T8210 T8210C T8213 T8214 T8220 T8221 T8222 T8223 T8224",
+  "1026": "T8200 T8200X T8201 T8201X T8202",
+  "6014": "T8420X T8441 T8442",
+  "6014/-": "T8422 T8424 T8531 T85V0",
+  "-": "T81A0 T84A1 T8790",
+});
+
+/** A C30/C31 or a video lock has reported no 1716, so its LED is read on 1045 whatever it is written on. */
+const doorbellLed = (ctx: AvailabilityContext): boolean => hasCapability(ctx, "doorbell") && !isUntriedDoorbell(ctx);
+
+/** Status LED on the wire {@link LED_WIRE} picks. */
+function statusLedCommand(on: boolean, ctx: CommandContext): Command {
+  const value = on ? 1 : 0;
+  switch (LED_WIRE(ctx)) {
+    case CAMERA_CMD.DOORBELL_LED:
+      return setPayload(CAMERA_CMD.DOORBELL_LED, { light_enable: value }, ctx);
+    case CAMERA_CMD.IC_LED_STATUS:
+      return setJson(CAMERA_CMD.IC_LED_STATUS, { value }, ctx);
+    case CAMERA_CMD.DOORBELL_LED_NIGHT:
+      return setJson(CAMERA_CMD.DOORBELL_LED_NIGHT, { status: value }, ctx);
+    default:
+      return setScalar(CAMERA_CMD.DEV_LED_SWITCH, value, ctx, "int-string");
+  }
+}
+
+/**
+ * `notification_type`: 6020 standalone, 1289 attached. Not built here: the attached doorbells' 1710
+ * object (it carries two other settings), the wired doorbells' 1030 and 6020 `{style}`, the 6020
+ * `{enable,value,status}` and `{value,notification_style}` payloads, and 6338 `param_data`.
+ */
+const NOTIFICATION_WIRE = bundleWires("notification_type", "6020/1289", {
+  "6020": "T8122 T8123 T8124 T8124R T8130 T8131 T817L T8441 T8442",
+  "6020/-": "T8150 T8151 T8214 T8223 T8224 T8420X T8422 T8423 T8424 T8425 T8426 T8452 T8453 T85M0 T85V0",
+  "-":
+    "T8203 T8210 T8210C T8213 T8220 T8221 T8222 T8530 T8200 T8201 T8202 T8200X T8201X T86P2 T8W11 T8531 " +
+    "T7400 T7401 T81A0 T84A1 T8790",
+});
+
+/**
+ * `live_streaming_resolution`: 2730, or 1020 `{quality}`. Not built here: 1705, which the doorbell's
+ * `setVideoQuality` owns as a composite, and 1205 `param_data`.
+ */
+const STREAMING_WIRE = bundleWires("live_streaming_resolution", "2730", {
+  "1020": "T8150 T8151 T8200 T8200X T8201 T8201X T8202 T8420X T8422 T8423 T8424 T8441 T8442 T8452 T8453 T8W11",
+  "1020/2730": "T8400 T8401 T8410 T8410C T8411 T8414 T8W11C",
+  "1020/-": "T8122 T8123 T8124 T8124R T8130 T8131 T8134 T8B00 T8419 T86P2 T8W11C__v1",
+  "2730/-": "T85M0 T85V0",
+  "-": "T8140 T8142 T8160 T8161 T8203 T8210 T8210C T8213 T8220 T8221 T8222 T8531 T81A0 T84A1 T8530 T8790",
+});
+
+/**
+ * The options a resolution identifier lists on this product, wire value (`associatedValue`) → its label,
+ * as the resolved description gives them: the values differ per wire and product (2K is 1 on a 1286
+ * product, 3 on a 2731 one). `undefined` where a listed wire value is missing or repeats.
+ */
+const listedOptions =
+  (identifier: string) =>
+  (ctx: AvailabilityContext): Record<number, string> | undefined => {
+    const members = ctx.things?.properties[identifier]?.members ?? [];
+    const options = Object.fromEntries(members.map((m) => [Number(m.wireValue), m.desc.trim()]));
+    const listed = Object.keys(options);
+    return listed.length && listed.length === members.length && !listed.includes("NaN") ? options : undefined;
+  };
+const recordingOptions = listedOptions("record_resolution");
+
+/** `record_resolution`: 2731, 1023 `{quality}` or 1286 `{record_quality}`. Not built here: 1286 `param_data`. */
+const RECORDING_WIRE = bundleWires("record_resolution", "2731", {
+  "1023":
+    "T8123 T8124 T8124R T8131 T8134 T8150 T8151 T8200 T8200X T8201 T8201X T8202 T8422 T8424 T8441 T8442 T8452 " +
+    "T8453 T8B00 T8W11",
+  "1286": "T8123__v1 T8124__v1 T8124R__v1 T8131__v1 T8134__v1 T8B00__v1 T8140 T8142 T8160 T8161 T8210 T8210C",
+  "1023/2731": "T8400 T8401 T8410 T8410C T8411 T8414 T8419 T8423 T8W11C",
+  "2731/1286": "T8531 T85V0",
+  "1023/1286": "T86P2",
+  "-": "T81A0 T84A1 T8530 T8790",
+});
+
+/** `anti_theft_detection_switch`: 1015, the v3 parser 2735. */
+const ANTI_THEFT_WIRE = bundleWires("anti_theft_detection_switch", "1015", { "2735": "T8172" });
+
+/** `watermark_set`: 1214. Not built here: 9210's encoded `osd_value` and 1214 `param_data`. */
+const WATERMARK_WIRE = bundleWires("watermark_set", "1214", {
+  "-": "T8110 T8110E T814X T81A0 T84A1 T7400 T7401 T8530 T8790",
+});
 
 /**
  * How this camera is powered, as every media egress needs to be told: a battery device is streamed
@@ -593,12 +717,13 @@ export const CAMERA_MEMBERS = {
     param: CAMERA_CMD.CAMERA_ENABLE,
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
-    available: isCameraCodec,
+    provenance: "apk",
+    available: cameraSwitch,
+    unverifiedFor: privacyStatusPower,
     invert: true,
     invertFor: (ctx) => (isT8410HomeBase3(ctx) ? false : undefined),
     readAliases: [{ paramType: 2001, invert: false }],
-    readReflectsWrite: (ctx) => !hasUnreflectedHomeBasePower(ctx) && !hasPrivacyPower(ctx),
+    readReflectsWrite: (ctx) => !hasUnreflectedPower(ctx),
     description:
       "Camera enabled. Family-dependent wire param: 1035 CMD_DEVS_SWITCH (enable bit on T8410/HomeBase 3, " +
       "disable bit on battery/solo cams) or 2001 OPEN_DEVICE (standalone indoor/outdoor). Reported on/off state; " +
@@ -622,7 +747,7 @@ export const CAMERA_MEMBERS = {
     type: "bool",
     kind: "boolean",
     provenance: "apk",
-    available: isCameraCodec,
+    available: cameraThing("rotate_image_180_on_off"),
     description:
       "Rotate the image 180° (ROTATE_IMAGE 1207): false = normal, true = flipped. " +
       "For ceiling/upside-down mounts. Write is a direct param; wire from the app parser (unverified live).",
@@ -640,7 +765,7 @@ export const CAMERA_MEMBERS = {
     kind: "enum",
     enumValues: { 0: "Off", 1: "Timestamp", 2: "Timestamp + Logo" },
     provenance: "verified",
-    available: isCameraCodec,
+    available: offers("watermark_set", WATERMARK_WIRE),
     description:
       "On-screen watermark/OSD overlay (CMD_SET_DEVS_OSD 1214). ✅ wire verified live (T8425 ch3): " +
       "direct-binary [ch][value 0/1/2] — a 3-value enum, not a bool. Enum labels are best-guess.",
@@ -659,7 +784,7 @@ export const CAMERA_MEMBERS = {
     type: "bool",
     kind: "boolean",
     provenance: "verified",
-    available: isCameraCodec,
+    available: cameraThing("sound_detection_status"),
     description:
       "Trigger on sound as well as motion (SOUND_DETECTION 6043). ✅ Write confirmed live on a T8410 " +
       "(mains, standalone, own channel): both directions sent through this member and read back on " +
@@ -678,7 +803,7 @@ export const CAMERA_MEMBERS = {
     type: "number",
     kind: "scalar",
     provenance: "verified",
-    available: isCameraCodec,
+    available: cameraThing("sound_detection_sensitivity"),
     description:
       "Sound-detection sensitivity: 1 = lowest, 3 = mid, 5 = highest (SOUND_DETECTION_SENSITIVITY " +
       "6044). ✅ Write confirmed live on a T8410: 1 and 5 sent consecutively through this member and " +
@@ -700,7 +825,7 @@ export const CAMERA_MEMBERS = {
     kind: "enum",
     enumValues: { 1: "Crying", 2: "All Sound" },
     provenance: "verified",
-    available: isCameraCodec,
+    available: cameraThing("sound_detection_type"),
     description:
       "Which sounds trigger a detection: crying alone, or any sound (SOUND_DETECTION_TYPE 6046). ✅ " +
       "Write confirmed live on a T8410: both values sent consecutively through this member and read " +
@@ -724,18 +849,19 @@ export const CAMERA_MEMBERS = {
     kind: "enum",
     enumValues: { 1: "Text Only", 2: "Included Thumbnail", 3: "Text First, Then Thumbnail" },
     thing: ["notification_type"],
-    provenance: "verified",
-    available: isCameraCodec,
+    provenance: "apk",
+    available: offers("notification_type", NOTIFICATION_WIRE),
     description:
-      "How much a detection push carries: text only, a thumbnail, or text then a thumbnail " +
-      "(CMD_INDOOR_PUSH_NOTIFY_TYPE 6020). All three values wire-verified live on a standalone " +
-      "T8171 over the cloud/WAN path — the 1700 control-payload wrapper, each one read back on the " +
-      "cloud param. A value outside the enum is REJECTED, not clamped: every neighbouring value is a " +
-      "real style, so a bad one would silently select the wrong notification.",
+      "How much a detection push carries: text only, a thumbnail, or text then a thumbnail. Standalone " +
+      "on CMD_INDOOR_PUSH_NOTIFY_TYPE 6020 in the 1700 wrapper, read back on the cloud param; " +
+      "HomeBase-attached on SET_PUSH_EFFECT 1289 " +
+      "{notification_style}, from the product's bundle. A value outside the enum is REJECTED, not " +
+      "clamped: every neighbouring value is a real style, so a bad one would silently select the wrong notification.",
     write: (v, ctx) => {
       const style = coerceEnumValue(NotificationStyle, v);
-      return style == null
-        ? undefined
+      if (style == null) return undefined;
+      return NOTIFICATION_WIRE(ctx) === CAMERA_CMD.PUSH_EFFECT
+        ? setPayload(CAMERA_CMD.PUSH_EFFECT, { notification_style: style }, ctx)
         : setJson(CAMERA_CMD.PUSH_NOTIFY_TYPE, { value: style, transaction: String(Date.now()) }, ctx);
     },
   },
@@ -747,7 +873,7 @@ export const CAMERA_MEMBERS = {
     enumValues: { 0: "Off", 1: "Infrared", 2: "Full Color", 3: "Infrared On" },
     thing: ["nightvision_type_new", "nightvision_type"],
     provenance: "verified",
-    available: isCameraCodec,
+    available: cameraThing("nightvision_type_new", "nightvision_type"),
     readAvailable: (ctx) => !readsNightVisionOn2002(ctx),
     readAliases: [{ paramType: 2002, available: readsNightVisionOn2002 }],
     coerce: (raw) => (raw === "true" ? 1 : raw === "false" ? 0 : Number(raw)),
@@ -774,9 +900,8 @@ export const CAMERA_MEMBERS = {
    * this name would collide with it on a device reporting both.
    *
    * `transaction` is part of the frame that was captured, so it is sent. The recording sibling's own
-   * confirmed frame carries no such field; neither is inferred from the other.
-   *
-   * Not offered where the device reports the doorbell's own live-view quality (1705).
+   * confirmed frame carries no such field; neither is inferred from the other. The options and their
+   * labels are the ones the description lists.
    */
   streamingQuality: {
     param: 1020,
@@ -784,22 +909,23 @@ export const CAMERA_MEMBERS = {
     kind: "enum",
     enumValues: STREAMING_QUALITY_TIERS,
     thing: ["live_streaming_resolution"],
-    provenance: "verified",
-    available: (ctx: AvailabilityContext) =>
-      isCameraCodec(ctx) && !(ctx.paramIds?.has(DOORBELL_CMD.VIDEO_QUALITY) ?? false),
+    provenance: "apk",
+    available: offers("live_streaming_resolution", STREAMING_WIRE),
+    unverifiedFor: (ctx) => STREAMING_WIRE(ctx) === CAMERA_CMD.STREAMING_QUALITY,
     args: [{ name: "quality", kind: "enum", description: "A tier, or the name it maps to. 0 is Auto." }],
     ...accepts<StreamingQualityName>(),
     description:
       "Live-view quality as a tier, 0 = Auto (1020; the write rides 2730 " +
-      "APP_CMD_MULTI_CAM_SET_VIDEO_QUALITY). Distinct from recordingQuality, which is what gets stored. " +
+      "APP_CMD_MULTI_CAM_SET_VIDEO_QUALITY, or 1020 itself where the product's bundle sends it). Distinct from recordingQuality, which is what gets stored. " +
       "All four tiers wire-verified live on a T8170 and read back on 1020. Sent from this SDK to a " +
       "standalone T8170 and T8171, tier 1 holds the live stream at 1280x720 and tier 0 restores the " +
       "camera's own resolution ladder — see CAMERA_CMD.STREAMING_QUALITY_SET. A value outside the tier set is REJECTED, not " +
       "clamped: every tier in range is a real quality, so a bad one would silently pick another.",
     write: (v, ctx) => {
-      const q = resolveStreamingQualityTier(v);
-      return q == null
-        ? undefined
+      const q = optionOf(v, STREAMING_QUALITY_TIERS);
+      if (q == null) return undefined;
+      return STREAMING_WIRE(ctx) === CAMERA_CMD.STREAMING_QUALITY
+        ? setJson(CAMERA_CMD.STREAMING_QUALITY, { quality: q }, ctx)
         : setPayload(
             CAMERA_CMD.STREAMING_QUALITY_SET,
             { channel: 0, mode: 0, primary_view: 0, quality: q, transaction: String(Date.now()) },
@@ -818,36 +944,38 @@ export const CAMERA_MEMBERS = {
   recordingQuality: {
     param: CAMERA_CMD.RECORDING_QUALITY_SET,
     type: "string",
-    provenance: "verified",
-    available: isCameraCodec,
-    decode: (raw) => decodeRecordingQualityTier(raw),
+    provenance: "apk",
+    available: offers("record_resolution", RECORDING_WIRE),
+    unverifiedFor: (ctx) => RECORDING_WIRE(ctx) !== CAMERA_CMD.RECORDING_QUALITY_SET,
+    decode: (raw, _codec, ctx) => decodeRecordingQualityTier(raw, recordingOptions(ctx) ?? RECORDING_QUALITY_TIERS),
     decodedKind: "enum",
     decodedValues: Object.keys(RECORDING_QUALITY_TIERS).map(Number),
-    // Label the decoded tiers so a host can render this as a labelled choice (a dropdown) rather than
-    // a bare number — same shape as `suction` and the sibling `streamingQuality`. `decode` still owns
-    // the value (a tier); these are only the tier→label map, keyed to match `decodedValues`.
     enumValues: RECORDING_QUALITY_TIERS,
+    enumValuesFor: recordingOptions,
     description:
       "RECORDING quality as a tier (2731) — distinct from streamingQuality, which is the live view. " +
       "The device reports the whole config — " +
       "`{cur_mode, mode_<n>:{quality}}`, read live off a T8170 — and the ACTIVE mode's tier is lifted out " +
       "of it on read. ✅ write wire verified live (T8425): 1350 SET_PAYLOAD " +
-      "{channel:0, mode:0, primary_view:0, quality:N}. Tier→label in RECORDING_QUALITY_TIERS / resolveRecordingQuality " +
-      "(verified on T8425; add a per-model map if a model's tiers ever diverge).",
+      "{channel, mode:0, primary_view:0, quality:N}. Tier→label in RECORDING_QUALITY_TIERS / resolveRecordingQuality, " +
+      "or as the product's description lists them. Where the product's bundle sends them instead: 1023 {quality} in the 1700 " +
+      "wrapper, or 1286 {record_quality} in the 1350 envelope.",
     args: [{ name: "quality", kind: "enum", description: "A tier; the resolution name it maps to is accepted too." }],
     ...accepts<RecordingQualityName>(),
     write: (v, ctx) => {
-      const q = resolveRecordingQualityTier(v);
-      return q == null
-        ? undefined
-        : setPayload(
-            CAMERA_CMD.RECORDING_QUALITY_SET,
-            { channel: 0, mode: 0, primary_view: 0, quality: q },
-            ctx,
-            0,
-            undefined,
-            "auto",
-          );
+      const q = optionOf(v, recordingOptions(ctx) ?? RECORDING_QUALITY_TIERS);
+      if (q == null) return undefined;
+      const wire = RECORDING_WIRE(ctx);
+      if (wire === CAMERA_CMD.VIDEO_RECORD_QUALITY) return setJson(wire, { quality: q }, ctx);
+      if (wire === CAMERA_CMD.SET_RECORD_QUALITY) return setPayload(wire, { record_quality: q }, ctx);
+      return setPayload(
+        CAMERA_CMD.RECORDING_QUALITY_SET,
+        { channel: 0, mode: 0, primary_view: 0, quality: q },
+        ctx,
+        0,
+        undefined,
+        "auto",
+      );
     },
   },
   /**
@@ -859,19 +987,23 @@ export const CAMERA_MEMBERS = {
     type: "bool",
     kind: "boolean",
     provenance: "apk",
-    available: isCameraCodec,
+    available: (ctx: AvailabilityContext) =>
+      offers("anti_theft_detection_switch", ANTI_THEFT_WIRE)(ctx) &&
+      (ANTI_THEFT_WIRE(ctx) === CAMERA_CMD.NEW_EAS_SWITCH || hasReportedEasSwitch(ctx)),
+    unverifiedFor: (ctx) => ANTI_THEFT_WIRE(ctx) === CAMERA_CMD.NEW_EAS_SWITCH,
     description:
       "Anti-theft detection on/off (1015 APP_CMD_EAS_SWITCH; the app parses it as " +
-      "anti_theft_detection_switch). Adaptive scalar {value:0|1}. ⚠️ Replay+readback confirmed on a " +
-      "HomeBase-attached T8425 only; standalone unverified and v3 devices use id 2735 — see " +
-      "CAMERA_CMD.EAS_SWITCH.",
-    requires: [CAMERA_CMD.EAS_SWITCH],
-    write: (v, ctx) => setScalar(CAMERA_CMD.EAS_SWITCH, asBool(v) ? 1 : 0, ctx, "auto"),
+      "anti_theft_detection_switch). Adaptive scalar {value:0|1}, or 2735 APP_CMD_NEW_EAS_SWITCH {value} " +
+      "in the 1350 envelope where the product's bundle sends it.",
+    write: (v, ctx) =>
+      ANTI_THEFT_WIRE(ctx) === CAMERA_CMD.NEW_EAS_SWITCH
+        ? setPayload(CAMERA_CMD.NEW_EAS_SWITCH, { value: asBool(v) ? 1 : 0 }, ctx)
+        : setScalar(CAMERA_CMD.EAS_SWITCH, asBool(v) ? 1 : 0, ctx, "auto"),
   },
 
   /**
-   * Privacy mode — the multi-frame burst. Nothing reports it back, so it is a setter with no getter, and
-   * it declares no param: the id the burst is built from is the transport's, not this capability's.
+   * Privacy mode — the product's `camera_on_off` privacy wire, written with the inverse of power, so it
+   * exists only where the bundle sends one. Nothing reports it back, so it is a setter with no getter.
    *
    * Being write-only, it is named by `unobservableMembers(dev.camera())`, which distinguishes "this camera
    * is not in privacy mode" from "this camera cannot say" rather than leaving both as `undefined`. That
@@ -882,9 +1014,11 @@ export const CAMERA_MEMBERS = {
     kind: "boolean",
     writeOnly: true,
     provenance: "verified",
-    available: isCameraCodec,
-    description: "Privacy mode (PRIVACY_MODE 6250) — the multi-frame burst the sink plays.",
-    write: (v, ctx) => privacyCommand(asBool(v), ctx.channel),
+    available: (ctx: AvailabilityContext) => cameraSwitch(ctx) && POWER_WIRE(ctx) !== CAMERA_CMD.CAMERA_ENABLE,
+    unverifiedFor: privacyStatusPower,
+    description:
+      "Privacy mode: camera power written inverted, on the product's privacy wire (6250, or 6090 standalone).",
+    write: (v, ctx) => powerCommand(!asBool(v), ctx),
   },
   /**
    * The same status LED is reported under 1045 on ordinary cameras and 1716 on video doorbells. The
@@ -895,8 +1029,9 @@ export const CAMERA_MEMBERS = {
     param: CAMERA_CMD.DEV_LED_SWITCH,
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
-    available: isCameraCodec,
+    provenance: "apk",
+    available: offers("led_on_off", LED_WIRE),
+    unverifiedFor: (ctx) => LED_WIRE(ctx) === CAMERA_CMD.DOORBELL_LED_NIGHT,
     readAvailable: (ctx) => !doorbellLed(ctx),
     readAliases: [{ paramType: CAMERA_CMD.DOORBELL_LED, available: doorbellLed }],
     requiresRead: true,
@@ -1046,7 +1181,7 @@ export const CAMERA: CapabilityModule = {
   ],
   /** Only the no-argument power verbs, which carry no value for a member to hold. */
   actions({ ctx, sink }: MemberDeps): CapabilityActions {
-    if (!isCameraCodec(ctx)) return {};
+    if (!cameraSwitch(ctx) || privacyStatusPower(ctx)) return {};
     return {
       on: () => sink.dispatch(powerCommand(true, ctx)),
       off: () => sink.dispatch(powerCommand(false, ctx)),
