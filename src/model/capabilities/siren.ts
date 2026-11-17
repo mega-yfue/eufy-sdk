@@ -201,11 +201,11 @@ function selfStationAlarm(seconds: number, ctx: CommandContext): Command {
   };
 }
 
-/** Self-station camera models whose siren was sounded and stopped with {@link selfStationAlarm} on real hardware. */
-const SELF_STATION_ALARM_MODELS: ReadonlySet<string> = new Set([
-  "T8151", // CAMERA_FG
-  "T86P2", // CAMERA_4G_S330
-]);
+/**
+ * Self-station camera models whose siren was sounded and stopped with {@link selfStationAlarm} on real hardware:
+ * T8151 (`CAMERA_FG`) and T86P2 (`CAMERA_4G_S330`).
+ */
+const SELF_STATION_ALARM_MODELS: ReadonlySet<string> = new Set(["T8151", "T86P2"]);
 
 /** Whether this camera is its own station, of a model in {@link SELF_STATION_ALARM_MODELS}. */
 function isSelfStationAlarm(ctx: CommandContext): boolean {

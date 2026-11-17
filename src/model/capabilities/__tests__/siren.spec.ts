@@ -579,7 +579,7 @@ describe("siren capability module", () => {
     });
     it("does not detect standalone siren evidence under a non-sensor codec", () => {
       expect(
-        detectCapabilities({ deviceType: DeviceType.INDOOR_CAMERA_1080, params: { 1825: "3", 61008: "0" } }, "camera"),
+        detectCapabilities({ deviceType: DeviceType.INDOOR_CAMERA, params: { 1825: "3", 61008: "0" } }, "camera"),
       ).not.toContain("siren");
       expect(
         detectCapabilities({ deviceType: DeviceType.HB3, params: { 1825: "3", 61006: "900" } }, "station"),
