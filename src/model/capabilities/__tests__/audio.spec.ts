@@ -1,8 +1,10 @@
-import { AUDIO, AUDIO_CMD, type AudioActions } from "../audio.js";
+import { AUDIO, AUDIO_CMD, AUDIO_MEMBERS, type AudioActions } from "../audio.js";
+import { propertiesOf } from "../members.js";
+import { parseThingsList } from "../thing-description.js";
 import { bind } from "./bind.js";
 import { DeviceType } from "../../device-types.js";
 import { buildCommand, detectCapabilities } from "../index.js";
-import type { CommandContext } from "../types.js";
+import type { AvailabilityContext, CommandContext } from "../types.js";
 import type { Command } from "../../../core/contracts.js";
 
 /**
@@ -19,6 +21,11 @@ const ctx = (channel = 0, extra: Partial<CommandContext> = {}): CommandContext =
   paramIds: new Set<number>(),
   ...extra,
 });
+/** A description listing `ids`, as the things service gives one per product. */
+const things = (...ids: string[]) =>
+  parseThingsList({
+    things_list: [{ profile: { product_code: "T0000" }, properties: ids.map((identifier) => ({ identifier })) }],
+  }).T0000!;
 
 describe("audio capability module", () => {
   it("declares the mic/speaker/volume schema", () => {
@@ -72,9 +79,10 @@ describe("audio capability module", () => {
       );
     });
 
-    it("audioRecording → 1350 set-payload {channel, record_mute} on the device ch, INVERTED (on ⇒ mute 0)", () => {
+    it("audioRecording on a HomeBase → 1350 set-payload {channel, record_mute}, INVERTED (on ⇒ mute 0)", () => {
       // Reversed from a live capture on T8425 (ch3): key is `record_mute`, inverted.
-      expect(buildCommand("audioRecording", true, ctx(3))).toMatchObject({
+      const attached = ctx(3, { homeBaseAttached: true });
+      expect(buildCommand("audioRecording", true, attached)).toMatchObject({
         kind: "set-payload",
         cmd: AUDIO_CMD.AUDIO_RECORDING, // 1288
         channel: 3,
@@ -82,8 +90,40 @@ describe("audio capability module", () => {
         payload: { channel: 3, record_mute: 0 },
       });
       expect(
-        (buildCommand("audioRecording", false, ctx(3)) as Extract<Command, { kind: "set-payload" }>).payload,
+        (buildCommand("audioRecording", false, attached) as Extract<Command, { kind: "set-payload" }>).payload,
       ).toEqual({ channel: 3, record_mute: 1 });
+    });
+    it("audioRecording standalone → 1700/6012 {enable}", () => {
+      expect(buildCommand("audioRecording", true, ctx(0, { homeBaseAttached: false }))).toEqual({
+        kind: "set-json",
+        param: 6012,
+        data: { enable: 1 },
+        channel: 0,
+      });
+    });
+    it.each([
+      ["T8200", false, { paramType: 2042, readAliases: [] }],
+      ["T8420", true, { paramType: 1366, invert: true, readAliases: [] }],
+      ["T8441", true, { paramType: 1288, invert: false }],
+      ["T8452", false, { paramType: 1288, invert: false, readAliases: [] }],
+    ])(
+      "audioRecording on %s (attached %s) reads its bundle's wire but has no setter until a device confirms it",
+      (model, homeBaseAttached, read) => {
+        const c = ctx(2, { model, homeBaseAttached, things: things("audio_recording_on_off") });
+        expect(bind<AudioActions>("audio", c).acts.setAudioRecording).toBeUndefined();
+        expect(() => buildCommand("audioRecording", true, c)).toThrow(/audioRecording write wire unverified/);
+        const props = propertiesOf(AUDIO_MEMBERS, { codec: "camera", model, homeBaseAttached } as AvailabilityContext);
+        expect(props.find((p) => p.name === "audioRecording")).toMatchObject(read);
+      },
+    );
+    it("audioRecording on a standalone T8441 keeps its 6012 setter", () => {
+      const c = ctx(2, { model: "T8441", homeBaseAttached: false, things: things("audio_recording_on_off") });
+      expect(buildCommand("audioRecording", true, c)).toMatchObject({ param: 6012, data: { enable: 1 } });
+    });
+    it("audioRecording is withheld where the bundle sends 1288 inside 1700, or nothing", () => {
+      const desc = things("audio_recording_on_off");
+      for (const model of ["T81A0", "T84A1", "T8790"])
+        expect(bind<AudioActions>("audio", ctx(0, { model, things: desc })).acts.setAudioRecording).toBeUndefined();
     });
     it("audioRecording property is inverted (raw 1288 = record_mute)", () => {
       const p = AUDIO.properties.find((x) => x.name === "audioRecording");
@@ -106,6 +146,18 @@ describe("audio capability module", () => {
       { kind: "set-param", param: 1241, value: 1, form: "direct-binary", channel: 3 },
       { kind: "set-param", param: 1230, value: 40, form: "direct-binary", channel: 3 },
     ]);
+  });
+
+  it("offers each camera control only where the product's description lists it", () => {
+    const ids = ["microphone_on_off", "speaker_on_off", "speaker_volume", "audio_recording_on_off"];
+    const setters = (c: CommandContext) => {
+      const a = bind<AudioActions>("audio", c).acts;
+      return [a.setMicrophone, a.setSpeaker, a.setVolume, a.setAudioRecording].map((f) => typeof f);
+    };
+    expect(setters(ctx(0, { things: things() }))).toEqual(Array(4).fill("undefined"));
+    expect(setters(ctx(0, { things: things(...ids) }))).toEqual(Array(4).fill("function"));
+    expect(setters(ctx(0, { codec: "lock", things: things(...ids) }))).toEqual(Array(4).fill("undefined"));
+    expect(setters(ctx())).toEqual(Array(4).fill("function"));
   });
 
   describe("station (HomeBase) voice-prompt audio", () => {

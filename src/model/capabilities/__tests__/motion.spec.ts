@@ -10,7 +10,8 @@ import type { MotionActions } from "../motion.js";
 
 import type { CommandContext } from "../types.js";
 import type { Command } from "../../../core/contracts.js";
-import { buildActions, buildCommand } from "../index.js";
+import { buildActions, buildCommand, describeCapabilities } from "../index.js";
+import { parseThingsList } from "../thing-description.js";
 import { Device } from "../../device.js";
 import { resolveDevice } from "../../registry.js";
 
@@ -343,6 +344,43 @@ describe("motion capability module", () => {
       expect(caps({ params: { 1011: "1" } })).toContain("motion");
       expect(caps({ params: {}, name: "Glass Break Sensor" })).not.toContain("motion");
     });
+  });
+});
+
+/** Where the product's thing description is held, it rather than the codec says which family a device is. */
+describe("motion — the thing description over the codec", () => {
+  const things = (properties: string[], actions: string[] = []) =>
+    parseThingsList({
+      things_list: [
+        {
+          profile: { product_code: "T0000" },
+          properties: properties.map((identifier) => ({ identifier })),
+          actions: actions.map((identifier) => ({ identifier })),
+        },
+      ],
+    }).T0000!;
+
+  it("claims and admits writes by the identifiers the description lists", async () => {
+    const pet = (description?: ReturnType<typeof things>) =>
+      describeCapabilities(
+        buildActions(["motion"], {
+          ctx: { ...ctx([1011]), things: description },
+          sink: { dispatch: async () => undefined },
+          read: () => undefined,
+        }),
+        {
+          codec: "camera",
+          capabilities: new Set(["motion"]),
+          things: description,
+        },
+      )[0]!.events.includes("petDetection");
+    expect(pet()).toBe(true);
+    expect(pet(things(["detection_type_set"]))).toBe(true);
+    expect(pet(things(["motion_detection_status"]))).toBe(false);
+
+    const sensorDescribed = { ...ctx([]), things: things([], ["sensor_entry_test_mode"]) };
+    await expect(bindMotion(sensorDescribed).setTestMode(true)).resolves.toBeUndefined();
+    await expect(bindMotion(sensorDescribed).setDetection(true)).rejects.toThrow(/verified only on a camera/);
   });
 });
 

@@ -91,10 +91,18 @@ describe.each([
     expect(Object.keys(acts).filter((k) => /^(set|play)/.test(k))).toEqual([]);
     expect(bind<AudioActions>("audio", dev).acts.setRingtoneVolume).toBeUndefined();
   });
+});
 
-  it("keeps the status LED on the generic 1045 wire", async () => {
-    const { acts, sent } = bind<CameraActions>("camera", dev);
-    await acts.setStatusLed!(true);
-    expect(sent).toEqual([expect.objectContaining({ param: CAMERA_CMD.DEV_LED_SWITCH, value: 1 })]);
-  });
+it("T8224 writes the status LED on 1716, as its bundle does", async () => {
+  const c30: CommandContext = {
+    channel: 0,
+    codec: "camera",
+    deviceType: 95,
+    model: "T8224",
+    paramIds: new Set([CAMERA_CMD.DEV_LED_SWITCH]),
+    capabilities: new Set(["camera", "audio", "doorbell"]),
+  };
+  const { acts, sent } = bind<CameraActions>("camera", c30);
+  await acts.setStatusLed!(true);
+  expect(sent).toEqual([expect.objectContaining({ cmd: CAMERA_CMD.DOORBELL_LED, payload: { light_enable: 1 } })]);
 });

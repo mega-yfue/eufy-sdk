@@ -24,6 +24,7 @@ const HOST = "mtalk.google.com";
 const PORT = 5228;
 const MCS_VERSION = 41;
 const HEARTBEAT_MS = 5 * 60 * 1000;
+const SILENCE_MS = HEARTBEAT_MS + 60 * 1000;
 
 function readNullTerminated(buf: Buffer): string {
   const i = buf.indexOf(0);
@@ -116,6 +117,8 @@ export class PushClient extends EventEmitter {
   private persistentIds: string[] = [];
   private loggedIn = false;
   private closing = false;
+  /** Timestamp (ms) of the last inbound MCS frame — the liveness signal the heartbeat checks. */
+  private lastRxMs = 0;
   /** Consecutive MCS login rejections — transient ones self-heal via reconnect (see {@link onMessage}). */
   private loginFailures = 0;
   /**
@@ -205,6 +208,7 @@ export class PushClient extends EventEmitter {
   }
 
   private onMessage(m: McsMessage): void {
+    this.lastRxMs = Date.now();
     switch (m.tag) {
       case MessageTag.LoginResponse:
         if (m.object?.error) {
@@ -291,10 +295,22 @@ export class PushClient extends EventEmitter {
     if (event) this.emit("push", event);
   }
 
+  /**
+   * Ping on an interval, and detect a half-open socket. MCS answers every `HeartbeatPing` with a
+   * `HeartbeatAck`, so {@link SILENCE_MS} with no inbound frame means the link is dead (a write to a
+   * half-open socket does not error for a long time, often never). We close it so {@link onClose}
+   * reconnects, rather than keep writing pings into the void.
+   */
   private startHeartbeat(): void {
     this.stopHeartbeat();
     this.heartbeatTimer = setInterval(() => {
-      if (this.socket && this.loggedIn) this.socket.write(this.buildHeartbeatPing());
+      if (!this.socket || !this.loggedIn) return;
+      if (Date.now() - this.lastRxMs >= SILENCE_MS) {
+        this.logger.debug("[push] no inbound within a heartbeat window — reconnecting");
+        this.socket.destroy();
+        return;
+      }
+      this.socket.write(this.buildHeartbeatPing());
     }, HEARTBEAT_MS);
   }
   private stopHeartbeat(): void {

@@ -51,6 +51,7 @@ import { type DpCatalog, EMPTY_DP_CATALOG, parseDpCatalog } from "../model/capab
 import { type CleanRecordPage, EMPTY_CLEAN_RECORD_PAGE, parseCleanRecords } from "../model/clean-records.js";
 import {
   commandObservation,
+  commandReflection,
   LiveSnapshotUnavailableError,
   StateConvergenceError,
   type Command,
@@ -449,6 +450,7 @@ export class EufyMega extends EventEmitter {
     this.rtc = new RtcCommandRouter({
       identity: () => this.mega.rtcIdentity(),
       shard: (route) => (route.mediaTrack ? this.mega.rtcShard : this.mega.portalShard()),
+      estimates: async () => ({ phone: this.mega.rtcShard, web: await this.mega.portalShard() }),
       country: opts.countryCode,
       logger: opts.logger,
       ffmpegPath: opts.ffmpegPath,
@@ -1192,7 +1194,7 @@ export class EufyMega extends EventEmitter {
       dispatch: async (cmd: Command) => {
         const observation = commandObservation(cmd);
         if (!observation) {
-          await this.routeCommand(sn, cmd);
+          await this.routeAndReflect(sn, cmd);
           return;
         }
         const key = this.eventRefreshKey(sn, observation);
@@ -1220,7 +1222,7 @@ export class EufyMega extends EventEmitter {
         const transaction = this.enqueueStateTransition(key, async () => {
           try {
             if (epoch !== this.realtimeEpoch) throw new Error("observed command superseded by disconnect");
-            await this.routeCommand(sn, cmd);
+            await this.routeAndReflect(sn, cmd);
             acknowledge();
             const refreshed = await this.refreshEventState(sn, observation);
             if (!refreshed || epoch !== this.realtimeEpoch) return;
@@ -1313,6 +1315,18 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
+   * Route a command and, when the device answered it with success, land the value it now holds under the
+   * param its member reads ({@link commandReflection}) through the realtime path, so the getter reads it and
+   * `propertyChanged` announces it as for any report. A write sent unread, refused or unanswered changes
+   * nothing here.
+   */
+  private async routeAndReflect(sn: string, cmd: Command): Promise<void> {
+    if ((await this.routeCommand(sn, cmd)) !== true) return;
+    const reflected = commandReflection(cmd);
+    if (reflected) this.applyRealtimeState(sn, { [reflected.param]: reflected.raw });
+  }
+
+  /**
    * Choose the transport stack for one command — the routing half of {@link commandSinkFor}.
    *
    * The `ff09-*` kinds share ONE frame that rides either transport, so each stack is asked whether it
@@ -1329,7 +1343,7 @@ export class EufyMega extends EventEmitter {
    * relay candidates; T9000 retains compact SDP and relay-only candidates. A call doorbell's route serves
    * media only, and the RTC router refuses a command on it. Everything else is P2P.
    */
-  private routeCommand(sn: string, cmd: Command): Promise<void> {
+  private routeCommand(sn: string, cmd: Command): Promise<boolean | void> {
     if (
       cmd.kind === "ff09-actuate" ||
       cmd.kind === "ff09-autolock" ||
@@ -2387,7 +2401,8 @@ export class EufyMega extends EventEmitter {
    * `(name, value)` — the module owns how THIS device applies it. No `(name, value)` recipe → the
    * device doesn't support the property, so we throw {@link CapabilityNotSupportedError} rather than
    * a silent no-op. On success the device echoes the new state back as a param update — read it with
-   * {@link getDevice} to confirm.
+   * {@link getDevice} to confirm. A P2P write the router awaits, at either level, settles on the device's
+   * answer and rejects with a `CommandResultError` when the device refuses it or does not answer.
    *
    * @param sn device serial.
    * @param name property name (e.g. "light", "brightness", "enabled").
@@ -2403,12 +2418,12 @@ export class EufyMega extends EventEmitter {
     // WRITE path. Every property resolves through the
     // capability modules: the module picks the right command variant for THIS device (JSON control
     // vs direct-binary vs burst, which param id), and the sink routes it to the transport
-    // (HomeBase-vs-standalone handled downstream). No cascade. P2P write is fire-and-forget, so a
+    // (HomeBase-vs-standalone handled downstream). No cascade. Not every P2P write is answered, so a
     // missing recipe must throw, not silently no-op.
     const ctx = await this.commandContext(sn);
     const cmd = buildCapabilityCommand(name, value, ctx);
     // No module produced a command for this (device, action) → the device doesn't support it.
-    // Throw instead of silently no-op'ing (the P2P write path is fire-and-forget).
+    // Throw instead of silently no-op'ing.
     if (!cmd) throw new CapabilityNotSupportedError(sn, name);
     await this.commandSinkFor(sn).dispatch(cmd);
   }

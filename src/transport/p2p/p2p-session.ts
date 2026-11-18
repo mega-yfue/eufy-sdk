@@ -296,10 +296,12 @@ const CMD_SET_PAYLOAD = 1350;
 /** CMD_NOTIFY_PAYLOAD (1351) — the station's unsolicited JSON notification. */
 const CMD_NOTIFY_PAYLOAD = 1351;
 /**
- * The one reply body read for a result code besides the bare four-byte int32: a `CMD_SET_PAYLOAD` answer of
- * exactly this many bytes on a sign-code-0 frame, the int32 LE code in its first four. The rest is whatever
- * the device's reply buffer held: unspecified and is not examined. The sign code is what admits the read —
- * a sign-code-0 body is plaintext as sent, never ciphertext the decrypt could not open.
+ * The one reply body read for a result code besides the bare four-byte int32: a `CMD_SET_PAYLOAD` or
+ * `CMD_CONTROL_PAYLOAD` answer of exactly this many bytes on a sign-code-0 frame, the int32 LE code in its
+ * first four. A standalone camera answers its level-1 and level-2 writes on both wrappers this way, in the
+ * clear, as captured from the vendor app. The rest is whatever the device's reply buffer held: unspecified
+ * and is not examined. The sign code is what admits the read — a sign-code-0 body is plaintext as sent,
+ * never ciphertext the decrypt could not open.
  */
 const PADDED_RESULT_BYTES = 132;
 /**
@@ -321,7 +323,7 @@ const LEVEL2_SEQ_BASE = 0x01020300;
 export interface P2PSessionConfig {
   stationSn: string;
   p2pDid: string;
-  /** Cloud lookup servers (decodeP2PCloudIPs of the station's p2p_conn/app_conn). */
+  /** Cloud lookup servers (the station record's `app_conn`, else `p2p_conn`: {@link stationCloudAddresses}). */
   cloudAddresses?: Address[];
   /** DSK key for the cloud-lookup payload. Optional — local lookup needs none. */
   dskKey?: string;
@@ -614,6 +616,11 @@ export class P2PSession extends EventEmitter {
   private clearCommandCount = 0;
   private readonly unackedLiveStarts = new Map<number, RetainedDatagram & { channel: number }>();
   private liveStartRetransmitTimer?: ReturnType<typeof setInterval>;
+  /** Datagrams sent through {@link sendAcknowledged} and not yet acknowledged, keyed by sequence number. */
+  private readonly unackedCommands = new Map<number, RetainedDatagram>();
+  private commandRetransmitTimer?: ReturnType<typeof setInterval>;
+  /** The DATA datagrams sent while a {@link sendAcknowledged} call runs its send. */
+  private capturedCommands?: Buffer[];
 
   private readonly logger: Logger;
 
@@ -904,6 +911,11 @@ export class P2PSession extends EventEmitter {
 
   get isConnected(): boolean {
     return this.connected;
+  }
+
+  /** Whether {@link close} has run since the last {@link connect}: this session will not connect again on its own. */
+  get isClosed(): boolean {
+    return this.closed;
   }
 
   /**
@@ -1268,8 +1280,7 @@ export class P2PSession extends EventEmitter {
     // Hole-punch the reported port and a small neighbourhood (NAT remapping).
     this.send(addr, RequestMessageType.CHECK_CAM, payload, socket);
     for (let p = addr.port - 3; p <= addr.port + 3; p++)
-      if (p !== addr.port && p > 0)
-        this.send({ host: addr.host, port: p }, RequestMessageType.CHECK_CAM, payload, socket);
+      if (p !== addr.port) this.send({ host: addr.host, port: p }, RequestMessageType.CHECK_CAM, payload, socket);
   }
 
   /** Bind additional UDP source ports before the first cloud lookup. */
@@ -1578,6 +1589,47 @@ export class P2PSession extends EventEmitter {
       if (!outstanding) this.clearLiveStartRetransmit();
     }, LIVE_START_RETRANSMIT_MS / 2);
     this.liveStartRetransmitTimer.unref?.();
+  }
+
+  /**
+   * Run `send` and repeat each DATA datagram it emits, byte-identically under its own sequence number, until
+   * the device acknowledges that sequence — the delivery the vendor app's transport gives every command (see
+   * {@link LIVE_START_RETRANSMIT_MS} for the measurement). A copy goes out only while the sequence is
+   * unacknowledged. The device answers a sequence once, however many copies arrive, and `onData` drops the
+   * repeats of that answer by their sequence. Repeats run on the live-start timing and stop at
+   * {@link LIVE_START_ACK_DEADLINE_MS}. Answers what `send` answered.
+   */
+  sendAcknowledged(send: () => boolean): boolean {
+    this.capturedCommands = [];
+    let sent: boolean;
+    let captured: Buffer[];
+    try {
+      sent = send();
+    } finally {
+      captured = this.capturedCommands;
+      this.capturedCommands = undefined;
+    }
+    const now = Date.now();
+    for (const data of captured) {
+      this.unackedCommands.set(data.readUInt16BE(2), { data, firstSentAt: now, sentAt: now, sends: 1 });
+    }
+    if (this.unackedCommands.size && !this.commandRetransmitTimer) {
+      this.commandRetransmitTimer = setInterval(() => {
+        const outstanding = this.retransmitUnacked(this.unackedCommands, {
+          retransmitMs: LIVE_START_RETRANSMIT_MS,
+          spent: (held) => Date.now() - held.firstSentAt >= LIVE_START_ACK_DEADLINE_MS,
+          onAbandoned: () => {},
+        });
+        if (!outstanding) this.clearCommandRetransmit();
+      }, LIVE_START_RETRANSMIT_MS / 2);
+      this.commandRetransmitTimer.unref?.();
+    }
+    return sent;
+  }
+
+  private clearCommandRetransmit(): void {
+    clearInterval(this.commandRetransmitTimer);
+    this.commandRetransmitTimer = undefined;
   }
 
   private clearLiveStartRetransmit(): void {
@@ -1940,8 +1992,10 @@ export class P2PSession extends EventEmitter {
         if (this.unackedLiveStarts.delete(sequence)) {
           this.trace({ phase: "media-command-ack", action: "start" });
         }
+        this.unackedCommands.delete(sequence);
       }
       if (!this.unackedLiveStarts.size) this.clearLiveStartRetransmit();
+      if (!this.unackedCommands.size) this.clearCommandRetransmit();
       return;
     }
     if (msg[5] !== P2PDataType.VIDEO) return;
@@ -2639,6 +2693,9 @@ export class P2PSession extends EventEmitter {
    * cipher-key resolver is configured, the key of the reply's own header version is not held (the app holds the
    * ECC and the RSA key apart) and no negotiation is in flight, the reply starts one (async, fire-and-forget);
    * a reply landing while one is in flight is ignored.
+   *
+   * A `CMD_DATABASE` (1306) reply opened with the session key is emitted as that opened text; a level-1 pass
+   * over its raw bytes would be noise.
    */
   private handleFrame(header: P2PDataFrameHeader, payload: Buffer, dataType: number): void {
     let data = payload;
@@ -2649,11 +2706,15 @@ export class P2PSession extends EventEmitter {
     const isMedia = header.commandId === CMD_VIDEO_FRAME || header.commandId === CMD_AUDIO_FRAME;
     // signCode 2/8 → level-2 gateway frame (AES-256-GCM, negotiated key). Try that first
     // when a level-2 key is set; otherwise fall through to the level-1 path.
+    let openedLevel2 = false;
     if (isMedia) {
       /* leave raw */
     } else if ((header.signCode === 2 || header.signCode === 8) && this.level2Key) {
       const dec = this.decryptLevel2(payload, header.signCode);
-      if (dec) data = dec;
+      if (dec) {
+        data = dec;
+        openedLevel2 = true;
+      }
     } else if (header.signCode > 0 && data.length > 0 && data.length % 16 === 0) {
       // signCode 1 → AES-128-ECB with the derivable Level-1 key (control notifications,
       // and many DATA notifications).
@@ -2670,10 +2731,12 @@ export class P2PSession extends EventEmitter {
       const held = header.version === 8 ? this.level2Key : this.level2EcbKey;
       if (!held && !this.level2Negotiating && this.cfg.resolveCipherKey) this.negotiateLevel2Key(data, header.version);
     }
-    // CMD_DATABASE (1306) reply chunks are level-1 encrypted but NOT 16-aligned
-    // (a trailing byte past the block boundary), so decrypt the block-aligned head
-    // and emit the JSON-ish text fragment for the caller to accumulate/parse.
-    if (header.commandId === CMD_DATABASE && header.signCode > 0) {
+    if (header.commandId === CMD_DATABASE && openedLevel2) {
+      this.emit("dbChunk", { stationSn: this.cfg.stationSn, text: data.toString("latin1") });
+    } else if (header.commandId === CMD_DATABASE && header.signCode > 0) {
+      // Otherwise the reply chunks are level-1 encrypted but NOT 16-aligned
+      // (a trailing byte past the block boundary), so decrypt the block-aligned head
+      // and emit the JSON-ish text fragment for the caller to accumulate/parse.
       const n = payload.length - (payload.length % 16);
       if (n >= 16) {
         try {
@@ -2745,15 +2808,24 @@ export class P2PSession extends EventEmitter {
     // test alone would read its first word and report a fabricated code for a command whose answer
     // was never recovered. Media is excluded because its bodies are never control plaintext.
     const paddedResult =
-      header.commandId === CMD_SET_PAYLOAD && header.signCode === 0 && data.length === PADDED_RESULT_BYTES;
+      (header.commandId === CMD_SET_PAYLOAD || header.commandId === CMD_CONTROL_PAYLOAD) &&
+      header.signCode === 0 &&
+      data.length === PADDED_RESULT_BYTES;
     if (!isMedia && !frame.json && (data.length === 4 || paddedResult)) {
-      this.emit("commandResult", { code: data.readInt32LE(0), channel: header.channel });
+      this.emit("commandResult", { code: data.readInt32LE(0), channel: header.channel, commandId: header.commandId });
     }
     this.emit("data", frame);
   }
 
+  /** Skips a port outside 1..65535 like a failed send; dgram would throw on it, uncaught in the message listener. */
   private send(addr: Address, type: Buffer, payload?: Buffer, socket = this.socket, done?: () => void): void {
     if (!socket) return;
+    if (addr.port < 1 || addr.port > 65535) {
+      this.logger.debug(`[p2p] send skipped ${addr.host}:${addr.port}: not a UDP port`);
+      done?.();
+      return;
+    }
+    if (type === RequestMessageType.DATA && payload) this.capturedCommands?.push(payload);
     const packet = frameMessage(type, payload);
     socket.send(packet, addr.port, addr.host, (err) => {
       if (err) this.logger.warn(`[p2p] send err ${addr.host}:${addr.port}`, err.message);
@@ -2784,6 +2856,8 @@ export class P2PSession extends EventEmitter {
     if (this.liveStartRetransmitTimer) clearInterval(this.liveStartRetransmitTimer);
     this.liveStartRetransmitTimer = undefined;
     this.unackedLiveStarts.clear();
+    this.clearCommandRetransmit();
+    this.unackedCommands.clear();
     this.resetInboundSequencing();
     const socket = this.socket;
     if (socket && this.connectAddress) {

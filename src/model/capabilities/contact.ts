@@ -2,7 +2,8 @@ import { CusPushEvent } from "../push-events.js";
 import { asBool, coerceEnumValue, enumLabels } from "../../core/util.js";
 import { setScalar, setPayload } from "./access.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
-import type { AvailabilityContext, CapabilityEvent, CapabilityModule, InboundSignal } from "./types.js";
+import { described } from "./thing-description.js";
+import type { CapabilityEvent, CapabilityModule, InboundSignal } from "./types.js";
 
 /**
  * The entry sensor's own command/param ids, each the app's own (`APP_CMD_*` in the product's settings
@@ -45,15 +46,6 @@ const ALARM_TONES = { None: 0, Water: 1, Classics: 2, Light: 3, Ding: 4 } as con
 /** Alarm volume bounds (`alarm_volume_value`: min 1, max 26, a device level, not a percentage). */
 const ALARM_VOLUME_MIN = 1;
 const ALARM_VOLUME_MAX = 26;
-
-/**
- * Whether the product's description lists `identifier`. With no description fetched the member stays,
- * so a missing cloud reply never hides what the device reports.
- */
-const described =
-  (identifier: string) =>
-  (ctx: AvailabilityContext): boolean =>
-    !ctx.things || identifier in ctx.things.properties;
 
 /**
  * Read one param out of a sensor-status notify, or `undefined` when this signal isn't one / doesn't

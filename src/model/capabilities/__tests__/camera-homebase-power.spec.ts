@@ -48,14 +48,15 @@ describe("T8410 power on HomeBase 3", () => {
     expect(unreflectedMembers(acts)).toEqual(["enabled"]);
   });
 
-  it.each([
-    { firmwareVersion: "2.3.1", kind: "set-payload" },
-    { firmwareVersion: "2.3.10.0", kind: "set-payload" },
-    { firmwareVersion: "2.3.0.9", kind: "set-param" },
-    { firmwareVersion: "unknown", kind: "set-param" },
-  ])("keeps the version gate for $firmwareVersion", ({ firmwareVersion, kind }) => {
-    expect(buildCommand("enabled", true, context({ firmwareVersion }))).toMatchObject({ kind });
-  });
+  it.each(["2.3.0.9", "unknown", undefined])(
+    "sends 6250 whatever the firmware (%s), as its bundle does",
+    (firmwareVersion) => {
+      expect(buildCommand("enabled", true, context({ firmwareVersion }))).toMatchObject({
+        kind: "set-payload",
+        cmd: 6250,
+      });
+    },
+  );
 
   it.each([true, false])("reads startup enabled=%s with the attached enable-bit polarity", (enabled) => {
     const device = Device.fromRecord("T8410P0000000000", {
@@ -80,7 +81,10 @@ describe("T8410 power on HomeBase 3", () => {
     const read = () => ({ value: false });
     const unreflected = bind<CameraActions>("camera", context(), { media, read }).acts;
     expect((await unreflected.snapshotLive!()).jpeg).toEqual(Buffer.from("jpeg"));
-    const reflected = bind<CameraActions>("camera", context({ firmwareVersion: "2.2.9.0" }), { media, read }).acts;
+    const reflected = bind<CameraActions>("camera", context({ paramIds: new Set([CAMERA_CMD.CAMERA_ENABLE, 2001]) }), {
+      media,
+      read,
+    }).acts;
     await expect(reflected.snapshotLive!()).rejects.toBeInstanceOf(CameraDisabledError);
   });
 });

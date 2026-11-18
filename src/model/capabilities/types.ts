@@ -53,15 +53,15 @@ export interface DetectionSpec {
  * `display` (the T87Ax Smart Display — secure MQTT, never P2P, its own 8001-8006 param space).
  * They overlap in retail vocabulary but share no wire, no param space and no semantics.
  *
- * `display` is a line of its own for the second of those reasons rather than the first: without it,
- * every security capability detected by a NAME regex is attachable to a Smart Display — measured at six,
- * on a device that can answer for none of them because it speaks no P2P at all. A line holding one
- * capability still buys that, which is why the count is not the measure of whether a line is worth
- * declaring.
+ * `display` and `tracker` are lines of their own for the second of those reasons rather than the first:
+ * without them, every security capability detected by a NAME regex is attachable to a Smart Display (the
+ * T87Ax) or a SmartTrack tracker (the T87Bx) — devices that speak no P2P and can answer for none of them
+ * (measured at six, on the Display). A line holding one capability still buys that, which is why the
+ * count is not the measure of whether a line is worth declaring.
  *
  * `any` is for the handful of capabilities that are genuinely line-independent (device identity).
  */
-export type ProductLine = "security" | "life" | "clean" | "print" | "display" | "any";
+export type ProductLine = "security" | "life" | "clean" | "print" | "display" | "tracker" | "any";
 
 /**
  * A structural subset of a P2P frame. Deliberately NOT `import`ed from `p2p/*` — keeping it
