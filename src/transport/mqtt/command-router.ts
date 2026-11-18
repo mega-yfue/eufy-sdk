@@ -51,10 +51,6 @@ import { dpPresetFields, dpLevelFields, type DpPresetSpec } from "../dp-preset.j
 import { dpColorFields } from "./dp-color.js";
 import { buildCleanDpEnvelope } from "./clean-codec.js";
 
-/** The app's `snToPn` fallback for a lock serial: the T8520 range splits on its 7th character. */
-const pnFromSerial = (sn: string): string =>
-  sn.startsWith("T8520") ? ({ "8": "T8510P", "9": "T8520P" }[sn.charAt(6)] ?? "T8520") : sn.slice(0, 5);
-
 /**
  * The ff09 command topic — always the `eufy_security` scope, regardless of the device's own category
  * (garage/standalone lock records aren't necessarily `eufy_security`-categorized, but this is the one
@@ -343,12 +339,31 @@ export class MqttCommandRouter {
 
   /**
    * The record with `model` set to the product number `ff09` topics name: `device_new_pn`, else the app's
-   * serial-derived fallback, never `device_model` (a C30 reports `T85D0C` and answers only on `T85D0`).
+   * serial-derived fallback ({@link pnFromSerial}), never `device_model` (a C30 reports `T85D0C` and answers only on `T85D0`).
    */
   private async ff09DeviceFor(sn: string): Promise<EufyDevice> {
     const dev = await this.deviceFor(sn);
     const pn = (dev.raw as { device_new_pn?: unknown } | undefined)?.device_new_pn;
-    return { ...dev, model: typeof pn === "string" && pn ? pn : pnFromSerial(sn) };
+    return { ...dev, model: typeof pn === "string" && pn ? pn : await this.pnFromSerial(sn) };
+  }
+
+  /** `get_pn_by_sn` answers per serial, kept like the app's `DevicePnCache`: a failed call keeps `""`. */
+  // ponytail: in-memory, so a restart asks again; the app persists it.
+  private readonly cloudPn = new Map<string, string>();
+
+  /**
+   * The app's `snToPn` fallback: the T8520 range splits on its 7th character, any other serial asks the
+   * cloud's `get_pn_by_sn`, and an empty answer takes the serial's first five characters.
+   */
+  private async pnFromSerial(sn: string): Promise<string> {
+    if (sn.startsWith("T8520")) return { "8": "T8510P", "9": "T8520P" }[sn.charAt(6)] ?? "T8520";
+    if (!this.cloudPn.has(sn)) {
+      const res = await this.deps.mega
+        .post<{ pn?: unknown }>("things", "/app/things/get_pn_by_sn", { device_sn: sn })
+        .catch(() => undefined);
+      this.cloudPn.set(sn, typeof res?.pn === "string" ? res.pn : "");
+    }
+    return this.cloudPn.get(sn) || sn.slice(0, 5);
   }
 
   /**
