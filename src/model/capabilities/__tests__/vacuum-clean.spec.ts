@@ -1836,3 +1836,38 @@ describe("mop_mode — two scalars in one wrapper", () => {
     expect(named).toEqual(["cleanType"]);
   });
 });
+
+describe("Tuya current-map room cleaning", () => {
+  it.each(["T2276", "T2266", undefined])("offers the control for %s with the reported DP", async (model) => {
+    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(model, "eufy_home_tuya", new Set([124])));
+    const before = Date.now();
+    await acts.cleanCurrentMapRooms!([0, 3]);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ kind: "aiot-dp", dp: 124 });
+    const request = JSON.parse(Buffer.from(String((sent[0] as { value: unknown }).value), "base64").toString());
+    expect(request).toEqual({
+      method: "selectRoomsClean",
+      data: { roomIds: [0, 3], cleanTimes: 1 },
+      timestamp: expect.any(Number),
+    });
+    expect(request.timestamp).toBeGreaterThanOrEqual(before);
+    expect(request.timestamp).toBeLessThanOrEqual(Date.now());
+  });
+
+  it("requires Tuya and its map-operation DP", () => {
+    for (const ctx of [fakeCtx(undefined, "eufy_home_tuya"), fakeCtx(undefined, "eufy_home", new Set([124]))]) {
+      expect(bind<VacuumCleanActions>("vacuum_clean", ctx).acts.cleanCurrentMapRooms).toBeUndefined();
+    }
+  });
+
+  it("rejects invalid selections without sending a command", async () => {
+    const { acts, sent } = bind<VacuumCleanActions>(
+      "vacuum_clean",
+      fakeCtx(undefined, "eufy_home_tuya", new Set([124])),
+    );
+    for (const ids of [[], [-1], [0.5], [NaN], [Infinity], [Number.MAX_SAFE_INTEGER + 1]]) {
+      await expect(acts.cleanCurrentMapRooms!(ids)).rejects.toThrow(RangeError);
+    }
+    expect(sent).toEqual([]);
+  });
+});

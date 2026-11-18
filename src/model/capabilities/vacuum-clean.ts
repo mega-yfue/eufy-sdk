@@ -129,6 +129,8 @@ export const TUYA_VACUUM_DP = {
   DIRECTION: 3,
   /** Cleaning mode (DP 5, Enum: "auto"|"room"|"zone"|"spot"|"fast_mapping"). Live-confirmed "auto". */
   MODE: 5,
+  /** Base64 JSON map-operation requests and acknowledgements (DP 124). */
+  MAP_OPERATIONS: 124,
   /** Work status (DP 15, Enum string) — the high-level activity. Live-confirmed "Sleeping". */
   WORK_STATUS: 15,
   /** Return to dock (DP 101, Bool rw). */
@@ -3140,6 +3142,30 @@ export const VACUUM_CLEAN_MEMBERS = {
       },
     ],
   },
+
+  /**
+   * Clean room ids on the currently selected map using a timestamped DP 124 request.
+   * Room id zero is valid. This command neither selects a map nor changes room order.
+   * One-pass room cleaning was physically verified on an X8 Pro / T2276.
+   */
+  cleanCurrentMapRooms: method(
+    ({ sink }) =>
+      async (roomIds: readonly number[]): Promise<void> => {
+        if (roomIds.length === 0 || roomIds.some((id) => !Number.isSafeInteger(id) || id < 0)) {
+          throw new RangeError("Room ids must be a non-empty list of non-negative safe integers");
+        }
+        const value = Buffer.from(
+          JSON.stringify({
+            method: "selectRoomsClean",
+            data: { roomIds: [...roomIds], cleanTimes: 1 },
+            timestamp: Date.now(),
+          }),
+        ).toString("base64");
+        await sink.dispatch(aiotDp(TUYA_VACUUM_DP.MAP_OPERATIONS, value));
+      },
+    "Clean the selected room ids on the current map once. Tuya; tested on X8 Pro / T2276.",
+    (ctx) => hasTuyaControlDps(ctx, TUYA_VACUUM_DP.MAP_OPERATIONS),
+  ),
 
   /**
    * Clean the named rooms of a named map (ModeCtrlRequest method 1 over DP 152).
