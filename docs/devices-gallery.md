@@ -362,6 +362,10 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
   <figcaption>Wall Light Cam S100 <span class="model">T84A1</span></figcaption>
 </figure>
 <figure>
+  <img src="/devices/security/security-T86C1.webp" alt="Wall Light Cam S4 T86C1" loading="lazy" />
+  <figcaption>Wall Light Cam S4 <span class="model">T86C1</span></figcaption>
+</figure>
+<figure>
   <img src="/devices/security/security-T8600.webp" alt="eufyCam E330 (Pro) T8600" loading="lazy" />
   <figcaption>eufyCam E330 (Pro) <span class="model">T8600</span></figcaption>
 </figure>
