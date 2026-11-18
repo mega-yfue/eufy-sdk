@@ -37,7 +37,17 @@ import type { ThingDescription } from "./capabilities/thing-description.js";
  * those are absent rather than deferred.
  */
 export type Codec =
-  "station" | "camera" | "sensor" | "lock" | "keypad" | "vacuum" | "mower" | "light" | "printer" | "display";
+  | "station"
+  | "camera"
+  | "sensor"
+  | "lock"
+  | "keypad"
+  | "vacuum"
+  | "mower"
+  | "light"
+  | "printer"
+  | "display"
+  | "tracker";
 
 /**
  * Capability identifiers (axis A). A capability is a composable feature a device exposes;

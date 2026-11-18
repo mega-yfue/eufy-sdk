@@ -266,6 +266,7 @@ const CODEC_LINE: Record<Codec, ProductLine> = {
   light: "life",
   printer: "print",
   display: "display",
+  tracker: "tracker",
 };
 
 /**
