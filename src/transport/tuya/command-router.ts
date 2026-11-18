@@ -10,6 +10,7 @@
  * Layering: imports `../../core` only — no `model/` import, consistent with the capability↔transport
  * decorrelation invariant. Sibling tuya/* imports are same-layer (transport).
  */
+import { fetchStoredMaps, type StoredMapFile } from "./map-storage.js";
 import type { Command } from "../../core/contracts.js";
 import { resolveCountryCode } from "./account.js";
 import { HmacSigner } from "./sign.js";
@@ -97,6 +98,14 @@ export class TuyaCommandRouter {
       this.loginOnce = p;
     }
     return this.loginOnce;
+  }
+
+  /** Download stored objects for a registered device using the shared login. */
+  async fetchMapFiles(sn: string): Promise<StoredMapFile[]> {
+    const ids = this.snMap.get(sn);
+    if (!ids) throw new Error("No registered Tuya device for map retrieval");
+    await this.ensureLoggedIn();
+    return fetchStoredMaps(this.client!, ids.devId);
   }
 
   /**

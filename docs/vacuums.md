@@ -183,6 +183,24 @@ Tuya publishing no longer requires an experimental opt-in: `tuyaAllowUnverified`
 `allowUnverified` options have been removed. API rejections throw through the command router; successful
 acceptance still does not guarantee a physical result.
 
+### Saved Tuya rooms
+
+Download the saved maps and their named room IDs using the authenticated cloud account:
+
+```ts
+const savedMaps = await eufy.getTuyaMapRooms(dev.sn);
+for (const map of savedMaps) {
+  console.log(map.mapId, map.name, map.rooms); // [{ id: 0, name: "Room A" }, …]
+}
+```
+
+Each map has its own room IDs, including zero. Names may repeat, so the result preserves a list
+rather than using names as unique keys. Only named room-table entries are returned; unnamed grid
+segments are excluded. No stored maps returns an empty array; authentication, download and malformed
+map errors reject the promise. This read does not switch the active map. Select the matching map in
+the vendor app before passing its room IDs to `cleanCurrentMapRooms`. Verified on T2276 using the
+owner account; shared-account access and other models have not been verified.
+
 ### AIoT controls
 
 **Every mode-control verb below was run on a T2351 and did what it says** — the whole-floor four, and

@@ -1,3 +1,4 @@
+import { decodeTuyaMapRooms, type TuyaMapRooms } from "../model/tuya-map.js";
 /**
  * eufy-sdk — one client for every eufy device class.
  *
@@ -1495,6 +1496,20 @@ export class EufyMega extends EventEmitter {
    */
   async reportedRtspUrl(sn: string): Promise<string | undefined> {
     return this.p2p.readReportedRtspUrl(sn);
+  }
+
+  /**
+   * Download saved Tuya vacuum maps and return their named rooms.
+   * Room ids are scoped to each map; room zero is valid and names can repeat.
+   * Returns an empty array when no maps are stored. Authentication, download and decoding failures throw.
+   * Does not select a map or send commands to the device.
+   */
+  async getTuyaMapRooms(sn: string): Promise<TuyaMapRooms[]> {
+    const devices = await this.getDevices();
+    const device = devices.find((d) => d.sn === sn);
+    if (!device || !isTuyaVacuum(device)) throw new Error("Map retrieval requires a Tuya vacuum");
+    const files = await this.tuya.fetchMapFiles(sn);
+    return files.map((file) => decodeTuyaMapRooms(file.data, file.name));
   }
 
   /**
