@@ -459,6 +459,15 @@ describe("camera capability module", () => {
       expect(buildCommand("on", true, at("T8110", false))).toMatchObject({ cmd: CAMERA_CMD.PRIVACY_MODE });
     });
 
+    it("power: the wire each product's camera_on_off parser or inline case writes, per topology", () => {
+      const enable = { kind: "set-param", param: CAMERA_CMD.CAMERA_ENABLE };
+      expect(buildCommand("on", true, at("T8110", true)), "v2 attached").toMatchObject(enable);
+      expect(buildCommand("privacy", true, at("T8110", true)), "v2 attached").toBeUndefined();
+      expect(buildCommand("on", true, at("T817L", false)), "v3").toMatchObject({ cmd: CAMERA_CMD.PRIVACY_MODE });
+      expect(buildCommand("on", true, at("T8420", true)), "v7 answers nothing, base v4").toMatchObject(enable);
+      expect(buildCommand("on", true, at("T8531", false)), "standalone inline").toMatchObject(enable);
+    });
+
     it("streamingQuality: 1020 unverified where the bundle sends it, 2730 attached", () => {
       expect(() => buildCommand("streamingQuality", 2, at("T8410", false)), "1020 is bundle-only").toThrow(
         /unverified/,
@@ -955,6 +964,18 @@ describe("camera capability module", () => {
       expect(enabledOf("T8400", false, { 2001: "false", 6250: "0" }, ON_OFF)).toBe(false);
       expect(enabledOf("T8400", true, { 2001: "false", 6250: "0" }, ON_OFF)).toBe(true);
     });
+    it("reads 1131 beside 2001 where the bundle's product parser does, '1' as on", () => {
+      expect(enabledOf("T8441", false, { 1131: "0" }, ON_OFF)).toBe(false);
+      expect(enabledOf("T8441", true, { 1131: "1" }, ON_OFF)).toBe(true);
+    });
+    it("reads 99904 in the bundle's order over 1035", () => {
+      expect(enabledOf("T8210", false, { 99904: "1", 1035: "0" }, ON_OFF)).toBe(false);
+      expect(enabledOf("T8210", true, { 99904: "1", 1035: "0" }, ON_OFF)).toBe(true);
+      expect(enabledOf("T8210", true, { 99904: "1" }, ON_OFF)).toBe(false);
+      expect(enabledOf("T8213", false, { 99904: "1", 1035: "0" }, ON_OFF)).toBe(true);
+      expect(enabledOf("T8200", false, { 2001: "true", 99904: "1" }, ON_OFF)).toBe(true);
+      expect(enabledOf("T8420", true, { 99904: "1", 1035: "0" }, ON_OFF)).toBe(false);
+    });
     it("without a description reads only a reported 1035 or 2001", () => {
       expect(enabledOf("T8162", true, {})).toBe("absent");
       expect(enabledOf("T8162", true, { 6250: "1" })).toBe("absent");
@@ -1351,6 +1372,21 @@ describe("camera enablement — observed write", () => {
     // Battery/solo (disable bit): ON ⇒ 0. Live: a T8114 reports 1035="0" while enabled.
     expect(observationFor(9, [CAMERA_ENABLE], true)).toEqual({ param: CAMERA_ENABLE, expected: 0, observed: true });
     expect(observationFor(9, [CAMERA_ENABLE], false)).toEqual({ param: CAMERA_ENABLE, expected: 1, observed: false });
+  });
+
+  /** A described product whose bundle reads the 6250 it writes confirms the privacy-wire write there. */
+  it("observes 6250 where the product's bundle reads the param it writes", () => {
+    const things = parseThingsList({
+      things_list: [{ profile: { product_code: "T0000" }, properties: [{ identifier: "camera_on_off" }] }],
+    }).T0000!;
+    const ctx = (model: string) =>
+      ({ ...ctx0, model, homeBaseAttached: true, things, paramIds: new Set([2001, CAMERA_CMD.PRIVACY_MODE]) }) as never;
+    const ctx0 = { channel: 0, codec: "camera" as const, deviceType: DeviceType.INDOOR_CAMERA };
+    expect(CAMERA_MEMBERS.enabled.observation.reflects(true, ctx("T8400"))).toEqual({
+      param: CAMERA_CMD.PRIVACY_MODE,
+      expected: 0,
+      observed: true,
+    });
   });
 
   /** A device reporting neither has nothing to read back, so the write is dispatched unobserved. */
