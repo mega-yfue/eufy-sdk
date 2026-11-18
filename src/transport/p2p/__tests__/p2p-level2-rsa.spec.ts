@@ -202,6 +202,12 @@ describe("P2PSession level-2 over an RSA cipher", () => {
 
     expect(await session.awaitLevel2Key(1_000, "call", "set-payload")).toBe(false);
     expect(errors).toEqual([]);
+    expect(traces.find((trace) => trace.phase === "level2-negotiating")).toEqual({
+      phase: "level2-negotiating",
+      cipherId: CIPHER_ID,
+      version: 1,
+      source: session.traceId,
+    });
     expect(traces.find((trace) => trace.phase === "level2-unavailable")).toEqual({
       phase: "level2-unavailable",
       reason: "derivation-failed",
