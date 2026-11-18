@@ -130,6 +130,17 @@ export function p2pDidToBuffer(p2pDid: string): Buffer {
 }
 
 /**
+ * The cloud lookup servers of a station's record, read as the app reads them: `app_conn` is the init string
+ * it hands the P2P connect, `p2p_conn` only a fallback. An empty field counts as absent.
+ */
+export function stationCloudAddresses(
+  raw: { app_conn?: string; p2p_conn?: string } | undefined,
+): Address[] | undefined {
+  const conn = raw?.app_conn || raw?.p2p_conn;
+  return conn ? decodeP2PCloudIPs(conn) : undefined;
+}
+
+/**
  * Decode a station's `p2p_conn` / `app_conn` string into the eufy cloud lookup
  * server addresses (port 32100). XOR cipher with a fixed lookup table, seed 0x39.
  */
