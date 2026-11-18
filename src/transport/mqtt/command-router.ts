@@ -347,9 +347,12 @@ export class MqttCommandRouter {
     return { ...dev, model: typeof pn === "string" && pn ? pn : await this.pnFromSerial(sn) };
   }
 
-  /** `get_pn_by_sn` answers per serial, kept like the app's `DevicePnCache`: a failed call keeps `""`. */
+  /**
+   * `get_pn_by_sn` answers per serial, kept like the app's `DevicePnCache`: a failed call keeps `""`. The
+   * promise is kept, so commands racing on a serial share one call.
+   */
   // ponytail: in-memory, so a restart asks again; the app persists it.
-  private readonly cloudPn = new Map<string, string>();
+  private readonly cloudPn = new Map<string, Promise<string>>();
 
   /**
    * The app's `snToPn` fallback: the T8520 range splits on its 7th character, any other serial asks the
@@ -357,13 +360,12 @@ export class MqttCommandRouter {
    */
   private async pnFromSerial(sn: string): Promise<string> {
     if (sn.startsWith("T8520")) return { "8": "T8510P", "9": "T8520P" }[sn.charAt(6)] ?? "T8520";
-    if (!this.cloudPn.has(sn)) {
-      const res = await this.deps.mega
-        .post<{ pn?: unknown }>("things", "/app/things/get_pn_by_sn", { device_sn: sn })
-        .catch(() => undefined);
-      this.cloudPn.set(sn, typeof res?.pn === "string" ? res.pn : "");
+    let pn = this.cloudPn.get(sn);
+    if (!pn) {
+      pn = this.deps.mega.getPnBySn(sn).catch(() => "");
+      this.cloudPn.set(sn, pn);
     }
-    return this.cloudPn.get(sn) || sn.slice(0, 5);
+    return (await pn) || sn.slice(0, 5);
   }
 
   /**
