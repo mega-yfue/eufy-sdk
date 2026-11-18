@@ -758,8 +758,8 @@ const CLEAN_PARAM_FIELD = {
   /**
    * `fan` — the suction level, and the SAME scale DP 158 reports.
    *
-   * Deliberately not surfaced as its own read. The two move together: `clean_param.fan` carries DP
-   * 158's value, absent for zero. `suction.level`
+   * Deliberately not surfaced as its own read. A capture covering only fan values 0 and 2 showed the two
+   * moving together: `clean_param.fan` carried DP 158's value, absent for zero. `suction.level`
    * already publishes that value from DP 158, and a second name for it here would be one feature
    * spelled twice. Named to document what field 6 is, not so anything reads it.
    */

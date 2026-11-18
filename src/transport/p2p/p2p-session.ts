@@ -2142,7 +2142,8 @@ export class P2PSession extends EventEmitter {
    * A camera answering that start wraps each keyframe's AES-256-GCM media key in an ECIES envelope for this
    * key ({@link VideoFrameDecoder}). Generated once per session, like the RSA pair.
    *
-   * `undefined` unless the station is a HomeBase 3 (`T8030`).
+   * `undefined` unless the station is a HomeBase 3 (`T8030`): the app's P-256 start and the runs that
+   * answered it were seen on that station only.
    */
   get mediaEccPrivateKey(): Buffer | undefined {
     return this.cfg.stationSn.startsWith("T8030") ? this.mediaEccPair().privateKey : undefined;

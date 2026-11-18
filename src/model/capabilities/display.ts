@@ -47,7 +47,8 @@ export const DISPLAY_MEMBERS = {
    * maintainer's own knowledge of the hardware rather than from the cloud data-point list, and `"100"`
    * fits brightness, volume or charge equally.
    *
-   * The scale is `percent`: a full charge reads `"100"`, not the `255` or `1000` of a wider scale.
+   * The scale is `percent`: a full charge reads `"100"`, not the `255` or `1000` of a wider scale. Nobody
+   * has watched it move, so a value stuck at `"100"` cannot yet be told from a healthy one.
    */
   battery: {
     param: DISPLAY_PARAM.BATTERY,

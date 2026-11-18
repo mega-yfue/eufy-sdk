@@ -2449,7 +2449,8 @@ export class P2PCommandRouter {
    * same GET step {@link sendFf09Autolock} runs internally to preserve A7/A8), then decrypts + decodes
    * fields `a1`-`a5` per `transport/ff09.ts`'s response tag map (`a1`=enabled, `a2`=delaySeconds,
    * `a3`=isSchedule, `a4`/`a5`=schedule start/end as raw `[hour,minute]` byte pairs — see
-   * {@link readFf09HourMinute}'s doc for why these aren't a packed number).
+   * {@link readFf09HourMinute}'s doc for why these aren't a packed number). This standalone read has not
+   * been exercised against a real device; only the GET step it shares with {@link sendFf09Autolock} has.
    */
   async getAutoLockState(sn: string, cmd: { adminUserId: string; deviceSn: string }): Promise<AutoLockSnapshot> {
     const resolved = await this.resolveSession(sn, { waitLevel2: true });
