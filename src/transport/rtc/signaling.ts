@@ -93,6 +93,8 @@ export interface RtcSignalingOptions {
   adminUserId: string;
   /** The mega shard the account lives on; picks the host and the cluster name. */
   shard: string;
+  /** The shards `estimate_domain` names for the PHONE and WEB identities; asked only when a sign is refused. */
+  estimates?: () => Promise<{ phone: string; web: string }>;
   /** The account's ISO country, sent on the sign request (`Web-Country`). */
   country: string;
   fetch?: typeof fetch;
@@ -171,8 +173,9 @@ export class RtcSignalingClient extends EventEmitter<RtcSignalingEvents> {
     });
     const body = ((await res.json().catch(() => ({}))) ?? {}) as { code?: number; data?: string; msg?: string };
     if (!res.ok || body.code !== 0 || !body.data) {
+      const est = await this.opts.estimates?.();
       throw new Error(
-        `RTC sign for ${this.opts.stationSn} refused: HTTP ${res.status} code ${body.code ?? "?"} ${withoutTokenEcho(body.msg ?? "")}`.trim(),
+        `RTC sign for ${this.opts.stationSn} on ${this.opts.shard} (phone ${est?.phone ?? "?"}, web ${est?.web ?? "?"}) refused: HTTP ${res.status} code ${body.code ?? "?"} ${withoutTokenEcho(body.msg ?? "")}`.trim(),
       );
     }
     this.sign = body.data;
