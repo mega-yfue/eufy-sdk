@@ -100,4 +100,32 @@ describe("FCM/MCS push primitives", () => {
     expect(errors).toHaveLength(1);
     client.close();
   });
+
+  it("closes a half-open socket when no inbound frame arrives within a heartbeat window", () => {
+    vi.useFakeTimers();
+    try {
+      const client = new PushClient({ fid: "x", androidId: "1", securityToken: "2", fcmToken: "t" } as never);
+      const write = vi.fn();
+      const destroy = vi.fn();
+      const internals = client as unknown as { socket: unknown; onMessage(m: unknown): void };
+      internals.socket = { write, destroy };
+      internals.onMessage({ tag: MessageTag.LoginResponse, object: {} });
+
+      vi.advanceTimersByTime(5 * 60 * 1000);
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(destroy).not.toHaveBeenCalled();
+
+      internals.onMessage({ tag: MessageTag.HeartbeatAck, object: {} });
+      vi.advanceTimersByTime(5 * 60 * 1000);
+      expect(destroy).not.toHaveBeenCalled();
+      expect(write).toHaveBeenCalledTimes(2);
+
+      vi.advanceTimersByTime(5 * 60 * 1000);
+      expect(destroy).toHaveBeenCalledTimes(1);
+      expect(write).toHaveBeenCalledTimes(2);
+      client.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
