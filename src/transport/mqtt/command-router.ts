@@ -351,7 +351,6 @@ export class MqttCommandRouter {
    * `get_pn_by_sn` answers per serial, kept like the app's `DevicePnCache`: a failed call keeps `""`. The
    * promise is kept, so commands racing on a serial share one call.
    */
-  // ponytail: in-memory, so a restart asks again; the app persists it.
   private readonly cloudPn = new Map<string, Promise<string>>();
 
   /**
