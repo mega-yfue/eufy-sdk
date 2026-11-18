@@ -12,7 +12,12 @@ import type { EufyDevice } from "../../../core/types.js";
  * `onCommandAck` callback (the facade re-emits it as the `commandAck` event).
  */
 function makeRouter() {
-  const dev = { sn: "T85D0K0000000000", category: "eufy_security", model: "T85D0" } as unknown as EufyDevice;
+  const dev = {
+    sn: "T85D0K0000000000",
+    category: "eufy_security",
+    model: "T85D0C",
+    raw: { device_new_pn: "T85D0" },
+  } as unknown as EufyDevice;
   const acks: any[] = [];
   const router = new MqttCommandRouter({
     mega: {} as any,
@@ -84,6 +89,7 @@ describe("MqttCommandRouter.dispatchCommand (ff09-actuate)", () => {
     fakeMqtt.emit("message", { topic: "cmd/eufy_security/T85D0/T85D0K0000000000/res" });
     await p;
 
+    expect(vi.mocked(fakeMqtt.publish).mock.calls[0]![0]).toBe("cmd/eufy_security/T85D0/T85D0K0000000000/req");
     expect(acks).toEqual([{ sn: "T85D0K0000000000", kind: "ff09-actuate", acked: true, instanceIp: "198.51.100.7" }]);
     expect(fakeMqtt.disconnect).toHaveBeenCalledOnce();
   });

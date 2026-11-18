@@ -312,6 +312,13 @@ export class MqttCommandRouter {
     return dev;
   }
 
+  /** The record with `model` set to its product number (`device_new_pn`) where it has one: `ff09` topics name it. */
+  private async ff09DeviceFor(sn: string): Promise<EufyDevice> {
+    const dev = await this.deviceFor(sn);
+    const pn = (dev.raw as { device_new_pn?: unknown } | undefined)?.device_new_pn;
+    return typeof pn === "string" && pn ? { ...dev, model: pn } : dev;
+  }
+
   /**
    * Fallback broker-instance IPs, tried alongside a fresh DNS resolution — the `aiot-mqtt-{region}
    * .anker.com` NLB has been observed (2026-07-16) to answer a single DNS query with only 2 of its
@@ -485,7 +492,7 @@ export class MqttCommandRouter {
    * unlike a fixed-sleep-then-teardown, where a late reply arrives after the subscription is already gone.
    */
   private async dispatchFf09Actuate(sn: string, cmd: Extract<Command, { kind: "ff09-actuate" }>): Promise<void> {
-    const dev = await this.deviceFor(sn);
+    const dev = await this.ff09DeviceFor(sn);
     if (!dev.model) throw new Error(`dispatchFf09Actuate(${sn}): no product model (pn) — required for the topic`);
     const trans = buildFf09Trans({
       engage: cmd.engage,
@@ -564,7 +571,7 @@ export class MqttCommandRouter {
    *     as-is rather than adding keyTime correlation this ack doesn't otherwise need.
    */
   private async dispatchFf09Autolock(sn: string, cmd: Extract<Command, { kind: "ff09-autolock" }>): Promise<void> {
-    const dev = await this.deviceFor(sn);
+    const dev = await this.ff09DeviceFor(sn);
     if (!dev.model) throw new Error(`dispatchFf09Autolock(${sn}): no product model (pn) — required for the topic`);
 
     const { mqtt, instanceIp } = await this.ensureSecurityMqttFor(dev);
@@ -662,7 +669,7 @@ export class MqttCommandRouter {
    * has not been independently exercised against a real device yet.
    */
   async getAutoLockState(sn: string, cmd: { adminUserId: string; deviceSn: string }): Promise<AutoLockSnapshot> {
-    const dev = await this.deviceFor(sn);
+    const dev = await this.ff09DeviceFor(sn);
     if (!dev.model) throw new Error(`getAutoLockState(${sn}): no product model (pn) — required for the topic`);
     const { mqtt, instanceIp } = await this.ensureSecurityMqttFor(dev);
     try {
