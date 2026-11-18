@@ -14,7 +14,7 @@ import type { EufyDevice } from "../../../core/types.js";
 function makeRouter(
   sn = "T85D0K0000000000",
   raw: Record<string, unknown> = { device_new_pn: "T85D0" },
-  post = vi.fn().mockRejectedValue(new Error("offline")),
+  getPnBySn = vi.fn().mockRejectedValue(new Error("offline")),
 ) {
   const dev = {
     sn,
@@ -24,7 +24,7 @@ function makeRouter(
   } as unknown as EufyDevice;
   const acks: any[] = [];
   const router = new MqttCommandRouter({
-    mega: { post } as any,
+    mega: { getPnBySn } as any,
     listDevices: () => [dev],
     ensureDevices: async () => {},
     onCommandAck: (info) => acks.push(info),
@@ -52,7 +52,7 @@ function makeRouter(
     shortUserId: "0003",
     deviceSn: sn,
   };
-  return { router, fakeMqtt, cmd, acks, post };
+  return { router, fakeMqtt, cmd, acks, getPnBySn };
 }
 
 describe("MqttCommandRouter.claimsDevice", () => {
@@ -103,26 +103,24 @@ describe("MqttCommandRouter.dispatchCommand (ff09-actuate)", () => {
       ["T85D0K0000000000", "T85D0", 1], // get_pn_by_sn fails → first five characters
       ["T852009000000000", "T8520P", 0], // the T8520 table answers without the cloud
     ] as const) {
-      const { router, fakeMqtt, cmd, post } = makeRouter(sn, {});
+      const { router, fakeMqtt, cmd, getPnBySn } = makeRouter(sn, {});
       const p = router.dispatchCommand(sn, cmd);
       await vi.advanceTimersByTimeAsync(5000);
       await p;
       expect(vi.mocked(fakeMqtt.publish).mock.calls[0]![0]).toBe(`cmd/eufy_security/${pn}/${sn}/req`);
-      expect(post).toHaveBeenCalledTimes(calls);
+      expect(getPnBySn).toHaveBeenCalledTimes(calls);
     }
   });
 
-  it("takes get_pn_by_sn's answer over the serial, asking once per serial", async () => {
-    const post = vi.fn().mockResolvedValue({ pn: "T85D2", device_sn: "T85D0K0000000000" });
-    const { router, fakeMqtt, cmd } = makeRouter("T85D0K0000000000", {}, post);
-    for (let i = 0; i < 2; i++) {
-      const p = router.dispatchCommand("T85D0K0000000000", cmd);
-      await vi.advanceTimersByTimeAsync(5000);
-      await p;
-    }
+  it("takes get_pn_by_sn's answer over the serial, one call for commands racing on a serial", async () => {
+    const getPnBySn = vi.fn().mockResolvedValue("T85D2");
+    const { router, fakeMqtt, cmd } = makeRouter("T85D0K0000000000", {}, getPnBySn);
+    const both = Promise.all([0, 1].map(() => router.dispatchCommand("T85D0K0000000000", cmd)));
+    await vi.advanceTimersByTimeAsync(5000);
+    await both;
     expect(vi.mocked(fakeMqtt.publish).mock.calls[1]![0]).toBe("cmd/eufy_security/T85D2/T85D0K0000000000/req");
-    expect(post).toHaveBeenCalledOnce();
-    expect(post).toHaveBeenCalledWith("things", "/app/things/get_pn_by_sn", { device_sn: "T85D0K0000000000" });
+    expect(getPnBySn).toHaveBeenCalledOnce();
+    expect(getPnBySn).toHaveBeenCalledWith("T85D0K0000000000");
   });
 
   it("resolves (does not throw) on timeout with no reply, reporting acked:false", async () => {
