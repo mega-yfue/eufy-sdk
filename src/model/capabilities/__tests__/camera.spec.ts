@@ -918,6 +918,50 @@ describe("camera capability module", () => {
     });
   });
 
+  /**
+   * `camera_on_off` read where the product's bundle reads it: the T8162 bundle's parser reads only 6250, a
+   * v5 bundle 2001 standalone. A listed identifier installs the getter on the description's default.
+   */
+  describe("enabled — the description's read param and default", () => {
+    const ON_OFF = parseThingsList({
+      things_list: [
+        {
+          profile: { product_code: "T0000" },
+          properties: [{ identifier: "camera_on_off", data_type: { type: "bool", specs: { defaultValue: "1" } } }],
+        },
+      ],
+    }).T0000!;
+    const enabledOf = (model: string, attached: boolean, params: Record<number, string>, things?: ThingDescription) => {
+      const identity = { deviceType: 9, model, category: "eufy_security" };
+      const parentSn = attached ? "T8010P0000000000" : undefined;
+      const dev = Device.fromRecord("T8000P0000000000", { ...identity, parentSn, params, things });
+      const paramIds = new Set(Object.keys(params).map(Number));
+      dev.bindActions(ctx(1, { ...identity, homeBaseAttached: attached, paramIds, things }), {
+        dispatch: async () => undefined,
+      });
+      const acts = dev.camera!()!;
+      return "enabled" in acts ? acts.enabled : "absent";
+    };
+
+    it("is present on a described product that reported no power param, reading the default", () => {
+      expect(enabledOf("T8162", true, {}, ON_OFF)).toBe(true);
+    });
+    it("reads 6250 where the bundle does, and not a reported 1035", () => {
+      expect(enabledOf("T8162", true, { 6250: "1" }, ON_OFF)).toBe(false);
+      expect(enabledOf("T8162", true, { 6250: "0" }, ON_OFF)).toBe(true);
+      expect(enabledOf("T8162", true, { 1035: "1" }, ON_OFF)).toBe(true);
+    });
+    it("reads 2001 on a standalone v5 product and 6250 attached", () => {
+      expect(enabledOf("T8400", false, { 2001: "false", 6250: "0" }, ON_OFF)).toBe(false);
+      expect(enabledOf("T8400", true, { 2001: "false", 6250: "0" }, ON_OFF)).toBe(true);
+    });
+    it("without a description reads only a reported 1035 or 2001", () => {
+      expect(enabledOf("T8162", true, {})).toBe("absent");
+      expect(enabledOf("T8162", true, { 6250: "1" })).toBe("absent");
+      expect(enabledOf("T8162", true, { 1035: "1" })).toBe(false);
+    });
+  });
+
   describe("statusLed — family-aware read alias and evidence-gated write", () => {
     it.each([
       [CAMERA_CMD.DEV_LED_SWITCH, "1", true, { deviceType: 9, model: "T8114" }],

@@ -137,10 +137,11 @@ those layers. CI-enforced by `guard:capability-ownership`.
   joined by name, is how one feature ends up spelled six ways and disagreeing with itself. The member
   kinds and flags are normative in `capabilities/members.ts`, with the walkthrough in
   `capabilities/README.md`.
-- **Getters are evidence-gated** — installed only when the device actually reported the backing
-  parameter, so a device advertises exactly what it has and no phantom sub-features. The binder narrows
-  a stored value to the member's declared type and answers `undefined` on a mismatch rather than
-  lie-casting.
+- **Getters are evidence-gated** — installed when the device reported the backing parameter, or when
+  the product's thing description lists the member's identifier, in which case it reads the
+  description's default until a report arrives — so a device advertises exactly what it has and no
+  phantom sub-features. The binder narrows a stored value to the member's declared type and answers
+  `undefined` on a mismatch rather than lie-casting.
 - **`actions()` is for what the table cannot state** — an object that is not a projection of device
   parameters at all, a method needing per-bind state the table cannot hold, or an on/off alias pair
   beside a member's own setter. A module may have both; the bound members merge over the `actions()`

@@ -490,14 +490,22 @@ const cameraThing =
  * T816x) is never standalone, so it is listed only where its wire differs from the fallback's attached arm.
  */
 function bundleWires(identifier: string, fallback: string, groups: Readonly<Record<string, string>>) {
+  const arm = bundleArm(identifier, fallback, groups);
+  return (ctx: AvailabilityContext): number | undefined => {
+    const wire = arm(ctx);
+    return wire === "-" ? undefined : Number(wire);
+  };
+}
+
+/** The {@link bundleWires} arm this device's product and topology select, as the table states it. */
+function bundleArm(identifier: string, fallback: string, groups: Readonly<Record<string, string>>) {
   const table = new Map<string, string>();
   for (const [wire, codes] of Object.entries(groups)) for (const code of codes.split(" ")) table.set(code, wire);
-  return (ctx: AvailabilityContext): number | undefined => {
+  return (ctx: AvailabilityContext): string => {
     const model = ctx.model ?? "";
     const variant = ctx.things?.properties[identifier]?.identifier.slice(identifier.length) ?? "";
     const arms = (table.get(model + variant) ?? table.get(model) ?? fallback).split("/");
-    const wire = arms[ctx.homeBaseAttached === true ? arms.length - 1 : 0];
-    return wire === "-" ? undefined : Number(wire);
+    return arms[ctx.homeBaseAttached === true ? arms.length - 1 : 0];
   };
 }
 
@@ -516,6 +524,35 @@ const POWER_WIRE = bundleWires("camera_on_off", "1035", {
   "-/1035": "T81A0 T8531",
   "-": "T7401 T84A1 T8790",
 });
+
+/**
+ * `camera_on_off` as each product's bundle reads it back (`parseCommandToModel` of the parser it registers,
+ * else its inline case), in the {@link bundleWires} form; `+` joins two params the bundle reads alike. 1035
+ * and 6250 read "0" as on, 2001 reads "true" as on; a param never reported leaves the description default.
+ */
+const POWER_READ = bundleArm("camera_on_off", "1035", {
+  "6250": "T8162 T817L",
+  "6250/1035": "T8110 T8110E T814X",
+  "1035/6250": "T8416 T8417 T8419 T85M0 T85V0 T8W11 T8W11C",
+  "2001/6250": "T8400 T8401 T8410 T8410C T8411 T8414 T8441 T8442",
+  "2001": "T8420X",
+  "1035+6250": "T6310 T8172 T8352 T8354",
+  "2001+1035": "T8200 T8201 T8202 T8422 T8424",
+});
+
+/**
+ * Whether this device reads its power state from `param`: per {@link POWER_READ} once described, else
+ * `undescribed`. A record names a station serial only for an attached device, which places it before a
+ * live context states the topology.
+ */
+const readsPower =
+  (param: number, undescribed: boolean) =>
+  (ctx: AvailabilityContext): boolean =>
+    ctx.things
+      ? POWER_READ({ ...ctx, homeBaseAttached: ctx.homeBaseAttached ?? ctx.stationSerial !== undefined })
+          .split("+")
+          .includes(String(param))
+      : undescribed;
 
 /** Power, privacy and the on/off verbs. */
 const cameraSwitch = offers("camera_on_off", POWER_WIRE);
@@ -708,25 +745,30 @@ export const CAMERA_MEMBERS = {
    * T8410 on HomeBase 3 reports 1035 as an enable bit ("1" ⇒ ON). That reported state does not reliably
    * reflect the privacy command. `readReflectsWrite` states this distinction.
    *
-   * The privacy param (6250) is reported by the outdoor-PT family and by no other camera measured, and both
-   * of its polarities are observed. It is deliberately NOT aliased here: it moved in the same step as 1035, so
-   * the reading cannot say whether power and privacy are one state or two — so
-   * aliasing a second param could only fold two possible states into one getter for no gain.
+   * A described product reads the params {@link POWER_READ} names, 6250 among them, and the description's
+   * default until one is reported. Without a description it reads 1035 or 2001, never 6250.
    */
   enabled: {
     param: CAMERA_CMD.CAMERA_ENABLE,
     type: "bool",
     kind: "boolean",
     provenance: "apk",
+    thing: ["camera_on_off"],
+    thingDefault: true,
     available: cameraSwitch,
     unverifiedFor: privacyStatusPower,
     invert: true,
     invertFor: (ctx) => (isT8410HomeBase3(ctx) ? false : undefined),
-    readAliases: [{ paramType: 2001, invert: false }],
+    readAvailable: readsPower(CAMERA_CMD.CAMERA_ENABLE, true),
+    readAliases: [
+      { paramType: 2001, invert: false, available: readsPower(2001, true) },
+      { paramType: CAMERA_CMD.PRIVACY_MODE, invert: true, available: readsPower(CAMERA_CMD.PRIVACY_MODE, false) },
+    ],
     readReflectsWrite: (ctx) => !hasUnreflectedPower(ctx),
     description:
       "Camera enabled. Family-dependent wire param: 1035 CMD_DEVS_SWITCH (enable bit on T8410/HomeBase 3, " +
-      "disable bit on battery/solo cams) or 2001 OPEN_DEVICE (standalone indoor/outdoor). Reported on/off state; " +
+      "disable bit on battery/solo cams), 2001 OPEN_DEVICE (standalone indoor/outdoor) or 6250 privacy, as the " +
+      "product's bundle reads it; the description's default until reported. Reported on/off state; " +
       "unreflectedMembers identifies commands whose effect this report does not reliably reflect.",
     observation: {
       event: "cameraEnabledChanged",
