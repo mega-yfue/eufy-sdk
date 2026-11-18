@@ -51,7 +51,12 @@ function decodeEnvelope(body: string): { apiCommand: number; time: number; trans
 }
 
 function makeRouter(plain: Buffer, opts: { noReply?: boolean } = {}) {
-  const dev = { sn: SN, category: "eufy_security", model: "T85D0" } as unknown as EufyDevice;
+  const dev = {
+    sn: SN,
+    category: "eufy_security",
+    model: "T85D0",
+    raw: { device_new_pn: "T85D0" },
+  } as unknown as EufyDevice;
   const router = new MqttCommandRouter({
     mega: {} as any,
     listDevices: () => [dev],

@@ -65,7 +65,12 @@ function decodeEnvelope(body: string): { apiCommand: number; time: number; trans
 }
 
 function makeRouter(opts: { delay: number; a7: number; a8: number; currentlyEnabled: boolean }) {
-  const dev = { sn: SN, category: "eufy_security", model: "T85D0" } as unknown as EufyDevice;
+  const dev = {
+    sn: SN,
+    category: "eufy_security",
+    model: "T85D0",
+    raw: { device_new_pn: "T85D0" },
+  } as unknown as EufyDevice;
   const acks: any[] = [];
   const router = new MqttCommandRouter({
     mega: {} as any,
@@ -183,7 +188,12 @@ describe("MqttCommandRouter.dispatchCommand (ff09-autolock)", () => {
   });
 
   it("throws if the GET reply never arrives (refuses to write settings blind)", async () => {
-    const dev = { sn: SN, category: "eufy_security", model: "T85D0" } as unknown as EufyDevice;
+    const dev = {
+      sn: SN,
+      category: "eufy_security",
+      model: "T85D0",
+      raw: { device_new_pn: "T85D0" },
+    } as unknown as EufyDevice;
     const router = new MqttCommandRouter({
       mega: {} as any,
       listDevices: () => [dev],
@@ -217,7 +227,12 @@ describe("MqttCommandRouter.dispatchCommand (ff09-autolock)", () => {
   });
 
   it("does not throw when the SET step gets no ack (fire-and-forget), reports it via commandAck", async () => {
-    const dev = { sn: SN, category: "eufy_security", model: "T85D0" } as unknown as EufyDevice;
+    const dev = {
+      sn: SN,
+      category: "eufy_security",
+      model: "T85D0",
+      raw: { device_new_pn: "T85D0" },
+    } as unknown as EufyDevice;
     const acks: any[] = [];
     const router = new MqttCommandRouter({
       mega: {} as any,
