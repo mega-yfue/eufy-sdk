@@ -475,6 +475,9 @@ export class MqttCommandRouter {
    * live session (see {@link ensureSecurityMqttFor}), and publishes to `cmd/eufy_security/{pn}/{sn}/req`.
    * `cmd.engage` maps straight to the frame's direction byte (`true`=lock/close, `false`=unlock/open) — no inversion.
    *
+   * **Verified per direction:** unlock confirmed end-to-end through this path; lock byte-exact with the
+   * app's close frame, not driven through it.
+   *
    * **What the `/res` reply actually means — a delivery ack, NOT "motion complete".** It answers within
    * seconds, well before a garage door finishes its travel — so this is the device saying "I received the command", not "I finished moving". That's
    * why {@link FF09_ACK_TIMEOUT_MS} is one fixed, short window shared by every ff09 device regardless of

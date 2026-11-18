@@ -70,7 +70,7 @@ const MAX_TRACED_DECODE_FAILURES = 3;
  * That restart is harmless on a station serving ONE camera and harmful on a station serving several: it
  * re-asserts this camera's channel every interval, so two attached streams contend continuously. So an
  * attached stream stops nudging as soon as the station delivers a frame of its own channel — see the private
- * `settleKeepalive`: an attached camera holds its stream with the nudge disabled outright.
+ * `settleKeepalive`: two attached cameras held a 40 s stream with the nudge disabled outright.
  */
 export const DEFAULT_KEEPALIVE_MS = 3000;
 
@@ -208,8 +208,9 @@ export class LiveStream extends EventEmitter {
    * attached streams restart every interval and contend for the station continuously.
    *
    * A frame of this camera's own channel is the station stating it is serving THIS camera, which is the only
-   * thing the restart was trying to bring about. An attached camera holds its stream with the nudge disabled,
-   * while an own-session camera that needs it goes quiet without it — so an own-session stream keeps its ping.
+   * thing the restart was trying to bring about. Two attached cameras held a 40 s stream with the nudge
+   * disabled, while an own-session camera that needs it went quiet without it — so an own-session stream keeps
+   * its ping.
    *
    * The warm-up retry a shared source runs is untouched: it recovers a start that raced the level-2 key, and
    * it stops at the first keyframe by its own rule.
