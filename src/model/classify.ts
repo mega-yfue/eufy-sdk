@@ -245,10 +245,7 @@ export function codecFromModel(model: string | undefined): Codec | undefined {
   // Anker-side grouping shared with other, unrelated appliance types this SDK hasn't seen yet.
   if (/^T87A/.test(m)) return "display";
 
-  // SmartTrack item trackers — the T87B model prefix (T87B0 Link, T87B2 Card, T87B4/T87B5). Matched
-  // by prefix so suffixed variants resolve too (e.g. "T87B0-V"), and BEFORE the generic T8 camera
-  // residual below — otherwise a tracker whose cloud record carries no device_type falls through to
-  // "camera". Must also sit after the T87A display arm so the two T87x lines don't collide.
+  // SmartTrack item trackers (T87Bx), before the T8 camera residual below.
   if (/^T87B/.test(m)) return "tracker";
 
   // Any remaining eufy security T-code is a camera/doorbell/floodlight/etc.
