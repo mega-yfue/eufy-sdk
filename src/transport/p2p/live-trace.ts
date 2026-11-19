@@ -129,9 +129,10 @@ export type LiveTrace =
    *
    * What separates a station that never answered the prompt from one that answered and produced no usable key:
    * without it, `level2-unavailable` with `not-negotiating` covers both, and they are a station or network
-   * problem and an account cipher-material problem respectively.
+   * problem and an account cipher-material problem respectively. `version` is the gateway info's header
+   * version, which picks the key branch: 8 derives on ECC, any other on RSA.
    */
-  | { phase: "level2-negotiating"; cipherId: number }
+  | { phase: "level2-negotiating"; cipherId: number; version: number }
   /**
    * A station was resolved for a call, stating what the caller's device is on it and whose station it is.
    *
