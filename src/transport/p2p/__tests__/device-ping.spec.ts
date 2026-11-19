@@ -74,5 +74,22 @@ describe("P2P connection device ping", () => {
     );
     expect(received).toHaveBeenCalledTimes(1);
     expect(onFrame).toHaveBeenCalledTimes(announces ? 1 : 0);
+
+    reply.mockClear();
+    received.mockClear();
+    onFrame.mockClear();
+    receiver.handleFrame(
+      {
+        commandId: CommandType.CMD_GET_DEVICE_PING,
+        channel: 3,
+        signCode: 0,
+        bytesToRead: 8,
+      } as P2PDataFrameHeader,
+      Buffer.alloc(8),
+      P2PDataType.CONTROL,
+    );
+    expect(reply).not.toHaveBeenCalled();
+    expect(received).toHaveBeenCalledTimes(1);
+    expect(onFrame).toHaveBeenCalledTimes(announces ? 1 : 0);
   });
 });

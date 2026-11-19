@@ -649,6 +649,7 @@ export class P2PCommandRouter {
       if (
         frame.commandId === CommandType.CMD_GET_DEVICE_PING &&
         frame.dataType === P2PDataType.CONTROL &&
+        frame.channel === 0 &&
         frame.raw.length === 8 &&
         frame.raw.every((byte) => byte === 0) &&
         adminUserId
