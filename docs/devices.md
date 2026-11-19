@@ -115,9 +115,10 @@ A getter narrows the value's **type**; what the value **means** — a percentage
 instant, one of a named set — is declared beside it and is what a host needs to render a reading. See
 [What a reading means](/value-kinds).
 
-**Getters are evidence-gated.** A getter is present only when the device actually reported the backing
-value — so a device advertises exactly the reads it has, never a phantom sub-feature of the capability
-it happens to own. A battery camera that reports its custom-recording settings exposes
+**Getters are evidence-gated.** A getter is present when the device reported the backing value, or when
+the product's thing description lists it, in which case it reads the description's default until a
+report arrives — so a device advertises exactly the reads it has, never a phantom sub-feature of the
+capability it happens to own. A battery camera that reports its custom-recording settings exposes
 `battery()?.recordDuration`; one that reports only a level and a temperature won't have that key at all:
 
 ```ts
