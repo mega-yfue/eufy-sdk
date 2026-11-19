@@ -466,7 +466,7 @@ export function paddingP2PData(data: Buffer, blocksize = 16): Buffer {
  * When `key` is given the data is zero-padded to 16 and AES-128-ECB encrypted, and
  * `encType` is written in the channel word (level-1 encryption = 1).
  */
-export function buildStringCommandPayload(value: string, channel = 0, key?: Buffer, encType = 1): Buffer {
+export function buildStringCommandPayload(value: string, channel = 0, key?: Buffer, encType = 1, streamId = 0): Buffer {
   const encrypted = !!key && key.length === 16;
   const raw = Buffer.from(value, "utf-8");
   const data = encrypted ? encryptP2PData(paddingP2PData(raw), key!) : raw;
@@ -477,7 +477,7 @@ export function buildStringCommandPayload(value: string, channel = 0, key?: Buff
     Buffer.from([0x00, 0x00]),
     Buffer.from([0x01, 0x00]),
     Buffer.from([channel, encrypted ? encType : 0x00]),
-    Buffer.from([0x00, 0x00]),
+    Buffer.from([streamId & 0xff, 0x00]),
     data,
   ]);
 }

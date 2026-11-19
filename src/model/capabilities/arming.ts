@@ -442,7 +442,6 @@ export const ARMING_MEMBERS = {
     type: "enum",
     kind: "enum",
     enumValues: ARMING_MODE_LABELS,
-    provenance: "verified",
     description:
       "Guard mode (verified: param 1224 = GUARD_MODE, read/write mechanism confirmed). Reads and SETS all " +
       "9 modes the app defines — away/home/schedule/custom1/custom2/custom3/off/geo/disarmed. Three are " +

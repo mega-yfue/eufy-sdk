@@ -34,6 +34,7 @@ import {
   accessorNamesFor,
   describeCapabilities,
   claimedParams,
+  thingValue,
   type DeviceActionMap,
   type CapabilityAccessors,
   type DeviceManifest,
@@ -107,8 +108,10 @@ function coerce(
   raw: string | number | boolean,
   invert = false,
   logger: Logger = noopLogger,
+  param?: number,
+  other?: (param: number) => string | undefined,
 ): boolean | number | string {
-  if (spec.decode) return spec.decode(raw);
+  if (spec.decode) return spec.decode(raw, param, other);
   if (spec.raw && spec.type === "bool" && typeof raw === "string" && !BOOL_WIRE.has(raw)) return raw;
   const v = coerceByType(spec.type, raw, spec.name, spec.raw ? noopLogger : logger);
   // A `bool` param that is a disable flag reads inverted ("0"/false ⇒ TRUE). `invert` comes from
@@ -195,8 +198,10 @@ export class Device {
    * answers a caller has to be able to tell apart.
    */
   private bound = false;
-  /** The product's thing description resolved for this device, as {@link bindActions} was given it. */
-  private things?: CommandContext["things"];
+  /** The context {@link bindActions} was given, its resolved thing description among it. */
+  private bindCtx?: CommandContext;
+  /** The raw value of every param applied, by param id, as the device reported it. */
+  private readonly raw = new Map<number, string>();
 
   /**
    * Read-through freshness policy (injected by the facade via {@link setFreshnessPolicy}; the model
@@ -309,7 +314,7 @@ export class Device {
       ff09Settings,
       rawDp,
     });
-    this.things = ctx.things;
+    this.bindCtx = ctx;
     this.bound = true;
   }
 
@@ -457,13 +462,17 @@ export class Device {
       const spec = hit?.spec;
       const def = this.withheld.has(pt) ? undefined : paramDef(this.namespace, pt);
       const name = spec ? spec.name : def ? def.name : `${UNKNOWN_PARAM_PREFIX}${pt}`;
-      const value: ParamValue = def?.encoding
-        ? decodeEncoded(rawVal, def.encoding) // base64+json / json → structured object
-        : spec
-          ? coerce(spec, rawVal, hit!.invert, this.logger)
-          : def
-            ? coerceByType(def.type, rawVal, def.name, this.logger)
-            : String(rawVal);
+      const value: ParamValue =
+        def?.encoding && !spec?.decode
+          ? decodeEncoded(rawVal, def.encoding) // base64+json / json → structured object
+          : spec
+            ? coerce(spec, rawVal, hit!.invert, this.logger, pt, (p) =>
+                p in params ? String(params[p]) : this.raw.get(p),
+              )
+            : def
+              ? coerceByType(def.type, rawVal, def.name, this.logger)
+              : String(rawVal);
+      this.raw.set(pt, String(rawVal));
       const prev = this.state.get(name);
       // Compare structurally (order-insensitive) so a decoded object whose keys come back reordered
       // doesn't read as "changed" and flap a downstream update — see `structuralEqual`.
@@ -546,9 +555,20 @@ export class Device {
         capabilities: new Set(this.capabilities),
         homeBaseAttached: this.stationSn !== this.sn,
         stationSerial: this.stationSn,
-        things: this.things,
+        things: this.bindCtx?.things,
       }),
     };
+  }
+
+  /**
+   * A thing property no capability member exposes, by its description identifier, as the product's
+   * settings bundle reads it: its value as the description states it, the description's default until the
+   * device reports it. `undefined` on an unbound device, for an identifier its description does not list,
+   * and for one a member exposes (read it there).
+   */
+  thingValue(identifier: string): string | undefined {
+    const ctx = this.bindCtx && { ...this.bindCtx, capabilities: this.capSet };
+    return ctx && thingValue(identifier, ctx, (p) => this.raw.get(p));
   }
 
   /** Plain-object view: serial, name, resolved codec/source, capabilities, and every current property value. */

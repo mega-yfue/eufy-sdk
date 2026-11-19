@@ -45,7 +45,7 @@ export function setScalar(
  * The transport picks L1 (standalone, ECB) vs L2 (HomeBase, GCM) by session — the capability just
  * describes the payload.
  */
-export function setJson(param: number, data: Record<string, unknown>, ctx: CommandContext): Command {
+export function setJson(param: number, data: Record<string, unknown> | number, ctx: CommandContext): Command {
   return { kind: "set-json", param, data, channel: ctx.channel };
 }
 
@@ -56,10 +56,17 @@ export function setJson(param: number, data: Record<string, unknown>, ctx: Comma
  * shape. Reversed from a live capture of the app's own SET_SNOOZE_TIME (1271) frame.
  *
  * `channel` overrides the device channel — pass it for a station-scoped bare write (e.g. the
- * alarm-delay config 1255, which rides the station broadcast channel 255, not `ctx.channel`).
+ * alarm-delay config 1255, which rides the station broadcast channel 255, not `ctx.channel`). `form`
+ * `"int-string"` seals it level-1 whatever the session holds, as the app does for 1060.
  */
-export function setJsonRaw(cmd: number, data: Record<string, unknown>, ctx: CommandContext, channel?: number): Command {
-  return { kind: "set-json-raw", cmd, data, channel: channel ?? ctx.channel };
+export function setJsonRaw(
+  cmd: number,
+  data: Record<string, unknown>,
+  ctx: CommandContext,
+  channel?: number,
+  form?: "int-string",
+): Command {
+  return { kind: "set-json-raw", cmd, data, channel: channel ?? ctx.channel, ...(form && { form }) };
 }
 
 /**
@@ -91,7 +98,7 @@ export function setJsonRaw(cmd: number, data: Record<string, unknown>, ctx: Comm
  */
 export function setPayload(
   cmd: number,
-  payload: Record<string, unknown>,
+  payload: Record<string, unknown> | readonly unknown[],
   ctx: CommandContext,
   mValue3?: number,
   channel?: number,

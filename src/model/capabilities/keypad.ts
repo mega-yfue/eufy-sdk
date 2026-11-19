@@ -24,7 +24,6 @@ export const KEYPAD_MEMBERS = {
     param: 1653,
     type: "bool",
     kind: "boolean",
-    provenance: "apk",
     unexposed: true,
     description:
       "Keypad low-battery flag (APP_CMD_KEYPAD_BATTERY_CAP_STATE, 1653). UNVERIFIED polarity: the app " +
@@ -38,7 +37,6 @@ export const KEYPAD_MEMBERS = {
     param: 1655,
     type: "bool",
     kind: "boolean",
-    provenance: "apk",
     coerce: isChargingState,
     description:
       "Keypad charging — derived from APP_CMD_KEYPAD_BATTERY_CHARGER_STATE (1655) as `value ∉ {0,2}`, " +

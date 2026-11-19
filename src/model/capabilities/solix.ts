@@ -32,12 +32,11 @@ export type SolixCapability =
  * "non-zero": a single-phase / single-CT meter still reports its L2/L3 slots as `0.0`, so those members
  * install and read `0` rather than staying absent — a caller sees `0` for an idle phase, not `undefined`.
  *
- * Provenance splits by what the evidence actually pins. The app's field VOCABULARY (these twelve names)
- * is authoritative. For the tag→field binding, a live single-phase frame confirmed the L1 and total
- * magnitudes (a nominal mains voltage, an equal line/total power pair, the line current), so those four
- * positions are `verified`. The L2/L3 tags are never non-zero on a single-CT install and the app itself
- * receives the meter as named JSON — there is no tag→phase decoder in the app binary — so their phase
- * assignment is inferred from the block ordering and is marked `guessed`, not `apk`. The energy counters (`meterImportEnergy`/`meterExportEnergy`) are named
+ * The app's field VOCABULARY (these twelve names) is authoritative. For the tag→field binding, a live
+ * single-phase frame confirmed the L1 and total magnitudes (a nominal mains voltage, an equal line/total
+ * power pair, the line current). The L2/L3 tags are never non-zero on a single-CT install and the app
+ * itself receives the meter as named JSON — there is no tag→phase decoder in the app binary — so their
+ * phase assignment is inferred from the block ordering. The energy counters (`meterImportEnergy`/`meterExportEnergy`) are named
  * on the wire but are NOT members here: their tag→name is confirmed, but their unit SCALE is not (a live
  * reading is consistent with either Wh or kWh), so they stay raw named values via
  * {@link SOLIX_METER_FIELD_NAMES} until a capture pins the scale, rather than ship a member with a guessed unit.
@@ -52,7 +51,6 @@ export const SOLIX_ENERGY_METER_MEMBERS = {
     type: "number",
     kind: "scalar",
     unit: "V",
-    provenance: "verified",
     description: "Meter line-1 voltage (V) — ff09 tag 0xAC, confirmed against a live single-phase frame.",
   },
   /** Line-2 voltage (V), ff09 tag `0xAD` — the app's field; reads 0 until a multi-phase frame carries it. */
@@ -61,7 +59,6 @@ export const SOLIX_ENERGY_METER_MEMBERS = {
     type: "number",
     kind: "scalar",
     unit: "V",
-    provenance: "guessed",
     description:
       "Meter line-2 voltage (V) — ff09 tag 0xAD; phase assignment inferred from block ordering (never observed non-zero), 0 on a single-phase install.",
   },
@@ -71,7 +68,6 @@ export const SOLIX_ENERGY_METER_MEMBERS = {
     type: "number",
     kind: "scalar",
     unit: "V",
-    provenance: "guessed",
     description:
       "Meter line-3 voltage (V) — ff09 tag 0xAE; phase assignment inferred from block ordering (never observed non-zero), 0 on a single-phase install.",
   },
@@ -81,7 +77,6 @@ export const SOLIX_ENERGY_METER_MEMBERS = {
     type: "number",
     kind: "scalar",
     unit: "A",
-    provenance: "verified",
     description: "Meter line-1 current (A) — ff09 tag 0xAF, confirmed against a live single-phase frame.",
   },
   /** Line-2 current (A), ff09 tag `0xB0` — the app's field; reads 0 until a multi-phase frame carries it. */
@@ -90,7 +85,6 @@ export const SOLIX_ENERGY_METER_MEMBERS = {
     type: "number",
     kind: "scalar",
     unit: "A",
-    provenance: "guessed",
     description:
       "Meter line-2 current (A) — ff09 tag 0xB0; phase assignment inferred from block ordering (never observed non-zero), 0 on a single-phase install.",
   },
@@ -100,7 +94,6 @@ export const SOLIX_ENERGY_METER_MEMBERS = {
     type: "number",
     kind: "scalar",
     unit: "A",
-    provenance: "guessed",
     description:
       "Meter line-3 current (A) — ff09 tag 0xB1; phase assignment inferred from block ordering (never observed non-zero), 0 on a single-phase install.",
   },
@@ -110,7 +103,6 @@ export const SOLIX_ENERGY_METER_MEMBERS = {
     type: "number",
     kind: "scalar",
     unit: "W",
-    provenance: "verified",
     description: "Meter line-1 active power (W) — ff09 tag 0xA8, confirmed live; negative on export.",
   },
   /** Line-2 active power (W), ff09 tag `0xA9` — the app's field; reads 0 until a multi-phase frame carries it. */
@@ -119,7 +111,6 @@ export const SOLIX_ENERGY_METER_MEMBERS = {
     type: "number",
     kind: "scalar",
     unit: "W",
-    provenance: "guessed",
     description:
       "Meter line-2 active power (W) — ff09 tag 0xA9; phase assignment inferred from block ordering (never observed non-zero), 0 on a single-phase install.",
   },
@@ -129,7 +120,6 @@ export const SOLIX_ENERGY_METER_MEMBERS = {
     type: "number",
     kind: "scalar",
     unit: "W",
-    provenance: "guessed",
     description:
       "Meter line-3 active power (W) — ff09 tag 0xAA; phase assignment inferred from block ordering (never observed non-zero), 0 on a single-phase install.",
   },
@@ -139,7 +129,6 @@ export const SOLIX_ENERGY_METER_MEMBERS = {
     type: "number",
     kind: "scalar",
     unit: "W",
-    provenance: "verified",
     description: "Meter total active power (W) — ff09 tag 0xAB, confirmed live; equals L1 on one phase.",
   },
 } as const satisfies Members;

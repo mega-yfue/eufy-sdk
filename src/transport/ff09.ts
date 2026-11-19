@@ -348,16 +348,22 @@ function assembleFf09Frame(
   deviceSn: string,
   keyTime: number,
   seqNum: number,
+  header: { subVersion: number; functionType: number; encrypt: boolean } = {
+    subVersion: 3,
+    functionType: 2,
+    encrypt: true,
+  },
 ): Ff09Frame {
   // key = admin_user_id[-12:] ‖ uint32_BE(keyTime); iv = deviceSn zero-padded to 16.
   const key = Buffer.concat([Buffer.from(adminUserId.slice(-12), "ascii"), u32be(keyTime)]);
   const iv = Buffer.alloc(16);
   Buffer.from(deviceSn, "ascii").copy(iv);
   const cipher = createCipheriv("aes-128-cbc", key, iv);
-  const ct = Buffer.concat([cipher.update(plain), cipher.final()]);
+  const ct = header.encrypt ? Buffer.concat([cipher.update(plain), cipher.final()]) : plain;
 
   // Outer ff09 frame: header ‖ ct, then a trailing XOR-of-all-preceding checksum byte.
-  const body = Buffer.concat([Buffer.from([0x03, 0x00, 0x02]), u16be(0x4000 | commandCode), ct]);
+  const opcode = (header.encrypt ? 0x4000 : 0) | commandCode;
+  const body = Buffer.concat([Buffer.from([header.subVersion, 0x00, header.functionType]), u16be(opcode), ct]);
   const size = 2 /*ff09*/ + 2 /*size*/ + body.length + 1; /*xor*/
   const preXor = Buffer.concat([Buffer.from([0xff, 0x09]), u16le(size), body]);
   let xor = 0;
@@ -365,6 +371,49 @@ function assembleFf09Frame(
   const frame = Buffer.concat([preXor, Buffer.from([xor])]);
 
   return { lockPayload: frame.toString("hex"), time: keyTime, seqNum, apiCommand };
+}
+
+/**
+ * An `ff09` frame from tagged TLV fields a settings bundle builds, for a lock reached over MQTT: `A1` the
+ * time and `A2` the admin user id first, then `fields`, sealed when `encrypt` (the descriptor's
+ * `needEncrypt`) with the frame header's `subVersion` and `functionType`. `apiCommand` is the MQTT
+ * channel's `TRANSFER_PAYLOAD`.
+ */
+export function buildFf09TlvFrame(input: {
+  cmdCode: number;
+  fields: readonly { tag: number; value: Buffer }[];
+  adminUserId: string;
+  deviceSn: string;
+  encrypt: boolean;
+  subVersion: number;
+  functionType: number;
+  unixTime?: number;
+  nonce?: number;
+}): Ff09Frame {
+  const { unixTime, keyTime, seqNum } = resolveFf09Identity(
+    input.adminUserId,
+    input.deviceSn,
+    input.unixTime,
+    input.nonce,
+  );
+  const fields = [
+    { tag: 0xa1, value: u32le(unixTime) },
+    { tag: 0xa2, value: Buffer.from(input.adminUserId, "ascii") },
+    ...input.fields,
+  ];
+  for (const f of fields)
+    if (f.value.length > 0xff) throw new Error(`ff09: TLV field too long for a 1-byte length (${f.value.length})`);
+  const tlv = Buffer.concat(fields.map((f) => Buffer.concat([Buffer.from([f.tag, f.value.length]), f.value])));
+  return assembleFf09Frame(
+    input.cmdCode,
+    CMD_TRANSFER_PAYLOAD,
+    input.encrypt ? zeroPadToBlock(tlv) : tlv,
+    input.adminUserId,
+    input.deviceSn,
+    keyTime,
+    seqNum,
+    { subVersion: input.subVersion, functionType: input.functionType, encrypt: input.encrypt },
+  );
 }
 
 /**

@@ -200,7 +200,7 @@ const PORTAL_COMMAND_KINDS: ReadonlySet<Command["kind"]> = new Set<Command["kind
   "set-json-raw",
   "p2p-station-scalar",
   "p2p-int-string",
-  "p2p-privacy-burst",
+  "p2p-string",
 ]);
 
 /** The portal kinds an RTC-control station refuses: every portal kind its control channel cannot frame. */
@@ -504,7 +504,8 @@ export class EufyMega extends EventEmitter {
   /**
    * Builds the inbound listener that converts ThingClips DP maps to realtime capability state.
    * DP values arrive as booleans, numbers, or strings; they are normalised to the string form
-   * the param store uses, then applied through the standard realtime-report path.
+   * the param store uses, then applied through the standard realtime-report path, every point the device
+   * reported and not only those a capability decodes.
    */
   private makeTuyaDpInbound(): TuyaDpInbound {
     return {
@@ -516,7 +517,7 @@ export class EufyMega extends EventEmitter {
         if (!Object.keys(dpParams).length) return;
         const caps = this.capsForEvent(sn);
         const signal = { source: "mqtt" as const, deviceSn: sn, topic: "", raw: {}, dpParams };
-        this.applyRealtimeReport(sn, decodeCapabilityState(signal, caps));
+        this.applyRealtimeReport(sn, [{ params: dpParams }, ...decodeCapabilityState(signal, caps)]);
       },
     };
   }
@@ -1321,13 +1322,16 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * Route a command and, when the device answered it with success, land the value it now holds under the
-   * param its member reads ({@link commandReflection}) through the realtime path, so the getter reads it and
-   * `propertyChanged` announces it as for any report. A write sent unread, refused or unanswered changes
-   * nothing here.
+   * Route a command, then the `next` one it carries (a cloud call only once the device answered the command
+   * with success, as the app calls `update_device_info` after a rename it saw succeed), and, when it did, land
+   * the value it now holds under the param its member reads ({@link commandReflection}) through the realtime
+   * path, so the getter reads it and `propertyChanged` announces it as for any report. A write sent unread,
+   * refused or unanswered changes nothing here.
    */
   private async routeAndReflect(sn: string, cmd: Command): Promise<void> {
-    if ((await this.routeCommand(sn, cmd)) !== true) return;
+    const answered = await this.routeCommand(sn, cmd);
+    if (cmd.next && (cmd.next.kind !== "cloud-request" || answered === true)) await this.routeAndReflect(sn, cmd.next);
+    if (answered !== true) return;
     const reflected = commandReflection(cmd);
     if (reflected) this.applyRealtimeState(sn, { [reflected.param]: reflected.raw });
   }
@@ -1367,6 +1371,7 @@ export class EufyMega extends EventEmitter {
     if (cmd.kind === "mqtt-dp" || cmd.kind === "mqtt-dp-preset" || cmd.kind === "mqtt-dp-color") {
       return this.mqtt.dispatchCommand(sn, cmd);
     }
+    if (cmd.kind === "cloud-request") return this.mega.cloudRequest(cmd).then(() => true);
     if (cmd.kind === "aiot-dp") {
       const dev = this.registry.require(sn);
       if (isTuyaVacuum(dev)) return this.tuya.dispatchCommand(sn, cmd);
@@ -2162,7 +2167,8 @@ export class EufyMega extends EventEmitter {
         dpParams: parseAiotDpReport(m.raw),
       };
       const caps = m.deviceSn ? this.capsForEvent(m.deviceSn) : undefined;
-      this.applyRealtimeReport(m.deviceSn, decodeCapabilityState(signal, caps));
+      const reported = signal.dpParams ? [{ params: signal.dpParams }] : [];
+      this.applyRealtimeReport(m.deviceSn, [...reported, ...decodeCapabilityState(signal, caps)]);
       for (const out of decodeCapabilityEvent(signal, caps))
         this.emitSemantic(out.event, out.payload, { edge: true, refresh: out.refresh });
     });
@@ -2538,6 +2544,7 @@ export class EufyMega extends EventEmitter {
       macAddress: recordString(raw, "wifi_mac"),
       updateAvailable: raw.needUpdate === true || raw.needUpdate === 1 || raw.needUpdate === "1",
       paramIds: new Set([...Object.keys(rec.params), ...Object.keys(rec.dpParams ?? {})].map(Number)),
+      paramValue: (param) => rec.params[param],
       things: rec.things,
       capabilities: new Set(resolved.capabilities),
       // Member identity for ff09-* command devices (see core/contracts Ff09Identity).

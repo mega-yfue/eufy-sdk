@@ -269,6 +269,7 @@ export function resolveProperties(rec: CloudRecord, codec: Codec, capabilities: 
     category: rec.category,
     capabilities: new Set(capabilities),
     paramIds,
+    paramValue: (param) => rec.params?.[param],
     things: rec.things,
     stationSerial: rec.parentSn,
   });

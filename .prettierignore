@@ -8,3 +8,6 @@ docs/api/
 
 # temporary logo proposals: verbatim copies of generated artefacts, not source to style
 docs/public/logo/
+
+# generated data, written by the bundle-wires generator
+src/model/capabilities/bundle-wires.generated.json

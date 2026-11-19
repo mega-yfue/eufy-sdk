@@ -49,7 +49,7 @@ export interface DeviceRecord {
   /**
    * State the device reported over its realtime wire, as ids in its own param namespace.
    *
-   * Kept apart from {@link params} rather than merged into it because the two differ in provenance and
+   * Kept apart from {@link params} rather than merged into it because the two differ in source and
    * staleness: cloud params are a slow server-side heartbeat snapshot, these are the device's own live
    * report. Capability detection reads only `params`, so a realtime id can never steer which
    * capabilities a device is judged to have.

@@ -6,6 +6,13 @@ import { DeviceType } from "../../device-types.js";
 import { bind as bindCapability } from "./bind.js";
 import type { CameraActions } from "../camera.js";
 import type { CommandSink } from "../../../core/contracts.js";
+import { parseThingsList } from "../thing-description.js";
+
+// The product's settings-bundle data, synthetic: the spec is about the code, not the shipped data.
+vi.mock("../../../model/capabilities/bundle-wires.generated.json", async () => {
+  const f = await import("../../../model/capabilities/__tests__/bundle-fixture.js");
+  return f.bundleData("T8410", { camera_on_off: f.power("1035>2001") });
+});
 
 /**
  * Typed capability reads — the fluent read getters (`dev.battery?.()?.level`) built from each module's
@@ -141,7 +148,15 @@ describe("typed capability reads", () => {
   it("installs a getter on a readAliases id alone, not just the member's own param", () => {
     const { acts } = bindCapability<CameraActions>(
       "camera",
-      { channel: 0, codec: "camera", paramIds: new Set([2001]) },
+      {
+        channel: 0,
+        codec: "camera",
+        model: "T8410",
+        paramIds: new Set([2001]),
+        things: parseThingsList({
+          things_list: [{ profile: { product_code: "T8410" }, properties: [{ identifier: "camera_on_off" }] }],
+        }).T8410,
+      },
       { read: (name) => (name === "enabled" ? { value: true } : undefined) },
     );
     expect("enabled" in acts).toBe(true);

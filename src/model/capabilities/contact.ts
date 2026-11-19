@@ -119,7 +119,6 @@ export const CONTACT_MEMBERS = {
     property: "contact",
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
     description: "Contact state, true=open (1550, sensor_door_status).",
   },
   /** The sensor was removed from its mount. Reported by a T8900; the meaning of a set value is the product bundle's. */
@@ -127,7 +126,6 @@ export const CONTACT_MEMBERS = {
     param: CONTACT_CMD.TAMPER,
     type: "bool",
     kind: "boolean",
-    provenance: "apk",
     description: "Removed from its mount (61015, sensor_disassemble_status).",
   },
   /** The alarm currently skips this sensor. Reported by a T8900; the meaning of a set value is the product bundle's. */
@@ -135,7 +133,6 @@ export const CONTACT_MEMBERS = {
     param: CONTACT_CMD.BYPASS,
     type: "bool",
     kind: "boolean",
-    provenance: "apk",
     description: "Bypassed by the alarm (61016, sensor_door_bypass_status).",
   },
   /**
@@ -146,7 +143,6 @@ export const CONTACT_MEMBERS = {
     param: CONTACT_CMD.OPEN_ALERT,
     type: "string",
     kind: "text",
-    provenance: "verified",
     unexposed: true,
     writtenElsewhere: true,
     description: "Left-open alert config, base64 JSON {door_enable,door_time_point} (1290).",
@@ -156,7 +152,6 @@ export const CONTACT_MEMBERS = {
     readsFrom: "openAlertConfig",
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
     decode: (raw) => {
       const c = config(raw);
       return c === undefined ? undefined : asBool(c.door_enable);
@@ -168,7 +163,6 @@ export const CONTACT_MEMBERS = {
     readsFrom: "openAlertConfig",
     type: "number",
     kind: "scalar",
-    provenance: "verified",
     decode: (raw) => {
       const n = Number(config(raw)?.door_time_point);
       return Number.isInteger(n) ? n : undefined;
@@ -180,7 +174,6 @@ export const CONTACT_MEMBERS = {
     param: CONTACT_CMD.DAILY_CHECK,
     type: "string",
     kind: "text",
-    provenance: "verified",
     unexposed: true,
     writtenElsewhere: true,
     description: "Daily check config, base64 JSON {door_enable,door_time_interval} (1291).",
@@ -190,7 +183,6 @@ export const CONTACT_MEMBERS = {
     readsFrom: "dailyCheckConfig",
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
     decode: (raw) => {
       const c = config(raw);
       return c === undefined ? undefined : asBool(c.door_enable);
@@ -202,7 +194,6 @@ export const CONTACT_MEMBERS = {
     readsFrom: "dailyCheckConfig",
     type: "string",
     kind: "text",
-    provenance: "verified",
     decode: (raw) => {
       const times = config(raw)?.door_time_interval;
       return Array.isArray(times) ? times.map((t) => hhmm(Number(t) || 0)).join(",") : undefined;
@@ -256,7 +247,6 @@ export const CONTACT_MEMBERS = {
     kind: "enum",
     enumValues: enumLabels(ALARM_TONES),
     thing: ["device_alarm_sound_type"],
-    provenance: "verified",
     available: described("device_alarm_sound_type"),
     args: [{ name: "tone", kind: "enum", description: "Silent (0) or one of the four tones." }],
     description: "Alarm tone (1507, device_alarm_sound_type): 0=None,1=Water,2=Classics,3=Light,4=Ding.",
@@ -274,7 +264,6 @@ export const CONTACT_MEMBERS = {
     param: CONTACT_CMD.ALARM_VOLUME,
     type: "number",
     kind: "scalar",
-    provenance: "verified",
     available: described("alarm_volume_value"),
     min: ALARM_VOLUME_MIN,
     max: ALARM_VOLUME_MAX,

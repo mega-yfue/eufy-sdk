@@ -296,7 +296,6 @@ describe("lock capability module", () => {
       paramType: 6000,
       type: "bool",
       kind: "boolean",
-      provenance: "verified",
       writable: true,
     });
 
@@ -305,7 +304,6 @@ describe("lock capability module", () => {
       paramType: 1101,
       type: "number",
       kind: "percent",
-      provenance: "verified",
       readAliases: [{ paramType: 6001 }],
     });
   });

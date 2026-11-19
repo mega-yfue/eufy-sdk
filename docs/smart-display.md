@@ -48,11 +48,10 @@ uses.
 be the display's own or the station it is bound to. One value does not settle either, and a name here
 would be read downstream as a fact. They are reported as raw ids instead.
 
-**8001 is the battery because the maintainer identified it, and that is why its provenance is `verified`
-rather than `mega`** (the tiers are defined once, on `PropertySource` in `src/model/types.ts`). `"100"`
-fits a percentage of brightness, volume or charge equally well, so the capture could not have said which,
-and picking one would have been a coin toss presented to users as a fact. It took someone who knows the
-device — not another capture, and not the cloud data-point list, which is what `mega` would have claimed.
+**8001 is the battery because the maintainer identified it.** `"100"` fits a percentage of brightness,
+volume or charge equally well, so the capture could not have said which, and picking one would have been a
+coin toss presented to users as a fact. It took someone who knows the device — not another capture, and not
+the cloud data-point list.
 
 The 0-100 scale rests on the reading rather than on convention alone: a full charge reads `255` on a
 0-255 scale and `1000` on a 0-1000 one, so `"100"` on a charged unit is positive evidence for a
@@ -65,11 +64,10 @@ reading both from one capability would be a claim that the ecosystems share a pa
 door this line was split to close.
 
 ::: warning `softwareVersion` is an inference
-Its provenance is `guessed`, alone among the four, and why it has no typed getter. The device sent a
-dotted version-shaped string and nothing corroborates what the id means. `modelName` and `modelCode` are
-`mega` because their VALUES were facts already known from elsewhere — the retail name and the model code
-— so the match is evidence about the id, not a shape that suggests one. `battery` sits between them at
-`verified`: a real id and a consistent reading, named by a person rather than by a data-point list.
+It is the only one of the four nothing corroborates, and why it has no typed getter. The device sent a
+dotted version-shaped string. `modelName` and `modelCode` hold VALUES already known from elsewhere — the
+retail name and the model code — so the match is evidence about the id, not a shape that suggests one.
+`battery` is a real id with a consistent reading, named by a person rather than by a data-point list.
 
 Where the cloud record carries a firmware version, `dev.info()?.firmwareVersion` is the field to trust.
 This device's record did not, which is the only reason 8003 is named at all.

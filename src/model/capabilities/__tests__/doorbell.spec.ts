@@ -1,11 +1,4 @@
-import {
-  DOORBELL,
-  DOORBELL_CMD,
-  DoorbellRingtone,
-  DoorbellVideoQuality,
-  DOORBELL_MEMBERS,
-  type DoorbellActions,
-} from "../doorbell.js";
+import { DOORBELL, DOORBELL_CMD, DoorbellRingtone, DOORBELL_MEMBERS, type DoorbellActions } from "../doorbell.js";
 import { buildCommand } from "../index.js";
 import { parseThingsList } from "../thing-description.js";
 import { resolveDevice } from "../../registry.js";
@@ -32,7 +25,6 @@ describe("doorbell capability module", () => {
       "ringtoneVolume",
       "dingdongVolume",
       "dingdongRingtone",
-      "videoQuality",
       "notificationMode",
     ]);
   });
@@ -200,64 +192,13 @@ describe("doorbell capability module", () => {
     });
   });
 
-  describe("1705 — one integer carrying two settings", () => {
-    // value = quality + (highCompression ? 5 : 0). Six of the eight combinations were written from the
-    // app and read back; 0 and 2 follow the same arithmetic and were not individually written.
-    const quality = DOORBELL_MEMBERS.videoQuality.decode!;
-    const compression = DOORBELL_MEMBERS.highCompressionEncoding.decode!;
-
-    it("splits the observed values into their two halves", () => {
-      const observed: Array<[number, number, boolean]> = [
-        [1, DoorbellVideoQuality.Low, false],
-        [3, DoorbellVideoQuality.High, false],
-        [5, DoorbellVideoQuality.Auto, true],
-        [6, DoorbellVideoQuality.Low, true],
-        [7, DoorbellVideoQuality.Medium, true],
-        [8, DoorbellVideoQuality.High, true],
-      ];
-      for (const [raw, q, high] of observed) {
-        expect(quality(raw)).toBe(q);
-        expect(compression(raw)).toBe(high);
-      }
-    });
-
-    it("answers undefined for a value that is not one of the eight, rather than a wrong half", () => {
-      // 4 and 9 are in range but outside the encoding: reading 9 as 9 % 5 would answer a quality of 4.
-      // null and "" would become 0 through Number(), and 0 is a real value here — Auto on low
-      // compression — so an absent reading must not decode as a setting.
-      for (const bad of [-1, 4, 9, 1.5, "x", "", null, undefined, true]) {
-        expect(quality(bad)).toBeUndefined();
-        expect(compression(bad)).toBeUndefined();
-      }
-    });
-
-    it("one setter carries both halves — the wire has no way to send one", async () => {
-      const { acts, sent } = bind<DoorbellActions>("doorbell", ctx(2));
-      await acts.setVideoQuality!(DoorbellVideoQuality.Low, true);
-      expect(sent[0]).toMatchObject({ param: DOORBELL_CMD.VIDEO_QUALITY, value: 6, channel: 2 });
-      await acts.setVideoQuality!(DoorbellVideoQuality.High, false);
-      expect(sent[1]).toMatchObject({ value: 3 });
-      await acts.setVideoQuality!(DoorbellVideoQuality.Auto, true);
-      expect(sent[2]).toMatchObject({ value: 5 });
-    });
-
-    it("takes both halves rather than preserving one from a read — that failed on hardware", async () => {
-      // An earlier shape took only the quality and rebuilt the integer from the state reader. The reader
-      // is the snapshot the device was bound with, so a second write composed against the value from
-      // before the first: setting Low on 8 gave 6 correctly, then setting low compression re-read 8 and
-      // sent 3, reverting the quality. Requiring both arguments removes the stale copy entirely, so no
-      // reader is consulted here at all.
-      const { acts, sent } = bind<DoorbellActions>("doorbell", ctx(2), {
-        read: (n) => (n === "videoQuality" ? { value: 8 } : undefined),
-      });
-      await acts.setVideoQuality!(DoorbellVideoQuality.Low, false);
-      expect(sent[0]).toMatchObject({ value: 1 });
-    });
-
-    it("refuses a quality outside the enum", async () => {
-      const { acts, sent } = bind<DoorbellActions>("doorbell", ctx(2));
-      await expect(acts.setVideoQuality!(9 as never, true)).rejects.toThrow(/videoQuality/);
-      expect(sent).toHaveLength(0);
-    });
+  it("leaves 1705 to the camera's streamingQuality, the one write the product's bundle sends there", () => {
+    const things = parseThingsList({
+      things_list: [{ profile: { product_code: "T8210" }, properties: [{ identifier: "live_streaming_resolution" }] }],
+    }).T8210;
+    const doorbell = ctx(2, { model: "T8210", things, capabilities: new Set(["camera", "doorbell"]) });
+    expect(Object.values(DOORBELL_MEMBERS).some((m) => (m as { param?: number }).param === 1705)).toBe(false);
+    expect("setVideoQuality" in bind<DoorbellActions>("doorbell", doorbell).acts).toBe(false);
+    expect(buildCommand("streamingQuality", 10, doorbell), "1705 is the camera's").toBeDefined();
   });
 });

@@ -1,16 +1,7 @@
 import { buildFf09Trans, buildFf09MqttEnvelope, ff09MqttTopic } from "../command-router.js";
-import { LOCK_API_COMMAND, CMD_TRANSFER_PAYLOAD } from "../../ff09.js";
+import { CMD_TRANSFER_PAYLOAD } from "../../ff09.js";
 
-// Golden vectors — REDACTED. Originally captured live from a real T85D0 (OPEN: Zygisk SSL_write hook,
-// 2026-07-13; CLOSE: subscribing to the device's own `.../req` topic with our own account credentials,
-// 2026-07-16 — caught the real app's own close/lock publish in plaintext, no phone-keystore capture
-// needed). Both use apiCommand 6018/ON_OFF_LOCK; only the ff09 frame's internal A3 byte differs (see
-// transport/ff09.ts's class doc — the earlier "6012 = OPEN, 6018 = CLOSE, distinct commands" theory
-// was wrong). The real admin_user_id/serial were re-derived to synthetic placeholders
-// (docs/REDACTION.md) and these vectors regenerated from the (unchanged) encoder against the
-// synthetic identity — still a byte-exact structural proof of the frame layout, just no longer tied
-// to the real capture's identity. `lock` follows the frame's own convention (true=lock/close,
-// false=unlock/open) — the inverse of the old `open` field this replaced.
+// Golden frames, synthetic identity (docs/REDACTION.md): the two directions differ only in the frame's A3 byte.
 const ADMIN = "0000000000000000000000000000000000000000";
 const SN = "T85D0K0000000000";
 const USERNAME = "someone+tag";
@@ -21,7 +12,7 @@ const CAP_CLOSE =
   "ff096a000300024023f56a253cc41fc164eedd2d9b892fa475b90b8f7906369878ab7e921c22696af268515313bd60267433c682ec9c35240b9d835c76849d815878c3a7990c2965d3fc00617704de73e5477ff3eeb70c685d7f91f3df0b60e1982ccfbd13fcbbe57ba8";
 
 describe("garage/lock ff09 command over MQTT (secure-mqtt trans envelope)", () => {
-  it("lock:true reproduces a live-captured real-app close frame byte-exact: apiCommand 6018, A3=lock", () => {
+  it("lock:true builds the close frame, under the MQTT channel's apiCommand 1940", () => {
     const trans = buildFf09Trans({
       engage: true, // close
       adminUserId: ADMIN,
@@ -32,14 +23,15 @@ describe("garage/lock ff09 command over MQTT (secure-mqtt trans envelope)", () =
       nonce: 1784216759, // any nonce s.t. unixTime|nonce === the captured keyTime reproduces it exactly
       seqNum: 1,
     });
-    expect(trans.cmd).toBe(CMD_TRANSFER_PAYLOAD); // 1940
-    expect(trans.payload.apiCommand).toBe(LOCK_API_COMMAND.ON_OFF_LOCK); // 6018 — NOT 6012
+    expect(trans.cmd).toBe(CMD_TRANSFER_PAYLOAD);
+    expect(trans.account_id).toBe("");
+    expect(trans.payload.apiCommand).toBe(CMD_TRANSFER_PAYLOAD);
     expect(trans.payload.lock_payload).toBe(CAP_CLOSE);
     expect(trans.mChannel).toBe(0);
     expect(trans.mValue3).toBe(0);
   });
 
-  it("lock:false reproduces the captured frame byte-exact: apiCommand 6018, A3=unlock", () => {
+  it("lock:false builds the open frame, under apiCommand 1940", () => {
     const trans = buildFf09Trans({
       engage: false, // open
       adminUserId: ADMIN,
@@ -50,7 +42,7 @@ describe("garage/lock ff09 command over MQTT (secure-mqtt trans envelope)", () =
       nonce: 1,
       seqNum: 1783952254,
     });
-    expect(trans.payload.apiCommand).toBe(LOCK_API_COMMAND.ON_OFF_LOCK); // 6018
+    expect(trans.payload.apiCommand).toBe(CMD_TRANSFER_PAYLOAD);
     expect(trans.payload.lock_payload).toBe(CAP_OPEN);
   });
 
@@ -79,7 +71,7 @@ describe("garage/lock ff09 command over MQTT (secure-mqtt trans envelope)", () =
     expect(ff09MqttTopic("T85D0", SN)).toBe(`cmd/eufy_security/T85D0/${SN}/req`);
   });
 
-  it("buildFf09MqttEnvelope wraps the trans in {head:{cmd:9,…}, payload:{account_id,device_sn,trans}}", () => {
+  it("buildFf09MqttEnvelope wraps the trans in {head:{cmd:9,…}, payload:{account_id,device_sn,trans,data,update_data,method}}", () => {
     const trans = buildFf09Trans({
       engage: true,
       adminUserId: ADMIN,
@@ -110,8 +102,7 @@ describe("garage/lock ff09 command over MQTT (secure-mqtt trans envelope)", () =
       sign_code: 0,
     });
     const payload = JSON.parse(obj.payload);
-    expect(payload.account_id).toBe(ADMIN);
-    expect(payload.device_sn).toBe(SN);
+    expect(payload).toMatchObject({ account_id: ADMIN, device_sn: SN, data: "", update_data: "", method: "" });
     const decodedTrans = JSON.parse(Buffer.from(payload.trans, "base64").toString("utf-8"));
     expect(decodedTrans).toEqual(trans);
   });

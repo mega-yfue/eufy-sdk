@@ -13,6 +13,7 @@
  * payload cannot disagree with the getter beside it. And EVERY schema property is announced: there is no
  * per-member opt-out and no central filter on `kind`.
  */
+import { parseThingsList } from "../capabilities/thing-description.js";
 import { describe, it, expect } from "vitest";
 import { Device, UNKNOWN_PARAM_PREFIX } from "../index.js";
 import type { CloudRecord } from "../index.js";
@@ -47,7 +48,10 @@ describe("Device.announcements", () => {
    * convention to drift from it. 1035 is the camera's disable bit: raw `"1"` reads as NOT enabled.
    */
   it("announces a value in the polarity the getter reads it in", () => {
-    const dev = Device.fromRecord("sn", camera);
+    const things = parseThingsList({
+      things_list: [{ profile: { product_code: "T0000" }, properties: [{ identifier: "camera_on_off" }] }],
+    }).T0000;
+    const dev = Device.fromRecord("sn", { ...camera, things });
 
     expect(announce(dev, { 1035: "1" })).toEqual([{ property: "enabled", value: false }]);
   });

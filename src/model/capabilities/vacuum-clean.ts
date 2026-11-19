@@ -1669,7 +1669,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     param: VACUUM_DP.POWER,
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     description: "Power on/off (DP 151 power switch, cloud get_product_data_point).",
     write: (v, _ctx) => aiotDp(VACUUM_DP.POWER, asBool(v)),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
@@ -1678,7 +1677,6 @@ export const VACUUM_CLEAN_MEMBERS = {
   activity: {
     param: VACUUM_DP.WORK_STATUS,
     type: "string",
-    provenance: "mega",
     decode: (raw, codec) => decodeVacuumActivity(raw as ParamValue | undefined, codec),
     decodedKind: "enum",
     decodedValues: VACUUM_ACTIVITIES,
@@ -1696,7 +1694,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "%",
     kind: "percent",
-    provenance: "mega",
     description: "Speaker volume 0-100 (DP 161, Value ro). AIoT clean line.",
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
   },
@@ -1711,7 +1708,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "%",
     kind: "percent",
-    provenance: "mega",
     readAliases: [{ paramType: TUYA_VACUUM_DP.BATTERY_LEVEL, available: isTuyaVacuum }],
     description: "Battery level 0-100 (DP 163 AIoT / DP 104 Tuya). NOTE: clean namespace — not param 1101.",
   },
@@ -1731,7 +1727,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     param: VACUUM_DP.LANGUAGE,
     type: "number",
     kind: "identifier",
-    provenance: "mega",
     decode: (raw, codec) => decodeLanguageField(raw as ParamValue | undefined, codec, LANGUAGE_FIELD.CURRENT_ID),
     decodedKind: "identifier",
     description: "The voice pack in use — LanguageResponse.current_id (DP 162, Raw protobuf). AIoT clean line.",
@@ -1745,7 +1740,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "voicePack",
     type: "number",
     kind: "identifier",
-    provenance: "mega",
     decode: (raw, codec) => decodeLanguageField(raw as ParamValue | undefined, codec, LANGUAGE_FIELD.DEFAULT_ID),
     decodedKind: "identifier",
     description: "The firmware's own voice pack — LanguageResponse.default_id (DP 162, Raw protobuf).",
@@ -1757,7 +1751,6 @@ export const VACUUM_CLEAN_MEMBERS = {
   voicePackState: {
     readsFrom: "voicePack",
     type: "string",
-    provenance: "mega",
     decode: (raw, codec) => {
       const v = decodeLanguageField(raw as ParamValue | undefined, codec, LANGUAGE_FIELD.STATE);
       return v === undefined ? undefined : VOICE_PACK_STATES[v];
@@ -1774,7 +1767,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "voicePack",
     type: "number",
     kind: "scalar",
-    provenance: "mega",
     decode: (raw, codec) => decodeLanguageField(raw as ParamValue | undefined, codec, LANGUAGE_FIELD.VERSION),
     decodedKind: "scalar",
     description: "Installed voice-pack version — LanguageResponse.version (DP 162, Raw protobuf).",
@@ -1790,7 +1782,6 @@ export const VACUUM_CLEAN_MEMBERS = {
   cleanType: {
     param: VACUUM_DP.CLEAN_PARAM,
     type: "string",
-    provenance: "mega",
     decode: (raw, codec) => decodeCleanType(raw as ParamValue | undefined, codec),
     decodedKind: "enum",
     decodedValues: [...VACUUM_CLEAN_TYPES, ...TUYA_CLEAN_TYPES] as readonly string[],
@@ -1806,7 +1797,6 @@ export const VACUUM_CLEAN_MEMBERS = {
   carpetStrategy: {
     readsFrom: "cleanType",
     type: "string",
-    provenance: "mega",
     decode: (raw, codec) => {
       const v = decodeCleanParamValue(raw as ParamValue | undefined, codec, CLEAN_PARAM_FIELD.CLEAN_CARPET);
       return v === undefined ? undefined : CARPET_STRATEGY[v];
@@ -1824,7 +1814,6 @@ export const VACUUM_CLEAN_MEMBERS = {
   cleanExtent: {
     readsFrom: "cleanType",
     type: "string",
-    provenance: "mega",
     decode: (raw, codec) => {
       const v = decodeCleanParamValue(raw as ParamValue | undefined, codec, CLEAN_PARAM_FIELD.CLEAN_EXTENT);
       return v === undefined ? undefined : CLEAN_EXTENT[v];
@@ -1841,7 +1830,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "cleanType",
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     decode: (raw, codec) => {
       const v = decodeCleanParamValue(raw as ParamValue | undefined, codec, CLEAN_PARAM_FIELD.SMART_MODE);
       return v === undefined ? undefined : v !== 0;
@@ -1859,7 +1847,6 @@ export const VACUUM_CLEAN_MEMBERS = {
   mopLevel: {
     readsFrom: "cleanType",
     type: "string",
-    provenance: "verified",
     decode: (raw, codec) => {
       const v = decodeCleanParamValue(
         raw as ParamValue | undefined,
@@ -1882,7 +1869,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "cleanType",
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
     decode: (raw, codec) => {
       const v = decodeCleanParamValue(
         raw as ParamValue | undefined,
@@ -1903,7 +1889,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "cleanType",
     type: "number",
     kind: "scalar",
-    provenance: "mega",
     decode: (raw, codec) => decodeCleanParamValue(raw as ParamValue | undefined, codec, CLEAN_PARAM_FIELD.CLEAN_TIMES),
     decodedKind: "scalar",
     description: "Passes per job from CleanParam.clean_times (DP 154 AIoT, Raw protobuf).",
@@ -1927,7 +1912,6 @@ export const VACUUM_CLEAN_MEMBERS = {
   errorCode: {
     param: VACUUM_DP.FAULT_ALERT,
     type: "number",
-    provenance: "mega",
     readAliases: [{ paramType: TUYA_VACUUM_DP.FAULT_REPORT }],
     decode: (raw, codec) => decodeVacuumFault(raw as ParamValue | undefined, codec),
     decodedKind: "scalar",
@@ -1945,7 +1929,6 @@ export const VACUUM_CLEAN_MEMBERS = {
   workStatus: {
     param: TUYA_VACUUM_DP.WORK_STATUS,
     type: "string",
-    provenance: "mega",
     decode: (raw) => decodeTuyaWorkStatus(raw as ParamValue | undefined),
     decodedKind: "enum",
     decodedValues: VACUUM_ACTIVITIES,
@@ -1960,7 +1943,6 @@ export const VACUUM_CLEAN_MEMBERS = {
   workMode: {
     param: TUYA_VACUUM_DP.MODE,
     type: "string",
-    provenance: "mega",
     decode: (raw): TuyaWorkMode | undefined => {
       const s = typeof raw === "string" ? raw : undefined;
       return s !== undefined && (TUYA_WORK_MODES as readonly string[]).includes(s) ? (s as TuyaWorkMode) : undefined;
@@ -1978,7 +1960,6 @@ export const VACUUM_CLEAN_MEMBERS = {
   cleaningStrength: {
     param: TUYA_VACUUM_DP.CLEANING_STRENGTH,
     type: "string",
-    provenance: "mega",
     decode: (raw): TuyaCleaningStrength | undefined => {
       const s = typeof raw === "string" ? raw : undefined;
       return s !== undefined && (TUYA_CLEANING_STRENGTHS as readonly string[]).includes(s)
@@ -1999,7 +1980,6 @@ export const VACUUM_CLEAN_MEMBERS = {
   mopWater: {
     param: TUYA_VACUUM_DP.MOP_WATER,
     type: "string",
-    provenance: "mega",
     decode: (raw): TuyaMopWaterLevel | undefined => {
       const s = typeof raw === "string" ? raw : undefined;
       return s !== undefined && (TUYA_MOP_WATER_LEVELS as readonly string[]).includes(s)
@@ -2020,7 +2000,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "s",
     kind: "seconds",
-    provenance: "mega",
     readAliases: [{ paramType: TUYA_VACUUM_DP.CLEAR_TIME, available: isTuyaVacuum }],
     decode: (raw, codec) =>
       decodeCleanStat(raw as ParamValue | undefined, codec, CLEAN_STATS_FIELD.SINGLE, CLEAN_STATS_FIELD.DURATION),
@@ -2037,7 +2016,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "clearTime",
     type: "number",
     kind: "scalar",
-    provenance: "mega",
     decode: (raw, codec) =>
       decodeCleanStat(raw as ParamValue | undefined, codec, CLEAN_STATS_FIELD.SINGLE, CLEAN_STATS_FIELD.AREA),
     decodedKind: "scalar",
@@ -2054,7 +2032,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "%",
     kind: "percent",
-    provenance: "mega",
     description: "Speaker loudness 0-100 from DP 111 (Loudness). X8 Pro Tuya clean line. Live-confirmed.",
   },
   /**
@@ -2068,7 +2045,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "s",
     kind: "seconds",
-    provenance: "mega",
     decode: (raw, codec) =>
       decodeCleanStat(raw as ParamValue | undefined, codec, CLEAN_STATS_FIELD.USER_TOTAL, CLEAN_STATS_FIELD.DURATION),
     decodedKind: "seconds",
@@ -2086,7 +2062,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "clearTime",
     type: "number",
     kind: "scalar",
-    provenance: "mega",
     decode: (raw, codec) =>
       decodeCleanStat(raw as ParamValue | undefined, codec, CLEAN_STATS_FIELD.USER_TOTAL, CLEAN_STATS_FIELD.AREA),
     decodedKind: "scalar",
@@ -2105,7 +2080,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "clearTime",
     type: "number",
     kind: "scalar",
-    provenance: "mega",
     // Refuses a bare number outright. Its owner also answers from a Tuya DP via a read alias, and that
     // DP carries a session DURATION — passing it through would report seconds as a run count. A member
     // with no wire of its own can only be answered by the protobuf, so anything else is `undefined`.
@@ -2126,7 +2100,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     param: TUYA_VACUUM_DP.WATER_TANK_STATUS,
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     description: "Water tank attached (DP 127, Bool ro). X8 Pro Tuya clean line. Schema-confirmed.",
   },
   /**
@@ -2137,7 +2110,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     param: TUYA_VACUUM_DP.MOP_STATUS,
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     description: "Mop pad attached (DP 129, Bool ro). X8 Pro Tuya clean line. Schema-confirmed.",
   },
   /**
@@ -2149,7 +2121,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     param: VACUUM_DP.SETTINGS,
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.CHILDREN_LOCK),
     decodedKind: "boolean",
     description: "Child lock from UnisettingResponse.children_lock (DP 176 commonSettings, Raw protobuf).",
@@ -2162,7 +2133,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "childLock",
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.CRUISE_CONTINUE),
     decodedKind: "boolean",
     description: "Resume a cruise after charging — UnisettingResponse.cruise_continue_sw (DP 176, Raw protobuf).",
@@ -2174,7 +2144,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "childLock",
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.MULTI_MAP),
     decodedKind: "boolean",
     description: "Multi-map storage — UnisettingResponse.multi_map_sw (DP 176, Raw protobuf).",
@@ -2186,7 +2155,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "childLock",
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.AI_SEE),
     decodedKind: "boolean",
     description: "Obstacle-recognition camera — UnisettingResponse.ai_see (DP 176, Raw protobuf).",
@@ -2199,7 +2167,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "childLock",
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.WATER_LEVEL),
     decodedKind: "boolean",
     description:
@@ -2213,7 +2180,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "childLock",
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.SUGGEST_RESTRICTED),
     decodedKind: "boolean",
     description: "Restricted-area suggestions — UnisettingResponse.suggest_restricted (DP 176, Raw protobuf).",
@@ -2225,7 +2191,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "childLock",
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.DEEP_MOP_CORNER),
     decodedKind: "boolean",
     description: "Deep corner mopping — UnisettingResponse.deep_mop_corner_sw (DP 176, Raw protobuf).",
@@ -2242,7 +2207,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "min",
     kind: "scalar",
-    provenance: "mega",
     decode: (raw, codec) =>
       decodeUnisettingNumber(raw as ParamValue | undefined, codec, UNISETTING_FIELD.DUST_FULL_REMIND),
     decodedKind: "scalar",
@@ -2257,7 +2221,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "childLock",
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.POOP_AVOIDANCE),
     decodedKind: "boolean",
     description: "Pet-mess avoidance — UnisettingResponse.poop_avoidance_sw (DP 176, Raw protobuf).",
@@ -2269,7 +2232,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "childLock",
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.PET_MODE),
     decodedKind: "boolean",
     description: "Pet mode — UnisettingResponse.pet_mode_sw (DP 176, Raw protobuf).",
@@ -2285,7 +2247,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "childLock",
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     decode: (raw, codec) => decodeUnistateFlag(raw as ParamValue | undefined, codec, UNISTATE_FIELD.MAP_VALID),
     decodedKind: "boolean",
     description: "Whether a usable map exists — UnisettingResponse.unistate.map_valid (DP 176, Raw protobuf).",
@@ -2300,7 +2261,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "childLock",
     type: "number",
     kind: "bitfield",
-    provenance: "mega",
     decode: (raw, codec) =>
       decodeUnistateNumber(raw as ParamValue | undefined, codec, UNISTATE_FIELD.LIVE_MAP, UNISTATE_FIELD.STATE_BITS),
     decodedKind: "bitfield",
@@ -2315,7 +2275,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "childLock",
     type: "number",
     kind: "scalar",
-    provenance: "mega",
     decode: (raw, codec) =>
       decodeUnistateNumber(raw as ParamValue | undefined, codec, UNISTATE_FIELD.CLEAN_STRATEGY_VERSION),
     decodedKind: "scalar",
@@ -2335,7 +2294,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "%",
     kind: "percent",
-    provenance: "mega",
     decode: (raw, codec) => decodeUnisettingTopLevel(raw as ParamValue | undefined, codec, UNISETTING_FIELD.AP_SIGNAL),
     decodedKind: "percent",
     description: "WiFi signal strength 0-100% — UnisettingResponse.ap_signal_strength (DP 176, Raw protobuf).",
@@ -2347,7 +2305,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "childLock",
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.LIVE_PHOTO),
     decodedKind: "boolean",
     description: "Capture stills while cleaning — UnisettingResponse.live_photo_sw (DP 176, Raw protobuf).",
@@ -2360,7 +2317,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "childLock",
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.SMART_FOLLOW),
     decodedKind: "boolean",
     description: "Smart-follow mode — UnisettingResponse.smart_follow_sw (DP 176, Raw protobuf).",
@@ -2378,7 +2334,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "h",
     kind: "hours",
-    provenance: "mega",
     decode: (raw, codec) => decodeConsumableHours(raw as ParamValue | undefined, codec, CONSUMABLE_FIELD.SIDE_BRUSH),
     decodedKind: "hours",
     description: "Side-brush hours used — ConsumableRuntime.side_brush (DP 168 consumables, Raw protobuf).",
@@ -2392,7 +2347,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "h",
     kind: "hours",
-    provenance: "mega",
     decode: (raw, codec) => decodeConsumableHours(raw as ParamValue | undefined, codec, CONSUMABLE_FIELD.ROLLING_BRUSH),
     decodedKind: "hours",
     description: "Rolling-brush hours used — ConsumableRuntime.rolling_brush (DP 168, Raw protobuf).",
@@ -2405,7 +2359,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "h",
     kind: "hours",
-    provenance: "mega",
     decode: (raw, codec) => decodeConsumableHours(raw as ParamValue | undefined, codec, CONSUMABLE_FIELD.FILTER_MESH),
     decodedKind: "hours",
     description: "Filter-mesh hours used — ConsumableRuntime.filter_mesh (DP 168, Raw protobuf).",
@@ -2418,7 +2371,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "h",
     kind: "hours",
-    provenance: "mega",
     decode: (raw, codec) => decodeConsumableHours(raw as ParamValue | undefined, codec, CONSUMABLE_FIELD.SCRAPE),
     decodedKind: "hours",
     description: "Scraper hours used — ConsumableRuntime.scrape (DP 168, Raw protobuf).",
@@ -2431,7 +2383,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "h",
     kind: "hours",
-    provenance: "mega",
     decode: (raw, codec) => decodeConsumableHours(raw as ParamValue | undefined, codec, CONSUMABLE_FIELD.SENSOR),
     decodedKind: "hours",
     description: "Hours since the sensors were cleaned — ConsumableRuntime.sensor (DP 168, Raw protobuf).",
@@ -2444,7 +2395,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "h",
     kind: "hours",
-    provenance: "mega",
     decode: (raw, codec) => decodeConsumableHours(raw as ParamValue | undefined, codec, CONSUMABLE_FIELD.MOP),
     decodedKind: "hours",
     description: "Mop-pad hours used — ConsumableRuntime.mop (DP 168, Raw protobuf).",
@@ -2457,7 +2407,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "h",
     kind: "hours",
-    provenance: "mega",
     decode: (raw, codec) => decodeConsumableHours(raw as ParamValue | undefined, codec, CONSUMABLE_FIELD.DUSTBAG),
     decodedKind: "hours",
     description: "Dust-bag hours used — ConsumableRuntime.dustbag (DP 168, Raw protobuf).",
@@ -2471,7 +2420,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "h",
     kind: "hours",
-    provenance: "mega",
     decode: (raw, codec) =>
       decodeConsumableHours(raw as ParamValue | undefined, codec, CONSUMABLE_FIELD.DIRTY_WATERTANK),
     decodedKind: "hours",
@@ -2485,7 +2433,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "h",
     kind: "hours",
-    provenance: "mega",
     decode: (raw, codec) =>
       decodeConsumableHours(raw as ParamValue | undefined, codec, CONSUMABLE_FIELD.DIRTY_WATERFILTER),
     decodedKind: "hours",
@@ -2501,7 +2448,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     param: VACUUM_DP.DO_NOT_DISTURB,
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     readAliases: [{ paramType: TUYA_VACUUM_DP.FORBID_MODE, available: isTuyaVacuum }],
     decode: (raw, codec) => decodeDoNotDisturb(raw as ParamValue | undefined, codec),
     decodedKind: "boolean",
@@ -2526,7 +2472,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "doNotDisturb",
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     decode: (raw, codec) => decodeDoNotDisturbActive(raw as ParamValue | undefined, codec),
     decodedKind: "boolean",
     description: "Whether the do-not-disturb window is open now — Undisturbed.active (DP 157 AIoT, Raw protobuf).",
@@ -2542,7 +2487,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "doNotDisturb",
     type: "string",
     kind: "text",
-    provenance: "mega",
     decode: (raw, codec) => decodeDoNotDisturbTime(raw as ParamValue | undefined, codec, UNDISTURBED_FIELD.BEGIN),
     decodedKind: "text",
     description: "Quiet hours start, HH:MM — Undisturbed.begin (DP 157 AIoT, Raw protobuf).",
@@ -2553,7 +2497,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "doNotDisturb",
     type: "string",
     kind: "text",
-    provenance: "mega",
     decode: (raw, codec) => decodeDoNotDisturbTime(raw as ParamValue | undefined, codec, UNDISTURBED_FIELD.END),
     decodedKind: "text",
     description: "Quiet hours end, HH:MM — Undisturbed.end (DP 157 AIoT, Raw protobuf).",
@@ -2570,7 +2513,6 @@ export const VACUUM_CLEAN_MEMBERS = {
   chargeState: {
     readsFrom: "activity",
     type: "string",
-    provenance: "mega",
     decode: (raw, codec) => decodeChargeState(raw as ParamValue | undefined, codec),
     decodedKind: "enum",
     decodedValues: CHARGE_STATES as readonly string[],
@@ -2588,7 +2530,6 @@ export const VACUUM_CLEAN_MEMBERS = {
   triggerSource: {
     readsFrom: "activity",
     type: "string",
-    provenance: "mega",
     decode: (raw, codec) => decodeTriggerSource(raw as ParamValue | undefined, codec),
     decodedKind: "enum",
     decodedValues: TRIGGER_SOURCES as readonly string[],
@@ -2607,7 +2548,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     param: VACUUM_DP.TIMING,
     type: "number",
     kind: "scalar",
-    provenance: "mega",
     decode: (raw, codec) => decodeVacuumScheduleCount(raw, codec),
     decodedKind: "scalar",
     description: "How many schedules the robot holds — TimerResponse.timers (DP 164, Raw protobuf).",
@@ -2624,7 +2564,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "scheduleCount",
     type: "number",
     kind: "scalar",
-    provenance: "mega",
     decode: (raw, codec) => decodeActiveVacuumScheduleCount(raw, codec),
     decodedKind: "scalar",
     description: "How many schedules are on and usable — TimerInfo.status (DP 164, Raw protobuf).",
@@ -2656,7 +2595,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     param: VACUUM_DP.SCENES,
     type: "number",
     kind: "scalar",
-    provenance: "mega",
     decode: (raw, codec) => decodeVacuumSceneCount(raw, codec),
     decodedKind: "scalar",
     description: "How many cleaning scenes the robot holds — SceneResponse.infos (DP 180, Raw protobuf).",
@@ -2671,7 +2609,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "sceneCount",
     type: "number",
     kind: "scalar",
-    provenance: "mega",
     decode: (raw, codec) => decodeUsableVacuumSceneCount(raw, codec),
     decodedKind: "scalar",
     description: "How many scenes can still run — SceneInfo.valid (DP 180, Raw protobuf).",
@@ -2711,7 +2648,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: VACUUM_DOCK_INFO_SOURCE,
     type: "string",
     kind: "text",
-    provenance: "mega",
     decode: (raw, codec) => decodeRobotInfoText(raw as ParamValue | undefined, codec, ROBOT_INFO_FIELD.WIFI_NAME),
     decodedKind: "text",
     description: "The WiFi network the robot is on — DeviceInfo.wifi_name (DP 169, Raw protobuf).",
@@ -2721,7 +2657,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: VACUUM_DOCK_INFO_SOURCE,
     type: "string",
     kind: "text",
-    provenance: "mega",
     decode: (raw, codec) => decodeRobotInfoText(raw as ParamValue | undefined, codec, ROBOT_INFO_FIELD.WIFI_IP),
     decodedKind: "text",
     description: "The robot's IP on its WiFi network — DeviceInfo.wifi_ip (DP 169, Raw protobuf).",
@@ -2731,7 +2666,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: VACUUM_DOCK_INFO_SOURCE,
     type: "string",
     kind: "identifier",
-    provenance: "mega",
     decode: (raw, codec) => decodeRobotInfoText(raw as ParamValue | undefined, codec, ROBOT_INFO_FIELD.DEVICE_MAC),
     decodedKind: "identifier",
     description: "The robot's MAC address — DeviceInfo.device_mac (DP 169, Raw protobuf).",
@@ -2744,7 +2678,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: VACUUM_DOCK_INFO_SOURCE,
     type: "number",
     kind: "scalar",
-    provenance: "mega",
     decode: (raw, codec) => decodeRobotHardware(raw as ParamValue | undefined, codec),
     decodedKind: "scalar",
     description: "The robot's hardware revision — DeviceInfo.hardware (DP 169, Raw protobuf).",
@@ -2758,7 +2691,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "dBm",
     kind: "dbm",
-    provenance: "mega",
     description: "WiFi RSSI in dBm (DP 134, Value ro). Schema-confirmed.",
     available: (ctx: AvailabilityContext) => ctx.paramIds?.has(TUYA_VACUUM_DP.RSSI) ?? false,
   },
@@ -2791,7 +2723,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     unverified: true,
     write: (value) => aiotDp(VACUUM_DP.CONSUMABLES, encodeConsumableReset(value as ConsumablePart)),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Clear the hours on one replaceable part (ConsumableRequest.reset_types over DP 168). " +
       "Frame not captured — unverified.",
@@ -2807,7 +2738,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     unverified: true,
     write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.STOP_TASK, nextModeCtrlSeq())),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Stop the current job (ModeCtrlRequest method 12 over DP 152). Method number not captured — unverified.",
   },
@@ -2833,7 +2763,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     unverified: true,
     write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_GOWASH, nextModeCtrlSeq())),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Go and wash the mops (ModeCtrlRequest method 10 over DP 152). Method number not captured — unverified.",
   },
@@ -2847,7 +2776,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     unverified: true,
     write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.STOP_GOWASH, nextModeCtrlSeq())),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Stop washing the mops (ModeCtrlRequest method 17 over DP 152). Method number not captured — unverified.",
   },
@@ -2861,7 +2789,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     unverified: true,
     write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.STOP_GOHOME, nextModeCtrlSeq())),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Stop returning to the dock (ModeCtrlRequest method 15 over DP 152). Method number not captured — unverified.",
   },
@@ -2876,7 +2803,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     unverified: true,
     write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_SPOT_CLEAN, nextModeCtrlSeq())),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Spot-clean where the robot stands (ModeCtrlRequest method 3 over DP 152). Method number not captured — unverified.",
   },
@@ -2890,7 +2816,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     unverified: true,
     write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_FAST_MAPPING, nextModeCtrlSeq())),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Run a fast mapping pass (ModeCtrlRequest method 9 over DP 152). Method number not captured — unverified.",
   },
@@ -2904,7 +2829,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     unverified: true,
     write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_GLOBAL_CRUISE, nextModeCtrlSeq())),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Start a global cruise (ModeCtrlRequest method 20 over DP 152). Method number not captured — unverified.",
   },
@@ -2919,7 +2843,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     unverified: true,
     write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_RC_CLEAN, nextModeCtrlSeq())),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Enter remote-control cleaning (ModeCtrlRequest method 5 over DP 152). Method number not captured — unverified.",
   },
@@ -2938,7 +2861,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     unverified: true,
     write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.STOP_TASK, nextModeCtrlSeq())),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Leave remote-control mode (ModeCtrlRequest method 12 STOP_TASK over DP 152, per the DP 155 " +
       "catalogue note). Not captured on a device — unverified.",
@@ -2962,7 +2884,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     enumValues: { 0: "Brake", 1: "Forward", 2: "Back", 3: "Left", 4: "Right" },
     write: (v) => aiotDp(VACUUM_DP.REMOTE_CTRL, String(v)),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Remote-control direction (DP 155 Enum: Brake/Forward/Back/Left/Right). Values from the product " +
       "catalogue; the wire is not captured — unverified.",
@@ -2975,7 +2896,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     param: VACUUM_DP.RESUME_CLEAN,
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     description: "Resume an interrupted job after charging (DP 156 pause_job, Bool).",
     available: (ctx: AvailabilityContext) => ctx.paramIds?.has(VACUUM_DP.RESUME_CLEAN) ?? false,
   },
@@ -2990,7 +2910,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     unverified: true,
     write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.STOP_SMART_FOLLOW, nextModeCtrlSeq())),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Stop smart-follow mode (ModeCtrlRequest method 18 over DP 152). Method number not captured — unverified.",
   },

@@ -236,7 +236,6 @@ export const LIGHT_MEMBERS = {
     property: "light",
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
     description:
       "Light on/off (1400) — lit right now, not a setting: it follows whichever client is streaming. " +
       "Verified via P2P state readback (3/3); session-scoped behaviour measured live on a T8170.",
@@ -259,7 +258,6 @@ export const LIGHT_MEMBERS = {
     type: "number",
     unit: "%",
     kind: "percent",
-    provenance: "verified",
     min: BRIGHTNESS_MIN,
     max: BRIGHTNESS_MAX,
     description: "Manual brightness, range 1-100 (1401). Verified live (T8425 + T8124).",
@@ -275,7 +273,6 @@ export const LIGHT_MEMBERS = {
     param: LIGHT_CMD.SPOTLIGHT_COLOR_TEMP,
     type: "number",
     kind: "scalar",
-    provenance: "verified",
     writeOnly: true,
     min: 0,
     max: 100,
@@ -305,7 +302,6 @@ export const LIGHT_MEMBERS = {
     param: LIGHT_CMD.SPOTLIGHT_ENABLE,
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
     description:
       "The spotlight master switch, distinct from the on/off above — whether the spotlight may light at " +
       "all. Read verified live on a T8170 (param 1403, direct polarity: 1 = enabled).",

@@ -32,7 +32,6 @@ export const LEAK_MEMBERS = {
     param: LEAK_PARAM.WATER,
     type: "bool",
     kind: "boolean",
-    provenance: "apk",
     description: "Water detected (1820, sensor_water_status).",
   },
   /** The temperature is below {@link LEAK_MEMBERS.lowTemperatureThreshold}: the freeze alarm. */
@@ -40,7 +39,6 @@ export const LEAK_MEMBERS = {
     param: LEAK_PARAM.LOW_TEMPERATURE,
     type: "bool",
     kind: "boolean",
-    provenance: "apk",
     description: "Temperature below the alarm threshold (1822, sensor_temperature_low_status).",
   },
   /**
@@ -54,7 +52,6 @@ export const LEAK_MEMBERS = {
     kind: "enum",
     enumValues: { 32: "32°F", 33: "33°F", 35: "35°F", 37: "37°F", 40: "40°F" },
     thing: ["sensor_low_temperature_alarm_threshold"],
-    provenance: "apk",
     unverified: true,
     description: "Freeze alarm threshold, °F: 32, 33, 35, 37 or 40 (1873, sensor_low_temperature_alarm_threshold).",
   },

@@ -59,7 +59,6 @@ export const MOWER_MEMBERS = {
     type: "number",
     unit: "%",
     kind: "percent",
-    provenance: "mega",
     description: "Battery level 0-100 (DP 8, battery_percentage). Read-only.",
   },
   /** Speaker volume (DP 26, `volume_set`). */
@@ -68,7 +67,6 @@ export const MOWER_MEMBERS = {
     type: "number",
     unit: "%",
     kind: "percent",
-    provenance: "mega",
     description: "Speaker volume 0-100 (DP 26, volume_set). Read-only.",
   },
   /** Whether the child lock is on (DP 47, `child_lock`). */
@@ -76,7 +74,6 @@ export const MOWER_MEMBERS = {
     param: MOWER_DP.CHILD_LOCK,
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     description: "Child lock on (DP 47, child_lock). Read-only.",
   },
   /** Whether the mower returns to its station when it detects rain (DP 101, `rain_auto_return`). */
@@ -84,7 +81,6 @@ export const MOWER_MEMBERS = {
     param: MOWER_DP.RAIN_AUTO_RETURN,
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     description: "Return to the station when rain is detected (DP 101, rain_auto_return). Read-only.",
   },
   /** Wi-Fi signal strength as a percentage (DP 109, `wifi_signal_strength`), not a dBm reading. */
@@ -93,7 +89,6 @@ export const MOWER_MEMBERS = {
     type: "number",
     unit: "%",
     kind: "percent",
-    provenance: "mega",
     description: "Wi-Fi signal strength 0-100 % (DP 109, wifi_signal_strength). Read-only.",
   },
   /** Cutting height in millimetres (DP 110, `mow_height`), 25-75. */
@@ -104,7 +99,6 @@ export const MOWER_MEMBERS = {
     kind: "millimetres",
     min: 25,
     max: 75,
-    provenance: "mega",
     description: "Cutting height 25-75 mm (DP 110, mow_height). Read-only.",
   },
   /** Progress of saving the map (DP 118, `save_map_process`). */
@@ -113,7 +107,6 @@ export const MOWER_MEMBERS = {
     type: "number",
     unit: "%",
     kind: "percent",
-    provenance: "mega",
     description: "Map-save progress 0-100 % (DP 118, save_map_process). Read-only.",
   },
   /** Total base-station use in minutes (DP 125, `base_station_used_time`). */
@@ -122,7 +115,6 @@ export const MOWER_MEMBERS = {
     type: "number",
     unit: "min",
     kind: "minutes",
-    provenance: "mega",
     description: "Base-station use in minutes (DP 125, base_station_used_time). Read-only.",
   },
   /** Total cutting-blade use in minutes (DP 126, `mow_blade_used_time`). */
@@ -131,7 +123,6 @@ export const MOWER_MEMBERS = {
     type: "number",
     unit: "min",
     kind: "minutes",
-    provenance: "mega",
     description: "Cutting-blade use in minutes (DP 126, mow_blade_used_time). Read-only.",
   },
   /** Whether edge trimming is on (DP 128, `edge_trim`). */
@@ -139,7 +130,6 @@ export const MOWER_MEMBERS = {
     param: MOWER_DP.EDGE_TRIM,
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     description: "Edge trimming on (DP 128, edge_trim). Read-only.",
   },
   /** Whether a fixed mowing angle is in use (DP 130, `enable_work_angle`); the angle is `workAngle`. */
@@ -147,7 +137,6 @@ export const MOWER_MEMBERS = {
     param: MOWER_DP.WORK_ANGLE_ENABLED,
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     description: "Fixed mowing angle in use (DP 130, enable_work_angle). Read-only.",
   },
   /** The mowing angle in degrees, -90 to 90 (DP 131, `work_angle`). */
@@ -158,7 +147,6 @@ export const MOWER_MEMBERS = {
     kind: "degrees",
     min: -90,
     max: 90,
-    provenance: "mega",
     description: "Mowing angle -90 to 90 degrees (DP 131, work_angle). Read-only.",
   },
   /** Whether smart no-go zones are on (DP 132, `enable_smart_forbid_zone`). */
@@ -166,7 +154,6 @@ export const MOWER_MEMBERS = {
     param: MOWER_DP.SMART_NO_GO_ZONES,
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     description: "Smart no-go zones on (DP 132, enable_smart_forbid_zone). Read-only.",
   },
   /** Whether bird's-eye-view capture is on (DP 133, `enable_bird_view_capture`). */
@@ -174,7 +161,6 @@ export const MOWER_MEMBERS = {
     param: MOWER_DP.BIRD_VIEW_CAPTURE,
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     description: "Bird's-eye-view capture on (DP 133, enable_bird_view_capture). Read-only.",
   },
   /**
@@ -184,7 +170,6 @@ export const MOWER_MEMBERS = {
   network: {
     param: MOWER_DP.NETWORK,
     type: "string",
-    provenance: "mega",
     decode: (raw): MowerNetwork | undefined =>
       typeof raw === "string" && (MOWER_NETWORKS as readonly string[]).includes(raw)
         ? (raw as MowerNetwork)
@@ -198,7 +183,6 @@ export const MOWER_MEMBERS = {
     param: MOWER_DP.CELLULAR_ENABLED,
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     description: "Cellular link enabled (DP 137, enable_cellular). Read-only.",
   },
   /** Edge-following distance in millimetres (DP 139, `follow_edge_distance`), signed. */
@@ -209,7 +193,6 @@ export const MOWER_MEMBERS = {
     kind: "millimetres",
     min: -10000,
     max: 10000,
-    provenance: "mega",
     description: "Edge-following distance in mm, signed (DP 139, follow_edge_distance). Read-only.",
   },
   /** Whether GPS anti-theft is on (DP 140, `gps_location_check`). */
@@ -217,7 +200,6 @@ export const MOWER_MEMBERS = {
     param: MOWER_DP.GPS_ANTI_THEFT,
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     description: "GPS anti-theft on (DP 140, gps_location_check). Read-only.",
   },
   /** Whether sparse-lawn optimisation is on (DP 141, `sparse_lawn_optimization`). */
@@ -225,7 +207,6 @@ export const MOWER_MEMBERS = {
     param: MOWER_DP.SPARSE_LAWN_OPTIMIZATION,
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     description: "Sparse-lawn optimisation on (DP 141, sparse_lawn_optimization). Read-only.",
   },
 } as const satisfies Members;

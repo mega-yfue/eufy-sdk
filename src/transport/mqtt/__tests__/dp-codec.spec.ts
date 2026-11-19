@@ -32,13 +32,18 @@ function decodeFields(buf: Buffer): Array<{ tag: number; value: Buffer }> {
 }
 
 describe("dp-codec — eufy_life MQTT DP TLV frame", () => {
-  it("builds the confirmed frame shape: magic, u16LE size, header, subtype = cmdCode & 0xff, checksum", () => {
+  it("builds the frame shape: magic, u16LE size, header, u16BE cmdCode, checksum", () => {
     const buf = buildDpFrame(0x0201, ACCOUNT_ID, [{ tag: 0xa3, value: Buffer.from([1]) }]);
     expect(buf[0]).toBe(0xff);
     expect(buf[1]).toBe(0x09);
     expect(buf.readUInt16LE(2)).toBe(buf.length); // u16LE total-length self-check at offset 2
-    expect(buf.subarray(4, 9)).toEqual(Buffer.from([0x03, 0x00, 0x02, 0x02, 0x01])); // header + subtype 0x0201 & 0xff
+    expect(buf.subarray(4, 9)).toEqual(Buffer.from([0x03, 0x00, 0x02, 0x02, 0x01]));
     expect(buf[buf.length - 1]).toBe(xorChecksum(buf.subarray(0, buf.length - 1)));
+  });
+
+  it("writes a cmdCode outside 0x02xx whole, as the app does", () => {
+    expect(buildDpFrame(0x0033, ACCOUNT_ID, []).subarray(7, 9)).toEqual(Buffer.from([0x00, 0x33]));
+    expect(buildDpFrame(0x0041, ACCOUNT_ID, []).subarray(7, 9)).toEqual(Buffer.from([0x00, 0x41]));
   });
 
   it("writes the size as a real u16LE for frames over 255 bytes (effect frames) — not a truncated byte", () => {
