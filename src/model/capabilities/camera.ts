@@ -224,7 +224,7 @@ export type SoundDetectionTypeValue = (typeof SoundDetectionType)[keyof typeof S
  * offers a subset.
  */
 export const NightVision = {
-  /** Off — never use infrared. */
+  /** Off — never use infrared; Standard on a product whose description lists no Off. */
   Off: 0,
   /** Infrared / "B&W Auto" — black-and-white night vision, switched on when it gets dark. */
   Infrared: 1,
@@ -232,6 +232,8 @@ export const NightVision = {
   FullColor: 2,
   /** Infrared held on — black-and-white night vision, not switched by the light level. */
   InfraredOn: 3,
+  /** Spotlight — 5 in a product's `nightvision_type` list; read only, as no list the app prefers offers it. */
+  Spotlight: 5,
   /** Daylike — the colour-like night mode a product's description lists as 6, the default of `nightvision_type`. */
   Daylike: 6,
 } as const;
@@ -673,6 +675,53 @@ const WATERMARK_WIRE = bundleWires("watermark_set", "1214", {
 });
 
 /**
+ * The 1277 value a product's bundle writes for a `nightvision_type_new` option where that is not the
+ * option's `associatedValue`: the parser it registers maps the option's UI value through its own table
+ * (`NightvisionTypeNewParser` v1 on T8161, v2 on T8214 and T8217), in the {@link bundleWires} form with
+ * `ui:wire` pairs.
+ */
+const NIGHT_VISION_WIRE = bundleArm("nightvision_type_new", "", {
+  "103:2": "T8161",
+  "102:1 103:2": "T8214",
+  "101:1": "T8217",
+});
+
+/**
+ * The 1277 value of each option `identifier` lists on this device, by its UI value: 0 and 1 for a `bool`,
+ * none for a list stating one wire for every option.
+ */
+function nightVisionWires(identifier: string, ctx: AvailabilityContext): [ui: string, wire: number][] {
+  const property = ctx.things?.properties[identifier];
+  if (property?.type === "bool") return [0, 1].map((wire) => [String(wire), wire]);
+  const table = new Map(
+    (identifier === "nightvision_type_new" ? NIGHT_VISION_WIRE(ctx) : "")
+      .split(" ")
+      .map((pair) => pair.split(":") as [string, string]),
+  );
+  const wires = (property?.members ?? []).map((m): [string, number] => [
+    m.value,
+    Number(table.get(m.value) ?? m.wireValue ?? NaN),
+  ]);
+  return wires.length > 1 && new Set(wires.map(([, wire]) => wire)).size === 1 ? [] : wires;
+}
+
+/**
+ * Night-vision options: what every listed `thing` identifier reads, the first one's label winning. 0 is
+ * Standard where that list names it UI 104, the app's Standard, rather than 100, Off. Without a
+ * description, Off, Infrared, Full Color and Infrared On.
+ */
+function nightVisionOptions(ctx: AvailabilityContext): Record<number, string> | undefined {
+  if (!ctx.things) return { 0: "Off", 1: "Infrared", 2: "Full Color", 3: "Infrared On" };
+  const { thing, enumValues } = CAMERA_MEMBERS.nightVision;
+  const options: Record<number, string> = {};
+  for (const identifier of thing)
+    for (const [ui, wire] of nightVisionWires(identifier, ctx))
+      if (wire in enumValues && !(wire in options))
+        options[wire] = ui === "104" ? "Standard" : enumValues[wire as keyof typeof enumValues];
+  return Object.keys(options).length ? options : undefined;
+}
+
+/**
  * How this camera is powered, as every media egress needs to be told: a battery device is streamed
  * under a budget, a wired one unbounded. Read off the resolved capabilities, except that a confirmed
  * mains-only model (see `cameraPowerTier` in battery.ts) is wired even with `battery` resolved. Given
@@ -933,28 +982,34 @@ export const CAMERA_MEMBERS = {
     },
   },
   /**
-   * Modes come from the thing description (`thing`); unlisted values read as `undefined`. Daylike (6) is
-   * offered only where a description lists it: without one the domain is Off, Infrared, Full Color and
-   * Infrared On.
+   * Modes come from the thing description ({@link nightVisionOptions}); unlisted values read as `undefined`.
+   * A write takes the options of the first listed identifier.
    */
   nightVision: {
     param: CAMERA_CMD.NIGHT_VISION_TYPE,
     type: "enum",
     kind: "enum",
-    enumValues: { 0: "Off", 1: "Infrared", 2: "Full Color", 3: "Infrared On", 6: "Daylike" },
+    enumValues: { 0: "Off", 1: "Infrared", 2: "Full Color", 3: "Infrared On", 5: "Spotlight", 6: "Daylike" },
     thing: ["nightvision_type_new", "nightvision_type"],
-    enumValuesFor: (ctx) => (ctx.things ? undefined : { 0: "Off", 1: "Infrared", 2: "Full Color", 3: "Infrared On" }),
+    enumValuesFor: nightVisionOptions,
     provenance: "verified",
     available: cameraThing("nightvision_type_new", "nightvision_type"),
     readAvailable: (ctx) => !readsNightVisionOn2002(ctx),
     readAliases: [{ paramType: 2002, available: readsNightVisionOn2002 }],
     coerce: (raw) => (raw === "true" ? 1 : raw === "false" ? 0 : Number(raw)),
     description:
-      "Night-vision mode: 0 = off, 1 = infrared by light level, 2 = full colour, 3 = infrared held on. " +
+      "Night-vision mode: 0 = off (standard where the product has no off), 1 = infrared by light level, " +
+      "2 = full colour, 3 = infrared held on, 5 = spotlight (read only), 6 = daylike. " +
       "Written on 1277 (1350 SET_PAYLOAD, night_sion), or on 1013 as a bare [channel][value] when the device reports 2002.",
     write: (v, ctx) => {
       const nv = coerceEnumValue(NightVision, v);
       if (nv == null) return undefined;
+      const offered = nightVisionWires(
+        CAMERA_MEMBERS.nightVision.thing.find((id) => ctx.things?.properties[id]) ?? "",
+        ctx,
+      );
+      if (offered.length && !offered.some(([, wire]) => wire === nv))
+        throw new Error(`nightVision: ${nv} is not among the modes this product's description offers`);
       if (readsNightVisionOn2002(ctx)) return setScalar(CAMERA_CMD.IC_NIGHT_VISION_TYPE, nv, ctx, "int-pair");
       if (nv === NightVision.InfraredOn)
         throw new Error("nightVision: Infrared On has no verified write on this model");

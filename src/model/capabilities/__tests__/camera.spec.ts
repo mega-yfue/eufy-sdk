@@ -39,7 +39,8 @@ const ctx = (channel = 0, extra: Partial<CommandContext> = {}): CommandContext =
 
 /**
  * A product's thing description as `get_things_list` returns it, each property's `eunmList` given by its
- * members' wire values (or `"wire=label"`), or `"bool"` for a boolean property. Parsed by the real parser.
+ * members' wire values (or `"wire=label"`, `"ui/wire"` with the app's UI value), or `"bool"` for a boolean
+ * property. Parsed by the real parser.
  */
 const things = (props: Record<string, readonly string[] | "bool">): ThingDescription =>
   parseThingsList({
@@ -54,7 +55,11 @@ const things = (props: Record<string, readonly string[] | "bool">): ThingDescrip
               : {
                   type: "enum",
                   specs: {
-                    eunmList: members.map((m) => ({ associatedValue: m.split("=")[0], desc: m.split("=")[1] })),
+                    eunmList: members.map((m) => {
+                      const [option = "", desc] = m.split("=");
+                      const [value, associatedValue] = option.includes("/") ? option.split("/") : [undefined, option];
+                      return { value, associatedValue, desc };
+                    }),
                   },
                 },
         })),
@@ -328,6 +333,50 @@ describe("camera capability module", () => {
       expect(() => buildCommand("nightVision", 6, ctx(1)), "no description: no write of 6").toThrow(
         /nightVision: 6 is not a valid value \(must be one of 0\/1\/2\/3\)/,
       );
+    });
+
+    it("offers and writes the 1277 value the product's bundle maps an option to, not its associatedValue", () => {
+      const options = (model: string, description: ThingDescription) =>
+        Device.fromRecord("TEST-SN", { model, params: { 1277: "1" }, things: description }).properties.find(
+          (p) => p.name === "nightVision",
+        )?.enumValues;
+      const t8161 = things({ nightvision_type: ["0", "1", "2"], nightvision_type_new: ["102/1", "103/4", "100/0"] });
+      expect(options("T8161", t8161)).toEqual({ 0: "Off", 1: "Infrared", 2: "Full Color" });
+      expect(
+        buildCommand("nightVision", NightVision.FullColor, ctx(0, { model: "T8161", things: t8161 })),
+      ).toMatchObject({ cmd: CAMERA_CMD.NIGHT_VISION_TYPE, payload: { night_sion: 2 } });
+      const t8214 = things({ nightvision_type_new: ["103/0", "102/0", "100/0"] });
+      expect(options("T8214", t8214), "every associatedValue 0").toEqual({ 0: "Off", 1: "Infrared", 2: "Full Color" });
+    });
+
+    it("reads every listed night-vision list, writes the first, and names 0 Standard where it lists no Off", () => {
+      const t8162 = things({
+        nightvision_type: ["11/0", "8/6", "7/5", "10/1"],
+        nightvision_type_new: ["104/0", "105/6", "103/2", "102/1"],
+      });
+      const dev = Device.fromRecord("TEST-SN", { model: "T8162", params: { 1277: "5" }, things: t8162 });
+      expect(dev.properties.find((p) => p.name === "nightVision")?.enumValues).toEqual({
+        0: "Standard",
+        1: "Infrared",
+        2: "Full Color",
+        5: "Spotlight",
+        6: "Daylike",
+      });
+      expect(dev.getProperty("nightVision")?.value).toBe(NightVision.Spotlight);
+      dev.applyParams({ 1277: "6" });
+      expect(dev.getProperty("nightVision")?.value).toBe(NightVision.Daylike);
+      expect(() =>
+        buildCommand("nightVision", NightVision.Spotlight, ctx(0, { model: "T8162", things: t8162 })),
+      ).toThrow(/5 is not among the modes this product's description offers/);
+      const off = Device.fromRecord("TEST-SN", {
+        model: "T8170",
+        params: { 1277: "0" },
+        things: things({ nightvision_type_new: ["100/0", "102/1"] }),
+      });
+      expect(off.properties.find((p) => p.name === "nightVision")?.enumValues, "a real Off").toEqual({
+        0: "Off",
+        1: "Infrared",
+      });
     });
 
     it("reads a 1277 value outside the published options as undefined, getter and announcement alike", () => {
@@ -698,7 +747,7 @@ describe("camera capability module", () => {
 
     it("nightVision → 1350 set-payload, mChannel 0, {channel,night_sion} (verified)", () => {
       // Verified live: device channel goes INSIDE the payload; the envelope's mChannel is 0.
-      expect(NightVision).toEqual({ Off: 0, Infrared: 1, FullColor: 2, InfraredOn: 3, Daylike: 6 });
+      expect(NightVision).toEqual({ Off: 0, Infrared: 1, FullColor: 2, InfraredOn: 3, Spotlight: 5, Daylike: 6 });
       expect(buildCommand("nightVision", NightVision.FullColor, ctx(3, { paramIds: new Set([1400]) }))).toMatchObject({
         kind: "set-payload",
         cmd: CAMERA_CMD.NIGHT_VISION_TYPE,
