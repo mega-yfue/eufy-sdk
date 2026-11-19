@@ -439,6 +439,8 @@ export type Command =
        * may seal it. Absent, the send waits for the key every level-2 sender uses.
        */
       level2Sender?: "set-payload";
+      /** A command sent after this one, as the app's `multipleRequest` follows a frame with another. */
+      next?: Command;
     }
   | { kind: "p2p-privacy-burst"; enabled: boolean; channel: number }
   | {

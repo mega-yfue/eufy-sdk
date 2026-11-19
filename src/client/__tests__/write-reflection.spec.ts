@@ -59,6 +59,22 @@ describe("a write the device answered", () => {
   });
 });
 
+describe("a write carrying a next command", () => {
+  it("routes the next one after it", async () => {
+    const sent: Command[] = [];
+    const eufy = new EufyMega({ email: "t@example.com", password: "x" });
+    const target = eufy as never as {
+      routeCommand: (sn: string, cmd: Command) => Promise<boolean>;
+      commandSinkFor(sn: string): { dispatch(cmd: Command): Promise<void> };
+    };
+    target.routeCommand = async (_sn, cmd) => (sent.push(cmd), false);
+    const next: Command = { kind: "set-payload", cmd: 1277, payload: { night_sion: 1 }, channel: 0 };
+    const first: Command = { kind: "set-payload", cmd: 6252, payload: { value: 1 }, channel: 0, next };
+    await target.commandSinkFor(SENSOR).dispatch(first);
+    expect(sent).toEqual([first, next]);
+  });
+});
+
 describe("a member write's readback", () => {
   const ctx = { channel: 0 } as CommandContext;
   const scalar = (value: boolean | number | string): Command => ({

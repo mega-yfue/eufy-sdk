@@ -51,14 +51,14 @@ function liveContactSensor(eufy: EufyMega, sn = "T8000P0000000000"): Device {
 
 /**
  * A live battery camera a caller is holding, reporting the three members #95 names as announced by
- * nothing: its enablement (1035), its status LED (1045) and its night-vision mode (1277).
+ * nothing: its enablement (1035), its status LED (1045) and its night-vision mode (1013, where its bundle reads it).
  */
 function liveCamera(eufy: EufyMega, sn = "T8000P0000000000"): Device {
   const record = {
     deviceType: 9,
     // A battery camera, because the fixture reports a battery level (1101) and is described as one.
     model: "T8114",
-    params: { 1101: "88", 1035: "0", 1045: "1", 1277: "1" },
+    params: { 1101: "88", 1035: "0", 1045: "1", 1013: "1" },
     paramUpdatedAt: {},
   };
   const dev = Device.fromRecord(sn, record);
@@ -277,8 +277,8 @@ describe("cloud-param poll loop", () => {
     liveCamera(eufy);
     vi.spyOn((eufy as any).registry, "pollChanges").mockResolvedValue({
       params: [
-        { deviceSn: "T8000P0000000000", paramType: 1045, from: "1", to: "0", params: { 1045: "0", 1277: "2" } },
-        { deviceSn: "T8000P0000000000", paramType: 1277, from: "1", to: "2", params: { 1045: "0", 1277: "2" } },
+        { deviceSn: "T8000P0000000000", paramType: 1045, from: "1", to: "0", params: { 1045: "0", 1013: "2" } },
+        { deviceSn: "T8000P0000000000", paramType: 1013, from: "1", to: "2", params: { 1045: "0", 1013: "2" } },
       ],
       added: [],
       removed: [],
@@ -290,8 +290,8 @@ describe("cloud-param poll loop", () => {
     await (eufy as any).pollOnce();
 
     expect(seen).toEqual([
-      { deviceSn: "T8000P0000000000", property: "statusLed", value: false },
       { deviceSn: "T8000P0000000000", property: "nightVision", value: 2 },
+      { deviceSn: "T8000P0000000000", property: "statusLed", value: false },
     ]);
   });
 

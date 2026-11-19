@@ -1312,6 +1312,11 @@ export const SECURITY_PARAMS: Record<number, ParamDef> = {
     type: "bool",
     provenance: "apk",
   },
+  6252: {
+    name: "nightVisionCompensation",
+    type: "string",
+    provenance: "apk",
+  },
   6253: {
     name: "enableMotionInNight",
     type: "bool",

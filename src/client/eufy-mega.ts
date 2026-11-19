@@ -1315,13 +1315,15 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * Route a command and, when the device answered it with success, land the value it now holds under the
-   * param its member reads ({@link commandReflection}) through the realtime path, so the getter reads it and
-   * `propertyChanged` announces it as for any report. A write sent unread, refused or unanswered changes
-   * nothing here.
+   * Route a command, then the `next` one it carries, and, when the device answered it with success, land
+   * the value it now holds under the param its member reads ({@link commandReflection}) through the realtime
+   * path, so the getter reads it and `propertyChanged` announces it as for any report. A write sent unread,
+   * refused or unanswered changes nothing here.
    */
   private async routeAndReflect(sn: string, cmd: Command): Promise<void> {
-    if ((await this.routeCommand(sn, cmd)) !== true) return;
+    const answered = await this.routeCommand(sn, cmd);
+    if (cmd.kind === "set-payload" && cmd.next) await this.routeAndReflect(sn, cmd.next);
+    if (answered !== true) return;
     const reflected = commandReflection(cmd);
     if (reflected) this.applyRealtimeState(sn, { [reflected.param]: reflected.raw });
   }

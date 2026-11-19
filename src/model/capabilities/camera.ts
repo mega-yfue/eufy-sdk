@@ -675,16 +675,41 @@ const WATERMARK_WIRE = bundleWires("watermark_set", "1214", {
 });
 
 /**
- * The 1277 value a product's bundle writes for a `nightvision_type_new` option where that is not the
- * option's `associatedValue`: the parser it registers maps the option's UI value through its own table
- * (`NightvisionTypeNewParser` v1 on T8161, v2 on T8214 and T8217), in the {@link bundleWires} form with
- * `ui:wire` pairs.
+ * The value a product's bundle writes for a night-vision option where that is not the option's
+ * `associatedValue`: the parser it registers maps the option's UI value through its own table, in the
+ * {@link bundleWires} form with `ui:wire` pairs. `nightvision_type_new`: `NightvisionTypeNewParser` v1 on
+ * T8161, v2 on T8214 and T8217. `nightvision_type`: the default `NightvisionTypeParser`, whose table has no
+ * 3 or 4 and writes both as its default, 1.
  */
-const NIGHT_VISION_WIRE = bundleArm("nightvision_type_new", "", {
-  "103:2": "T8161",
-  "102:1 103:2": "T8214",
-  "101:1": "T8217",
+const NIGHT_VISION_VALUE: Readonly<Record<string, (ctx: AvailabilityContext) => string>> = {
+  nightvision_type_new: bundleArm("nightvision_type_new", "", {
+    "103:2": "T8161",
+    "102:1 103:2": "T8214",
+    "101:1": "T8217",
+  }),
+  nightvision_type: bundleArm("nightvision_type", "", { "3:1 4:1": "T6310 T8352 T8354 T8416" }),
+};
+
+/**
+ * The param night vision is written and read on, per product as its bundle's parser builds it, in the
+ * {@link bundleWires} form: 1013 bare `[channel][value]` for `NightvisionTypeParser` v8 and v4, standalone
+ * only for v10 (attached it writes 1277), else 1277.
+ */
+const NIGHT_VISION_PARAM = bundleWires("nightvision_type_new", "1277", {
+  "1013": "T8111 T8112 T8114 T8130 T8131 T8140 T8410C T8414 T8420 T8420X",
+  "1013/1277": "T8400 T8401 T8410 T8411",
 });
+
+/** A device whose bundle reads and writes its night vision on 1013, its topology placed as {@link readsPower} does. */
+const readsNightVisionOn1013 = (ctx: AvailabilityContext): boolean =>
+  NIGHT_VISION_PARAM({ ...ctx, homeBaseAttached: ctx.homeBaseAttached ?? ctx.stationSerial !== undefined }) ===
+  CAMERA_CMD.IC_NIGHT_VISION_TYPE;
+
+/**
+ * The compensation param a product's `NightvisionTypeNewParser` v2 sends beside 1277: `{value:1}` then
+ * 1277 = 1 for its compensated infrared (UI 102), 1277 then `{value:0}` for every other option.
+ */
+const NIGHT_VISION_COMPENSATION = bundleWires("nightvision_type_new", "-", { "6252": "T8214 T8217 T8223 T8224" });
 
 /**
  * The 1277 value of each option `identifier` lists on this device, by its UI value: 0 and 1 for a `bool`,
@@ -694,9 +719,7 @@ function nightVisionWires(identifier: string, ctx: AvailabilityContext): [ui: st
   const property = ctx.things?.properties[identifier];
   if (property?.type === "bool") return [0, 1].map((wire) => [String(wire), wire]);
   const table = new Map(
-    (identifier === "nightvision_type_new" ? NIGHT_VISION_WIRE(ctx) : "")
-      .split(" ")
-      .map((pair) => pair.split(":") as [string, string]),
+    (NIGHT_VISION_VALUE[identifier]?.(ctx) ?? "").split(" ").map((pair) => pair.split(":") as [string, string]),
   );
   const wires = (property?.members ?? []).map((m): [string, number] => [
     m.value,
@@ -707,10 +730,11 @@ function nightVisionWires(identifier: string, ctx: AvailabilityContext): [ui: st
 
 /**
  * Night-vision options: what every listed `thing` identifier reads, the first one's label winning. 0 is
- * Standard where that list names it UI 104, the app's Standard, rather than 100, Off. Without a
- * description, Off, Infrared, Full Color and Infrared On.
+ * Standard where that list names it UI 104, the app's Standard, rather than 100, Off. A described product
+ * has only the options it lists, and no night vision where they state none. Without a description, Off,
+ * Infrared, Full Color and Infrared On.
  */
-function nightVisionOptions(ctx: AvailabilityContext): Record<number, string> | undefined {
+function nightVisionOptions(ctx: AvailabilityContext): Record<number, string> {
   if (!ctx.things) return { 0: "Off", 1: "Infrared", 2: "Full Color", 3: "Infrared On" };
   const { thing, enumValues } = CAMERA_MEMBERS.nightVision;
   const options: Record<number, string> = {};
@@ -718,7 +742,7 @@ function nightVisionOptions(ctx: AvailabilityContext): Record<number, string> | 
     for (const [ui, wire] of nightVisionWires(identifier, ctx))
       if (wire in enumValues && !(wire in options))
         options[wire] = ui === "104" ? "Standard" : enumValues[wire as keyof typeof enumValues];
-  return Object.keys(options).length ? options : undefined;
+  return options;
 }
 
 /**
@@ -992,15 +1016,20 @@ export const CAMERA_MEMBERS = {
     enumValues: { 0: "Off", 1: "Infrared", 2: "Full Color", 3: "Infrared On", 5: "Spotlight", 6: "Daylike" },
     thing: ["nightvision_type_new", "nightvision_type"],
     enumValuesFor: nightVisionOptions,
-    provenance: "verified",
-    available: cameraThing("nightvision_type_new", "nightvision_type"),
-    readAvailable: (ctx) => !readsNightVisionOn2002(ctx),
-    readAliases: [{ paramType: 2002, available: readsNightVisionOn2002 }],
+    provenance: "apk",
+    available: (ctx: AvailabilityContext) =>
+      cameraThing("nightvision_type_new", "nightvision_type")(ctx) && Object.keys(nightVisionOptions(ctx)).length > 0,
+    readAvailable: (ctx) => !readsNightVisionOn2002(ctx) && !readsNightVisionOn1013(ctx),
+    readAliases: [
+      { paramType: 2002, available: readsNightVisionOn2002 },
+      { paramType: CAMERA_CMD.IC_NIGHT_VISION_TYPE, available: readsNightVisionOn1013 },
+    ],
     coerce: (raw) => (raw === "true" ? 1 : raw === "false" ? 0 : Number(raw)),
     description:
       "Night-vision mode: 0 = off (standard where the product has no off), 1 = infrared by light level, " +
       "2 = full colour, 3 = infrared held on, 5 = spotlight (read only), 6 = daylike. " +
-      "Written on 1277 (1350 SET_PAYLOAD, night_sion), or on 1013 as a bare [channel][value] when the device reports 2002.",
+      "Written on 1277 (1350 SET_PAYLOAD, night_sion), with the 6252 compensation frame where the product's " +
+      "bundle sends one, or on 1013 as a bare [channel][value] where the bundle writes it there or the device reports 2002.",
     write: (v, ctx) => {
       const nv = coerceEnumValue(NightVision, v);
       if (nv == null) return undefined;
@@ -1010,10 +1039,22 @@ export const CAMERA_MEMBERS = {
       );
       if (offered.length && !offered.some(([, wire]) => wire === nv))
         throw new Error(`nightVision: ${nv} is not among the modes this product's description offers`);
-      if (readsNightVisionOn2002(ctx)) return setScalar(CAMERA_CMD.IC_NIGHT_VISION_TYPE, nv, ctx, "int-pair");
+      if (readsNightVisionOn2002(ctx) || readsNightVisionOn1013(ctx))
+        return setScalar(CAMERA_CMD.IC_NIGHT_VISION_TYPE, nv, ctx, "int-pair");
       if (nv === NightVision.InfraredOn)
         throw new Error("nightVision: Infrared On has no verified write on this model");
-      return setPayload(CAMERA_CMD.NIGHT_VISION_TYPE, { channel: ctx.channel, night_sion: nv }, ctx, 0, 0, "auto");
+      const mode = setPayload(
+        CAMERA_CMD.NIGHT_VISION_TYPE,
+        { channel: ctx.channel, night_sion: nv },
+        ctx,
+        0,
+        0,
+        "auto",
+      );
+      const compensation = NIGHT_VISION_COMPENSATION(ctx);
+      if (!compensation) return mode;
+      const compensate = (value: number) => setPayload(compensation, { value }, ctx, 0, undefined, "auto");
+      return nv === NightVision.Infrared ? { ...compensate(1), next: mode } : { ...mode, next: compensate(0) };
     },
   },
   /**

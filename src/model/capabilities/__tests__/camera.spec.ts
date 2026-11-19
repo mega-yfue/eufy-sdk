@@ -379,6 +379,48 @@ describe("camera capability module", () => {
       });
     });
 
+    it("sends the compensation frame beside 1277 where the product's bundle does", () => {
+      const t8223 = ctx(0, { model: "T8223", things: things({ nightvision_type_new: ["100/0", "102/1"] }) });
+      const mode = (night_sion: number) => ({ kind: "set-payload", cmd: 1277, payload: { night_sion } });
+      expect(buildCommand("nightVision", NightVision.Infrared, t8223)).toMatchObject({
+        kind: "set-payload",
+        cmd: 6252,
+        payload: { value: 1 },
+        next: mode(1),
+      });
+      expect(buildCommand("nightVision", NightVision.Off, t8223)).toMatchObject({
+        ...mode(0),
+        next: { kind: "set-payload", cmd: 6252, payload: { value: 0 } },
+      });
+      expect(buildCommand("nightVision", NightVision.Off, ctx(0, { model: "T8170" }))).not.toHaveProperty("next");
+    });
+
+    it("reads and writes night vision on 1013 where the product's bundle does, per topology", () => {
+      const dev = Device.fromRecord("TEST-SN", { model: "T8130", params: { 1013: "1" } });
+      expect(dev.properties.find((p) => p.name === "nightVision")).toMatchObject({
+        paramType: 1013,
+        provenance: "apk",
+      });
+      expect(dev.getProperty("nightVision")?.value).toBe(NightVision.Infrared);
+      const ic = { kind: "set-param", param: 1013, value: 1, form: "int-pair" };
+      expect(buildCommand("nightVision", NightVision.Infrared, ctx(0, { model: "T8130" }))).toMatchObject(ic);
+      expect(buildCommand("nightVision", NightVision.Infrared, ctx(0, { model: "T8410" }))).toMatchObject(ic);
+      expect(
+        buildCommand("nightVision", NightVision.Infrared, ctx(0, { model: "T8410", homeBaseAttached: true })),
+      ).toMatchObject({ kind: "set-payload", cmd: 1277 });
+    });
+
+    it("offers only what the bundle writes, and no night vision where the description states no option", () => {
+      const options = (model: string, description: ThingDescription) =>
+        Device.fromRecord("TEST-SN", { model, params: { 1277: "1" }, things: description }).properties.find(
+          (p) => p.name === "nightVision",
+        )?.enumValues;
+      const auto = things({ nightvision_type: ["3/1", "4/3", "0/0"] });
+      expect(options("T6310", auto), "its parser writes 3 and 4 as 1").toEqual({ 0: "Off", 1: "Infrared" });
+      expect(options("T8419", auto)).toEqual({ 0: "Off", 1: "Infrared", 3: "Infrared On" });
+      expect(options("T8170", things({ nightvision_type: ["0/0", "1/0", "8/0"] })), "one wire for all").toBeUndefined();
+    });
+
     it("reads a 1277 value outside the published options as undefined, getter and announcement alike", () => {
       const params = { [CAMERA_CMD.NIGHT_VISION_TYPE]: "2" };
       const read = (value: string) => () => ({ value: Number(value) });
