@@ -692,11 +692,11 @@ const NIGHT_VISION_VALUE: Readonly<Record<string, (ctx: AvailabilityContext) => 
 
 /**
  * The param night vision is written and read on, per product as its bundle's parser builds it, in the
- * {@link bundleWires} form: 1013 bare `[channel][value]` for `NightvisionTypeParser` v8 and v4, standalone
- * only for v10 (attached it writes 1277), else 1277.
+ * {@link bundleWires} form: 1013 bare `[channel][value]` for `NightvisionTypeParser` v8 and v4 and for the
+ * T8410's `nightvision_type__v1`, standalone only for v10 (attached it writes 1277), else 1277.
  */
-const NIGHT_VISION_PARAM = bundleWires("nightvision_type_new", "1277", {
-  "1013": "T8111 T8112 T8114 T8130 T8131 T8140 T8410C T8414 T8420 T8420X",
+const NIGHT_VISION_PARAM = bundleWires("nightvision_type", "1277", {
+  "1013": "T8111 T8112 T8114 T8130 T8131 T8140 T8410C T8410__v1 T8414 T8420 T8420X",
   "1013/1277": "T8400 T8401 T8410 T8411",
 });
 
@@ -704,6 +704,12 @@ const NIGHT_VISION_PARAM = bundleWires("nightvision_type_new", "1277", {
 const readsNightVisionOn1013 = (ctx: AvailabilityContext): boolean =>
   NIGHT_VISION_PARAM({ ...ctx, homeBaseAttached: ctx.homeBaseAttached ?? ctx.stationSerial !== undefined }) ===
   CAMERA_CMD.IC_NIGHT_VISION_TYPE;
+
+/**
+ * Where a product's bundle writes Infrared On (3) on 1277, in the {@link bundleWires} form: the T8410
+ * attached, for `nightvision_type` UI 4 and `nightvision_type_new` UI 101.
+ */
+const INFRARED_ON_WIRE = bundleWires("nightvision_type", "-", { "-/1277": "T8410" });
 
 /**
  * The compensation param a product's `NightvisionTypeNewParser` v2 sends beside 1277: `{value:1}` then
@@ -1041,7 +1047,7 @@ export const CAMERA_MEMBERS = {
         throw new Error(`nightVision: ${nv} is not among the modes this product's description offers`);
       if (readsNightVisionOn2002(ctx) || readsNightVisionOn1013(ctx))
         return setScalar(CAMERA_CMD.IC_NIGHT_VISION_TYPE, nv, ctx, "int-pair");
-      if (nv === NightVision.InfraredOn)
+      if (nv === NightVision.InfraredOn && !INFRARED_ON_WIRE(ctx))
         throw new Error("nightVision: Infrared On has no verified write on this model");
       const mode = setPayload(
         CAMERA_CMD.NIGHT_VISION_TYPE,

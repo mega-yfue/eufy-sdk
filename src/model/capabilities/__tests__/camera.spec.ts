@@ -410,6 +410,39 @@ describe("camera capability module", () => {
       ).toMatchObject({ kind: "set-payload", cmd: 1277 });
     });
 
+    it("reads and writes the T8410's nightvision_type__v1 on 1013 in every topology", () => {
+      const bool = things({ nightvision_type: "bool" });
+      const v1 = {
+        ...bool,
+        properties: { nightvision_type: { ...bool.properties.nightvision_type!, identifier: "nightvision_type__v1" } },
+      };
+      const ic = { kind: "set-param", param: 1013, value: 1, form: "int-pair" };
+      for (const homeBaseAttached of [false, true])
+        expect(
+          buildCommand("nightVision", NightVision.Infrared, ctx(0, { model: "T8410", homeBaseAttached, things: v1 })),
+        ).toMatchObject(ic);
+      const dev = Device.fromRecord("TEST-SN", { model: "T8410", parentSn: "T8030-SN", params: {}, things: v1 });
+      expect(dev.properties.find((p) => p.name === "nightVision")?.paramType).toBe(1013);
+    });
+
+    it("writes Infrared On on 1277 for a T8410 behind a HomeBase, as its bundle does, and nowhere else", () => {
+      const t8410 = (description: ThingDescription) =>
+        ctx(1, { model: "T8410", homeBaseAttached: true, things: description });
+      for (const description of [
+        things({ nightvision_type: ["3/1", "4/3", "0/0"] }),
+        things({ nightvision_type_new: ["100/0", "101/3", "102/1"] }),
+      ]) {
+        expect(buildCommand("nightVision", NightVision.InfraredOn, t8410(description))).toMatchObject({
+          kind: "set-payload",
+          cmd: 1277,
+          payload: { night_sion: 3, channel: 1 },
+        });
+      }
+      expect(() =>
+        buildCommand("nightVision", NightVision.InfraredOn, ctx(0, { model: "T8419", homeBaseAttached: true })),
+      ).toThrow(/no verified write/);
+    });
+
     it("offers only what the bundle writes, and no night vision where the description states no option", () => {
       const options = (model: string, description: ThingDescription) =>
         Device.fromRecord("TEST-SN", { model, params: { 1277: "1" }, things: description }).properties.find(
