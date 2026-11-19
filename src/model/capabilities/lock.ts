@@ -1,4 +1,4 @@
-import { isClassicWifiLock, isSmartDrop, isVideoSmartLock } from "../device-family.js";
+import { isBluetoothLock, isClassicWifiLock, isSmartDrop, isVideoSmartLock } from "../device-family.js";
 import { DeviceType } from "../device-types.js";
 import { asBool } from "../../core/util.js";
 import { LockPushEvent } from "../push-events.js";
@@ -42,8 +42,9 @@ export const LOCK_SETTING_ID = {
  *
  * Everything is DERIVED from `LOCK_MEMBERS`. `lock`/`unlock` drive every lock-family actuator over the
  * wire its family takes: the shared `ff09` frame on the T8531 video smart lock and the T85D0 garage door,
- * the T8530 video lock's own `set-payload`, and the keyed-payload envelope on the classic Wi-Fi lock (the
- * `T8520`-range unit that never negotiates a session key). The setting toggles ride `ff09` only. This
+ * the T8530 video lock's own `set-payload`, the keyed-payload envelope on the classic Wi-Fi lock (the
+ * `T8520`-range unit that never negotiates a session key), and the station's door-lock pass-through on the
+ * Bluetooth lock. The setting toggles ride `ff09` only. This
  * module emits ONE transport-neutral intent per wire (identity fields only, no wire bytes, no cipher, no
  * routing key) and names no transport: the command sink routes P2P vs MQTT by the device's topology, and
  * the chosen transport's command router builds the frame + envelope and re-resolves its own routing tail.
@@ -101,7 +102,11 @@ function actuate(engage: boolean, ctx: CommandContext, sink: CommandSink): Promi
     });
   }
   return sink.dispatch({
-    kind: isClassicWifiLock(ctx) ? "keyed-payload-actuate" : "ff09-actuate",
+    kind: isClassicWifiLock(ctx)
+      ? "keyed-payload-actuate"
+      : isBluetoothLock(ctx)
+        ? "doorlock-pass-through-actuate"
+        : "ff09-actuate",
     engage,
     adminUserId: ctx.adminUserId,
     username: ctx.accountName ?? "",

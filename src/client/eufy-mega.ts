@@ -184,7 +184,7 @@ const STATION_REOPEN_MAX_MS = 300_000;
 /**
  * The command kinds that ride a device's PRIMARY transport — the ones {@link EufyMega.routeCommand} lets
  * fall through to `this.rtc` / `this.p2p` after peeling off the self-routed kinds (`ff09-*`,
- * `keyed-payload-actuate`, `mqtt-dp*`, `aiot-dp`, which name their own wire). Kept beside the routing it
+ * `keyed-payload-actuate`, `doorlock-pass-through-actuate`, `mqtt-dp*`, `aiot-dp`, which name their own wire). Kept beside the routing it
  * mirrors so the two change together; `commandContext` turns it into the per-device refused set.
  */
 const PORTAL_COMMAND_KINDS: ReadonlySet<Command["kind"]> = new Set<Command["kind"]>([
@@ -1331,8 +1331,8 @@ export class EufyMega extends EventEmitter {
    *
    * The `ff09-*` kinds share ONE frame that rides either transport, so each stack is asked whether it
    * drives this device (`claimsDevice`) rather than inferring from the kind; `keyed-payload-actuate` (the
-   * classic Wi-Fi lock) is routed the same way, a channel-less actuation claimed by the stack that drives
-   * the lock. `registry.require` throws on an unloaded serial, so a routing decision never silently falls
+   * classic Wi-Fi lock) and `doorlock-pass-through-actuate` are routed the same way, an actuation claimed by
+   * the stack that drives the lock. `registry.require` throws on an unloaded serial, so a routing decision never silently falls
    * through to the wrong transport.
    * The `eufy_life` DP writes (smart lights) are secure-MQTT-only. `aiot-dp` routes to either the
    * Anker AIoT MQTT stack or the legacy Tuya REST router depending on the device's category
@@ -1348,7 +1348,8 @@ export class EufyMega extends EventEmitter {
       cmd.kind === "ff09-actuate" ||
       cmd.kind === "ff09-autolock" ||
       cmd.kind === "ff09-setting-toggle" ||
-      cmd.kind === "keyed-payload-actuate"
+      cmd.kind === "keyed-payload-actuate" ||
+      cmd.kind === "doorlock-pass-through-actuate"
     ) {
       const dev = this.registry.require(sn);
       if (P2PCommandRouter.claimsDevice(dev)) return this.p2p.dispatchCommand(sn, cmd);

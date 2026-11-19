@@ -458,6 +458,12 @@ export type Command =
    * resolves the device key and the member display name from the device record.
    */
   | ({ kind: "keyed-payload-actuate" } & Ff09Identity)
+  /**
+   * `doorlock-pass-through-actuate` — a lock/unlock the device's station relays to the lock it is paired to,
+   * sealed under a key derived from the station owner and the station serial. P2P-only; the router resolves
+   * the station, its owner identity and the lock's channel from the device records.
+   */
+  | ({ kind: "doorlock-pass-through-actuate" } & Ff09Identity)
   | { kind: "ff09-autolock"; adminUserId: string; deviceSn: string; enabled: boolean; delaySeconds?: number }
   | { kind: "ff09-setting-toggle"; adminUserId: string; deviceSn: string; settingId: number; value: boolean }
   // `mqtt-dp` — an `eufy_life` secure-MQTT "DP" TLV write (smart lights + kin). The capability supplies

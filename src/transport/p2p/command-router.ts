@@ -45,6 +45,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { CONNECT_TIMEOUT_MS, P2PSession, type P2PFrame } from "./p2p-session.js";
 import { LEVEL2_SETTLE_MS } from "./level2-settle.js";
 import { buildDirectBinaryBody } from "./write-commands.js";
+import { buildDoorlockPassThrough } from "./doorlock-pass-through.js";
 import { CommandType } from "./commands.js";
 import {
   buildFf09Frame,
@@ -800,6 +801,9 @@ export class P2PCommandRouter {
       case "keyed-payload-actuate":
         await this.sendKeyedPayloadActuate(sn, cmd);
         return true;
+      case "doorlock-pass-through-actuate":
+        await this.sendDoorlockPassThrough(sn, cmd);
+        return false;
       case "ff09-autolock":
         await this.sendFf09Autolock(sn, cmd);
         return false;
@@ -2312,6 +2316,50 @@ export class P2PCommandRouter {
       0,
       resolved,
     );
+  }
+
+  /** Per-station door-lock pass-through sequence numbers, seeded from the clock in seconds. */
+  private readonly passThroughSeq = new Map<string, number>();
+
+  /**
+   * **`doorlock-pass-through-actuate` intent** — `CMD_DOORLOCK_DATA_PASS_THROUGH` at level-2 inside the
+   * `CMD_SET_PAYLOAD` envelope, `mValue3=0`, on the lock's channel of the station it is paired to, its
+   * `payload` the sealed blob from {@link buildDoorlockPassThrough} keyed to that station and its owner's
+   * member record. Sent once: the blob carries its own sequence number. Confirmed on hardware on a
+   * DeviceType 50 lock paired to a Wi-Fi bridge — the bolt moves both ways and the lock reports each with a
+   * lock-state push.
+   */
+  private async sendDoorlockPassThrough(sn: string, cmd: Ff09Identity): Promise<void> {
+    const { session, parentSn, channel } = await this.resolveSession(sn, {
+      waitLevel2: true,
+      level2Sender: "set-payload",
+    });
+    const member = ((this.recordFor(parentSn)?.raw as Record<string, unknown> | undefined)?.member ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const adminUserId = typeof member.admin_user_id === "string" ? member.admin_user_id : cmd.adminUserId;
+    const shortUserId = Number.parseInt(String(member.short_user_id ?? cmd.shortUserId), 10);
+    const nickname = typeof member.nick_name === "string" ? member.nick_name : cmd.username;
+    const seqNum = (this.passThroughSeq.get(parentSn) ?? Math.trunc(Date.now() / 1000)) + 1;
+    this.passThroughSeq.set(parentSn, seqNum);
+    const blob = buildDoorlockPassThrough({
+      engage: cmd.engage,
+      adminUserId,
+      shortUserId,
+      nickname,
+      stationSn: parentSn,
+      channel,
+      seqNum,
+    });
+    (this.deps.logger ?? noopLogger).debug(
+      `[p2p] ${parentSn} door-lock pass-through ${cmd.engage ? "lock" : "unlock"} ${sn} ch=${channel}`,
+    );
+    if (
+      !session.sendControlLevel2(CommandType.CMD_DOORLOCK_DATA_PASS_THROUGH, channel, adminUserId, { payload: blob }, 0)
+    ) {
+      throw new StationKeyUnavailableError(parentSn);
+    }
   }
 
   /**
