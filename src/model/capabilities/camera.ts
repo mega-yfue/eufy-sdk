@@ -932,13 +932,17 @@ export const CAMERA_MEMBERS = {
         : setJson(CAMERA_CMD.PUSH_NOTIFY_TYPE, { value: style, transaction: String(Date.now()) }, ctx);
     },
   },
-  /** Modes come from the thing description (`thing`); unlisted values read as `undefined`. */
+  /**
+   * Modes come from the thing description (`thing`); unlisted values read as `undefined`. Daylike (6) is
+   * offered only where a description lists it: without one the domain is the four modes the SDK always had.
+   */
   nightVision: {
     param: CAMERA_CMD.NIGHT_VISION_TYPE,
     type: "enum",
     kind: "enum",
     enumValues: { 0: "Off", 1: "Infrared", 2: "Full Color", 3: "Infrared On", 6: "Daylike" },
     thing: ["nightvision_type_new", "nightvision_type"],
+    enumValuesFor: (ctx) => (ctx.things ? undefined : { 0: "Off", 1: "Infrared", 2: "Full Color", 3: "Infrared On" }),
     provenance: "verified",
     available: cameraThing("nightvision_type_new", "nightvision_type"),
     readAvailable: (ctx) => !readsNightVisionOn2002(ctx),

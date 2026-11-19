@@ -202,12 +202,11 @@ describe("camera capability module", () => {
         0: "Off",
         1: "Infrared",
       });
-      expect(options(), "no description").toEqual({
+      expect(options(), "no description: Daylike stays out").toEqual({
         0: "Off",
         1: "Infrared",
         2: "Full Color",
         3: "Infrared On",
-        6: "Daylike",
       });
       expect(() =>
         buildCommand(
@@ -326,6 +325,9 @@ describe("camera capability module", () => {
       });
       const read = (value: number) => () => ({ value });
       expect(bind<CameraActions>("camera", daylike, { read: read(6) }).acts.nightVision).toBe(6);
+      expect(() => buildCommand("nightVision", 6, ctx(1)), "no description: no write of 6").toThrow(
+        /nightVision: 6 is not a valid value \(must be one of 0\/1\/2\/3\)/,
+      );
     });
 
     it("reads a 1277 value outside the published options as undefined, getter and announcement alike", () => {
@@ -686,7 +688,7 @@ describe("camera capability module", () => {
           /watermark: .+ is not a valid value \(must be one of 0\/1\/2\)/,
         );
         expect(() => buildCommand("nightVision", bad as number, ctx())).toThrow(
-          /nightVision: .+ is not a valid value \(must be one of 0\/1\/2\/3\/6\)/,
+          /nightVision: .+ is not a valid value \(must be one of 0\/1\/2\/3\)/,
         );
       }
       // Valid enum values still pass.
@@ -1115,7 +1117,7 @@ describe("camera capability module", () => {
       expect(sent[1]).toMatchObject({ cmd: CAMERA_CMD.RECORDING_QUALITY_SET, payload: { quality: 3 } });
       await expect(acts.setWatermark!(5)).rejects.toThrow("watermark: 5 is not a valid value (must be one of 0/1/2)");
       await expect(acts.setNightVision!(9)).rejects.toThrow(
-        "nightVision: 9 is not a valid value (must be one of 0/1/2/3/6)",
+        "nightVision: 9 is not a valid value (must be one of 0/1/2/3)",
       );
       await expect(acts.setRecordingQuality!(0)).rejects.toThrow(
         "recordingQuality: 0 is not a valid value (must be one of 1/2/3)",
