@@ -348,7 +348,7 @@ describe("resolveThing", () => {
   });
 });
 
-describe("a member's thing gives its enum options on the device", () => {
+describe("a member's thing no longer gives its enum options from the description's wire values", () => {
   const member = {
     param: 1,
     type: "number" as const,
@@ -366,15 +366,14 @@ describe("a member's thing gives its enum options on the device", () => {
     data_type: { type: "enum", specs: { eunmList: wire.map((associatedValue) => ({ associatedValue })) } },
   });
 
-  it("takes the first listed identifier the device has, keeping the values the member names", () => {
+  it("keeps the static domain whatever the listed identifier's wire values, the bundle's data deciding", () => {
     expect(enumOf([listed("mode", ["0", "1", "2"]), listed("mode_new", ["2", "0", "7"])])).toEqual({
-      values: { 0: "Off", 2: "High" },
-      dynamic: true,
+      values: member.enumValues,
+      dynamic: false,
     });
-    expect(enumOf([{ identifier: "mode", data_type: { type: "bool" } }]).values, "a bool is 0 and 1").toEqual({
-      0: "Off",
-      1: "Low",
-    });
+    expect(enumOf([{ identifier: "mode", data_type: { type: "bool" } }]).values, "a bool too").toEqual(
+      member.enumValues,
+    );
   });
 
   it("keeps the static domain without a listed property, a named value or an enum", () => {

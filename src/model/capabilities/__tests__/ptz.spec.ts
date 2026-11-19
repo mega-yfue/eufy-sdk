@@ -95,26 +95,16 @@ describe("ptz capability module", () => {
       }).T0000!;
     const available = PTZ_MEMBERS.motionTracking.available!;
 
+    const t8410 = () => ({ ...ctx(), model: "T8410", things: listing("motion_track_status") }) as CommandContext;
+
     it("is offered where the description lists motion_track_status", () => {
-      expect(available({ ...ctx(), things: listing("motion_track_status") })).toBe(true);
-      expect(available({ ...ctx(0, [6016]), things: listing("ptz_action_control") })).toBe(false);
+      expect(available(t8410())).toBe(true);
+      expect(available({ ...ctx(0, [6016]), model: "T8410", things: listing("ptz_action_control") })).toBe(false);
     });
 
-    it("without a description, once the camera reported 6016", () => {
-      expect(available(ctx(0, [6016]))).toBe(true);
+    it("without a description, is absent whatever the camera reported", () => {
+      expect(available({ ...ctx(0, [6016]), model: "T8410" })).toBe(false);
       expect(available(ctx())).toBe(false);
-    });
-
-    it.each([
-      [true, 1],
-      [false, 0],
-    ])("writes %s as the app's set-json {value: %i}", (on, value) => {
-      expect(buildCommand("motionTracking", on, ctx(1, [6016]))).toEqual({
-        kind: "set-json",
-        param: 6016,
-        data: { value },
-        channel: 1,
-      });
     });
   });
 

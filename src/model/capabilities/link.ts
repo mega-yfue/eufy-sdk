@@ -21,7 +21,6 @@ export const LINK_MEMBERS = {
     param: 1551,
     type: "number",
     kind: "timestamp",
-    provenance: "verified",
     description: "Last-seen unix timestamp, seconds (verified: param 1551).",
   },
   /** Link quality in dBm as the device measures it, never normalised to a bar count. */
@@ -30,7 +29,6 @@ export const LINK_MEMBERS = {
     type: "number",
     unit: "dBm",
     kind: "dbm",
-    provenance: "verified",
     description: "Sub-1G/Wi-Fi signal strength (verified: param 1141 = RSSI).",
   },
 } as const satisfies Members;

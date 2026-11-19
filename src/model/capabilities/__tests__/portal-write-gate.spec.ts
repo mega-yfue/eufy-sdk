@@ -23,7 +23,6 @@ const RTC_CONTROL_REFUSED = new Set<Command["kind"]>([
   "set-json-raw",
   "p2p-station-scalar",
   "p2p-int-string",
-  "p2p-privacy-burst",
 ]);
 const MEDIA_REFUSED = new Set<Command["kind"]>([...RTC_CONTROL_REFUSED, "set-payload", "set-json"]);
 

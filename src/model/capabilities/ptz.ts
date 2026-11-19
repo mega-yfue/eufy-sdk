@@ -1,8 +1,8 @@
 import { DeviceType } from "../device-types.js";
-import { asBool } from "../../core/util.js";
 import { setJson, setPayload } from "./access.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
-import type { AvailabilityContext, CapabilityModule, InboundSignal, CapabilityEvent, CommandContext } from "./types.js";
+import { bundled } from "./bundle.js";
+import type { CapabilityModule, InboundSignal, CapabilityEvent, CommandContext } from "./types.js";
 import type { Command } from "../../core/contracts.js";
 
 /**
@@ -344,6 +344,9 @@ function isDirection(v: unknown): v is PtzDirection {
   return v === "left" || v === "right" || v === "up" || v === "down";
 }
 
+/** `motion_track_status` as each product's settings bundle writes and reads it. */
+const MOTION_TRACK = bundled(["motion_track_status"], PTZ_CMD.MOTION_TRACK);
+
 /**
  * Every `ptz` feature, declared once.
  *
@@ -375,7 +378,6 @@ export const PTZ_MEMBERS = {
     param: PTZ_CMD.PTZ_ROTATE_SPEED,
     type: "number",
     kind: "scalar",
-    provenance: "verified",
     description:
       "Pan/tilt rotate speed: 1 = slow, 3 = mid, 5 = fast (PTZ_ROTATE_SPEED 6015). ✅ Write confirmed " +
       "live on a T8410 (mains, standalone): the app's Slow/Mid/Fast control identified 1/3/5, then 1 " +
@@ -388,19 +390,12 @@ export const PTZ_MEMBERS = {
     },
   },
 
-  /** Offered where the description lists `motion_track_status`; with none, once the camera reported 6016. */
+  /** Offered where the product's bundle writes `motion_track_status`. */
   motionTracking: {
-    param: PTZ_CMD.MOTION_TRACK,
     type: "bool",
     kind: "boolean",
-    thing: ["motion_track_status"],
-    provenance: "verified",
-    available: (ctx: AvailabilityContext) =>
-      ctx.things ? "motion_track_status" in ctx.things.properties : ctx.paramIds?.has(PTZ_CMD.MOTION_TRACK) === true,
-    description:
-      "Whether the camera turns to follow a moving subject, independent of motion detection " +
-      "(COMMAND_INDOOR_PAN_MOTION_TRACK 6016).",
-    write: (v, ctx) => setJson(PTZ_CMD.MOTION_TRACK, { value: asBool(v) ? 1 : 0 }, ctx),
+    ...MOTION_TRACK,
+    description: "Whether the camera turns to follow a moving subject, independent of motion detection.",
   },
 
   /** Rotate a step in a direction; `zoom` scales the step size (1.0 = the default step). */

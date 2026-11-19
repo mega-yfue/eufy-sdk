@@ -4,14 +4,14 @@ import { createCipheriv } from "node:crypto";
 import { MqttCommandRouter } from "../command-router.js";
 import type { EufyDevice } from "../../../core/types.js";
 import { u16le, u32be } from "../../../core/util.js";
-import { LOCK_API_COMMAND, CMD_TRANSFER_PAYLOAD } from "../../ff09.js";
+import { LOCK_COMMAND_CODE, CMD_TRANSFER_PAYLOAD } from "../../ff09.js";
 
 /**
  * `MqttCommandRouter.dispatchCommand` on the `ff09-autolock` intent (behind `dev.lock()?.setAutoLock`)
  * — no live broker: `ensureSecurityMqttFor` is stubbed, device resolution comes from the injected
  * `listDevices`, and the "MQTT connection" is a bare EventEmitter standing in for `SecureMqtt`, same style
  * as `ff09-mqtt-dispatch.spec.ts`. The `publish` mock inspects each outbound envelope (GET vs SET, by
- * `apiCommand`) and, for the GET, emits a synthetic-but-correctly-encrypted device reply built with the
+ * opcode) and, for the GET, emits a synthetic-but-correctly-encrypted device reply built with the
  * SAME cipher `transport/ff09.ts` documents (own local encryptor here, since the library has no response
  * ENCODER — only a device builds real ones) — so the whole GET→decrypt→SET flow runs for real, just
  * against a fake wire.
@@ -57,11 +57,12 @@ interface DecodedTrans {
   payload: { apiCommand: number; lock_payload: string; seq_num: number; time: number };
 }
 
-function decodeEnvelope(body: string): { apiCommand: number; time: number; trans: DecodedTrans } {
+/** The envelope's trans, its frame's opcode (the cmdEnc low bits, in the clear) and its key time. */
+function decodeEnvelope(body: string): { op: number; time: number; trans: DecodedTrans } {
   const outer = JSON.parse(body);
   const payload = JSON.parse(outer.payload);
   const trans = JSON.parse(Buffer.from(payload.trans, "base64").toString("utf-8")) as DecodedTrans;
-  return { apiCommand: trans.payload.apiCommand, time: trans.payload.time, trans };
+  return { op: parseInt(trans.payload.lock_payload.slice(14, 18), 16) & 0x3fff, time: trans.payload.time, trans };
 }
 
 function makeRouter(opts: { delay: number; a7: number; a8: number; currentlyEnabled: boolean }) {
@@ -88,8 +89,8 @@ function makeRouter(opts: { delay: number; a7: number; a8: number; currentlyEnab
   const publishedBodies: string[] = [];
   fakeMqtt.publish = vi.fn().mockImplementation(async (_topic: string, body: string) => {
     publishedBodies.push(body);
-    const { apiCommand, time } = decodeEnvelope(body);
-    if (apiCommand === LOCK_API_COMMAND.GET_SETTINGS) {
+    const { op, time } = decodeEnvelope(body);
+    if (op === LOCK_COMMAND_CODE.GET_SETTINGS) {
       const plain = buildResponsePlain(opts.delay, opts.a7, opts.a8, opts.currentlyEnabled);
       const lockPayload = buildResponseFrame(plain, time);
       // Mirror SecureMqtt's REAL "message" event shape (secure-mqtt.ts JSON-parses the outer MQTT
@@ -105,7 +106,7 @@ function makeRouter(opts: { delay: number; a7: number; a8: number; currentlyEnab
         topic: `cmd/eufy_security/T85D0/${SN}/res`,
         raw: { head: { cmd: 8 }, payload: JSON.stringify({ trans: transB64 }) },
       });
-    } else if (apiCommand === LOCK_API_COMMAND.SET_SETTINGS) {
+    } else if (op === LOCK_COMMAND_CODE.SET_SETTINGS) {
       fakeMqtt.emit("message", { topic: `cmd/eufy_security/T85D0/${SN}/res` });
     }
   });
@@ -134,8 +135,12 @@ describe("MqttCommandRouter.dispatchCommand (ff09-autolock)", () => {
     expect(publishedBodies).toHaveLength(2);
     const get = decodeEnvelope(publishedBodies[0]!);
     const set = decodeEnvelope(publishedBodies[1]!);
-    expect(get.apiCommand).toBe(LOCK_API_COMMAND.GET_SETTINGS);
-    expect(set.apiCommand).toBe(LOCK_API_COMMAND.SET_SETTINGS);
+    expect([get.op, set.op]).toEqual([LOCK_COMMAND_CODE.GET_SETTINGS, LOCK_COMMAND_CODE.SET_SETTINGS]);
+    expect([get.trans.payload.apiCommand, set.trans.payload.apiCommand]).toEqual([
+      CMD_TRANSFER_PAYLOAD,
+      CMD_TRANSFER_PAYLOAD,
+    ]);
+    expect([get.trans.payload.seq_num, set.trans.payload.seq_num], "a per-device counter").toEqual([1, 2]);
 
     // Decode the SET frame's TLV to check the actual bytes sent — A4=enable(1), A5=delay(200 LE),
     // A7/A8 = the GET reply's a4/a5 values (11, 22), not hardcoded/guessed.
@@ -236,8 +241,8 @@ describe("MqttCommandRouter.dispatchCommand (ff09-autolock)", () => {
     fakeMqtt.subscribeDevice = vi.fn().mockResolvedValue(undefined);
     fakeMqtt.disconnect = vi.fn().mockResolvedValue(undefined);
     fakeMqtt.publish = vi.fn().mockImplementation(async (_topic: string, body: string) => {
-      const { apiCommand, time } = decodeEnvelope(body);
-      if (apiCommand === LOCK_API_COMMAND.GET_SETTINGS) {
+      const { op, time } = decodeEnvelope(body);
+      if (op === LOCK_COMMAND_CODE.GET_SETTINGS) {
         const plain = buildResponsePlain(90, 1, 2, true);
         const lockPayload = buildResponseFrame(plain, time);
         const innerTrans = {

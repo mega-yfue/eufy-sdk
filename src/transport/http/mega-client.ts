@@ -323,6 +323,22 @@ export interface SignedRetry {
   reauth?: boolean;
 }
 
+/** The app's cloud modules (`MegaModule`), lowercased: the `domain` names a bundle's cloud call may use. */
+const CLOUD_MODULES: ReadonlySet<string> = new Set(
+  (
+    "basic event things passport clean cloudstorage devicemanage devicerelation factory help house logging news " +
+    "openapi push smart valuesadd smartscreen shopping shortlink geofence ota light agreement commercial smartdrop " +
+    "powermanage health proalarm butler esagent promonitor"
+  ).split(" "),
+);
+
+/** The modules whose host prefix is not `app-<module>`. */
+const CLOUD_MODULE_HOSTS: Readonly<Record<string, string>> = {
+  basic: "mega",
+  cloudstorage: "app-cloudstor",
+  promonitor: "pro-monitoring",
+};
+
 /**
  * The cloud HTTP client. Internal transport, reachable as an escape hatch via `EufyMega.api`.
  * @internal
@@ -383,6 +399,8 @@ export class MegaHttpClient {
   private lastRecoveryAt = 0;
   /** A token of ours has been rejected and not yet replaced — see {@link noteTokenReplacement}. */
   private rejectedTokenPending = false;
+  /** The last thing description of each product fetched, persisted with the session — see {@link getThingsList}. */
+  private things: unknown[];
 
   constructor(cfg: MegaClientConfig) {
     this.cfg = {
@@ -402,6 +420,7 @@ export class MegaHttpClient {
     // fresh (deterministic, openudid-seeded) generate that persist() saves. Identity is reused even when
     // the stored token itself has expired.
     const saved = this.store.load();
+    this.things = saved?.things ?? [];
     this.openudid =
       cfg.openudid ?? saved?.openudid ?? createHash("md5").update(`eufy-mega:${cfg.email}`).digest("hex").slice(0, 16);
     this.phoneModel = cfg.phoneModel ?? saved?.phoneModel ?? randomPhoneModel(this.openudid);
@@ -886,15 +905,32 @@ export class MegaHttpClient {
    * description already held: a product whose description has not changed since comes back with that
    * `update_time` and no properties, one that has (or is not named) comes back in full. Returns the raw
    * `data`.
+   *
+   * Each product's last full description is kept with the session, as the app keeps its own locally, and
+   * answers in place of a failed call for the products it covers. A dead session still throws.
    */
-  getThingsList<T = unknown>(
+  async getThingsList<T = unknown>(
     productCodes: readonly string[],
     codeTimeMap: Readonly<Record<string, number>> = {},
   ): Promise<T> {
-    return this.post<T>("things", "/app/things/get_things_list", {
-      product_codes: productCodes,
-      code_time_map: codeTimeMap,
-    });
+    const code = (t: unknown) => (t as { profile?: { product_code?: unknown } })?.profile?.product_code;
+    try {
+      const data = await this.post<{ things_list?: unknown }>("things", "/app/things/get_things_list", {
+        product_codes: productCodes,
+        code_time_map: codeTimeMap,
+      });
+      const fresh = (Array.isArray(data?.things_list) ? data.things_list : []).filter(
+        (t) => (t as { properties?: unknown[] })?.properties?.length,
+      );
+      this.things = [...this.things.filter((t) => !fresh.some((f) => code(f) === code(t))), ...fresh];
+      this.persist();
+      return data as T;
+    } catch (e) {
+      const cached = this.things.filter((t) => productCodes.includes(code(t) as string));
+      if (e instanceof SessionExpiredError || !cached.length) throw e;
+      this.logger.debug(`[mega] thing descriptions unavailable, using the stored ones: ${(e as Error)?.message ?? e}`);
+      return { things_list: cached } as T;
+    }
   }
 
   /**
@@ -1117,6 +1153,29 @@ export class MegaHttpClient {
    */
   async securityAppPost<T = any>(path: string, body: Record<string, unknown> = {}): Promise<T> {
     return this.postSigned<T>(this.securityAppHost(), path, body, true);
+  }
+
+  /**
+   * A cloud call a settings bundle names by `domain`, as the app resolves it: `eufy_security` is the
+   * security-app host; a cloud module name (case-insensitive) is the mega host with `mega` replaced by
+   * `app-<module>` (`Basic` the mega host itself, `CloudStorage` `app-cloudstor`, `ProMonitor`
+   * `pro-monitoring`), the path under its root. Signed and encrypted like every call here, so POST only: another method, another
+   * category's host and an unknown domain throw.
+   */
+  async cloudRequest<T = unknown>(req: {
+    method: string;
+    domain: string;
+    path: string;
+    body?: Record<string, unknown>;
+    headers?: Record<string, string>;
+  }): Promise<T> {
+    const name = req.domain.toLowerCase();
+    const prefix = CLOUD_MODULES.has(name) ? (CLOUD_MODULE_HOSTS[name] ?? `app-${name}`) : undefined;
+    const host = name === "eufy_security" ? this.securityAppHost() : prefix && `${prefix}-${this.region}.eufy.com`;
+    if (!host) throw new Error(`cloud request ${req.path}: no host for domain ${req.domain}`);
+    if (req.method !== "POST") throw new Error(`cloud request ${req.path}: ${req.method} is not signed by this client`);
+    const path = req.path.startsWith("/") ? req.path : `/${req.path}`;
+    return this.postSigned<T>(host, path, req.body ?? {}, true, {}, req.headers ?? {});
   }
 
   /**
@@ -1488,6 +1547,7 @@ export class MegaHttpClient {
       keyIdent: this.sessionKey.keyIdent,
       tokenExpiresAt: this.tokenExpiresAt,
       savedAt: Date.now(),
+      things: this.things,
     });
   }
 

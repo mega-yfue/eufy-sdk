@@ -44,7 +44,7 @@ import { assertNever } from "../../core/util.js";
 import { setTimeout as sleep } from "node:timers/promises";
 import { CONNECT_TIMEOUT_MS, P2PSession, type P2PFrame } from "./p2p-session.js";
 import { LEVEL2_SETTLE_MS } from "./level2-settle.js";
-import { buildDirectBinaryBody } from "./write-commands.js";
+import { buildDirectBinaryBody, buildStringBody } from "./write-commands.js";
 import { buildDoorlockPassThrough } from "./doorlock-pass-through.js";
 import { CommandType } from "./commands.js";
 import {
@@ -786,7 +786,7 @@ export class P2PCommandRouter {
           true
         );
       case "set-json-raw":
-        await this.sendJsonRaw(sn, cmd.cmd, cmd.data, cmd.channel);
+        await this.sendJsonRaw(sn, cmd.cmd, cmd.data, cmd.channel, cmd.form);
         return false;
       case "set-payload":
         return (
@@ -800,17 +800,18 @@ export class P2PCommandRouter {
             cmd.form,
             cmd.level2Sender,
             true,
+            cmd.unzip,
+            cmd.counter,
           )) === true
         );
       case "p2p-station-scalar":
         await this.sendStationScalar(sn, cmd.cmd, cmd.value, cmd.channel, cmd.form);
         return false;
       case "p2p-int-string":
-        await this.sendIntString(sn, cmd.cmd, cmd.value, cmd.valueSub, cmd.channel);
+        await this.sendIntString(sn, cmd.cmd, cmd.value, cmd.valueSub, cmd.channel, cmd.form);
         return false;
-      // ── Raw wire kinds — the privacy burst is a bespoke multi-frame sequence, not a set-param. ──
-      case "p2p-privacy-burst":
-        await this.sendPrivacyBurst(sn, cmd.enabled);
+      case "p2p-string":
+        await this.sendNativeBody(sn, cmd.cmd, 255, (accountId) => buildStringBody(cmd.channel, cmd.value, accountId));
         return false;
       case "ff09-actuate":
         await this.sendFf09Actuate(sn, cmd);
@@ -829,6 +830,8 @@ export class P2PCommandRouter {
         return false;
       case "aiot-dp":
         throw new Error(`aiot-dp command (DP ${cmd.dp}) not routable over P2P: AIoT MQTT devices use the MQTT router`);
+      case "cloud-request":
+        throw new Error(`cloud-request ${cmd.path} is a cloud write and must not reach the P2P router (routing bug)`);
       case "mqtt-dp":
       case "mqtt-dp-preset":
       case "mqtt-dp-color":
@@ -1603,8 +1606,8 @@ export class P2PCommandRouter {
   /**
    * Resolve a scalar `"set-param"` intent to a concrete P2P frame — the ONE place that maps a
    * capability's *what* (param + value + {@link ScalarForm}) to the *how* (encryption level + wire):
-   * `"auto"` defers the level to {@link sendBySessionLevel} — the ONE decision point — while
-   * `"int-string"` and `"int-pair"` pin L1 and `"direct-binary"` pins L2. `answered` settles an L2 write on
+   * `"auto"` and `"int-pair"` (the bare `[channel][value]` body) defer the level to {@link sendBySessionLevel} —
+   * the ONE decision point — while `"int-string"` pins L1 and `"direct-binary"` pins L2. `answered` settles an L2 write on
    * the device's answer ({@link sendAnswered}); without it the write is replayed and not read.
    */
   private async resolveScalarParam(
@@ -1614,11 +1617,12 @@ export class P2PCommandRouter {
     form: ScalarForm,
     answered = true,
   ): Promise<boolean | void> {
-    if (form === "int-string" || form === "int-pair") return this.sendIntStringCommand(sn, param, value, form);
+    if (form === "int-string") return this.sendIntStringCommand(sn, param, value, form);
     if (form === "direct-binary") return this.sendDirectBinary(sn, param, value, answered);
+    const pair = form === "int-pair";
     return this.sendBySessionLevel<boolean | void>(sn, {
-      l1: () => this.sendIntStringCommand(sn, param, value),
-      l2: () => this.sendDirectBinary(sn, param, value, answered),
+      l1: () => this.sendIntStringCommand(sn, param, value, form),
+      l2: () => this.sendDirectBinary(sn, param, value, answered, pair),
     });
   }
 
@@ -1891,13 +1895,17 @@ export class P2PCommandRouter {
     outerCmd: number,
     value: number,
     answered: boolean,
+    pair = false,
   ): Promise<boolean | void> {
     const resolved = await this.resolveSession(sn, { waitLevel2: true });
+    const body = (accountId: string, channel: number) => {
+      const full = buildDirectBinaryBody(value, accountId, channel);
+      return pair ? full.subarray(0, 8) : full;
+    };
     return this.replayLevel2Send(
       sn,
       `direct cmd ${outerCmd}`,
-      ({ session, channel, accountId }) =>
-        session.sendRawLevel2Bytes(buildDirectBinaryBody(value, accountId, channel), channel, outerCmd, 8),
+      ({ session, channel, accountId }) => session.sendRawLevel2Bytes(body(accountId, channel), channel, outerCmd, 8),
       resolved,
       answered ? { commandId: outerCmd, channel: resolved.channel } : undefined,
     );
@@ -1945,13 +1953,46 @@ export class P2PCommandRouter {
   }
 
   /** Send a level-1 int-plus-string frame with authenticated account identity injected by the transport. */
+  /**
+   * A native body (the string body {@link buildStringBody}, the bare int pair) on header `channel`, sealed at
+   * the session's level and replayed as every unacknowledged control here is. `body` gets the account id.
+   */
+  private async sendNativeBody(
+    sn: string,
+    cmd: number,
+    channel: number,
+    body: (accountId: string) => Buffer,
+  ): Promise<void> {
+    const describe = `native cmd ${cmd}`;
+    await this.sendBySessionLevel(sn, {
+      l2: () =>
+        this.replayLevel2Send(sn, describe, ({ session, accountId }) =>
+          session.sendRawLevel2Bytes(body(accountId), channel, cmd, 8),
+        ),
+      l1: (resolved) =>
+        this.replayLevel2Send(
+          sn,
+          describe,
+          ({ session, accountId }) => session.sendRawLevel1Bytes(body(accountId), channel, cmd),
+          resolved,
+        ),
+    });
+  }
+
   private async sendIntString(
     sn: string,
     commandType: number,
     value: number,
     valueSub: number,
     channel: number,
+    form?: "int-pair",
   ): Promise<void> {
+    if (form === "int-pair") {
+      const pair = Buffer.alloc(8);
+      pair.writeUInt32LE(valueSub >>> 0, 0);
+      pair.writeUInt32LE(value >>> 0, 4);
+      return this.sendNativeBody(sn, commandType, channel, () => pair);
+    }
     const { session, accountId } = await this.resolveSession(sn);
     if (!accountId) throw new Error(`int-plus-string command ${commandType} for ${sn} requires an account id`);
     session.sendIntStringCommand(commandType, value, valueSub, accountId, channel);
@@ -1969,7 +2010,16 @@ export class P2PCommandRouter {
     outerCmd: number,
     data: Record<string, unknown>,
     channel: number,
+    form?: "int-string",
   ): Promise<void> {
+    if (form === "int-string") {
+      const { session, accountId } = await this.resolveSession(sn);
+      for (let i = 0; i < DIRECT_CMD_SENDS; i++) {
+        session.sendStringPayloadCommand(outerCmd, JSON.stringify({ account_id: accountId, ...data }), channel);
+        await sleep(200);
+      }
+      return;
+    }
     await this.replayLevel2Send(sn, `set-json-raw cmd ${outerCmd}`, ({ session, accountId }) =>
       session.sendRawLevel2(JSON.stringify({ account_id: accountId, ...data }), channel, outerCmd),
     );
@@ -1989,6 +2039,7 @@ export class P2PCommandRouter {
    * camera accepts the level-1 form. With no `form` (default) it stays level-2 only and waits for the
    * key every level-2 sender uses; `level2Sender: "set-payload"` also takes an RSA cipher's AES-128-ECB
    * key (see {@link P2PSession.sendControlLevel2}). A `resolved` session keeps the wait its caller gave it.
+   * `"int-string"` pins the level-1 form whatever the session holds, as the app seals 1350/1001.
    *
    * Both seals REPLAY the frame {@link DIRECT_CMD_SENDS}× at 200ms, as every other fire-and-forget
    * control on this router does: these are unacknowledged datagrams, and a level-1 device is the one
@@ -2003,32 +2054,36 @@ export class P2PCommandRouter {
   private async sendSetPayloadEnvelope(
     sn: string,
     cmd: number,
-    payload: Record<string, unknown>,
+    payload: Record<string, unknown> | readonly unknown[],
     channel: number,
     mValue3?: number,
     resolved?: ResolvedSession,
     form?: ScalarForm,
     level2Sender?: "set-payload",
     answered = false,
+    unzip = false,
+    counter?: "bump" | "current",
   ): Promise<boolean | void> {
     const answer = answered ? { commandId: P2P_ENVELOPE.SET_PAYLOAD, channel } : undefined;
+    const l1 = async (resolved: ResolvedSession): Promise<boolean | void> => {
+      const { session, accountId } = resolved;
+      if (answer) {
+        return this.sendAnswered(sn, resolved, answer, (r) => {
+          r.session.sendAcknowledged(() => {
+            r.session.sendSetPayload(cmd, payload, { accountId: r.accountId, channel, unzip, counter });
+            return true;
+          });
+        });
+      }
+      for (let i = 0; i < DIRECT_CMD_SENDS; i++) {
+        session.sendSetPayload(cmd, payload, { accountId, channel, unzip, counter });
+        await sleep(200);
+      }
+    };
+    if (form === "int-string") return l1(await this.resolveSession(sn));
     if (form === "auto") {
       return this.sendBySessionLevel<boolean | void>(sn, {
-        l1: async (resolved) => {
-          const { session, accountId } = resolved;
-          if (answer) {
-            return this.sendAnswered(sn, resolved, answer, (r) => {
-              r.session.sendAcknowledged(() => {
-                r.session.sendSetPayload(cmd, payload, { accountId: r.accountId, channel });
-                return true;
-              });
-            });
-          }
-          for (let i = 0; i < DIRECT_CMD_SENDS; i++) {
-            session.sendSetPayload(cmd, payload, { accountId, channel });
-            await sleep(200);
-          }
-        },
+        l1,
         // NB: do NOT forward sendBySessionLevel's resolved session here — it was resolved with
         // waitLevel2:false (enough to read topology), so on a HomeBase-attached device the level-2
         // key may not be ready yet. Let replayLevel2Send re-resolve with waitLevel2:true and wait for
@@ -2037,7 +2092,8 @@ export class P2PCommandRouter {
           this.replayLevel2Send(
             sn,
             `set-payload cmd ${cmd}`,
-            ({ session, accountId }) => session.sendControlLevel2(cmd, channel, accountId, payload, mValue3 ?? cmd),
+            ({ session, accountId }) =>
+              session.sendControlLevel2(cmd, channel, accountId, payload, mValue3 ?? cmd, false, unzip, counter),
             undefined,
             answer,
           ),
@@ -2047,7 +2103,7 @@ export class P2PCommandRouter {
       sn,
       `set-payload cmd ${cmd}`,
       ({ session, accountId, sendsClear }) =>
-        session.sendControlLevel2(cmd, channel, accountId, payload, mValue3 ?? cmd, sendsClear),
+        session.sendControlLevel2(cmd, channel, accountId, payload, mValue3 ?? cmd, sendsClear, unzip, counter),
       resolved ?? (await this.resolveSession(sn, { waitLevel2: true, level2Sender })),
       answer,
     );
@@ -2586,41 +2642,6 @@ export class P2PCommandRouter {
       session.sendIntStringCommand(outerCmd, value, channel, form === "int-pair" ? "" : accountId, channel);
       await sleep(200);
     }
-  }
-
-  /**
-   * Play the **privacy-mode multi-frame burst** over P2P (the `p2p-privacy-burst` command). Privacy
-   * does NOT engage as one frame — the app sends a MULTI-CHANNEL BURST of level-2 (signCode 8) frames.
-   * Reversed from a live capture: 1103 precursor on ch255 → 6250 SET on ch0 ×2 → 6250 SET on the
-   * camera channel ×3 → 1103 companion on ch0. Every frame is signCode 8 (a signCode-1 header on a
-   * GCM body is silently dropped).
-   */
-  private async sendPrivacyBurst(sn: string, enabled: boolean): Promise<void> {
-    const { session, channel, accountId } = await this.resolveSession(sn, { waitLevel2: true });
-
-    const setJson = Buffer.from(
-      JSON.stringify({
-        account_id: accountId,
-        cmd: P2P_ENVELOPE.PRIVACY_MODE,
-        mChannel: channel,
-        mValue3: 0,
-        payload: { switch: enabled ? 1 : 0 },
-      }),
-      "utf-8",
-    );
-    const gap = () => sleep(150);
-
-    session.sendRawLevel2Bytes(STATION_TABLE_QUERY, 255, P2P_ENVELOPE.GET_CAMERA_INFO, 8); // precursor on the station channel
-    await gap();
-    for (let i = 0; i < 2; i++) {
-      session.sendRawLevel2Bytes(setJson, 0, P2P_ENVELOPE.SET_PAYLOAD, 8); // SET on ch0 (station scope)
-      await gap();
-    }
-    for (let i = 0; i < 3; i++) {
-      session.sendRawLevel2Bytes(setJson, channel, P2P_ENVELOPE.SET_PAYLOAD, 8); // SET on the camera channel
-      await gap();
-    }
-    session.sendRawLevel2Bytes(STATION_TABLE_QUERY, 0, P2P_ENVELOPE.GET_CAMERA_INFO, 8); // 1103 companion on ch0
   }
 
   /**

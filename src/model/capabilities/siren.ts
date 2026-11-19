@@ -258,7 +258,6 @@ export const SIREN_MEMBERS = {
     property: "siren",
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
     available: isSensorCodec,
     description:
       "Whether the siren is sounding (61008 APP_CMD_DEV_RING_STATUS). ✅ Confirmed boolean: a live " +
@@ -273,7 +272,6 @@ export const SIREN_MEMBERS = {
     property: "sirenVolume",
     type: "number",
     kind: "scalar",
-    provenance: "verified",
     available: isSensorCodec,
     requires: [SIREN_PARAM.ALARM_VOLUME],
     enumValues: enumLabels(SirenVolume),
@@ -293,7 +291,6 @@ export const SIREN_MEMBERS = {
     type: "number",
     unit: "s",
     kind: "seconds",
-    provenance: "verified",
     available: isSensorCodec,
     requires: [SIREN_PARAM.ALARM_TIMEOUT],
     enumValues: enumLabels(SirenAlarmDuration),
@@ -308,7 +305,7 @@ export const SIREN_MEMBERS = {
     },
   },
   /**
-   * Read-only: `apk` provenance means the id comes from the disassembled app and the only live evidence
+   * Read-only: the id comes from the app and the only live evidence
    * is a T90R0 reporting 0, which fixes neither the polarity's other value nor a write frame. Typed
    * `bool` on the app's own naming; do not add a setter until a toggle is captured.
    */
@@ -316,7 +313,6 @@ export const SIREN_MEMBERS = {
     param: SIREN_PARAM.NOT_DISTURB,
     type: "bool",
     kind: "boolean",
-    provenance: "apk",
     available: isSensorCodec,
     description: "Do-not-disturb (1828 APP_CMD_SENSOR_NOT_DISTURB). Observed 0 on a T90R0.",
   },
@@ -328,7 +324,6 @@ export const SIREN_MEMBERS = {
     unit: "%",
     kind: "percent",
     writeOnly: true,
-    provenance: "verified",
     available: isHomeBase,
     requires: HUB_ALARM_EVIDENCE,
     min: 0,
@@ -344,7 +339,6 @@ export const SIREN_MEMBERS = {
     kind: "enum",
     enumValues: enumLabels(HubAlarmTone),
     thing: ["alarm_tones_mode"],
-    provenance: "verified",
     available: isHomeBase,
     requires: HUB_ALARM_EVIDENCE,
     args: [{ name: "tone", kind: "enum", description: "One of the app's alarm tones (1-indexed)." }],

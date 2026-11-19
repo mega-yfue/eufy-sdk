@@ -536,7 +536,6 @@ export const MOTION_MEMBERS = {
     property: "motionDetection",
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
     readAvailable: (ctx) => !reportsIndoorSwitch(ctx),
     readAliases: [{ paramType: MOTION_CMD.INDOOR_MOTION_ENABLE, available: reportsIndoorSwitch }],
     description:
@@ -561,7 +560,6 @@ export const MOTION_MEMBERS = {
     param: MOTION_CMD.MOTION_SENSITIVITY,
     type: "number",
     kind: "scalar",
-    provenance: "verified",
     unexposed: true,
     description:
       "Motion sensitivity, raw wire value (1-indexed; the app's own picker UI is 0-indexed — see " +
@@ -580,7 +578,6 @@ export const MOTION_MEMBERS = {
     type: "string",
     decode: decodeAiDetectTypeParam,
     decodedKind: "bitfield",
-    provenance: "verified",
     description:
       "AI detection type bitmask — which classes trigger detection. ✅ Bits decoded live + confirmed " +
       "vs the app: 0x30000 = enabled base, bit0 = human recognition, bit1 = human detection, bit2 = " +
@@ -603,7 +600,6 @@ export const MOTION_MEMBERS = {
     param: MOTION_CMD.SOLO_SENSITIVITY,
     type: "number",
     kind: "scalar",
-    provenance: "verified",
     unexposed: true,
     description: "Raw sensitivity a solo camera reports (verified: param 6070).",
   },
@@ -620,7 +616,6 @@ export const MOTION_MEMBERS = {
     param: MOTION_CMD.INDOOR_SENSITIVITY_INDEX,
     type: "number",
     kind: "scalar",
-    provenance: "verified",
     unexposed: true,
     description: "Raw sensitivity an indoor camera reports (verified: param 6041).",
     decode: (raw) => (typeof raw === "number" ? raw : undefined),
@@ -635,7 +630,6 @@ export const MOTION_MEMBERS = {
     param: MOTION_CMD.CAMERA_PIR_SENSITIVITY,
     type: "number",
     kind: "scalar",
-    provenance: "verified",
     unexposed: true,
     description: "Raw sensitivity reported on the inverted seven-step scale (verified: param 1210).",
   },
@@ -649,7 +643,6 @@ export const MOTION_MEMBERS = {
     param: MOTION_CMD.SENSOR_PIR_SENSITIVITY,
     type: "number",
     kind: "scalar",
-    provenance: "verified",
     unexposed: true,
     description: "Raw sensitivity a standalone PIR sensor reports (verified: param 1609, inverted ladder).",
   },
@@ -667,7 +660,6 @@ export const MOTION_MEMBERS = {
     param: MOTION_CMD.SENSOR_WORK_MODE,
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
     description:
       "Whether a standalone motion sensor is in the app's user test mode — the only state in which it " +
       "reports detections over P2P. ✅ Observed live on a T8910 both ways. P2P-only: the cloud record " +
@@ -691,7 +683,6 @@ export const MOTION_MEMBERS = {
   snoozeTime: {
     param: MOTION_CMD.SNOOZE_TIME,
     type: "string",
-    provenance: "verified",
     min: 0,
     decode: (raw) => decodeSnoozeSeconds(raw as ParamValue | undefined),
     decodedKind: "seconds",
@@ -711,7 +702,6 @@ export const MOTION_MEMBERS = {
     param: MOTION_CMD.HUMAN_ONLY_AT_NIGHT,
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
     description:
       "Restrict AI classification to night-time only (1719). ⚠️ Replay + readback confirmed on a " +
       "HomeBase-attached T8425, not byte-captured.",
@@ -729,7 +719,6 @@ export const MOTION_MEMBERS = {
     param: MOTION_CMD.LOITERING_DETECTION,
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
     coerce: (raw) => decodeRadarWdSwitch(raw) ?? false,
     description:
       "Loitering detection — alert on lingering rather than passing (2706). Observed on the T8214 " +

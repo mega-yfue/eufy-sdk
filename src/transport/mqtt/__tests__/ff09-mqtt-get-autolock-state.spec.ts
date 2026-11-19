@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { MqttCommandRouter } from "../command-router.js";
 import type { EufyDevice } from "../../../core/types.js";
-import { LOCK_API_COMMAND, CMD_TRANSFER_PAYLOAD } from "../../ff09.js";
+import { LOCK_COMMAND_CODE, CMD_TRANSFER_PAYLOAD } from "../../ff09.js";
 import { buildFf09ResponseFrame } from "../../__tests__/ff09-test-fixtures.js";
 
 /**
@@ -43,11 +43,12 @@ interface DecodedTrans {
   payload: { apiCommand: number; lock_payload: string; seq_num: number; time: number };
 }
 
-function decodeEnvelope(body: string): { apiCommand: number; time: number; trans: DecodedTrans } {
+/** The envelope's trans, its frame's opcode (the cmdEnc low bits, in the clear) and its key time. */
+function decodeEnvelope(body: string): { op: number; time: number; trans: DecodedTrans } {
   const outer = JSON.parse(body);
   const payload = JSON.parse(outer.payload);
   const trans = JSON.parse(Buffer.from(payload.trans, "base64").toString("utf-8")) as DecodedTrans;
-  return { apiCommand: trans.payload.apiCommand, time: trans.payload.time, trans };
+  return { op: parseInt(trans.payload.lock_payload.slice(14, 18), 16) & 0x3fff, time: trans.payload.time, trans };
 }
 
 function makeRouter(plain: Buffer, opts: { noReply?: boolean } = {}) {
@@ -71,8 +72,8 @@ function makeRouter(plain: Buffer, opts: { noReply?: boolean } = {}) {
   fakeMqtt.disconnect = vi.fn().mockResolvedValue(undefined);
   fakeMqtt.publish = vi.fn().mockImplementation(async (_topic: string, body: string) => {
     if (opts.noReply) return;
-    const { apiCommand, time } = decodeEnvelope(body);
-    if (apiCommand === LOCK_API_COMMAND.GET_SETTINGS) {
+    const { op, time } = decodeEnvelope(body);
+    if (op === LOCK_COMMAND_CODE.GET_SETTINGS) {
       const lockPayload = buildResponseFrame(plain, time);
       // Mirror SecureMqtt's REAL "message" event shape (a JSON payload STRING wrapping
       // {trans: base64(innerTransObject)}) so parseFf09SettingsResponseTrans's real unwrap runs.

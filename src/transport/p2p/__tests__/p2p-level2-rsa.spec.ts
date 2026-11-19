@@ -343,9 +343,6 @@ describe("routing on an RSA session", () => {
       router.dispatchCommand(DEVICE_SN, { kind: "set-payload", cmd: 1716, payload: { light_enable: 1 }, channel: 0 }),
     ).rejects.toBeInstanceOf(StationKeyUnavailableError);
     await expect(
-      router.dispatchCommand(DEVICE_SN, { kind: "p2p-privacy-burst", enabled: true, channel: 1 }),
-    ).rejects.toBeInstanceOf(StationKeyUnavailableError);
-    await expect(
       router.dispatchCommand(DEVICE_SN, { kind: "p2p-station-scalar", cmd: 1235, value: 1, channel: 255 }),
     ).rejects.toBeInstanceOf(StationKeyUnavailableError);
 

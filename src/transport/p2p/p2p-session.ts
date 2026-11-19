@@ -496,6 +496,8 @@ export class P2PSession extends EventEmitter {
   private receiveBufferReported = false;
   private connectAddress?: Address;
   private seqNumber = 0;
+  /** The header byte-14 counter some set-payload frames carry, cycling 10..251 — see {@link headerCounter}. */
+  private byte14 = 0;
   /**
    * Sequence counter for frames sent on the **video** data-type channel, which the device tracks
    * separately from the control channel's — today only {@link sendAudioFrame} rides it.
@@ -1707,6 +1709,16 @@ export class P2PSession extends EventEmitter {
   }
 
   /**
+   * Header byte 14 of a frame that carries the session's counter, as the app's native sender writes it:
+   * `bump` moves it on (to 10 when `(b + 5) & 0xff < 15`, else up one, so it cycles 10..251) and writes it,
+   * `current` writes it as it stands, no mode writes 0.
+   */
+  private headerCounter(mode?: "bump" | "current"): number {
+    if (mode === "bump") this.byte14 = ((this.byte14 + 5) & 0xff) < 15 ? 10 : this.byte14 + 1;
+    return mode ? this.byte14 : 0;
+  }
+
+  /**
    * Send a **level-2 (AES-256-GCM, signCode 8) control payload** to a HomeBase-attached device. The
    * target camera is selected by `channel` (= device_channel) + the `mChannel` envelope — the same
    * mechanism proven for camera selection in media start. Use for control commands routed through a
@@ -1719,28 +1731,37 @@ export class P2PSession extends EventEmitter {
    *
    * With `clearOnRefusal` on a session that {@link refusedLevel2}, the frame goes in the clear in the vendor
    * app's form for such a device: header bytes `[01 00]`, signCode 0, and a body of `{cmd, payload}` alone.
-   * Without it, a refused session answers `false` and sends nothing.
+   * Without it, a refused session answers `false` and sends nothing. `unzip` puts the payload's keys at the
+   * top level of the envelope, in place of `payload`.
    */
   sendControlLevel2(
     cmd: number,
     channel: number,
     accountId: string,
-    payload: Record<string, unknown>,
+    payload: unknown,
     mValue3: number = cmd,
     clearOnRefusal: boolean = false,
+    unzip: boolean = false,
+    counter?: "bump" | "current",
   ): boolean {
     if (!this.connectAddress || !(this.level2KeyServes("set-payload") || (clearOnRefusal && this.refusedLevel2))) {
       return false;
     }
     const value = Buffer.from(
-      JSON.stringify({ account_id: accountId, cmd, mChannel: channel, mValue3, payload }),
+      JSON.stringify({
+        account_id: accountId,
+        cmd,
+        mChannel: channel,
+        mValue3,
+        ...(unzip ? (payload as object) : { payload }),
+      }),
       "utf-8",
     );
     let sealed: Buffer;
     if (this.level2Key) {
       const body = this.encryptLevel2(value);
       if (!body) return false;
-      sealed = buildRawCommandPayload(body, channel, 8, [0x08, 0x00], 0);
+      sealed = buildRawCommandPayload(body, channel, 8, [0x08, 0x00], this.headerCounter(counter));
     } else if (this.level2EcbKey) {
       sealed = buildRawCommandPayload(encryptP2PData(paddingP2PData(value), this.level2EcbKey), channel, 2);
     } else {
@@ -2456,6 +2477,10 @@ export class P2PSession extends EventEmitter {
       wrapCmd?: number;
       rawValue?: Record<string, unknown>;
       key?: string;
+      /** The payload's keys at the top level of the envelope, in place of `payload`. */
+      unzip?: boolean;
+      /** Header byte 14: the session counter bumped, or as it stands — see {@link headerCounter}. */
+      counter?: "bump" | "current";
     } = {},
   ): void {
     if (!this.connectAddress) throw new Error("not connected");
@@ -2470,12 +2495,18 @@ export class P2PSession extends EventEmitter {
       cmd: subCmd,
       mChannel: channel,
       mValue3: 0,
-      ...(opts.omitPayload ? {} : { payload }),
+      ...(opts.omitPayload ? {} : opts.unzip ? (payload as object) : { payload }),
     };
     const value = keyed ? JSON.stringify(inner).replace(/=/g, "\\u003d") : JSON.stringify(inner);
     const body = Buffer.concat([
       buildCommandHeader(this.seqNumber, opts.wrapCmd ?? CMD_SET_PAYLOAD),
-      buildStringCommandPayload(value, channel, keyed ? undefined : this.level1Key, 1),
+      buildStringCommandPayload(
+        value,
+        channel,
+        keyed ? undefined : this.level1Key,
+        1,
+        this.headerCounter(opts.counter),
+      ),
     ]);
     this.seqNumber = (this.seqNumber + 1) & 0xffff;
     this.logger.debug(`[p2p] ${this.cfg.stationSn} sendSetPayload subCmd=${subCmd}`);

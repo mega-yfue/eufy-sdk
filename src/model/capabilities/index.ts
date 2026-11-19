@@ -29,7 +29,9 @@ import type {
   CommandContext,
   AvailabilityContext,
 } from "./types.js";
-import type { Command } from "../../core/contracts.js";
+import { reflectCommand, type Command } from "../../core/contracts.js";
+import { asBool } from "../../core/util.js";
+import { thingRead, thingReadback, thingWrite } from "./bundle.js";
 
 import { VIDEO } from "./video.js";
 import { RTSP } from "./rtsp.js";
@@ -44,23 +46,6 @@ export { SirenVolume, type SirenVolumeValue, SirenAlarmDuration, type SirenAlarm
  * that value reflecting its own setter.
  */
 export { unobservableMembers, unreflectedMembers } from "./members.js";
-export {
-  Watermark,
-  type WatermarkValue,
-  NightVision,
-  type NightVisionValue,
-  RecordingQuality,
-  type RecordingQualityName,
-  RECORDING_QUALITY_TIERS,
-  StreamingQuality,
-  type StreamingQualityName,
-  STREAMING_QUALITY_TIERS,
-  resolveStreamingQuality,
-  resolveStreamingQualityTier,
-  resolveRecordingQuality,
-  resolveRecordingQualityValue,
-  resolveRecordingQualityTier,
-} from "./camera.js";
 export {
   WorkingMode,
   PowerSource,
@@ -627,7 +612,48 @@ export function buildCommand(
     const cmd = memberCommand(m, action, value, ctx) ?? m.buildCommand?.(action, value, ctx);
     if (cmd !== undefined) return cmd;
   }
-  return undefined;
+  return thingCommand(action, value, ctx, has);
+}
+
+/** Whether a member of a capability in `has` claims `identifier` through its `thing`. */
+function claimed(identifier: string, has: ReadonlySet<Capability>): boolean {
+  return MODULES.some(
+    (m) =>
+      has.has(m.capability) &&
+      Object.values(m.members ?? {}).some((x) => (x as { thing?: readonly string[] }).thing?.includes(identifier)),
+  );
+}
+
+/**
+ * A described `RW` identifier no member claims, written by its identifier as the app does: the value as
+ * the description states it, sent as the product's settings bundle sends it and read back on the param
+ * it reads first. `undefined` where the bundle sends nothing for that value on this topology.
+ */
+function thingCommand(
+  identifier: string,
+  value: boolean | number | string,
+  ctx: CommandContext,
+  has: ReadonlySet<Capability>,
+): Command | undefined {
+  const property = ctx.things?.properties[identifier];
+  if (property?.accessMode !== "RW" || claimed(identifier, has)) return undefined;
+  const v = property.type === "bool" ? (asBool(value) ? "1" : "0") : String(value);
+  const cmd = thingWrite(identifier, v, ctx);
+  const readback = cmd && thingReadback(identifier, v, ctx);
+  return readback ? reflectCommand(cmd, readback) : cmd;
+}
+
+/**
+ * A described identifier no member claims, read as the product's settings bundle reads it from the raw
+ * params `raw` answers, as the description states the value. @internal
+ */
+export function thingValue(
+  identifier: string,
+  ctx: CommandContext,
+  raw: (param: number) => string | undefined,
+): string | undefined {
+  if (!ctx.things?.properties[identifier] || claimed(identifier, ctx.capabilities ?? new Set())) return undefined;
+  return thingRead(identifier, ctx, raw);
 }
 
 /**

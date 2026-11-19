@@ -21,17 +21,17 @@ import type { ParamDef } from "./param-dictionary.js";
 /** Tag ids a `eufy_life` light reports. Only fields whose meaning is evidenced appear here. */
 export const LIFE_PARAMS: Record<number, ParamDef> = {
   /** DP tag `0xa1` `spotlight_switch`. */
-  161: { name: "lightPower", type: "bool", provenance: "apk" },
+  161: { name: "lightPower", type: "bool" },
   /** DP tag `0xa2` `device_light_brightness`, 0-100. */
-  162: { name: "lightBrightness", type: "number", provenance: "apk" },
+  162: { name: "lightBrightness", type: "number" },
   /** DP tag `0xa3` `light_length` (segment count). */
-  163: { name: "lightLength", type: "number", provenance: "apk" },
+  163: { name: "lightLength", type: "number" },
   /** DP tag `0xa4` `light_effect_id`, u32LE. */
-  164: { name: "lightEffectId", type: "number", provenance: "apk" },
+  164: { name: "lightEffectId", type: "number" },
   /** DP tag `0xa5` `color_gradient_switch`. */
-  165: { name: "lightColorGradient", type: "bool", provenance: "apk" },
+  165: { name: "lightColorGradient", type: "bool" },
   /** DP tag `0xa6` `cloud_light_effect_id` — the ACTIVE effect, 0 when off. */
-  166: { name: "lightCloudEffectId", type: "number", provenance: "apk" },
+  166: { name: "lightCloudEffectId", type: "number" },
   /** DP tag `0xa7` `light_effect_mode` on a status report; the value space is not evidenced. */
-  167: { name: "lightEffectMode", type: "number", provenance: "apk" },
+  167: { name: "lightEffectMode", type: "number" },
 };

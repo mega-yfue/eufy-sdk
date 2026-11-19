@@ -49,10 +49,11 @@ await build({
   logLevel: "warning",
 });
 
-// Everything tsc emitted except the bundle and its map, which the bundle now supersedes.
+// Everything tsc emitted except the bundle and its map, which the bundle now supersedes: the JSON data a
+// module imports is inlined into it too.
 for (const file of readdirSync(DIST, { recursive: true, encoding: "utf8" })) {
   if (file === "index.js" || file === "index.js.map") continue;
-  if (file.endsWith(".js") || file.endsWith(".js.map")) rmSync(join(DIST, file));
+  if (file.endsWith(".js") || file.endsWith(".js.map") || file.endsWith(".json")) rmSync(join(DIST, file));
 }
 
 const bytes = statSync(ENTRY).size;

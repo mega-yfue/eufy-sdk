@@ -95,27 +95,6 @@ export const DOORBELL_CMD = {
    */
   DINGDONG_RINGTONE: 1718,
   /**
-   * Live-view quality AND the video encoding format, both in one integer — app
-   * `CMD_BAT_DOORBELL_VIDEO_QUALITY`. The value is `quality + (highCompression ? 5 : 0)`, where quality
-   * is 0 Auto / 1 Low / 2 Medium / 3 High ({@link DoorbellVideoQuality}). The app drives the two from
-   * separate menus and each write carries both, so setting either requires the other's current value —
-   * which is why neither is a derived setter.
-   *
-   * The encoding is reversed from writing every option in the app and reading the parameter back: High
-   * on high compression is 8 and on low compression 3, Low on low compression 1, Auto on high
-   * compression 5. Six of the eight combinations were observed that way; `0` (Auto, low compression) and
-   * `2` (Medium, low compression) follow the same arithmetic but were not individually written.
-   *
-   * Wire captured byte-exact from the app on a T8210 behind a HomeBase: outer P2P cmd 1705 itself — no
-   * wrapper — signCode 8, on the doorbell's own channel, the same 136-byte direct-binary
-   * `[u32 channel][u32 value][account_id ASCII pad 128]` struct as its 1703/1704 siblings. The station
-   * answers with an unencrypted level-1 frame carrying 0.
-   *
-   * Replayed from this SDK and confirmed on that device: three writes in one session, each read back off
-   * the parameter — quality alone, then the encoding format with the quality held, then a restore.
-   */
-  VIDEO_QUALITY: 1705,
-  /**
    * Doorbell quick-response LIST fetch — the sub-command carried inside a `SET_PAYLOAD` (1350)
    * wrapper (app `APP_CMD_GET_CUSTOMIZE_VICOE_LIST`). The station replies with a `NOTIFY_PAYLOAD`
    * (1351) frame whose JSON is `{cmd:6237, payload:{voice_list:[{voice_id,voice_name,voice_path}]}}`.
@@ -147,19 +126,6 @@ export const DoorbellRingtone = {
 /** A doorbell ringtone option — the value side of {@link DoorbellRingtone}. */
 export type DoorbellRingtoneValue = (typeof DoorbellRingtone)[keyof typeof DoorbellRingtone];
 
-// Deliberately NOT JSDoc: re-exported publicly, and the publication guard rejects wire detail on the
-// generated page. The wire is documented on DOORBELL_CMD.VIDEO_QUALITY, which stays internal.
-// Ranks, not resolutions — the app's own picker reads Auto/Low/Medium/High on this device.
-export const DoorbellVideoQuality = {
-  /** The doorbell picks a quality from the link. */
-  Auto: 0,
-  Low: 1,
-  Medium: 2,
-  High: 3,
-} as const;
-/** A doorbell live-view quality — the value side of {@link DoorbellVideoQuality}. */
-export type DoorbellVideoQualityValue = (typeof DoorbellVideoQuality)[keyof typeof DoorbellVideoQuality];
-
 /**
  * One of a Video Doorbell's **quick responses** — a canned voice reply it can play at a visitor.
  * Returned by `dev.doorbell()?.quickResponses()`; pass `voiceId` to `playQuickResponse`. Owned by the
@@ -185,21 +151,6 @@ export interface QuickResponse {
  * with a {@link MediaProvider} — hence optional, call with `?.`.
  */
 export type DoorbellActions = Surface<typeof DOORBELL_MEMBERS>;
-
-/**
- * The composite {@link DOORBELL_CMD.VIDEO_QUALITY} value, or `undefined` if it is not one the encoding
- * can produce. Valid values are `quality + (highCompression ? 5 : 0)` for a quality of 0-3, so 4 and 9
- * are NOT in the domain even though they are in range — reading 9 as `9 % 5` would answer a quality of
- * 4, which is not one. Shared by both halves so they cannot disagree about what a value means.
- */
-function composite(raw: unknown): number | undefined {
-  // The cloud reports parameters as strings, so a numeric string is the normal case — but `Number` maps
-  // `null` and `""` to 0, which is a real value here (Auto, low compression), so the type is checked
-  // first rather than letting an absent reading decode as a setting.
-  if (typeof raw !== "number" && (typeof raw !== "string" || raw.trim() === "")) return undefined;
-  const v = Number(raw);
-  return Number.isInteger(v) && v >= 0 && v <= 8 && v % 5 <= 3 ? v : undefined;
-}
 
 /**
  * Parse a doorbell `voice_list` (the `{voice_id,voice_name,voice_path}` records the station returns
@@ -245,8 +196,7 @@ export function parseQuickResponses(
 export const DOORBELL_MEMBERS = {
   /**
    * The HOMEBASE as the doorbell's chime — the hub plays the ring, not the wired chime box
-   * `mechanicalChimeSwitch` drives. `provenance` is "verified" on our own decrypt of the app's frame:
-   * direct-binary `[ch][value][acct]`, 1=on/0=off, the same shape as its 1703 sibling — captured, not
+   * `mechanicalChimeSwitch` drives. Decrypted from the app's frame: direct-binary `[ch][value][acct]`, 1=on/0=off, the same shape as its 1703 sibling — captured, not
    * inferred from the shared param range.
    */
   chimeSwitch: {
@@ -254,14 +204,13 @@ export const DOORBELL_MEMBERS = {
     available: writable,
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
     description:
       "The HomeBase plays the doorbell's chime (1702; the app's \"HomeBase as chime\" switch — write " +
       "wire-confirmed live on T8210).",
     write: (v, ctx) => setScalar(DOORBELL_CMD.CHIME_SWITCH, asBool(v) ? 1 : 0, ctx, "direct-binary"),
   },
   /**
-   * `provenance` is "verified" on our own P2P decrypt of the write wire: direct-binary
+   * Decrypted from the P2P write wire: direct-binary
    * `[ch][value][acct]`, 1=on/0=off, verified live on a T8214 (ON then OFF).
    */
   mechanicalChimeSwitch: {
@@ -269,7 +218,6 @@ export const DOORBELL_MEMBERS = {
     available: writable,
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
     description:
       'The existing wired chime box rings (1703; the app\'s "existing doorbell chime" switch — ' +
       "confirmed on T8214, and that pairing confirmed by toggling it alone on a T8210).",
@@ -281,7 +229,6 @@ export const DOORBELL_MEMBERS = {
     available: writable,
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
     description:
       "Wide Dynamic Range (WDR) image switch (1704; write wire-confirmed live on T8214 — see DOORBELL_CMD.WDR_SWITCH).",
     write: (v, ctx) => setScalar(DOORBELL_CMD.WDR_SWITCH, asBool(v) ? 1 : 0, ctx, "direct-binary"),
@@ -298,7 +245,6 @@ export const DOORBELL_MEMBERS = {
     type: "number",
     unit: "%",
     kind: "percent",
-    provenance: "verified",
     writtenElsewhere: true,
     description:
       "Ringtone volume (1708; confirmed on T8214, observed value 80). The WRITE is `audio`'s " +
@@ -307,8 +253,7 @@ export const DOORBELL_MEMBERS = {
   /**
    * A `1350` SET_PAYLOAD envelope (NOT direct-binary) with an explicit `mValue3` 0 — both live frames
    * captured that value. Bounded 0-100 like every sibling volume setter: the write is fire-and-forget,
-   * so an out-of-range value would otherwise be sent as-is and look like it worked. `provenance` is
-   * "verified" on our own capture, not merely an observed param id.
+   * so an out-of-range value would otherwise be sent as-is and look like it worked.
    */
   dingdongVolume: {
     param: DOORBELL_CMD.DINGDONG_VOLUME,
@@ -316,7 +261,6 @@ export const DOORBELL_MEMBERS = {
     type: "number",
     unit: "%",
     kind: "percent",
-    provenance: "verified",
     min: 0,
     max: 100,
     description:
@@ -338,7 +282,6 @@ export const DOORBELL_MEMBERS = {
     type: "number",
     kind: "enum",
     enumValues: enumLabels(DoorbellRingtone),
-    provenance: "verified",
     args: [{ name: "ringtone", kind: "enum", description: "A tone INDEX, not a volume." }],
     description:
       "Doorbell chime ringtone SELECTION INDEX, not a bool (1718 APP_CMD_BAT_DOORBELL_SET_DINGDONG_RINGTONE; " +
@@ -354,76 +297,6 @@ export const DOORBELL_MEMBERS = {
     },
   },
   /**
-   * The live-view quality half of {@link DOORBELL_CMD.VIDEO_QUALITY}, lifted out of the composite by
-   * `decode`. `writtenElsewhere` because the setter needs the OTHER half's current value to rebuild the
-   * integer, which a member's `write` — given only the new value and the context — cannot read.
-   */
-  videoQuality: {
-    param: DOORBELL_CMD.VIDEO_QUALITY,
-    type: "number",
-    kind: "enum",
-    enumValues: enumLabels(DoorbellVideoQuality),
-    provenance: "verified",
-    writtenElsewhere: true,
-    decode: (raw) => {
-      const v = composite(raw);
-      return v === undefined ? undefined : v % 5;
-    },
-    decodedKind: "enum",
-    decodedValues: Object.values(DoorbellVideoQuality),
-    description:
-      "Live-view quality: 0 Auto / 1 Low / 2 Medium / 3 High (1705 CMD_BAT_DOORBELL_VIDEO_QUALITY). " +
-      "The parameter also carries the video encoding format, so this is the remainder mod 5 — see " +
-      "highCompressionEncoding for the other half. Ranks, not resolutions: the app's picker reads " +
-      "Auto/Low/Medium/High. Written by setVideoQuality, which takes the encoding format too — " +
-      "hardware-confirmed on a T8210.",
-  },
-  /**
-   * The encoding half of the SAME integer, so it declares no param of its own and reaches into the
-   * owner's value — two members claiming 1705 would leave the second reading a name nothing is stored
-   * under, and a paramless member publishes no schema entry at all, which is what keeps that from
-   * happening structurally. High compression is the app's default on the captured device.
-   */
-  highCompressionEncoding: {
-    readsFrom: "videoQuality",
-    type: "bool",
-    kind: "boolean",
-    provenance: "verified",
-    decode: (raw) => {
-      const v = composite(raw);
-      return v === undefined ? undefined : v >= 5;
-    },
-    description:
-      "Video encoding format: true = high compression, false = low compression (the +5 offset inside " +
-      "1705, which also carries videoQuality). Set through setVideoQuality, which takes both halves " +
-      "because the wire carries both.",
-  },
-  /**
-   * Set both halves of {@link DOORBELL_CMD.VIDEO_QUALITY} at once, because the wire has no way to set
-   * one alone: every frame carries the whole integer.
-   *
-   * Taking both is not a convenience choice. An earlier shape took one and preserved the other by
-   * reading it back, and it failed on hardware: the state reader is the snapshot the device was bound
-   * with, so a second write in the same session composed against the value from before the first and
-   * silently reverted it. Requiring both puts that decision where it can be made correctly — a caller
-   * reads {@link DOORBELL_MEMBERS.videoQuality} and {@link DOORBELL_MEMBERS.highCompressionEncoding}
-   * and passes what it wants, instead of the SDK guessing from a stale copy.
-   */
-  setVideoQuality: method(
-    ({ ctx, sink }) =>
-      async (quality: DoorbellVideoQualityValue, highCompression: boolean): Promise<void> => {
-        const q = coerceEnumValue(DoorbellVideoQuality, quality);
-        if (q === undefined) {
-          throw new Error(`videoQuality: ${String(quality)} is not one of ${enumLabels(DoorbellVideoQuality)}`);
-        }
-        await sink.dispatch(
-          setScalar(DOORBELL_CMD.VIDEO_QUALITY, q + (asBool(highCompression) ? 5 : 0), ctx, "direct-binary"),
-        );
-      },
-    "Set the live-view quality and the video encoding format, which share one wire.",
-    writable,
-  ),
-  /**
    * A config blob the device reports WHOLE, so it is typed `string` and handed back unparsed — three
    * settings live inside it (motion notifications, ring notifications, notification style) and the SDK
    * lifts none of them out, because no `decode` is evidenced for the shape. Read-only: no write frame
@@ -433,7 +306,6 @@ export const DOORBELL_MEMBERS = {
     param: 1710,
     type: "string",
     kind: "text",
-    provenance: "verified",
     description:
       "Notification config JSON {notification_motion_onoff,notification_ring_onoff," +
       "notification_style} (1710; confirmed on T8214).",

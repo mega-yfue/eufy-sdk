@@ -31,6 +31,7 @@ import {
   buildFf09Frame,
   buildFf09QueryFrame,
   buildFf09AutolockSetFrame,
+  buildFf09TlvFrame,
   decryptFf09Frame,
   parseFf09SettingsResponse,
   decodeFf09AutoLockSnapshot,
@@ -75,17 +76,22 @@ export type Ff09TransInput = Omit<Ff09FrameInput, "omitUserFields" | "username" 
   shortUserId: string;
 };
 
-/** The inner `trans` object (before base64) — `{cmd:1940,…,payload:{apiCommand,lock_payload,…}}`. */
+/** The inner `trans` object (before base64) — `{cmd:1940, account_id:"", payload:{apiCommand:1940,…}, …}`. */
 export interface Ff09Trans {
   cmd: number;
+  account_id: string;
   mChannel: number;
   mValue3: number;
   payload: Ff09TransferPayload;
 }
 
-/** Wrap a built ff09 frame in the `{cmd:1940, mChannel:0, mValue3:0, payload}` MQTT `trans` envelope. */
+/**
+ * Wrap a built ff09 frame in the MQTT `trans` envelope as the app's MQTT channel builds it: `cmd` and the
+ * payload's `apiCommand` both `TRANSFER_PAYLOAD` (1940), `account_id` empty, `mValue3`/`mChannel` 0.
+ */
 function toFf09Trans(frame: Ff09Frame): Ff09Trans {
-  return { cmd: CMD_TRANSFER_PAYLOAD, mChannel: 0, mValue3: 0, payload: ff09TransferPayload(frame) };
+  const payload = { ...ff09TransferPayload(frame), apiCommand: CMD_TRANSFER_PAYLOAD };
+  return { cmd: CMD_TRANSFER_PAYLOAD, account_id: "", payload, mValue3: 0, mChannel: 0 };
 }
 
 /**
@@ -184,7 +190,7 @@ function parseFf09SettingsResponseTrans(raw: unknown): Ff09SettingsResponseTrans
 
 /**
  * Build the `{head, payload}` envelope a ff09 command publishes to {@link ff09MqttTopic} — `head.cmd:9`,
- * `payload` = `{account_id, device_sn, trans: base64(trans)}`. `timestamp`/`sessId`/`seed` are
+ * `payload` = `{account_id, device_sn, trans: base64(trans), data:"", update_data:"", method:""}`. `timestamp`/`sessId`/`seed` are
  * injectable for deterministic tests; default to fresh/random.
  */
 export function buildFf09MqttEnvelope(input: {
@@ -195,9 +201,18 @@ export function buildFf09MqttEnvelope(input: {
   timestamp?: number;
   sessId?: string;
   seed?: string;
+  /** `head.cmd`, the descriptor's `mqttCmdCode`; 9 by default. */
+  cmd?: number;
 }): string {
   const transB64 = Buffer.from(JSON.stringify(input.trans), "utf-8").toString("base64");
-  const payload = JSON.stringify({ account_id: input.accountId, device_sn: input.deviceSn, trans: transB64 });
+  const payload = JSON.stringify({
+    account_id: input.accountId,
+    device_sn: input.deviceSn,
+    trans: transB64,
+    data: "",
+    update_data: "",
+    method: "",
+  });
   const head = {
     version: "1.0.0.1",
     client_id: input.clientId,
@@ -206,7 +221,7 @@ export function buildFf09MqttEnvelope(input: {
     seed: input.seed ?? randomBytes(16).toString("hex"),
     timestamp: input.timestamp ?? Math.floor(Date.now() / 1000),
     cmd_status: 2,
-    cmd: 9,
+    cmd: input.cmd ?? 9,
     sign_code: 0,
   };
   return JSON.stringify({ head, payload });
@@ -253,9 +268,18 @@ export interface MqttRouterDeps {
 export class MqttCommandRouter {
   private readonly deps: MqttRouterDeps;
   private readonly logger: Logger;
+  /** The last `seq_num` sent per serial, counted per device as the app's `SecuritySeqNumManager` does. */
+  private readonly seqNums = new Map<string, number>();
   constructor(deps: MqttRouterDeps) {
     this.deps = deps;
     this.logger = deps.logger ?? noopLogger;
+  }
+
+  /** `trans` carrying this device's next `seq_num`. */
+  private sequenced(sn: string, trans: Ff09Trans): Ff09Trans {
+    const seq = (this.seqNums.get(sn) ?? 0) + 1;
+    this.seqNums.set(sn, seq);
+    return { ...trans, payload: { ...trans.payload, seq_num: seq } };
   }
 
   /**
@@ -478,16 +502,8 @@ export class MqttCommandRouter {
    * live session (see {@link ensureSecurityMqttFor}), and publishes to `cmd/eufy_security/{pn}/{sn}/req`.
    * `cmd.engage` maps straight to the frame's direction byte (`true`=lock/close, `false`=unlock/open) — no inversion.
    *
-   * **Verification status differs by direction — don't conflate them.** ✅ Unlock is LIVE-VERIFIED on a
-   * T85D0 (2026-07-16): 3/3 closed→open transitions, direct cause→observed-effect, driven fully
-   * end-to-end through this exact codepath. Lock is byte-exact against two independently-captured
-   * real-app close frames — the same evidentiary bar the P2P video lock's wire ships under — but has
-   * NOT itself been driven through this codepath and physically observed closing the real door; that's
-   * still open.
-   *
-   * **What the `/res` reply actually means — a delivery ack, NOT "motion complete".** A live garage-open
-   * test (2026-07-15) got its `/res` in ~2.5s, far faster than the ~20-30s a garage door physically takes
-   * to travel — so this is the device saying "I received the command", not "I finished moving". That's
+   * **What the `/res` reply actually means — a delivery ack, NOT "motion complete":** the device saying "I
+   * received the command", not "I finished moving". That's
    * why {@link FF09_ACK_TIMEOUT_MS} is one fixed, short window shared by every ff09 device regardless of
    * its actuator's physical speed: it's timing a network round-trip, not a door. (There is currently no
    * signal at all for actuation completion — that would need a different source, e.g. the device's own
@@ -501,13 +517,16 @@ export class MqttCommandRouter {
    */
   private async dispatchFf09Actuate(sn: string, cmd: Extract<Command, { kind: "ff09-actuate" }>): Promise<void> {
     const dev = await this.ff09DeviceFor(sn);
-    const trans = buildFf09Trans({
-      engage: cmd.engage,
-      adminUserId: cmd.adminUserId,
-      deviceSn: cmd.deviceSn,
-      username: cmd.username,
-      shortUserId: cmd.shortUserId,
-    });
+    const trans = this.sequenced(
+      sn,
+      buildFf09Trans({
+        engage: cmd.engage,
+        adminUserId: cmd.adminUserId,
+        deviceSn: cmd.deviceSn,
+        username: cmd.username,
+        shortUserId: cmd.shortUserId,
+      }),
+    );
 
     const { mqtt, instanceIp } = await this.ensureSecurityMqttFor(dev);
     try {
@@ -531,11 +550,6 @@ export class MqttCommandRouter {
       });
       const topic = ff09MqttTopic(dev.model, sn);
       await mqtt.publish(topic, envelope, { qos: 1 });
-      // Event-driven, not a blind sleep: resolves the instant the device's own `/res` arrives (a live
-      // T85D0 garage-open answered in ~2.5s), or after FF09_ACK_TIMEOUT_MS with no reply. The
-      // subscription stays open for the whole wait, so a reply
-      // that lands right at the edge of the window is never missed the way a fixed-sleep-then-teardown
-      // would miss it.
       const acked = (await ackPromise) ?? false;
       this.deps.onCommandAck({ sn, kind: "ff09-actuate", acked, instanceIp });
       if (!acked) {
@@ -552,9 +566,7 @@ export class MqttCommandRouter {
 
   /**
    * The `ff09-autolock` intent handler over MQTT — read-modify-write the T85D0's auto-lock setting.
-   * ✅ LIVE-VERIFIED end-to-end (2026-07-17): both enable and disable
-   * driven through this exact codepath against a real T85D0, confirmed via the app UI showing the new
-   * state afterward, not just byte-exact against a capture. Unlike {@link dispatchFf09Actuate} (one
+   * Unlike {@link dispatchFf09Actuate} (one
    * fire-and-forget frame), this is a GET then a SET over the SAME one-shot MQTT connection:
    *
    *  1. Publish a settings GET query ({@link buildFf09QueryTrans}), then wait for the device's `/res`
@@ -590,15 +602,18 @@ export class MqttCommandRouter {
 
       // ── 2+3. Decrypt the reply, preserve A7/A8 + delay, build the SET frame (shared with the P2P
       //         sibling — see buildFf09AutolockSetFrame), then wrap it in the MQTT trans envelope. ──
-      const setTrans = toFf09Trans(
-        buildFf09AutolockSetFrame({
-          lockPayload: getReply.lockPayload,
-          keyTime: getReply.keyTime,
-          adminUserId: cmd.adminUserId,
-          deviceSn: cmd.deviceSn,
-          enabled: cmd.enabled,
-          delaySeconds: cmd.delaySeconds,
-        }),
+      const setTrans = this.sequenced(
+        sn,
+        toFf09Trans(
+          buildFf09AutolockSetFrame({
+            lockPayload: getReply.lockPayload,
+            keyTime: getReply.keyTime,
+            adminUserId: cmd.adminUserId,
+            deviceSn: cmd.deviceSn,
+            enabled: cmd.enabled,
+            delaySeconds: cmd.delaySeconds,
+          }),
+        ),
       );
       const setAckPromise = this.waitForMqttMessage(
         mqtt,
@@ -639,7 +654,10 @@ export class MqttCommandRouter {
     cmd: { adminUserId: string; deviceSn: string },
     instanceIp: string,
   ): Promise<{ lockPayload: string; keyTime: number }> {
-    const queryTrans = buildFf09QueryTrans({ adminUserId: cmd.adminUserId, deviceSn: cmd.deviceSn });
+    const queryTrans = this.sequenced(
+      sn,
+      buildFf09QueryTrans({ adminUserId: cmd.adminUserId, deviceSn: cmd.deviceSn }),
+    );
     const getReplyPromise = this.waitForMqttMessage(
       mqtt,
       (m) => {
@@ -738,10 +756,45 @@ export class MqttCommandRouter {
    */
   private async dispatchMqttDp(sn: string, cmd: Extract<Command, { kind: "mqtt-dp" }>): Promise<void> {
     const dev = await this.deviceFor(sn);
+    if (dev.category !== "eufy_life") return this.dispatchLockDp(sn, cmd);
     const accountId = this.requireAccountId(dev);
     const frame = buildDpFrame(cmd.cmdCode, accountId, cmd.fields);
     await this.publishDpFrame(dev, sn, accountId, cmd.mqttCmdCode, frame);
     this.deps.onCommandAck({ sn, kind: "mqtt-dp", cmdCode: cmd.cmdCode, acked: true });
+  }
+
+  /**
+   * An `mqtt-dp` write to a security device (a lock), as the app's MQTT channel sends it: the bundle's TLV
+   * in an `ff09` frame sealed with the lock key (unless the descriptor says otherwise), in the lock `trans`
+   * envelope under `head.cmd = mqttCmdCode`, on the device's `eufy_security` topic.
+   */
+  private async dispatchLockDp(sn: string, cmd: Extract<Command, { kind: "mqtt-dp" }>): Promise<void> {
+    const dev = await this.ff09DeviceFor(sn);
+    const adminUserId = this.requireAccountId(dev);
+    const frame = buildFf09TlvFrame({
+      cmdCode: cmd.cmdCode,
+      fields: cmd.fields,
+      adminUserId,
+      deviceSn: sn,
+      encrypt: cmd.encrypt ?? true,
+      subVersion: cmd.subVersion ?? 3,
+      functionType: cmd.functionType ?? 2,
+    });
+    const trans = this.sequenced(sn, toFf09Trans(frame));
+    const { mqtt } = await this.ensureSecurityMqttFor(dev);
+    try {
+      const envelope = buildFf09MqttEnvelope({
+        trans,
+        clientId: mqtt.id,
+        accountId: adminUserId,
+        deviceSn: sn,
+        cmd: cmd.mqttCmdCode,
+      });
+      await mqtt.publish(ff09MqttTopic(dev.model, sn), envelope, { qos: 1 });
+      this.deps.onCommandAck({ sn, kind: "mqtt-dp", cmdCode: cmd.cmdCode, acked: true });
+    } finally {
+      await mqtt.disconnect();
+    }
   }
 
   /** Serialize and publish one semantic RGB DP action without changing configured brightness. */
