@@ -118,6 +118,37 @@ function rsaSession(stationSn = STATION_SN): {
   return { session, ready, traces };
 }
 
+/**
+ * A session whose cipher answers both an ECC and the spec's RSA key, a feed of gateway-info frames by header
+ * version, and a version-8 gateway info that unwraps under the ECC key.
+ */
+function dualSession(): ReturnType<typeof rsaSession> & {
+  frame: (version: number, payload: Buffer) => void;
+  v8: Buffer;
+} {
+  const ecdh = createECDH("prime256v1");
+  ecdh.generateKeys();
+  const { logger, traces } = traceCollector();
+  const session = new P2PSession({
+    stationSn: STATION_SN,
+    p2pDid: P2P_DID,
+    logger,
+    resolveCipherKey: async () => ({ ecc: ecdh.getPrivateKey("hex"), rsa: PKCS8_B64 }),
+  });
+  const ready: unknown[] = [];
+  session.on("level2Ready", (e) => ready.push(e));
+  const frame = (version: number, payload: Buffer) =>
+    (session as unknown as SessionInternals).handleFrame(
+      { commandId: 1100, bytesToRead: payload.length, version, channel: 0, signCode: 0, type: 0 },
+      payload,
+      1,
+    );
+  const head = Buffer.alloc(4);
+  head.writeUInt16LE(CIPHER_ID, 0);
+  const v8 = Buffer.concat([head, eciesWrap(Buffer.alloc(32, 7), ecdh.getPublicKey())]);
+  return { session, ready, traces, frame, v8 };
+}
+
 /** {@link rsaSession}, negotiated from a gateway info. */
 async function negotiatedSession(stationSn = STATION_SN): Promise<ReturnType<typeof rsaSession>> {
   const built = rsaSession(stationSn);
@@ -165,32 +196,45 @@ describe("P2PSession level-2 over an RSA cipher", () => {
 
   /** The app holds both keys apart; an RSA key negotiated first must not stop the ECC one. */
   test("a version-8 gateway info after a version-1 one still negotiates the ECC key", async () => {
-    const ecdh = createECDH("prime256v1");
-    ecdh.generateKeys();
-    const { logger } = traceCollector();
-    const session = new P2PSession({
-      stationSn: STATION_SN,
-      p2pDid: P2P_DID,
-      logger,
-      resolveCipherKey: async () => ({ ecc: ecdh.getPrivateKey("hex"), rsa: PKCS8_B64 }),
-    });
-    const ready: unknown[] = [];
-    session.on("level2Ready", (e) => ready.push(e));
-    const frame = (version: number, payload: Buffer) =>
-      (session as unknown as SessionInternals).handleFrame(
-        { commandId: 1100, bytesToRead: payload.length, version, channel: 0, signCode: 0, type: 0 },
-        payload,
-        1,
-      );
+    const { session, ready, frame, v8 } = dualSession();
 
     frame(1, gatewayInfo(wrapped()));
     expect(await session.awaitLevel2Key(1_000, "call", "set-payload")).toBe(true);
-    const head = Buffer.alloc(4);
-    head.writeUInt16LE(CIPHER_ID, 0);
-    frame(8, Buffer.concat([head, eciesWrap(Buffer.alloc(32, 7), ecdh.getPublicKey())]));
+    frame(8, v8);
 
     await vi.waitFor(() => expect(ready).toEqual([{ cipherId: CIPHER_ID }]));
     expect(session.hasLevel2Key).toBe(true);
+  });
+
+  /** The app handles every gateway info on its own, so a version-1 reply's lookup does not swallow the version-8 one. */
+  test("a version-8 gateway info during a failing version-1 lookup negotiates the ECC key", async () => {
+    const { session, ready, traces, frame, v8 } = dualSession();
+
+    frame(1, gatewayInfo(Buffer.alloc(128, 0x33)));
+    frame(8, v8);
+
+    expect(await session.awaitLevel2Key(1_000)).toBe(true);
+    expect(ready).toEqual([{ cipherId: CIPHER_ID }]);
+    expect(traces.filter((trace) => trace.phase === "level2-negotiating").map((trace) => trace.version)).toEqual([
+      1, 8,
+    ]);
+    expect(traces.filter((trace) => trace.phase === "level2-unavailable")).toEqual([]);
+  });
+
+  test("a failing version-1 gateway info during or after the version-8 negotiation leaves the ECC key", async () => {
+    for (const settledFirst of [false, true]) {
+      const { session, ready, traces, frame, v8 } = dualSession();
+
+      frame(8, v8);
+      if (settledFirst) await vi.waitFor(() => expect(ready).toHaveLength(1));
+      frame(1, gatewayInfo(Buffer.alloc(128, 0x33)));
+      await vi.waitFor(() => expect(traces.filter((trace) => trace.phase === "level2-negotiating")).toHaveLength(2));
+
+      expect(await session.awaitLevel2Key(1_000)).toBe(true);
+      expect(session.hasLevel2Key).toBe(true);
+      expect(ready).toEqual([{ cipherId: CIPHER_ID }]);
+      expect(traces.filter((trace) => trace.phase === "level2-unavailable")).toEqual([]);
+    }
   });
 
   test("an RSA key that does not unwrap the gateway info is traced and settled, not an error", async () => {

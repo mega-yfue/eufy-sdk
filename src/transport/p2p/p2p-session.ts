@@ -585,10 +585,12 @@ export class P2PSession extends EventEmitter {
    */
   private readonly attachedStartKeys = new Map<number, { kind: "ecc" | "rsa"; answered: boolean }>();
   /**
-   * Whether a level-2 key negotiation kicked off by a GATEWAYINFO reply is in flight. Cleared when it
-   * settles, so a later reply — the answer to {@link repromptLevel2Key} — negotiates again.
+   * The key branches with a negotiation in flight, by whether the GATEWAYINFO reply that started it is version 8.
+   * A station answers with several replies of both versions, so a reply of the other branch still negotiates
+   * while one runs. Each negotiation removes its branch when it concludes, so a later reply — the answer to
+   * {@link repromptLevel2Key} — negotiates again.
    */
-  private level2Negotiating = false;
+  private readonly level2Negotiating = new Set<boolean>();
   /**
    * Whether waiting for a level-2 key can still change the answer: `false` once one has been negotiated,
    * once a negotiation concluded without one, and from the start when nothing can negotiate one.
@@ -805,7 +807,6 @@ export class P2PSession extends EventEmitter {
   /** Record that the level-2 negotiation has finished, with or without a key, and wake every waiter. */
   private settleLevel2(reason: "terminal" | "closed" = "terminal"): void {
     this.level2Pending = false;
-    this.level2Negotiating = false;
     const outcome = this.level2Key ? "key" : reason;
     for (const wake of this.level2Waiters.splice(0)) wake(outcome);
   }
@@ -819,21 +820,29 @@ export class P2PSession extends EventEmitter {
    * `level2-set-payload-only` instead for the AES-128-ECB key, and emits `error` when the ECC unwrap
    * fails; an RSA unwrap failure is only traced (non-fatal either way — level-1 traffic keeps working).
    *
-   * Every outcome settles the wait in {@link awaitLevel2Key}, so a later command is told at once rather than
-   * left to time out against a key that is not coming. Settling also re-opens the negotiation, so a later
-   * GATEWAYINFO reply in the same connection generation runs it again; a lookup that completes after its
-   * generation ended settles nothing. A {@link gatewayInfoRefused} reply names no cipher, so it settles at once
-   * with no cloud lookup, and a later reply naming a cipher withdraws the refusal.
+   * The wait in {@link awaitLevel2Key} settles once the AES-256-GCM key is negotiated, or once the last negotiation in flight concludes, so a later
+   * command is told at once rather than left to time out against a key that is not coming. Only that
+   * concluding failure is traced: one failing while the other branch runs, or after the key is held, is
+   * not the answer. Concluding re-opens the branch, so a later GATEWAYINFO reply in the same connection
+   * generation runs it again; a lookup that completes after its generation ended settles nothing. A
+   * {@link gatewayInfoRefused} reply names no cipher, so it concludes at once with no cloud lookup, and a
+   * later reply naming a cipher withdraws the refusal.
    */
   private negotiateLevel2Key(gwPayload: Buffer, version: number): void {
+    const ecc = version === 8;
+    const conclude = (unavailable?: LiveTrace): void => {
+      this.level2Negotiating.delete(ecc);
+      if (this.level2Key || this.level2Negotiating.size) return;
+      if (unavailable) this.trace(unavailable);
+      this.settleLevel2();
+    };
     this.gatewayRefused = gatewayInfoRefused(gwPayload);
     if (this.gatewayRefused) {
       this.logger.debug(`[p2p] ${this.cfg.stationSn} gateway info refused level-2`);
-      this.trace({ phase: "level2-unavailable", reason: "gateway-refused" });
-      this.settleLevel2();
+      conclude({ phase: "level2-unavailable", reason: "gateway-refused" });
       return;
     }
-    this.level2Negotiating = true;
+    this.level2Negotiating.add(ecc);
     const generation = this.connectionGeneration;
     const cipherId = gatewayInfoCipherId(gwPayload);
     this.gatewayCipherId = cipherId;
@@ -843,25 +852,24 @@ export class P2PSession extends EventEmitter {
         const resolved = await this.cfg.resolveCipherKey?.(cipherId);
         if (this.closed || generation !== this.connectionGeneration) return;
         const keys = typeof resolved === "string" ? { ecc: resolved } : resolved;
-        const eccPrivHex = version === 8 ? keys?.ecc : undefined;
-        const rsaPrivKey = version === 8 ? undefined : keys?.rsa;
+        const eccPrivHex = ecc ? keys?.ecc : undefined;
+        const rsaPrivKey = ecc ? undefined : keys?.rsa;
         if (!eccPrivHex && !rsaPrivKey) {
           this.logger.debug(`[p2p] ${this.cfg.stationSn} no ECC or RSA key for cipher_id ${cipherId}`);
-          this.trace({ phase: "level2-unavailable", reason: "no-cipher-key", cipherId });
-          this.settleLevel2();
+          conclude({ phase: "level2-unavailable", reason: "no-cipher-key", cipherId });
           return;
         }
         const key = eccPrivHex
           ? deriveLevel2KeyFromGatewayInfo(gwPayload, eccPrivHex)
           : deriveLevel2KeyFromRsaGatewayInfo(gwPayload, rsaPrivKey!);
         if (!key) {
-          this.trace({ phase: "level2-unavailable", reason: "derivation-failed", cipherId });
-          this.settleLevel2();
+          conclude({ phase: "level2-unavailable", reason: "derivation-failed", cipherId });
           if (eccPrivHex) this.emit("error", new Error(`level-2 key derivation failed (cipher_id ${cipherId})`));
           return;
         }
         if (eccPrivHex) {
           this.setLevel2Key(key);
+          conclude();
           this.logger.debug(`[p2p] ${this.cfg.stationSn} level-2 key negotiated (cipher_id ${cipherId})`);
           this.trace({ phase: "level2-ready", cipherId });
           this.emit("level2Ready", { cipherId });
@@ -869,12 +877,11 @@ export class P2PSession extends EventEmitter {
           this.level2EcbKey = key;
           this.logger.debug(`[p2p] ${this.cfg.stationSn} level-2 set-payload key negotiated (cipher_id ${cipherId})`);
           this.trace({ phase: "level2-set-payload-only", cipherId });
-          this.settleLevel2();
+          conclude();
         }
       } catch (e) {
         if (this.closed || generation !== this.connectionGeneration) return;
-        this.trace({ phase: "level2-unavailable", reason: "derivation-failed", cipherId });
-        this.settleLevel2();
+        conclude({ phase: "level2-unavailable", reason: "derivation-failed", cipherId });
         this.emit("error", e instanceof Error ? e : new Error(String(e)));
       }
     })();
@@ -964,7 +971,7 @@ export class P2PSession extends EventEmitter {
     this.resetInboundSequencing();
     if (!this.level2KeyServes("set-payload")) {
       this.level2Pending = this.cfg.resolveCipherKey !== undefined;
-      this.level2Negotiating = false;
+      this.level2Negotiating.clear();
       this.level2Reprompted = false;
       this.gatewayCipherId = undefined;
       this.gatewayRefused = false;
@@ -2728,8 +2735,10 @@ export class P2PSession extends EventEmitter {
       this.logger.debug(
         `[p2p] ${this.cfg.stationSn} level-2 gateway info v${header.version} ch ${header.channel} ${data.length}B (cipher_id ${gatewayInfoCipherId(data)})`,
       );
-      const held = header.version === 8 ? this.level2Key : this.level2EcbKey;
-      if (!held && !this.level2Negotiating && this.cfg.resolveCipherKey) this.negotiateLevel2Key(data, header.version);
+      const ecc = header.version === 8;
+      const held = ecc ? this.level2Key : this.level2EcbKey;
+      if (!held && !this.level2Negotiating.has(ecc) && this.cfg.resolveCipherKey)
+        this.negotiateLevel2Key(data, header.version);
     }
     if (header.commandId === CMD_DATABASE && openedLevel2) {
       this.emit("dbChunk", { stationSn: this.cfg.stationSn, text: data.toString("latin1") });
