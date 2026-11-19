@@ -10,7 +10,7 @@ import type { ValueMember } from "../members.js";
  * Cross-module property-id integrity — the general form of the guard the siren fix needed locally.
  *
  * A capability property is a claim that a wire id carries a given meaning. Two ways that claim rots:
- *  1. it points at an id NO param dictionary knows (a `provenance:"guessed"` number nobody has
+ *  1. it points at an id NO param dictionary knows (a number nobody has
  *     grounded), so nothing schema-driven ever validates it; or
  *  2. it points at an id ANOTHER capability in the same product line already owns for a different
  *     meaning — the one-owner rule — so a device reports one and both capabilities read it, and one of
@@ -87,7 +87,7 @@ describe("property id integrity (cross-module)", () => {
     for (const [cap, m] of Object.entries(CAPABILITY_MODULES)) {
       for (const p of (m as Mod).properties ?? []) {
         if (!KNOWN_IDS.has(p.paramType) && !KNOWN_UNLISTED.has(p.paramType)) {
-          offenders.push(`${cap}.${p.name} → ${p.paramType} (${p.provenance ?? "guessed"})`);
+          offenders.push(`${cap}.${p.name} → ${p.paramType}`);
         }
       }
     }

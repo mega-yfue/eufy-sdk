@@ -321,7 +321,6 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
     type: "number",
     unit: "%",
     kind: "percent",
-    provenance: "verified",
     available: (ctx: AvailabilityContext) => !hasCapability(ctx, "lock"),
     description: "Battery level 0-100 (verified: param 1101).",
   },
@@ -334,7 +333,6 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
     param: BATTERY_PARAM.BATTERY_STATUS,
     type: "bool",
     kind: "boolean",
-    provenance: "apk",
     coerce: isChargingState,
     description:
       "Charging in progress — derived from BATTERY_STATUS (2111) as `value ∉ {0,2}`, matching the app's own " +
@@ -357,7 +355,6 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
     type: "enum",
     kind: "enum",
     enumValues: { 0: "Battery", 1: "External Solar Panel" },
-    provenance: "apk",
     coerce: decodePowerSource,
     requires: [BATTERY_PARAM.POWER_CHARGE],
     readAvailable: (ctx) => !readsTestWiring(ctx),
@@ -404,7 +401,6 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
     type: "number",
     kind: "scalar",
     enumValuesFor: publishedWorkingModeDomain,
-    provenance: "verified",
     requires: [BATTERY_PARAM.WORKING_MODE],
     min: 0,
     args: [
@@ -437,7 +433,6 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
     type: "number",
     unit: "s",
     kind: "seconds",
-    provenance: "verified",
     requires: [BATTERY_PARAM.RECORD_DURATION],
     min: 0,
     description:
@@ -455,7 +450,6 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
     type: "number",
     unit: "s",
     kind: "seconds",
-    provenance: "verified",
     requires: [BATTERY_PARAM.RECORD_INTERVAL],
     min: 0,
     description:
@@ -472,7 +466,6 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
     param: BATTERY_PARAM.RECORD_AUTO_STOP,
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
     requires: [BATTERY_PARAM.RECORD_AUTO_STOP],
     invert: true,
     description:
@@ -484,8 +477,7 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
   /**
    * The cell temperature the device measures, in its own degrees Celsius — never converted, since
    * rescaling a number sourced only from the app's param table would be inventing precision. Read-only:
-   * `apk` provenance means the id comes from the disassembled app, not from a captured toggle, so
-   * nothing here establishes a write. Pairs with the `batteryAlert` HOT push.
+   * the id comes from the app, not from a captured toggle, so nothing here establishes a write. Pairs with the `batteryAlert` HOT push.
    */
   temperature: {
     param: BATTERY_PARAM.BATTERY_TEMP,
@@ -493,13 +485,11 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
     type: "number",
     unit: "°C",
     kind: "celsius",
-    provenance: "apk",
     description: "Battery temperature (1138 GET_BATTERY_TEMP).",
   },
   /**
    * Remaining cell capacity as a percentage of new — a slow-moving ageing figure, NOT the current
-   * charge (`level` is that), which is why it takes its own flat name `batteryHealth`. `apk`
-   * provenance: the id is read out of the disassembled app rather than from a captured change.
+   * charge (`level` is that), which is why it takes its own flat name `batteryHealth`.
    */
   health: {
     param: BATTERY_PARAM.BATTERY_HEALTH,
@@ -507,31 +497,28 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
     type: "number",
     unit: "%",
     kind: "percent",
-    provenance: "apk",
     description: "Battery health 0-100 (1198 APP_CMD_DEV_BATTERY_HEALTHY_V2).",
   },
   /**
    * How much light the solar panel is currently harvesting. A bare `scalar` on purpose: only the zero
    * point is established (0 = no solar input), so the SDK declares no unit and no ceiling rather than
-   * publishing a percentage the wire has not been shown to be. `apk` provenance.
+   * publishing a percentage the wire has not been shown to be.
    */
   solarIntensity: {
     param: BATTERY_PARAM.SOLAR_INTENSITY,
     type: "number",
     kind: "scalar",
-    provenance: "apk",
     description: "Solar-panel light/charge intensity (1309 APP_CMD_SOLAR_INTENSITY); 0 = no solar input.",
   },
   /**
    * A rolling 24-hour verdict on whether the panel contributed anything — so it stays true through a
    * night, and is the right read for "is the panel actually working", where `solarIntensity` only says
-   * what it is doing this instant. `apk` provenance; the id is the app's own, not a captured toggle.
+   * what it is doing this instant.
    */
   solarConnected24h: {
     param: BATTERY_PARAM.SOLAR_CONNECT_24H,
     type: "bool",
     kind: "boolean",
-    provenance: "apk",
     description: "Whether a solar panel supplied power in the last 24h (6482 APP_CMD_GET_SOLAR_PANEL_CONNECT_24H).",
   },
   /**
@@ -548,7 +535,6 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
     param: BATTERY_PARAM.BATTERY_POWER_DATAS,
     type: "string",
     kind: "text",
-    provenance: "apk",
     unexposed: true,
     description:
       "Battery power-history stats JSON (3100 APP_CMD_GET_BATTERY_POWER_DATAS). Often only in the live " +
@@ -566,7 +552,6 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
     param: BATTERY_PARAM.CAMERA_INFO,
     type: "number",
     kind: "scalar",
-    provenance: "apk",
     unexposed: true,
     description:
       "Raw GET_CAMERA_INFO value (1103), meaning unevidenced — read live as the constant 5 on a T8170 at " +
@@ -582,7 +567,6 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
     readAliases: [{ paramType: 1601 }],
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
     available: (ctx: AvailabilityContext) => !notSensor(ctx),
     description: "Sensor battery low (1552 entry sensor, 1601 motion sensor; sensor_is_low_power).",
   },

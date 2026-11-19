@@ -23,9 +23,6 @@ describe("rtsp capability module", () => {
     expect(prop.paramType).toBe(1145);
     expect(prop.type).toBe("bool");
     expect(prop.writable).toBe(true);
-    // provenance is NAME-trust: the name is the app's own typo'd constant, so it is "apk"; the
-    // verified live effect lives in the note (see the resolved review thread on #111).
-    expect(prop.provenance).toBe("apk");
   });
 
   /**

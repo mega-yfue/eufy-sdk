@@ -1,17 +1,11 @@
-import { AUDIO, AUDIO_CMD, AUDIO_MEMBERS, type AudioActions } from "../audio.js";
-import { propertiesOf } from "../members.js";
+import { AUDIO, AUDIO_CMD, type AudioActions } from "../audio.js";
 import { parseThingsList } from "../thing-description.js";
 import { bind } from "./bind.js";
 import { DeviceType } from "../../device-types.js";
 import { buildCommand, detectCapabilities } from "../index.js";
-import type { AvailabilityContext, CommandContext } from "../types.js";
-import type { Command } from "../../../core/contracts.js";
+import type { CommandContext } from "../types.js";
 
-/**
- * Audio capability (offline). Asserts the WRITE intents each action emits and the detection signal.
- * The wire (`direct-binary`, signCode 8) and polarity (on ⇒ 1) are CONFIRMED on T8214 (
- * cmd 1240/1241, 136-byte struct; cloud param OFF→0/ON→1). These tests lock that behaviour.
- */
+/** Audio capability (offline). Asserts the WRITE intents each action emits and the detection signal. */
 const ctx = (channel = 0, extra: Partial<CommandContext> = {}): CommandContext => ({
   channel,
   codec: "camera",
@@ -26,6 +20,10 @@ const things = (...ids: string[]) =>
   parseThingsList({
     things_list: [{ profile: { product_code: "T0000" }, properties: ids.map((identifier) => ({ identifier })) }],
   }).T0000!;
+const SWITCHES = things("microphone_on_off", "speaker_on_off", "audio_recording_on_off");
+/** A described `model`, as each switch's product bundle writes and reads it. */
+const at = (channel: number, model: string, extra: Partial<CommandContext> = {}) =>
+  ctx(channel, { model, things: SWITCHES, ...extra });
 
 describe("audio capability module", () => {
   it("declares the mic/speaker/volume schema", () => {
@@ -44,27 +42,7 @@ describe("audio capability module", () => {
     expect(detectCapabilities({ deviceType: DeviceType.CAMERA_POE_S4, params: {} }, "station")).not.toContain("audio");
   });
 
-  describe("buildCommand — direct-binary intents (wire verified live on T8214)", () => {
-    it("microphone → set-param direct-binary on 1240, on ⇒ 1 / off ⇒ 0", () => {
-      expect(buildCommand("microphone", true, ctx(2))).toEqual({
-        kind: "set-param",
-        param: AUDIO_CMD.AUDIO_MICROPHONE,
-        value: 1,
-        form: "direct-binary",
-        channel: 2,
-      });
-      expect(buildCommand("microphone", false, ctx())).toMatchObject({ value: 0 });
-    });
-
-    it("speaker → set-param direct-binary on 1241", () => {
-      expect(buildCommand("speaker", true, ctx())).toMatchObject({
-        kind: "set-param",
-        param: AUDIO_CMD.AUDIO_SPEAKER,
-        value: 1,
-        form: "direct-binary",
-      });
-    });
-
+  describe("buildCommand", () => {
     it("speakerVolume/volume → set-param direct-binary on 1230, rejecting anything outside 0..100", () => {
       expect(buildCommand("speakerVolume", 80, ctx())).toMatchObject({
         param: AUDIO_CMD.SPEAKER_VOLUME,
@@ -79,71 +57,21 @@ describe("audio capability module", () => {
       );
     });
 
-    it("audioRecording on a HomeBase → 1350 set-payload {channel, record_mute}, INVERTED (on ⇒ mute 0)", () => {
-      // Reversed from a live capture on T8425 (ch3): key is `record_mute`, inverted.
-      const attached = ctx(3, { homeBaseAttached: true });
-      expect(buildCommand("audioRecording", true, attached)).toMatchObject({
-        kind: "set-payload",
-        cmd: AUDIO_CMD.AUDIO_RECORDING, // 1288
-        channel: 3,
-        mValue3: 0,
-        payload: { channel: 3, record_mute: 0 },
-      });
-      expect(
-        (buildCommand("audioRecording", false, attached) as Extract<Command, { kind: "set-payload" }>).payload,
-      ).toEqual({ channel: 3, record_mute: 1 });
-    });
-    it("audioRecording standalone → 1700/6012 {enable}", () => {
-      expect(buildCommand("audioRecording", true, ctx(0, { homeBaseAttached: false }))).toEqual({
-        kind: "set-json",
-        param: 6012,
-        data: { enable: 1 },
-        channel: 0,
-      });
-    });
-    it.each([
-      ["T8200", false, { paramType: 2042, readAliases: [] }],
-      ["T8420", true, { paramType: 1366, invert: true, readAliases: [] }],
-      ["T8441", true, { paramType: 1288, invert: false }],
-      ["T8452", false, { paramType: 1288, invert: false, readAliases: [] }],
-    ])(
-      "audioRecording on %s (attached %s) reads its bundle's wire but has no setter until a device confirms it",
-      (model, homeBaseAttached, read) => {
-        const c = ctx(2, { model, homeBaseAttached, things: things("audio_recording_on_off") });
-        expect(bind<AudioActions>("audio", c).acts.setAudioRecording).toBeUndefined();
-        expect(() => buildCommand("audioRecording", true, c)).toThrow(/audioRecording write wire unverified/);
-        const props = propertiesOf(AUDIO_MEMBERS, { codec: "camera", model, homeBaseAttached } as AvailabilityContext);
-        expect(props.find((p) => p.name === "audioRecording")).toMatchObject(read);
-      },
-    );
-    it("audioRecording on a standalone T8441 keeps its 6012 setter", () => {
-      const c = ctx(2, { model: "T8441", homeBaseAttached: false, things: things("audio_recording_on_off") });
-      expect(buildCommand("audioRecording", true, c)).toMatchObject({ param: 6012, data: { enable: 1 } });
-    });
-    it("audioRecording is withheld where the bundle sends 1288 inside 1700, or nothing", () => {
-      const desc = things("audio_recording_on_off");
-      for (const model of ["T81A0", "T84A1", "T8790"])
-        expect(bind<AudioActions>("audio", ctx(0, { model, things: desc })).acts.setAudioRecording).toBeUndefined();
-    });
-    it("audioRecording property is inverted (raw 1288 = record_mute)", () => {
-      const p = AUDIO.properties.find((x) => x.name === "audioRecording");
-      expect(p?.paramType).toBe(AUDIO_CMD.AUDIO_RECORDING);
-      expect(p?.invert).toBe(true);
-    });
-
     it("returns undefined for an unknown action", () => {
       expect(buildCommand("nope", 1, ctx())).toBeUndefined();
     });
   });
 
-  it("actions dispatch the same intents (camera family)", async () => {
-    const { acts, sent } = bind<AudioActions>("audio", ctx(3)); // default ctx = camera codec
+  it("a setter dispatches the command its intent builds", async () => {
+    const described = things("microphone_on_off", "speaker_on_off", "speaker_volume");
+    const { acts, sent } = bind<AudioActions>("audio", at(3, "T8214", { things: described }));
     await acts.setMicrophone!(false);
     await acts.setSpeaker!(true);
     await acts.setVolume!(40);
+    const c = at(3, "T8214", { things: described });
     expect(sent).toEqual([
-      { kind: "set-param", param: 1240, value: 0, form: "direct-binary", channel: 3 },
-      { kind: "set-param", param: 1241, value: 1, form: "direct-binary", channel: 3 },
+      buildCommand("microphone", false, c),
+      buildCommand("speaker", true, c),
       { kind: "set-param", param: 1230, value: 40, form: "direct-binary", channel: 3 },
     ]);
   });
@@ -154,10 +82,24 @@ describe("audio capability module", () => {
       const a = bind<AudioActions>("audio", c).acts;
       return [a.setMicrophone, a.setSpeaker, a.setVolume, a.setAudioRecording].map((f) => typeof f);
     };
-    expect(setters(ctx(0, { things: things() }))).toEqual(Array(4).fill("undefined"));
-    expect(setters(ctx(0, { things: things(...ids) }))).toEqual(Array(4).fill("function"));
-    expect(setters(ctx(0, { codec: "lock", things: things(...ids) }))).toEqual(Array(4).fill("undefined"));
-    expect(setters(ctx())).toEqual(Array(4).fill("function"));
+    expect(setters(ctx(0, { model: "T8214", things: things() }))).toEqual(Array(4).fill("undefined"));
+    expect(setters(ctx(0, { model: "T8214", things: things(...ids) }))).toEqual(Array(4).fill("function"));
+    expect(
+      setters(ctx(0, { model: "T8214", codec: "lock", things: things(...ids) })),
+      "the description decides the bundle-written switches on any codec; the volume stays camera-only",
+    ).toEqual(["function", "function", "undefined", "function"]);
+    expect(setters(ctx(0, { model: "T8214", codec: "lock", things: things("speaker_on_off") }))).toEqual([
+      "undefined",
+      "function",
+      "undefined",
+      "undefined",
+    ]);
+    expect(setters(ctx()), "no description: the bundle-written switches are not exposed").toEqual([
+      "undefined",
+      "undefined",
+      "function",
+      "undefined",
+    ]);
   });
 
   describe("station (HomeBase) voice-prompt audio", () => {

@@ -19,7 +19,7 @@ import { jsonObject } from "../../core/util.js";
 
 const DP_MAGIC = [0xff, 0x09] as const;
 
-/** Bytes before the TLV run: magic (2) + u16LE size (2) + `03 00 02 02` (4) + subtype (1). */
+/** Bytes before the TLV run: magic (2) + u16LE size (2) + `03 00 02` (3) + u16BE cmdCode (2). */
 const DP_HEADER_LEN = 9;
 
 /** One TLV field in a DP frame (tag `0xa1`-`0xff`, arbitrary-length value). */
@@ -40,15 +40,14 @@ function tlv(tag: number, value: Buffer): Buffer {
 }
 
 /**
- * Build one `eufy_life` DP TLV frame: `[ff 09][total len][00 03 00 02 02][subtype][tag/len/value…]
- * [xor]`. `subtype` = `cmdCode & 0xff`. Every frame opens with `a1`=timestamp (u32LE) + `a2`=account
+ * Build one `eufy_life` DP TLV frame: `[ff 09][total len][03 00 02][u16BE cmdCode][tag/len/value…][xor]`,
+ * the opcode the app writes from the descriptor's `cmdCode`. Every frame opens with `a1`=timestamp (u32LE) + `a2`=account
  * id (ASCII), prepended here so callers supply only the command-specific fields (`0xa3` onward).
  *
  * The total-size field at offset 2 is a **u16LE**, not a single byte: `0x020D` effect frames routinely
  * exceed 255 bytes, and a truncated high byte yields a frame the light rejects outright.
  */
 export function buildDpFrame(cmdCode: number, accountId: string, fields: readonly DpField[]): Buffer {
-  const subtype = cmdCode & 0xff;
   const timestamp = Buffer.alloc(4);
   timestamp.writeUInt32LE(Math.floor(Date.now() / 1000), 0);
   const all: DpField[] = [
@@ -60,7 +59,11 @@ export function buildDpFrame(cmdCode: number, accountId: string, fields: readonl
   const totalLen = DP_HEADER_LEN + tlvBytes.length + 1;
   const size = Buffer.alloc(2);
   size.writeUInt16LE(totalLen, 0);
-  const header = Buffer.concat([Buffer.from([...DP_MAGIC]), size, Buffer.from([0x03, 0x00, 0x02, 0x02, subtype])]);
+  const header = Buffer.concat([
+    Buffer.from([...DP_MAGIC]),
+    size,
+    Buffer.from([0x03, 0x00, 0x02, (cmdCode >> 8) & 0xff, cmdCode & 0xff]),
+  ]);
   const body = Buffer.concat([header, tlvBytes]);
   return Buffer.concat([body, Buffer.from([xorChecksum(body)])]);
 }

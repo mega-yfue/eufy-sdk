@@ -49,11 +49,10 @@ describe("siren capability module", () => {
     expect(ring?.writable).toBe(false);
   });
 
-  it("volume + duration are now writable, verified", () => {
+  it("volume + duration are writable", () => {
     for (const name of ["sirenVolume", "alarmDuration"]) {
       const p = SIREN.properties.find((x) => x.name === name);
       expect(p?.writable).toBe(true);
-      expect(p?.provenance).toBe("verified");
     }
   });
 
@@ -154,34 +153,21 @@ describe("siren capability module", () => {
       expect(sent).toEqual([]);
     });
 
-    it("accepts only the volume, duration and tone the product's description lists", async () => {
-      const described = parseThingsList({
+    it("keeps its own value sets for volume, duration and tone, whatever the description lists", async () => {
+      const listing = parseThingsList({
         things_list: [
           {
             profile: { product_code: "T0000" },
-            properties: Object.entries({
-              audio_alert_volume: ["1", "3"],
-              sensor_alarm_timeout: ["60", "300"],
-              alarm_tones_mode: ["1"],
-            }).map(([identifier, wire]) => ({
-              identifier,
-              data_type: { type: "ienum", specs: { eunmList: wire.map((associatedValue) => ({ associatedValue })) } },
-            })),
+            properties: [
+              { identifier: "audio_alert_volume", data_type: { type: "ienum", specs: { eunmList: [{ value: "1" }] } } },
+            ],
           },
         ],
       }).T0000!;
-      const { acts: a, sent } = sirenOf({ ...ctx(), things: described });
-      await expect(a.setVolume!(2)).rejects.toThrow(/must be one of 1\/3\)/);
-      await expect(a.setAlarmDuration!(600)).rejects.toThrow(/must be one of 60\/300\)/);
-      const hub = bind<SirenActions>("siren", {
-        channel: 0,
-        codec: "station",
-        deviceType: DeviceType.HB3,
-        paramIds: new Set([1281]),
-        things: described,
-      } as CommandContext);
-      await expect(hub.acts.setAlarmTone!(2)).rejects.toThrow(/must be one of 1\)/);
-      expect([...sent, ...hub.sent]).toEqual([]);
+      const { acts: a, sent } = sirenOf({ ...ctx(), model: "T90R0", things: listing });
+      await a.setVolume!(2);
+      await expect(a.setVolume!(4)).rejects.toThrow(/must be one of 1\/2\/3\)/);
+      expect(sent).toHaveLength(1);
     });
   });
 

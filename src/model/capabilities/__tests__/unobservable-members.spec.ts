@@ -35,7 +35,6 @@ const writeOnlyMember = {
   type: "bool" as const,
   kind: "boolean" as const,
   writeOnly: true as const,
-  provenance: "verified" as const,
   description: "a setting the device never reports back",
   write: () => ({ kind: "set-param" as const, param: 1, value: 1, channel: 0 }),
 };
@@ -49,7 +48,6 @@ const readableMember = {
   param: 1035,
   type: "bool" as const,
   kind: "boolean" as const,
-  provenance: "verified" as const,
   description: "a setting the device does report",
 };
 

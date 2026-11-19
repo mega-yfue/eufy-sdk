@@ -35,7 +35,6 @@ export const LOCATE_MEMBERS = {
     param: LOCATE_DP,
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     writtenElsewhere: true,
     readAliases: [{ paramType: LEGACY_LOCATE_DP, available: isTuyaVacuum }],
     description:

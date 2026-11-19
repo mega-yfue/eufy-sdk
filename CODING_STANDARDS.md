@@ -161,13 +161,14 @@ those layers. CI-enforced by `guard:capability-ownership`.
 ## Hard rules
 
 - **Unverified write wires throw, never guess.** Some writes are fire-and-forget, so a guessed frame
-  looks exactly like success. A member marks its write unverified until it is confirmed on a real
-  device: the setter is then **absent** from the bound object — a caller learns at compile time — and
-  the intent path throws rather than reporting the device as lacking the feature. Read paths may ship
-  ahead of writes. Verification is **per direction**; don't flatten it.
+  looks exactly like success. A member marks its write unverified until it is confirmed on a real device
+  or the product's settings bundle sends it: the setter is then **absent** from the
+  bound object — a caller learns at compile time — and the intent path throws rather than reporting the
+  device as lacking the feature. Read paths may ship ahead of writes. Verification is **per direction**;
+  don't flatten it.
 - **Never ship a guessed parameter as a typed getter.** Give a member a parameter id only when a real
-  device reports it. Runtime gating hides an unreported one, but don't advertise a guess in the typed
-  surface either.
+  device reports it or the product's settings bundle reads it. Runtime gating hides
+  an unreported one, but don't advertise a guess in the typed surface either.
 - **Ground every wire claim in evidence you can point at.** A parameter id, a polarity or a frame shape
   is valid only when it comes from the current app's own behaviour: a capture, a run on a real device, or
   the app's own code — including the per-product plugin whose URL the thing description's `profile`

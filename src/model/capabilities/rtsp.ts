@@ -151,15 +151,14 @@ export const RTSP_MEMBERS = {
    * the station's URL push (which proves the stream is up) and the cloud poll reports it too. A caller
    * that needs "did *I* turn it on" tracks its own `publish()` call rather than reading this back.
    *
-   * `provenance` is name-trust: the name is the app's own typo'd constant (`NAS_STREAM_SWITHC`), so it
-   * is "apk". The verified live WRITE — both directions, HomeBase and standalone — is in the description.
+   * The name is the app's own typo'd constant (`NAS_STREAM_SWITHC`). The live WRITE, both directions,
+   * HomeBase and standalone, is in the description.
    */
   published: {
     param: RTSP_PARAM.STREAM_SWITCH,
     property: "rtspStream",
     type: "bool",
     kind: "boolean",
-    provenance: "apk",
     description:
       "Whether this camera's stream is published over RTSP (1145 NAS_STREAM_SWITHC). Name from the " +
       "apk; the WRITE is verified live on a HomeBase-attached doorbell and two indoor cameras, both " +
@@ -187,8 +186,8 @@ export const RTSP_MEMBERS = {
    * state, for code that already holds a `dev.rtsp()` and reacts to `propertyChanged` (a getter that is
    * simply absent until a push has landed), rather than driving the read itself.
    *
-   * `provenance` below is `verified` for the VALUE and its frame — not for the id: {@link STREAM_URL}
-   * is synthetic and the wire never reports it, so no capture could have "verified" the id itself.
+   * The value and its frame are observed live; the id is not: {@link STREAM_URL} is synthetic and the
+   * wire never reports it.
    *
    * Arrives ONLY over the P2P notify wire and never in the cloud record, so it is absent until a push
    * lands and then reads back like any other state. Read-only: the device reports it, a caller does not
@@ -199,8 +198,6 @@ export const RTSP_MEMBERS = {
     property: "rtspUrl",
     type: "string",
     kind: "text",
-    // `verified` describes the value and its frame (observed live), not the synthetic id — see the note above.
-    provenance: "verified",
     description:
       "The device-reported rtsp://user:pass@host/path, with the credentials the device currently " +
       "enforces. P2P-notify only (pushed on the 1145 wire once published); absent until a push lands.",
@@ -216,7 +213,6 @@ export const RTSP_MEMBERS = {
     type: "enum",
     kind: "enum",
     enumValues: enumLabels(RtspRecordingMode),
-    provenance: "apk",
     writtenElsewhere: true,
     description:
       "What the NAS records: 0 = events only, 1 = continuous (6050 NAS_VIDEO_TYPE_EVENT). The app " +

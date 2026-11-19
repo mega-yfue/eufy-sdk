@@ -50,9 +50,9 @@ describe("display capability", () => {
     // A typed getter is a recommendation, not just a decoding. Only the charge earns one: it is the sole
     // read a caller could not get another way. The identity strings restate what `info` already answers
     // from the registry and the cloud record — their whole evidence is that agreement — and 8003 is
-    // `guessed`, which must not reach a surface where a caller cannot see the label.
+    // version-shaped and unconfirmed.
     expect(getterNames()).toEqual(["battery"]);
-    // 8003 is in the SCHEMA all the same, `unexposed`, so its type and its `guessed` label have a home
+    // 8003 is in the SCHEMA all the same, `unexposed`, so its type has a home
     // and `getProperty` answers for it. 8005 and 8006 have no spec and are named by the dictionary.
     expect(DISPLAY.properties?.map((p) => p.paramType)).toEqual([8001, 8003]);
     for (const id of [8003, 8005, 8006]) expect(DISPLAY_PARAMS[id]).toBeDefined();
@@ -95,19 +95,8 @@ describe("display capability", () => {
     }
   });
 
-  it("labels the version-shaped string as the guess it is, and keeps it off the typed surface", () => {
-    // "2.9.05" on one device and nothing corroborates the mapping. The two identity ids are `mega`
-    // because their VALUES were independently known facts — the retail name and the model code — which
-    // is evidence about what an id means, not a shape that suggests it. `battery` is only `verified`:
-    // the id is real, but its NAME came from the maintainer rather than the cloud data-point list.
-    expect(DISPLAY_PARAMS[8003]?.provenance).toBe("guessed");
-    expect(DISPLAY_PARAMS[8001]?.provenance).toBe("verified");
-    expect(DISPLAY_PARAMS[8005]?.provenance).toBe("mega");
-    expect(DISPLAY_PARAMS[8006]?.provenance).toBe("mega");
-    // The label survives into the schema, which is the point of `unexposed` over dropping the member:
-    // asked from either side, the answer carries the same provenance.
-    expect(DISPLAY.properties?.find((p) => p.paramType === 8003)?.provenance).toBe("guessed");
-    // And the guess has no typed getter, which is the rule it would otherwise break.
+  it("keeps the version-shaped string in the schema and off the typed surface", () => {
+    expect(DISPLAY.properties?.some((p) => p.paramType === 8003)).toBe(true);
     expect(getterNames()).not.toContain("softwareVersion");
   });
 

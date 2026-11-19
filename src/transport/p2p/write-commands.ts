@@ -62,12 +62,12 @@ function encodeNameField(name: string, maxBytes: number): Buffer {
 }
 
 /**
- * Body for the device/hub rename command (`SET_DEVICE_NAME` 1217 / `SET_HUB_NAME` 1216). A 261-byte
- * struct confirmed against the app: `[u32 = 0][u8 device_channel][name → 128B, null-padded]
- * [account_id → 128B, null-padded]`. Sent signCode 8 on the station channel (255). The name is UTF-8
- * (matching the app), truncated to fit 127 bytes so the field stays null-terminated.
+ * The app's native string body (its sender's layout 0x2d9cb4, used by `SET_TIME_ZONE` 1215, `SET_HUB_NAME`
+ * 1216 and `SET_DEVICE_NAME` 1217): a 261-byte `[u32 = 0][u8 device_channel][string → 128B, null-padded]
+ * [account_id → 128B, null-padded]`, sent on the station channel (255). The string is UTF-8 (matching the
+ * app), truncated to fit 127 bytes so the field stays null-terminated.
  */
-export function buildDeviceNameBody(channel: number, name: string, accountId: string): Buffer {
+export function buildStringBody(channel: number, name: string, accountId: string): Buffer {
   const body = Buffer.alloc(5 + 128 + 128);
   body.writeUInt32LE(0, 0); // reserved / value = 0
   body.writeUInt8(channel & 0xff, 4); // device channel

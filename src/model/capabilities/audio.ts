@@ -1,7 +1,7 @@
-import { asBool } from "../../core/util.js";
 import { isUntriedDoorbell, isHomeBase, HOMEBASE_TYPES } from "../device-family.js";
-import { setScalar, setJson, setPayload, isCameraCodec, hasCapability } from "./access.js";
+import { setScalar, setPayload, isCameraCodec, hasCapability } from "./access.js";
 import { described } from "./thing-description.js";
+import { bundled } from "./bundle.js";
 import { propertiesOf, type Members, type Surface } from "./members.js";
 import type { AvailabilityContext, CapabilityModule, CommandContext } from "./types.js";
 import type { Command } from "../../core/contracts.js";
@@ -13,27 +13,14 @@ import type { Command } from "../../core/contracts.js";
  * the generated `transport/p2p/commands.ts`). All ✅ wire-verified live — see the module JSDoc below.
  */
 export const AUDIO_CMD = {
-  /**
-   * Microphone on/off (app `AUDIO_MICROPHONE_SWITCH`). ✅ Wire verified live on T8214: direct-binary
-   * 136-byte struct, signCode 8, 1=on/0=off (a switch, not a mute).
-   */
+  /** Microphone on/off (app `AUDIO_MICROPHONE_SWITCH`), 1 = on. */
   AUDIO_MICROPHONE: 1240,
-  /** Speaker on/off (app `AUDIO_SPEAKER_SWITCH`). ✅ Wire verified live on T8214 — direct-binary, 1=on/0=off. */
+  /** Speaker on/off (app `AUDIO_SPEAKER_SWITCH`), 1 = on. */
   AUDIO_SPEAKER: 1241,
   /** Speaker volume 0..100 (app `DOORBELL_AUDIO_VOLUME`). ✅ Same direct-binary wire; write verified live on T8214 (set 60 → param 60). */
   SPEAKER_VOLUME: 1230,
-  /**
-   * Audio recording on/off (app `DOORBELL_AUDIO_RECORDING_SWITCH`) — whether the camera records audio
-   * with video. Reported by every camera. ✅ Wire reversed from a live outbound capture + L2 decrypt on
-   * T8425 (ch3): `1350` SET_PAYLOAD on the device channel (mChannel = device ch, mValue3 0), payload
-   * `{channel:<deviceCh>, record_mute:0|1}`. The key is `record_mute` and it is **INVERTED** —
-   * `record_mute:1` = muted (recording OFF), `record_mute:0` = recording ON.
-   */
+  /** Audio recording (app `DOORBELL_AUDIO_RECORDING_SWITCH`), `{channel, record_mute}` in the `1350` envelope. */
   AUDIO_RECORDING: 1288,
-  /** Audio recording on a standalone camera (app `AUDIO_RECORDING_SWITCH`): `1700` with `{enable:0|1}`, 1 = on. */
-  AUDIO_RECORDING_STANDALONE: 6012,
-  /** Audio recording on the T8420 (app `FLC_AUDIO_RECORDING_SWITCH`): `1350` with `{storage_audio_switch}`, inverted. */
-  AUDIO_RECORDING_FLC: 1366,
   /**
    * Doorbell ringtone/chime volume 0..100 (app `DOORBELL_RINGTONE_VOLUME`). ✅ Wire verified live on
    * T8214 — same direct-binary 136-byte struct, signCode 8. Doorbell-only: this capability adds it when
@@ -62,55 +49,16 @@ function audioCommand(param: number, value: number, ctx: CommandContext): Comman
   return setScalar(param, value, ctx, "direct-binary");
 }
 
-/**
- * Where a product's bundle departs from `AudioRecordingOnOffParser` v1. `status`: T8200/T8201 send `1700`/1029
- * `{status}`, 1 = on, and read it on 2042. `flc`: the T8420's `AudioRecordingOnOffParser1366`. `plain`: T8441/T8442
- * keep 6012 standalone but send `record_mute` NOT inverted on a HomeBase. `plainEnable`: T8452/T8453 send
- * `{record_mute, channel, enable}`, not inverted, on every topology. `null` withholds the setter: T81A0/T84A1 send
- * 1288 inside `1700` `param_data`, which no SDK shape carries, and the T8790 bundle builds no command.
- */
-const AUDIO_RECORDING_BUNDLE: Readonly<Record<string, "status" | "flc" | "plain" | "plainEnable" | null>> = {
-  T8200: "status",
-  T8201: "status",
-  T8420: "flc",
-  T8441: "plain",
-  T8442: "plain",
-  T8452: "plainEnable",
-  T8453: "plainEnable",
-  T81A0: null,
-  T84A1: null,
-  T8790: null,
-};
-const audioRecordingBundle = (ctx: AvailabilityContext) => AUDIO_RECORDING_BUNDLE[ctx.model ?? ""];
-/** v1's connect-type split, which `plain` keeps: a standalone camera sends and reads 6012 `{enable}`. */
-const sendsEnable = (ctx: AvailabilityContext) => {
-  const bundle = audioRecordingBundle(ctx);
-  return !ctx.homeBaseAttached && (bundle === undefined || bundle === "plain");
-};
-
-/**
- * Audio recording as `AudioRecordingOnOffParser` v1 sends it, its connect type deciding: `1700`/6012 `{enable}`
- * when the camera stands alone, 1288 `{channel, record_mute}` inverted when it hangs off a HomeBase. The other
- * {@link AUDIO_RECORDING_BUNDLE} wires are bundle-only, so the member is `unverifiedFor` them.
- */
-function audioRecordingCommand(on: boolean, ctx: CommandContext): Command {
-  if (sendsEnable(ctx)) return setJson(AUDIO_CMD.AUDIO_RECORDING_STANDALONE, { enable: on ? 1 : 0 }, ctx);
-  return setPayload(
-    AUDIO_CMD.AUDIO_RECORDING,
-    { channel: ctx.channel, record_mute: on ? 0 : 1 },
-    ctx,
-    0,
-    undefined,
-    "auto",
-  );
-}
+/** `microphone_on_off`, `speaker_on_off` and `audio_recording_on_off` as each product's settings bundle sends them. */
+const MICROPHONE = bundled(["microphone_on_off"], AUDIO_CMD.AUDIO_MICROPHONE);
+const SPEAKER = bundled(["speaker_on_off"], AUDIO_CMD.AUDIO_SPEAKER);
+const RECORDING = bundled(["audio_recording_on_off"], AUDIO_CMD.AUDIO_RECORDING);
 
 /**
  * Every general audio feature, declared once and family-gated across cameras, doorbells, and HomeBases.
  *
- * Camera side (Doorbell T8214): outer-cmd = the param id
- * (1240/1241/1230/1708), signCode 8, device channel, 168B→136B direct-binary struct
- * `[u32 channel][u32 value][account_id pad→128]`; polarity is 1=on. HomeBase prompt volume `1292`
+ * Camera side: the volumes (1230/1708) are a direct-binary `[u32 channel][u32 value][account_id pad→128]`;
+ * the switches are written as the product's settings bundle sends them. HomeBase prompt volume `1292`
  * rides the `1350` SET_PAYLOAD wrapper on channel 0 with `payload:{value}` and is not cloud-reflected.
  *
  * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
@@ -118,33 +66,19 @@ function audioRecordingCommand(on: boolean, ctx: CommandContext): Command {
  * @internal
  */
 export const AUDIO_MEMBERS = {
-  /**
-   * A SWITCH, not a mute: `true` powers the mic, so the polarity reads the same way round on the wire
-   * (1 = on) with no `invert`. Camera-family only — a HomeBase has no microphone, so the getter and
-   * setter are both absent there and a caller must check.
-   */
+  /** A switch, not a mute: `true` powers the mic. */
   microphone: {
-    param: AUDIO_CMD.AUDIO_MICROPHONE,
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
-    available: (ctx: AvailabilityContext) => isCameraCodec(ctx) && described("microphone_on_off")(ctx),
-    description: "Microphone on/off (1240 AUDIO_MICROPHONE_SWITCH; 1=on/0=off). Wire verified live on T8214.",
-    write: (v, ctx) => audioCommand(AUDIO_CMD.AUDIO_MICROPHONE, asBool(v) ? 1 : 0, ctx),
+    ...MICROPHONE,
+    description: "Microphone on/off, as the product's settings bundle writes and reads it.",
   },
-  /**
-   * The camera's own speaker switch — what talkback and the doorbell's responses play out of. Distinct
-   * from `volume`, which sets how loud it is: turning this off silences the camera whatever the level
-   * says. Camera-family only, like `microphone` above; HomeBase voice prompts use `promptVolume`.
-   */
+  /** The device's own speaker switch; distinct from `volume`, which sets how loud it is. */
   speaker: {
-    param: AUDIO_CMD.AUDIO_SPEAKER,
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
-    available: (ctx: AvailabilityContext) => isCameraCodec(ctx) && described("speaker_on_off")(ctx),
-    description: "Speaker on/off (1241 AUDIO_SPEAKER_SWITCH; 1=on/0=off). Wire verified live on T8214.",
-    write: (v, ctx) => audioCommand(AUDIO_CMD.AUDIO_SPEAKER, asBool(v) ? 1 : 0, ctx),
+    ...SPEAKER,
+    description: "Speaker on/off, as the product's settings bundle writes and reads it.",
   },
   /**
    * `volume` is the accessor a caller sees; the flat property has to be `speakerVolume` because three
@@ -156,7 +90,6 @@ export const AUDIO_MEMBERS = {
     type: "number",
     unit: "%",
     kind: "percent",
-    provenance: "verified",
     available: (ctx: AvailabilityContext) => isCameraCodec(ctx) && described("speaker_volume")(ctx),
     min: 0,
     max: 100,
@@ -165,31 +98,12 @@ export const AUDIO_MEMBERS = {
       "Speaker volume 0..100 (1230 DOORBELL_AUDIO_VOLUME). Write verified live on T8214 (set 60 → param 60).",
     write: (v, ctx) => audioCommand(AUDIO_CMD.SPEAKER_VOLUME, Number(v), ctx),
   },
-  /** Raw 1288 is `record_mute` (1 = recording OFF), so audioRecording = NOT record_mute; 6012 and 1366 per the write. */
+  /** Record audio with video, written and read with each param's polarity as the product's bundle states it. */
   audioRecording: {
-    param: AUDIO_CMD.AUDIO_RECORDING,
     type: "bool",
     kind: "boolean",
-    invert: true,
-    invertFor: (ctx) => (audioRecordingBundle(ctx)?.startsWith("plain") ? false : undefined),
-    readAvailable: (ctx) => !["status", "flc"].includes(audioRecordingBundle(ctx) ?? ""),
-    readAliases: [
-      { paramType: 2042, invert: false, available: (ctx) => audioRecordingBundle(ctx) === "status" },
-      { paramType: AUDIO_CMD.AUDIO_RECORDING_STANDALONE, available: sendsEnable },
-      {
-        paramType: AUDIO_CMD.AUDIO_RECORDING_FLC,
-        invert: true,
-        available: (ctx) => audioRecordingBundle(ctx) === "flc",
-      },
-    ],
-    provenance: "apk",
-    unverifiedFor: (ctx) => audioRecordingBundle(ctx) != null && !sendsEnable(ctx),
-    available: (ctx: AvailabilityContext) =>
-      isCameraCodec(ctx) && described("audio_recording_on_off")(ctx) && audioRecordingBundle(ctx) !== null,
-    description:
-      "Record audio with video. HomeBase-attached: 1350/1288 `{channel, record_mute}` (inverted). " +
-      "Standalone: 1700/6012 `{enable}`. The other AUDIO_RECORDING_BUNDLE wires are read, not written.",
-    write: (v, ctx) => audioRecordingCommand(asBool(v), ctx),
+    ...RECORDING,
+    description: "Record audio with video, as the product's settings bundle writes and reads it.",
   },
   /**
    * Doorbell ring/chime loudness — WRITE-ONLY here on purpose. The READ property `ringtoneVolume` (1708)
@@ -202,7 +116,6 @@ export const AUDIO_MEMBERS = {
     unit: "%",
     kind: "percent",
     writeOnly: true,
-    provenance: "verified",
     available: (ctx: AvailabilityContext) => hasCapability(ctx, "doorbell") && !isUntriedDoorbell(ctx),
     min: 0,
     max: 100,
@@ -216,7 +129,6 @@ export const AUDIO_MEMBERS = {
     unit: "%",
     kind: "percent",
     writeOnly: true,
-    provenance: "verified",
     available: isHomeBase,
     min: 0,
     max: 100,

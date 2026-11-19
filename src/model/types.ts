@@ -186,23 +186,6 @@ export function isKnownValueKind(kind: ValueKind): kind is KnownValueKind {
 }
 
 /**
- * How much a param's name and meaning can be trusted, most-trusted first. This is the one definition;
- * the param dictionary and every `provenance` field use it.
- *  - `mega`     — the vendor's cloud names it: its data-point catalog (`get_product_data_point`), the
- *                 Tuya product schema of an `eufy_home_tuya` device (`thing.m.device.ref.info.list`), or a
- *                 reported value that matches what the cloud record already says (a model name or code).
- *  - `verified` — confirmed on a real device by this project: our own capture or observation, or
- *                 identified by someone who has the hardware.
- *  - `apk`      — the v6 app's own decompiled constant name, not yet confirmed on a device.
- *  - `guessed`  — no name source; a plausible placeholder until a toggle-diff settles it.
- *
- * A third-party reverse-engineering project is never a source: every name we ship comes from the
- * vendor's cloud, our own observation or the app itself. Absent provenance is treated as `guessed`.
- * @internal
- */
-export type PropertySource = "mega" | "apk" | "verified" | "guessed";
-
-/**
  * A single device property, mapped to its P2P `param_type`. This is pure data — the same
  * spec is reused across every device whose capability contributes it.
  */
@@ -232,11 +215,6 @@ export interface PropertySpec {
   /** Allowed values for `type: "enum"` (raw → label). */
   enumValues?: Record<number, string>;
   /**
-   * Trust level of this `paramType` mapping. Default (absent) = `guessed`. Anything still `guessed`
-   * is a candidate for confirmation against a first-party source, never relied on.
-   */
-  provenance?: PropertySource;
-  /**
    * Wire polarity for a `bool` property whose param is a *disable* flag: when `true`, a raw
    * `0`/`false` means the property is TRUE (e.g. a camera's `enabled` — the flag is the
    * disable bit, so `"0"` ⇒ enabled). Ignored for non-bool types.
@@ -249,7 +227,11 @@ export interface PropertySpec {
    * battery `charging` flag is derived from the reported charge status, matching the app's
    * own Hermes decode — see `capabilities/battery.ts`.
    */
-  decode?: (raw: string | number | boolean) => boolean | number | string;
+  decode?: (
+    raw: string | number | boolean,
+    param?: number,
+    other?: (param: number) => string | undefined,
+  ) => boolean | number | string;
   /**
    * This param carries a STRUCTURED PAYLOAD rather than a scalar — a base64 protobuf that the
    * capability's own getter reads a field out of, with the injected codec in scope.

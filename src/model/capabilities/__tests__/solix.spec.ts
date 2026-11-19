@@ -30,7 +30,6 @@ describe("Solix capability surface", () => {
     const v1 = props.find((p) => p.name === "meterVoltageL1")!;
     expect(v1.paramType).toBe(0xac);
     expect(v1.type).toBe("number");
-    expect(v1.provenance).toBe("verified");
     expect(v1.writable).toBe(false);
   });
 

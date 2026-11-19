@@ -367,7 +367,7 @@ export class StateConvergenceError extends Error {
  * `[u32 channel][u32 value][account_id → 128B]` in every form but `"int-pair"`.
  *
  * - `"int-string"` pins level-1 (AES-128-ECB), `"direct-binary"` pins level-2 (AES-256-GCM).
- * - `"int-pair"` pins level-1 with the bare `[u32 channel][u32 value]` body and no account id.
+ * - `"int-pair"` the bare `[u32 channel][u32 value]` body and no account id, sealed at the session's level.
  * - `"auto"` lets the transport pick the level, which it resolves from the session it will send on.
  */
 export type ScalarForm = "auto" | "int-string" | "int-pair" | "direct-binary";
@@ -419,18 +419,29 @@ const COMMAND_OBSERVATION = Symbol("command-observation");
  * own variant. The `ff09-*` kinds share ONE frame that rides BOTH P2P and secure-MQTT, so the sink
  * routes them by the device's runtime topology and the chosen router re-resolves its own routing tail
  * from the device record — nothing transport- or route-specific lives in the intent.
+ *
+ * `next` is a command sent after this one, as the app's `multipleRequest` follows a frame with another.
  */
-export type Command =
+export type Command = (
   | { kind: "set-param"; param: number; value: number; form: ScalarForm; channel: number }
-  | { kind: "set-json"; param: number; data: Record<string, unknown>; channel: number }
+  /** `data` is a number where the bundle sends `param_data`. */
+  | { kind: "set-json"; param: number; data: Record<string, unknown> | number; channel: number }
   // `set-json-raw` differs from `set-json` in ONE way: the wire's outer P2P command IS `cmd` itself
   // (no `1700` CONTROL_PAYLOAD wrapper, no `{commandType,data}` nesting) — the plaintext is exactly
   // `data` (plus an injected `account_id`), matching the app's own SET_SNOOZE_TIME (1271) frame.
-  | { kind: "set-json-raw"; cmd: number; data: Record<string, unknown>; channel: number }
+  | {
+      kind: "set-json-raw";
+      cmd: number;
+      data: Record<string, unknown>;
+      channel: number;
+      /** `"int-string"`: sealed level-1 (ECB) whatever the session holds. Absent, level-2. */
+      form?: Extract<ScalarForm, "int-string">;
+    }
   | {
       kind: "set-payload";
       cmd: number;
-      payload: Record<string, unknown>;
+      /** A list where the bundle sends `param_list` (and for 1308). */
+      payload: Record<string, unknown> | readonly unknown[];
       channel: number;
       mValue3?: number;
       form?: ScalarForm;
@@ -439,8 +450,11 @@ export type Command =
        * may seal it. Absent, the send waits for the key every level-2 sender uses.
        */
       level2Sender?: "set-payload";
+      /** The payload's keys at the top level of the envelope, in place of `payload` (`unzipParams`). */
+      unzip?: true;
+      /** Header byte 14: the session's counter bumped, or as it stands, as the app writes it for 1025. */
+      counter?: "bump" | "current";
     }
-  | { kind: "p2p-privacy-burst"; enabled: boolean; channel: number }
   | {
       kind: "p2p-station-scalar";
       cmd: number;
@@ -449,8 +463,22 @@ export type Command =
       /** `"auto"`: the seal follows the session, level-2 with a key and level-1 without. Absent, level-2 only. */
       form?: Extract<ScalarForm, "auto">;
     }
+  /**
+   * The app's native string body (`[u32 0][u8 channel][value][account_id]`) on the station channel 255,
+   * `channel` the device's own: a rename (1216, 1217) or a time zone (1215). The transport injects the
+   * account id and seals it at the session's level.
+   */
+  | { kind: "p2p-string"; cmd: number; value: string; channel: number }
   /** P2P int-plus-string frame; the transport injects the authenticated account id string. */
-  | { kind: "p2p-int-string"; cmd: number; value: number; valueSub: number; channel: number }
+  | {
+      kind: "p2p-int-string";
+      cmd: number;
+      value: number;
+      valueSub: number;
+      channel: number;
+      /** `"int-pair"`: the bare `[u32 valueSub][u32 value]`, no account id string, sealed at the session's level (1201). */
+      form?: Extract<ScalarForm, "int-pair">;
+    }
   | ({ kind: "ff09-actuate" } & Ff09Identity)
   /**
    * `keyed-payload-actuate` — a `SET_PAYLOAD` envelope whose inner JSON is sealed with a fresh AES key
@@ -470,7 +498,19 @@ export type Command =
   // its own opaque `mqttCmdCode` (the outer envelope's dispatch id) + `cmdCode` (the feature id whose
   // low byte is the frame subtype) + already-tagged scalar `fields`; the router does ONLY the generic
   // ff09-TLV framing + envelope (it names none of these ids). See `transport/mqtt/dp-codec.ts`.
-  | { kind: "mqtt-dp"; mqttCmdCode: number; cmdCode: number; fields: ReadonlyArray<{ tag: number; value: Buffer }> }
+  | {
+      kind: "mqtt-dp";
+      mqttCmdCode: number;
+      cmdCode: number;
+      fields: ReadonlyArray<{ tag: number; value: Buffer }>;
+      /**
+       * The `ff09` header a settings bundle states, for a lock: its version byte, function type and whether
+       * the frame is sealed. A lock's frame is sealed and wrapped as its MQTT channel does; a light's never.
+       */
+      subVersion?: number;
+      functionType?: number;
+      encrypt?: boolean;
+    }
   // `mqtt-dp-preset` — a DP write whose payload is too large to pass inline, named by a **cloud catalog
   // id** the router resolves through an injected lookup and serializes. Named for that wire shape, not
   // for the feature that uses it (as `ff09-actuate` is named for the action, not for locks): any
@@ -488,7 +528,21 @@ export type Command =
       blue: number;
       segmentCount: number;
     }
-  | { kind: "aiot-dp"; dp: number; value: boolean | number | string };
+  | { kind: "aiot-dp"; dp: number; value: boolean | number | string }
+  /**
+   * A cloud call as a settings bundle sends one (a rename): the client resolves `domain` (a category such
+   * as `eufy_security`, or a cloud module name) to its host.
+   */
+  | {
+      kind: "cloud-request";
+      method: "GET" | "POST" | "PUT" | "DELETE";
+      domain: string;
+      path: string;
+      body?: Record<string, unknown>;
+      query?: Record<string, unknown>;
+      headers?: Record<string, string>;
+    }
+) & { next?: Command };
 
 /** Attach non-wire observation policy to a command without changing its enumerable transport intent. @internal */
 export function observeCommand(command: Command, observation: CommandObservation): Command {

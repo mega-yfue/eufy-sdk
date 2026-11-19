@@ -16,15 +16,10 @@ export const P2P_ENVELOPE = {
   /** GET_CAMERA_INFO param-list query. */
   GET_CAMERA_INFO: 1103,
   /**
-   * Privacy / camera-off; the router sends it as a signCode-8 multi-channel burst under SET_PAYLOAD
-   * (see `sendPrivacyBurst`).
-   */
-  PRIVACY_MODE: 6250,
-  /**
    * Rename a device (app `SET_DEVICE_NAME`). ✅ Wire-confirmed on T8425 (
    * replay): outer-cmd 1217, signCode 8, on the STATION channel 255. Body is a 261-byte struct
    * `[u32=0][u8 device_channel][name→pad128][account_id→pad128]`. **P2P-only** — the HomeBase
-   * propagates the name to the cloud; no HTTP `update_device_info` call is needed. See `buildDeviceNameBody`.
+   * propagates the name to the cloud. See `buildStringBody`.
    */
   SET_DEVICE_NAME: 1217,
   /**
