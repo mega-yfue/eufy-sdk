@@ -198,11 +198,17 @@ describe("camera capability module", () => {
         1: "Infrared",
       });
       expect(options(AUTO_NIGHT_VISION), "the Auto Night Vision switch").toEqual({ 0: "Off", 1: "Infrared" });
-      expect(options(things({ nightvision_type: ["1", "6", "0"] })), "an unnamed mode").toEqual({
+      expect(options(things({ nightvision_type: ["1", "9", "0"] })), "an unnamed mode").toEqual({
         0: "Off",
         1: "Infrared",
       });
-      expect(options(), "no description").toEqual({ 0: "Off", 1: "Infrared", 2: "Full Color", 3: "Infrared On" });
+      expect(options(), "no description").toEqual({
+        0: "Off",
+        1: "Infrared",
+        2: "Full Color",
+        3: "Infrared On",
+        6: "Daylike",
+      });
       expect(() =>
         buildCommand(
           "nightVision",
@@ -311,6 +317,15 @@ describe("camera capability module", () => {
       const message = /nightVision: 2 is not a valid value \(must be one of 0\/1\)/;
       expect(() => buildCommand("nightVision", NightVision.FullColor, t8442)).toThrow(message);
       await expect(camera(t8442).acts.setNightVision!(NightVision.FullColor)).rejects.toThrow(message);
+    });
+
+    it("reads Daylike (6) where the product's description lists it", () => {
+      const daylike = ctx(1, {
+        paramIds: new Set([CAMERA_CMD.NIGHT_VISION_TYPE]),
+        things: things({ nightvision_type_new: ["0", "6", "2", "1"] }),
+      });
+      const read = (value: number) => () => ({ value });
+      expect(bind<CameraActions>("camera", daylike, { read: read(6) }).acts.nightVision).toBe(6);
     });
 
     it("reads a 1277 value outside the published options as undefined, getter and announcement alike", () => {
@@ -671,7 +686,7 @@ describe("camera capability module", () => {
           /watermark: .+ is not a valid value \(must be one of 0\/1\/2\)/,
         );
         expect(() => buildCommand("nightVision", bad as number, ctx())).toThrow(
-          /nightVision: .+ is not a valid value \(must be one of 0\/1\/2\/3\)/,
+          /nightVision: .+ is not a valid value \(must be one of 0\/1\/2\/3\/6\)/,
         );
       }
       // Valid enum values still pass.
@@ -681,7 +696,7 @@ describe("camera capability module", () => {
 
     it("nightVision → 1350 set-payload, mChannel 0, {channel,night_sion} (verified)", () => {
       // Verified live: device channel goes INSIDE the payload; the envelope's mChannel is 0.
-      expect(NightVision).toEqual({ Off: 0, Infrared: 1, FullColor: 2, InfraredOn: 3 });
+      expect(NightVision).toEqual({ Off: 0, Infrared: 1, FullColor: 2, InfraredOn: 3, Daylike: 6 });
       expect(buildCommand("nightVision", NightVision.FullColor, ctx(3, { paramIds: new Set([1400]) }))).toMatchObject({
         kind: "set-payload",
         cmd: CAMERA_CMD.NIGHT_VISION_TYPE,
@@ -1100,7 +1115,7 @@ describe("camera capability module", () => {
       expect(sent[1]).toMatchObject({ cmd: CAMERA_CMD.RECORDING_QUALITY_SET, payload: { quality: 3 } });
       await expect(acts.setWatermark!(5)).rejects.toThrow("watermark: 5 is not a valid value (must be one of 0/1/2)");
       await expect(acts.setNightVision!(9)).rejects.toThrow(
-        "nightVision: 9 is not a valid value (must be one of 0/1/2/3)",
+        "nightVision: 9 is not a valid value (must be one of 0/1/2/3/6)",
       );
       await expect(acts.setRecordingQuality!(0)).rejects.toThrow(
         "recordingQuality: 0 is not a valid value (must be one of 1/2/3)",

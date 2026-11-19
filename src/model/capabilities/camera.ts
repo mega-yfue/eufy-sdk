@@ -232,6 +232,8 @@ export const NightVision = {
   FullColor: 2,
   /** Infrared held on — black-and-white night vision, not switched by the light level. */
   InfraredOn: 3,
+  /** Daylike — the colour-like night mode a product's description lists as 6, the default of `nightvision_type`. */
+  Daylike: 6,
 } as const;
 /** A night-vision mode — the value side of {@link NightVision}. */
 export type NightVisionValue = (typeof NightVision)[keyof typeof NightVision];
@@ -935,7 +937,7 @@ export const CAMERA_MEMBERS = {
     param: CAMERA_CMD.NIGHT_VISION_TYPE,
     type: "enum",
     kind: "enum",
-    enumValues: { 0: "Off", 1: "Infrared", 2: "Full Color", 3: "Infrared On" },
+    enumValues: { 0: "Off", 1: "Infrared", 2: "Full Color", 3: "Infrared On", 6: "Daylike" },
     thing: ["nightvision_type_new", "nightvision_type"],
     provenance: "verified",
     available: cameraThing("nightvision_type_new", "nightvision_type"),
