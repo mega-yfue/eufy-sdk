@@ -459,6 +459,15 @@ describe("camera capability module", () => {
       expect(buildCommand("on", true, at("T8110", false))).toMatchObject({ cmd: CAMERA_CMD.PRIVACY_MODE });
     });
 
+    it("power: the wire each product's camera_on_off parser or inline case writes, per topology", () => {
+      const enable = { kind: "set-param", param: CAMERA_CMD.CAMERA_ENABLE };
+      expect(buildCommand("on", true, at("T8110", true)), "v2 attached").toMatchObject(enable);
+      expect(buildCommand("privacy", true, at("T8110", true)), "v2 attached").toBeUndefined();
+      expect(buildCommand("on", true, at("T817L", false)), "v3").toMatchObject({ cmd: CAMERA_CMD.PRIVACY_MODE });
+      expect(buildCommand("on", true, at("T8420", true)), "v7 answers nothing, base v4").toMatchObject(enable);
+      expect(buildCommand("on", true, at("T8531", false)), "standalone inline").toMatchObject(enable);
+    });
+
     it("streamingQuality: 1020 unverified where the bundle sends it, 2730 attached", () => {
       expect(() => buildCommand("streamingQuality", 2, at("T8410", false)), "1020 is bundle-only").toThrow(
         /unverified/,
@@ -918,6 +927,80 @@ describe("camera capability module", () => {
     });
   });
 
+  /**
+   * `camera_on_off` read where the product's bundle reads it: the T8162 bundle's parser reads only 6250, a
+   * v5 bundle 2001 standalone. A listed identifier installs the getter on the description's default.
+   */
+  describe("enabled — the description's read param and default", () => {
+    const ON_OFF = parseThingsList({
+      things_list: [
+        {
+          profile: { product_code: "T0000" },
+          properties: [{ identifier: "camera_on_off", data_type: { type: "bool", specs: { defaultValue: "1" } } }],
+        },
+      ],
+    }).T0000!;
+    const enabledOf = (model: string, attached: boolean, params: Record<number, string>, things?: ThingDescription) => {
+      const identity = { deviceType: 9, model, category: "eufy_security" };
+      const parentSn = attached ? "T8010P0000000000" : undefined;
+      const dev = Device.fromRecord("T8000P0000000000", { ...identity, parentSn, params, things });
+      const paramIds = new Set(Object.keys(params).map(Number));
+      dev.bindActions(ctx(1, { ...identity, homeBaseAttached: attached, paramIds, things }), {
+        dispatch: async () => undefined,
+      });
+      const acts = dev.camera!()!;
+      return "enabled" in acts ? acts.enabled : "absent";
+    };
+
+    it("is present on a described product that reported no power param, reading the default", () => {
+      expect(enabledOf("T8162", true, {}, ON_OFF)).toBe(true);
+    });
+    it("reads 6250 where the bundle does, and not a reported 1035", () => {
+      expect(enabledOf("T8162", true, { 6250: "1" }, ON_OFF)).toBe(false);
+      expect(enabledOf("T8162", true, { 6250: "0" }, ON_OFF)).toBe(true);
+      expect(enabledOf("T8162", true, { 1035: "1" }, ON_OFF)).toBe(true);
+    });
+    it("reads 2001 on a standalone v5 product and 6250 attached", () => {
+      expect(enabledOf("T8400", false, { 2001: "false", 6250: "0" }, ON_OFF)).toBe(false);
+      expect(enabledOf("T8400", true, { 2001: "false", 6250: "0" }, ON_OFF)).toBe(true);
+    });
+    it("reads a reported 1035 on a T8410 behind a HomeBase 3 that reports no 6250, as its enable bit", () => {
+      const identity = { deviceType: 9, model: "T8410", category: "eufy_security" };
+      const enabled = (params: Record<number, string>) => {
+        const dev = Device.fromRecord("T8000P0000000000", {
+          ...identity,
+          parentSn: "T8030P0000000000",
+          params,
+          things: ON_OFF,
+        });
+        const paramIds = new Set(Object.keys(params).map(Number));
+        const at = { ...identity, homeBaseAttached: true, stationSerial: "T8030P0000000000", paramIds, things: ON_OFF };
+        dev.bindActions(ctx(1, at), { dispatch: async () => undefined });
+        return (dev.camera!()! as { enabled?: boolean }).enabled;
+      };
+      expect(enabled({ 1035: "0" })).toBe(false);
+      expect(enabled({ 1035: "1" })).toBe(true);
+      expect(enabled({ 1035: "1", 6250: "1" })).toBe(false);
+    });
+    it("reads 1131 beside 2001 where the bundle's product parser does, '1' as on", () => {
+      expect(enabledOf("T8441", false, { 1131: "0" }, ON_OFF)).toBe(false);
+      expect(enabledOf("T8441", true, { 1131: "1" }, ON_OFF)).toBe(true);
+    });
+    it("reads 99904 in the bundle's order over 1035", () => {
+      expect(enabledOf("T8210", false, { 99904: "1", 1035: "0" }, ON_OFF)).toBe(false);
+      expect(enabledOf("T8210", true, { 99904: "1", 1035: "0" }, ON_OFF)).toBe(true);
+      expect(enabledOf("T8210", true, { 99904: "1" }, ON_OFF)).toBe(false);
+      expect(enabledOf("T8213", false, { 99904: "1", 1035: "0" }, ON_OFF)).toBe(true);
+      expect(enabledOf("T8200", false, { 2001: "true", 99904: "1" }, ON_OFF)).toBe(true);
+      expect(enabledOf("T8420", true, { 99904: "1", 1035: "0" }, ON_OFF)).toBe(false);
+    });
+    it("without a description reads only a reported 1035 or 2001", () => {
+      expect(enabledOf("T8162", true, {})).toBe("absent");
+      expect(enabledOf("T8162", true, { 6250: "1" })).toBe("absent");
+      expect(enabledOf("T8162", true, { 1035: "1" })).toBe(false);
+    });
+  });
+
   describe("statusLed — family-aware read alias and evidence-gated write", () => {
     it.each([
       [CAMERA_CMD.DEV_LED_SWITCH, "1", true, { deviceType: 9, model: "T8114" }],
@@ -1307,6 +1390,21 @@ describe("camera enablement — observed write", () => {
     // Battery/solo (disable bit): ON ⇒ 0. Live: a T8114 reports 1035="0" while enabled.
     expect(observationFor(9, [CAMERA_ENABLE], true)).toEqual({ param: CAMERA_ENABLE, expected: 0, observed: true });
     expect(observationFor(9, [CAMERA_ENABLE], false)).toEqual({ param: CAMERA_ENABLE, expected: 1, observed: false });
+  });
+
+  /** A described product whose bundle reads the 6250 it writes confirms the privacy-wire write there. */
+  it("observes 6250 where the product's bundle reads the param it writes", () => {
+    const things = parseThingsList({
+      things_list: [{ profile: { product_code: "T0000" }, properties: [{ identifier: "camera_on_off" }] }],
+    }).T0000!;
+    const ctx = (model: string) =>
+      ({ ...ctx0, model, homeBaseAttached: true, things, paramIds: new Set([2001, CAMERA_CMD.PRIVACY_MODE]) }) as never;
+    const ctx0 = { channel: 0, codec: "camera" as const, deviceType: DeviceType.INDOOR_CAMERA };
+    expect(CAMERA_MEMBERS.enabled.observation.reflects(true, ctx("T8400"))).toEqual({
+      param: CAMERA_CMD.PRIVACY_MODE,
+      expected: 0,
+      observed: true,
+    });
   });
 
   /** A device reporting neither has nothing to read back, so the write is dispatched unobserved. */

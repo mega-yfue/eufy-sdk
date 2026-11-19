@@ -242,7 +242,9 @@ when the key would collide there (`battery`'s `level` → property `battery`, si
 - **Evidence-gated presence.** A getter is installed **only when the device actually reported the
   backing param** (`ctx.paramIds`, or a `readAliases` id, which is the same value on another family's
   wire; `readAvailable` and each alias's `available` predicate restrict those ids to the families where
-  they carry that meaning; `realtime: true` is the opt-out for state that only ever arrives over realtime). So a device
+  they carry that meaning; `realtime: true` is the opt-out for state that only ever arrives over realtime;
+  `thingDefault: true` also installs it where the product's description lists the member's `thing`
+  identifier, reading the description's `defaultValue` until a report arrives). So a device
   advertises exactly the reads it has — never a phantom sub-feature of the capability it owns (a battery
   cam that reports its custom-recording settings exposes `recordDuration`; one that reports only a level
   won't have that key at all). This means **don't declare a `param` for a guessed id** — hold the read

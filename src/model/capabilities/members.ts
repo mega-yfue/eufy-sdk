@@ -67,6 +67,13 @@ export interface ValueMember {
    * {@link enumValues} names, or 0 and 1 for a `bool` property.
    */
   thing?: readonly string[];
+  /**
+   * The getter exists where the device's resolved description lists the first {@link thing} identifier,
+   * reported or not, and answers that property's `defaultValue` (the app's model value, before any wire
+   * polarity) until the device reports the param. The settings bundles read the identifier the same way:
+   * a param never reported leaves the description's default in place.
+   */
+  thingDefault?: true;
   provenance?: PropertySpec["provenance"];
   invert?: boolean;
   /** Per-device read polarity; undefined retains the static default. */
@@ -618,6 +625,17 @@ function thingEnum(m: ValueMember, ctx: AvailabilityContext): Record<number, str
 }
 
 /**
+ * A {@link ValueMember.thingDefault} member's description default, as the member's type: `undefined` for
+ * any other member, without a description listing its identifier, or for a listed one stating no default.
+ */
+function thingDefaultOf(m: ValueMember, ctx: AvailabilityContext): { value?: boolean | number | string } | undefined {
+  const raw = m.thingDefault && m.thing?.map((id) => ctx.things?.properties[id]).find(Boolean);
+  if (!raw) return undefined;
+  const d = raw.defaultValue;
+  return { value: d === undefined ? d : m.type === "bool" ? asBool(d) : m.type === "string" ? d : Number(d) };
+}
+
+/**
  * Resolve a member's enum options for a device, evaluating `enumValuesFor` at most once. Returns the
  * options and whether they came from the device context (`dynamic`), so the option set and the enum
  * `kind` both come from a single result. A context domain — `enumValuesFor(ctx)`, else what the
@@ -1038,7 +1056,8 @@ function actionRoutable(m: ActionMember, ctx: CommandContext): boolean {
  *
  *  - **One evidence gate for every read, decoded or not.** A `decode` changes how a value is READ, never
  *    whether the device reports it, so gating only the plain branch would publish a getter for a param
- *    the device never sent — one answering `undefined` forever. `realtime` is the opt-out.
+ *    the device never sent — one answering `undefined` forever. `realtime` is the opt-out, and
+ *    `thingDefault` installs it where the description lists the value, reading its default.
  *  - **A provider builder answering nothing DECLINES.** The provider is there but the member is not
  *    available on it (an optional method, or one the device gave no evidence for), so the member is
  *    ABSENT rather than a key holding `undefined` — `"talkback" in cam` has to mean the camera can talk.
@@ -1084,8 +1103,8 @@ export function bindMembers<M extends Members>(members: M, deps: MemberDeps): Su
     // One availability decision across getter, setter and manifest: a member gated off by `available`
     // for this device is not exposed as a getter either (the manifest already omits it).
     const available = !m.available || m.available(ctx);
-    // The getter gate is the manifest's `reported`, plus the realtime opt-out (see `wasReported`).
-    const reported = available && (m.realtime === true || wasReported(m, from, ctx));
+    const listed = thingDefaultOf(m, ctx);
+    const reported = available && (m.realtime === true || wasReported(m, from, ctx) || listed !== undefined);
     if (reported && !m.writeOnly && !m.unexposed) {
       const decode = m.decode;
       // The member's own wire wins; the owner's payload is the fallback for a device that does not
@@ -1093,7 +1112,9 @@ export function bindMembers<M extends Members>(members: M, deps: MemberDeps): Su
       const raw = (): unknown => read(prop)?.value ?? (borrowed === undefined ? undefined : read(borrowed)?.value);
       const { values, dynamic } = resolvedEnum(m, ctx);
       const domain = (dynamic ? "enum" : m.kind) === "enum" ? values : undefined;
-      const get = decode ? () => decode(raw(), rawDp, ctx) : () => narrow(m.type, read, prop, domain);
+      const get = decode
+        ? () => decode(raw(), rawDp, ctx)
+        : () => (listed && !read(prop) ? listed.value : narrow(m.type, read, prop, domain));
       Object.defineProperty(out, name, { get, enumerable: true, configurable: true });
     }
     if (!m.write || m.unverified || m.unverifiedFor?.(ctx) || !installs(m, ctx) || !writeRoutable(m, ctx)) continue;

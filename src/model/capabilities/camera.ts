@@ -437,11 +437,15 @@ function readsNightVisionOn2002(ctx: AvailabilityContext): boolean {
 }
 
 /**
- * A privacy-mode power write does not reliably move the enablement report: a device reporting 2001
- * reflects it there, the HomeBase-attached S350 ({@link hasPrivacyPower}) does not.
+ * A privacy-mode power write is reflected only where the read observes it: on 6250 where the product's
+ * bundle reads it there, else on a reported 2001. The HomeBase-attached S350 ({@link hasPrivacyPower})
+ * does not reflect it.
  */
 function hasUnreflectedPower(ctx: CommandContext): boolean {
-  return POWER_WIRE(ctx) === CAMERA_CMD.PRIVACY_MODE && (hasPrivacyPower(ctx) || !ctx.paramIds.has(2001));
+  if (POWER_WIRE(ctx) !== CAMERA_CMD.PRIVACY_MODE) return false;
+  return (
+    hasPrivacyPower(ctx) || !(ctx.things ? readsPower(CAMERA_CMD.PRIVACY_MODE, false)(ctx) : ctx.paramIds.has(2001))
+  );
 }
 
 /**
@@ -490,14 +494,22 @@ const cameraThing =
  * T816x) is never standalone, so it is listed only where its wire differs from the fallback's attached arm.
  */
 function bundleWires(identifier: string, fallback: string, groups: Readonly<Record<string, string>>) {
+  const arm = bundleArm(identifier, fallback, groups);
+  return (ctx: AvailabilityContext): number | undefined => {
+    const wire = arm(ctx);
+    return wire === "-" ? undefined : Number(wire);
+  };
+}
+
+/** The {@link bundleWires} arm this device's product and topology select, as the table states it. */
+function bundleArm(identifier: string, fallback: string, groups: Readonly<Record<string, string>>) {
   const table = new Map<string, string>();
   for (const [wire, codes] of Object.entries(groups)) for (const code of codes.split(" ")) table.set(code, wire);
-  return (ctx: AvailabilityContext): number | undefined => {
+  return (ctx: AvailabilityContext): string => {
     const model = ctx.model ?? "";
     const variant = ctx.things?.properties[identifier]?.identifier.slice(identifier.length) ?? "";
     const arms = (table.get(model + variant) ?? table.get(model) ?? fallback).split("/");
-    const wire = arms[ctx.homeBaseAttached === true ? arms.length - 1 : 0];
-    return wire === "-" ? undefined : Number(wire);
+    return arms[ctx.homeBaseAttached === true ? arms.length - 1 : 0];
   };
 }
 
@@ -507,15 +519,56 @@ const offers =
   (ctx: AvailabilityContext): boolean =>
     cameraThing(identifier)(ctx) && wire(ctx) !== undefined;
 
-/** `camera_on_off`: 1035, or privacy mode while attached. The T84A1/T81A0 `param_data` wire is not built here. */
+/**
+ * `camera_on_off` as each product's bundle writes it (`parse` of the parser it registers, else its inline
+ * case when that answers nothing): 1035, or privacy mode. Not built here: the T84A1/T81A0 `param_data` wire.
+ */
 const POWER_WIRE = bundleWires("camera_on_off", "1035", {
   "1035/6250": "T6310 T8352 T8354 T8400 T8401 T8410 T8411 T8416 T8417 T8419 T8441 T8442 T85M0 T85V0 T8W11 T8W11C",
-  "6250": "T8110 T8110E T814X T8162 T8172",
+  "6250": "T8162 T8172 T817L",
+  "6250/1035": "T8110 T8110E T814X",
   "6090/6250": "T8410C T8414",
-  "1035/-": "T8420 T8452 T8453",
-  "-/1035": "T81A0 T8531",
+  "1035/-": "T8452 T8453",
+  "-/1035": "T81A0",
   "-": "T7401 T84A1 T8790",
 });
+
+/**
+ * `camera_on_off` as each product's bundle reads it back (`parseCommandToModel` of the parser it registers,
+ * else its inline case), in the {@link bundleWires} form. `+` joins params one parser reads alike, the last
+ * one reported winning; `>` orders params a product parser reads over its base parser's, or one param the
+ * parser prefers when reported. 1035, 6250 and 99904 read "0" as on, 2001 "true" and 1131 "1"; a param never
+ * reported leaves the description default.
+ */
+const POWER_READ = bundleArm("camera_on_off", "1035", {
+  "6250": "T8162 T817L",
+  "6250/1035": "T8110 T8110E T814X",
+  "1035/6250": "T8416 T8417 T8419 T85M0 T85V0 T8W11 T8W11C",
+  "2001/6250>1035": "T8400 T8401 T8410 T8410C T8411 T8414",
+  "2001+1131/6250+1131": "T8441 T8442",
+  "2001": "T8420X",
+  "1035+6250": "T6310 T8352 T8354",
+  "6250>1035": "T8172",
+  "2001+1035": "T8422 T8424",
+  "99904>1035/1035>99904": "T8200X T8201X T8210 T8210C T8220 T8221 T8222",
+  "2001>99904>1035/2001>1035>99904": "T8200 T8201 T8202",
+  "1035>99904": "T8203 T8213 T8214 T8217 T8223 T8224",
+  "99904>1035": "T8420",
+});
+
+/**
+ * Whether this device reads its power state from `param`: per {@link POWER_READ} once described, from the
+ * first `>` rank the device reported a param of, else `undescribed`. A record names a station serial only
+ * for an attached device, which places it before a live context states the topology.
+ */
+const readsPower =
+  (param: number, undescribed: boolean) =>
+  (ctx: AvailabilityContext): boolean => {
+    if (!ctx.things) return undescribed;
+    const arm = POWER_READ({ ...ctx, homeBaseAttached: ctx.homeBaseAttached ?? ctx.stationSerial !== undefined });
+    const ranks = arm.split(">").map((rank) => rank.split("+").map(Number));
+    return (ranks.find((rank) => rank.some((p) => ctx.paramIds?.has(p))) ?? ranks.flat()).includes(param);
+  };
 
 /** Power, privacy and the on/off verbs. */
 const cameraSwitch = offers("camera_on_off", POWER_WIRE);
@@ -634,28 +687,33 @@ function poweredOf(ctx: CommandContext): "wired" | "battery" {
  * {@link CAMERA_CMD.CAMERA_ENABLE}, but the standalone indoor/outdoor cameras report their state under the
  * `2001` read alias and never the param that was written — measured on one account, 5 cameras report the
  * enablement param and never `2001`, 3 report `2001` and never the enablement param, and none reported both.
- * So the readback follows the reported param, chosen from the evidence the device gave: `2001` is direct.
- * T8410/HomeBase 3 retains a useful startup enable bit, but it does not reliably reflect the privacy write.
- * Do not poll that bit to confirm the wrapped command. Other routes retain their existing readback.
+ * So the readback follows a reported param the getter reads on this device, the written one where it is
+ * among them: `2001` reads "true" as on, 1035 takes the write polarity, the others read inverted or direct
+ * as their read alias states. T8410/HomeBase 3 retains a useful startup enable bit, but it does not reliably
+ * reflect the privacy write; `readReflectsWrite` withholds the readback there.
  *
- * `undefined` where a device reported neither param and has no enablement readback, or where
- * `readReflectsWrite` says its read does not follow the write.
+ * `undefined` where a device reported no param the getter reads, or where `readReflectsWrite` says its
+ * read does not follow the write.
  */
 function enablementReflection(
   on: boolean,
   ctx: CommandContext,
 ): { param: number; expected: boolean | number; observed: boolean } | undefined {
-  if (!CAMERA_MEMBERS.enabled.readReflectsWrite(ctx)) return undefined;
-  const alias = CAMERA_MEMBERS.enabled.readAliases[0].paramType;
-  if (ctx.paramIds.has(alias)) return { param: alias, expected: on, observed: on };
-  if (ctx.paramIds.has(CAMERA_CMD.CAMERA_ENABLE)) {
-    return {
-      param: CAMERA_CMD.CAMERA_ENABLE,
-      expected: powerValue(on, ctx),
-      observed: on,
-    };
-  }
-  return undefined;
+  const m = CAMERA_MEMBERS.enabled;
+  if (!m.readReflectsWrite(ctx)) return undefined;
+  const reads = [
+    { paramType: CAMERA_CMD.CAMERA_ENABLE, invert: true, available: m.readAvailable },
+    ...m.readAliases,
+  ].filter((r) => ctx.paramIds.has(r.paramType) && r.available(ctx));
+  const read = reads.find((r) => r.paramType === POWER_WIRE(ctx)) ?? reads[0];
+  if (!read) return undefined;
+  const expected =
+    read.paramType === CAMERA_CMD.CAMERA_ENABLE
+      ? powerValue(on, ctx)
+      : read.paramType === 2001
+        ? on
+        : Number(on !== read.invert);
+  return { param: read.paramType, expected, observed: on };
 }
 
 /**
@@ -708,25 +766,32 @@ export const CAMERA_MEMBERS = {
    * T8410 on HomeBase 3 reports 1035 as an enable bit ("1" ⇒ ON). That reported state does not reliably
    * reflect the privacy command. `readReflectsWrite` states this distinction.
    *
-   * The privacy param (6250) is reported by the outdoor-PT family and by no other camera measured, and both
-   * of its polarities are observed. It is deliberately NOT aliased here: it moved in the same step as 1035, so
-   * the reading cannot say whether power and privacy are one state or two — so
-   * aliasing a second param could only fold two possible states into one getter for no gain.
+   * A described product reads the params {@link POWER_READ} names, 6250 among them, and the description's
+   * default until one is reported. Without a description it reads 1035 or 2001, never 6250.
    */
   enabled: {
     param: CAMERA_CMD.CAMERA_ENABLE,
     type: "bool",
     kind: "boolean",
     provenance: "apk",
+    thing: ["camera_on_off"],
+    thingDefault: true,
     available: cameraSwitch,
     unverifiedFor: privacyStatusPower,
     invert: true,
     invertFor: (ctx) => (isT8410HomeBase3(ctx) ? false : undefined),
-    readAliases: [{ paramType: 2001, invert: false }],
+    readAvailable: readsPower(CAMERA_CMD.CAMERA_ENABLE, true),
+    readAliases: [
+      { paramType: 2001, invert: false, available: readsPower(2001, true) },
+      { paramType: CAMERA_CMD.PRIVACY_MODE, invert: true, available: readsPower(CAMERA_CMD.PRIVACY_MODE, false) },
+      { paramType: 99904, invert: true, available: readsPower(99904, false) },
+      { paramType: 1131, invert: false, available: readsPower(1131, false) },
+    ],
     readReflectsWrite: (ctx) => !hasUnreflectedPower(ctx),
     description:
       "Camera enabled. Family-dependent wire param: 1035 CMD_DEVS_SWITCH (enable bit on T8410/HomeBase 3, " +
-      "disable bit on battery/solo cams) or 2001 OPEN_DEVICE (standalone indoor/outdoor). Reported on/off state; " +
+      "disable bit on battery/solo cams), 2001 OPEN_DEVICE (standalone indoor/outdoor) or 6250 privacy, as the " +
+      "product's bundle reads it; the description's default until reported. Reported on/off state; " +
       "unreflectedMembers identifies commands whose effect this report does not reliably reflect.",
     observation: {
       event: "cameraEnabledChanged",
