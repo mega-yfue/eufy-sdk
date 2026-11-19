@@ -1659,7 +1659,8 @@ export class P2PSession extends EventEmitter {
    * Send an **int+string control command** over the level-1 (AES-128-ECB) channel — the wire shape
    * the app uses for the floodlight/spotlight switch (`CMD_SET_FLOODLIGHT_MANUAL_SWITCH` 1400) on
    * IndoorOutdoor / SoloCam-spotlight / Cam2C-3 families: `value` (0/1), `valueSub` (channel), and
-   * `strValue` (admin `account_id`). See {@link buildIntStringCommandPayload}. Fire-and-forget.
+   * `strValue` (admin `account_id`). A `signCode` of 0 sends the body in the clear, as the current app
+   * answers an eight-zero-byte device ping. See {@link buildIntStringCommandPayload}. Fire-and-forget.
    */
   sendIntStringCommand(
     commandType: number,
@@ -1667,11 +1668,13 @@ export class P2PSession extends EventEmitter {
     valueSub: number,
     strValue: string,
     channel = STATION_CHANNEL,
+    signCode: 0 | 1 = 1,
   ): void {
     if (!this.connectAddress) throw new Error(`P2P session ${this.cfg.stationSn} is not connected`);
+    const key = signCode === 0 ? undefined : this.level1Key;
     const data = Buffer.concat([
       buildCommandHeader(this.seqNumber, commandType),
-      buildIntStringCommandPayload(value, valueSub, strValue, channel, this.level1Key, 1),
+      buildIntStringCommandPayload(value, valueSub, strValue, channel, key, signCode),
     ]);
     this.seqNumber = (this.seqNumber + 1) & 0xffff;
     this.send(this.connectAddress, RequestMessageType.DATA, data);

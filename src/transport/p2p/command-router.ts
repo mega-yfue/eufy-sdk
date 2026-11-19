@@ -58,7 +58,7 @@ import {
   ff09TransferPayload,
   CMD_TRANSFER_PAYLOAD,
 } from "../ff09.js";
-import { stationCloudAddresses } from "./codec.js";
+import { P2PDataType, stationCloudAddresses } from "./codec.js";
 import { P2P_ENVELOPE } from "./envelope.js";
 import { freshestLanIp } from "./lan-ip.js";
 import { captureSnapshotFromShared, recordClip } from "./media.js";
@@ -610,6 +610,11 @@ export class P2PCommandRouter {
    * SUCCESSFUL lookup is cached — caching `undefined` after a transient failure would permanently
    * disable level-2 for the session's life.
    *
+   * The official app answers an eight-zero-byte CONTROL `CMD_GET_DEVICE_PING` with a clear
+   * int-plus-string body containing two zero integers and the account id, without opening live media.
+   * The reply is wired before connection on every session, where the station identity is available.
+   * Tested on standalone T8420. Not tested on any other device. Unknown what devices send this CONTROL.
+   *
    * The `close` handler drops the session from the {@link SessionManager} and disposes any shared live
    * source riding this station (consumers get `stop`; a later attach rebuilds via the factory).
    *
@@ -640,6 +645,18 @@ export class P2PCommandRouter {
       logger: this.deps.logger ?? noopLogger,
     });
     session.on("error", (e: Error) => this.reportError(e));
+    session.on("data", (frame: P2PFrame) => {
+      if (
+        frame.commandId === CommandType.CMD_GET_DEVICE_PING &&
+        frame.dataType === P2PDataType.CONTROL &&
+        frame.raw.length === 8 &&
+        frame.raw.every((byte) => byte === 0) &&
+        adminUserId
+      ) {
+        session.sendIntStringCommand(CommandType.CMD_GET_DEVICE_PING, 0, 0, adminUserId, frame.channel, 0);
+      }
+      if (announces) this.deps.onFrame(stationSn, frame);
+    });
     if (!announces) {
       session.on("close", () => {
         if (this.manager.get(key) === session) this.tearDownMediaSession(key);
@@ -660,7 +677,6 @@ export class P2PCommandRouter {
     session.on("peerAnswer", (atMs: number) => {
       if (this.manager.get(stationSn) === session) this.deps.onPeerAnswer?.(stationSn, atMs);
     });
-    session.on("data", (f: P2PFrame) => this.deps.onFrame(stationSn, f));
     return session;
   }
 
