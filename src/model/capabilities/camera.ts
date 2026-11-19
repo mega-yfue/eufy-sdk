@@ -934,7 +934,8 @@ export const CAMERA_MEMBERS = {
   },
   /**
    * Modes come from the thing description (`thing`); unlisted values read as `undefined`. Daylike (6) is
-   * offered only where a description lists it: without one the domain is the four modes the SDK always had.
+   * offered only where a description lists it: without one the domain is Off, Infrared, Full Color and
+   * Infrared On.
    */
   nightVision: {
     param: CAMERA_CMD.NIGHT_VISION_TYPE,
