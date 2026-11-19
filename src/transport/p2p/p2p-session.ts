@@ -837,7 +837,7 @@ export class P2PSession extends EventEmitter {
     const generation = this.connectionGeneration;
     const cipherId = gatewayInfoCipherId(gwPayload);
     this.gatewayCipherId = cipherId;
-    this.trace({ phase: "level2-negotiating", cipherId });
+    this.trace({ phase: "level2-negotiating", cipherId, version });
     void (async () => {
       try {
         const resolved = await this.cfg.resolveCipherKey?.(cipherId);
