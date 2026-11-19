@@ -964,7 +964,7 @@ describe("camera capability module", () => {
       expect(enabledOf("T8400", false, { 2001: "false", 6250: "0" }, ON_OFF)).toBe(false);
       expect(enabledOf("T8400", true, { 2001: "false", 6250: "0" }, ON_OFF)).toBe(true);
     });
-    it("reads a reported 1035 on a T8410 behind a HomeBase 3 that reports no 6250, as its enable bit", () => {
+    it("reads only 6250 on a T8410 behind a HomeBase 3, as its bundle does: a reported 1035 leaves the default", () => {
       const identity = { deviceType: 9, model: "T8410", category: "eufy_security" };
       const enabled = (params: Record<number, string>) => {
         const dev = Device.fromRecord("T8000P0000000000", {
@@ -978,9 +978,10 @@ describe("camera capability module", () => {
         dev.bindActions(ctx(1, at), { dispatch: async () => undefined });
         return (dev.camera!()! as { enabled?: boolean }).enabled;
       };
-      expect(enabled({ 1035: "0" })).toBe(false);
+      expect(enabled({ 1035: "0" })).toBe(true);
       expect(enabled({ 1035: "1" })).toBe(true);
       expect(enabled({ 1035: "1", 6250: "1" })).toBe(false);
+      expect(enabled({ 1035: "0", 6250: "0" })).toBe(true);
     });
     it("reads 1131 beside 2001 where the bundle's product parser does, '1' as on", () => {
       expect(enabledOf("T8441", false, { 1131: "0" }, ON_OFF)).toBe(false);

@@ -10,6 +10,7 @@ import {
 } from "../device-family.js";
 import { setScalar, setPayload, setJson, isCameraCodec, hasCapability } from "./access.js";
 import { described } from "./thing-description.js";
+import { BUNDLE_WIRES } from "./bundle-wires.generated.js";
 import { AUDIO_CMD } from "./audio.js";
 import { cameraPowerTier } from "./battery.js";
 import { accepts, propertiesOf, provided, type Members, type Surface, type MemberDeps } from "./members.js";
@@ -507,8 +508,7 @@ function bundleArm(identifier: string, fallback: string, groups: Readonly<Record
   for (const [wire, codes] of Object.entries(groups)) for (const code of codes.split(" ")) table.set(code, wire);
   return (ctx: AvailabilityContext): string => {
     const model = ctx.model ?? "";
-    const variant = ctx.things?.properties[identifier]?.identifier.slice(identifier.length) ?? "";
-    const arms = (table.get(model + variant) ?? table.get(model) ?? fallback).split("/");
+    const arms = (table.get(model + variantOf(identifier, ctx)) ?? table.get(model) ?? fallback).split("/");
     return arms[ctx.homeBaseAttached === true ? arms.length - 1 : 0];
   };
 }
@@ -520,41 +520,80 @@ const offers =
     cameraThing(identifier)(ctx) && wire(ctx) !== undefined;
 
 /**
- * `camera_on_off` as each product's bundle writes it (`parse` of the parser it registers, else its inline
- * case when that answers nothing): 1035, or privacy mode. Not built here: the T84A1/T81A0 `param_data` wire.
+ * One frame a product's settings bundle answers a write with: the command, the payload command it rides,
+ * its fields as the bundle builds them, and the frames sent after it.
  */
-const POWER_WIRE = bundleWires("camera_on_off", "1035", {
-  "1035/6250": "T6310 T8352 T8354 T8400 T8401 T8410 T8411 T8416 T8417 T8419 T8441 T8442 T85M0 T85V0 T8W11 T8W11C",
-  "6250": "T8162 T8172 T817L",
-  "6250/1035": "T8110 T8110E T814X",
-  "6090/6250": "T8410C T8414",
-  "1035/-": "T8452 T8453",
-  "-/1035": "T81A0",
-  "-": "T7401 T84A1 T8790",
-});
+export interface BundleFrame {
+  cmd: number;
+  subCmd?: number;
+  next?: BundleFrame[];
+  [field: string]: unknown;
+}
 
 /**
- * `camera_on_off` as each product's bundle reads it back (`parseCommandToModel` of the parser it registers,
- * else its inline case), in the {@link bundleWires} form. `+` joins params one parser reads alike, the last
- * one reported winning; `>` orders params a product parser reads over its base parser's, or one param the
- * parser prefers when reported. 1035, 6250 and 99904 read "0" as on, 2001 "true" and 1131 "1"; a param never
- * reported leaves the description default.
+ * How a product's settings bundle reads one identifier on one topology: `order` in the {@link POWER_READ}
+ * rank grammar, and `map` from each read param's raw value to the identifier's value.
  */
-const POWER_READ = bundleArm("camera_on_off", "1035", {
-  "6250": "T8162 T817L",
-  "6250/1035": "T8110 T8110E T814X",
-  "1035/6250": "T8416 T8417 T8419 T85M0 T85V0 T8W11 T8W11C",
-  "2001/6250>1035": "T8400 T8401 T8410 T8410C T8411 T8414",
-  "2001+1131/6250+1131": "T8441 T8442",
-  "2001": "T8420X",
-  "1035+6250": "T6310 T8352 T8354",
-  "6250>1035": "T8172",
-  "2001+1035": "T8422 T8424",
-  "99904>1035/1035>99904": "T8200X T8201X T8210 T8210C T8220 T8221 T8222",
-  "2001>99904>1035/2001>1035>99904": "T8200 T8201 T8202",
-  "1035>99904": "T8203 T8213 T8214 T8217 T8223 T8224",
-  "99904>1035": "T8420",
-});
+export interface BundleRead {
+  order: string;
+  map?: Readonly<Record<string, Readonly<Record<string, string>>>>;
+}
+
+/** A table whose keys are the space-joined members sharing one value. */
+export type Grouped<T> = Readonly<Record<string, T>>;
+
+/**
+ * The settings bundles' wires per identifier: product code (`CODE__vN` for a resolved variant), then
+ * topology (`standalone`, `hb2`, `hb3`), then the written value's frame and the read.
+ */
+export interface BundleWires {
+  wires: Readonly<Record<string, Grouped<{ write: Grouped<Grouped<BundleFrame>>; read: Grouped<BundleRead> }>>>;
+}
+
+/** The value of the `grouped` key listing `member`. */
+function memberOf<T>(grouped: Grouped<T> | undefined, member: string): T | undefined {
+  return Object.entries(grouped ?? {}).find(([key]) => key.split(" ").includes(member))?.[1];
+}
+
+/** The suffix of the variant this device's description resolved `identifier` to (`__v1`), else `""`. */
+function variantOf(identifier: string, ctx: AvailabilityContext): string {
+  return ctx.things?.properties[identifier]?.identifier.slice(identifier.length) ?? "";
+}
+
+/**
+ * The {@link BUNDLE_WIRES} entry and topology this device selects for `identifier`: its product and resolved
+ * variant, standalone unless HomeBase-attached, a T8030 station serial as `hb3`, any other as `hb2`.
+ */
+function bundleEntry(identifier: string, ctx: AvailabilityContext) {
+  const groups = BUNDLE_WIRES.wires[identifier];
+  const model = ctx.model ?? "";
+  const entry = memberOf(groups, model + variantOf(identifier, ctx)) ?? memberOf(groups, model);
+  const topology =
+    ctx.homeBaseAttached !== true ? "standalone" : ctx.stationSerial?.startsWith("T8030") ? "hb3" : "hb2";
+  return entry && { write: memberOf(entry.write, topology), read: memberOf(entry.read, topology) };
+}
+
+/**
+ * `camera_on_off` as each product's bundle writes it, per {@link BUNDLE_WIRES}: the param its frame sets,
+ * 1035 or privacy mode, `undefined` where it builds none. A product the data lacks sends 1035.
+ */
+export const POWER_WIRE = (ctx: AvailabilityContext): number | undefined => {
+  const entry = bundleEntry("camera_on_off", ctx);
+  if (!entry) return CAMERA_CMD.CAMERA_ENABLE;
+  const frame = Object.values(entry.write ?? {})[0];
+  return frame && (frame.subCmd ?? frame.cmd);
+};
+
+/**
+ * `camera_on_off` as each product's bundle reads it back, per {@link BUNDLE_WIRES}. `+` joins params read
+ * alike, the last one reported winning; `>` ranks a param read over the next when both are reported. 1035,
+ * 6250 and 99904 read "0" as on, 2001 "true" and 1131 "1"; a param never reported leaves the description
+ * default. A product the data lacks reads 1035.
+ */
+export const POWER_READ = (ctx: AvailabilityContext): string => {
+  const entry = bundleEntry("camera_on_off", ctx);
+  return entry ? (entry.read?.order ?? "") : String(CAMERA_CMD.CAMERA_ENABLE);
+};
 
 /**
  * Whether this device reads its power state from `param`: per {@link POWER_READ} once described, from the
