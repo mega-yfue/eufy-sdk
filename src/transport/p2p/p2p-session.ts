@@ -820,8 +820,7 @@ export class P2PSession extends EventEmitter {
    * `level2-set-payload-only` instead for the AES-128-ECB key, and emits `error` when the ECC unwrap
    * fails; an RSA unwrap failure is only traced (non-fatal either way — level-1 traffic keeps working).
    *
-   * Each reply negotiates on its own, as the app handles each one. The wait in {@link awaitLevel2Key} settles
-   * once the AES-256-GCM key is negotiated, or once the last negotiation in flight concludes, so a later
+   * The wait in {@link awaitLevel2Key} settles once the AES-256-GCM key is negotiated, or once the last negotiation in flight concludes, so a later
    * command is told at once rather than left to time out against a key that is not coming. Only that
    * concluding failure is traced: one failing while the other branch runs, or after the key is held, is
    * not the answer. Concluding re-opens the branch, so a later GATEWAYINFO reply in the same connection
