@@ -123,7 +123,6 @@ function publishCommand(on: boolean, ctx: CommandContext): Command {
 /**
  * The credentials frame. `mValue3` is 0, byte-exact with the app's own frame:
  * `{cmd:1287, mChannel:<deviceCh>, mValue3:0, payload:{mode,passwd,username}}`.
- * Passing 0 explicitly overrides the transport's `mValue3 ?? cmd` default, which would send 1287.
  */
 function credentialsCommand(mode: number, username: string, password: string, ctx: CommandContext): Command {
   return setPayload(RTSP_PARAM.SEND_SECURITY_PASSWD, { mode, username, passwd: password }, ctx, 0, undefined, "auto");

@@ -215,8 +215,7 @@ export function rotateCommand(direction: keyof typeof PTZ_ROTATE, ctx: CommandCo
  * Digital-zoom as a transport-neutral {@link Command}. The V6 app's `SetPictureZoomParser` builds a
  * `SET_PAYLOAD` (1350) sub-command `COMMAND_DUAL_CAMERA_ZOOM` with the crop-window payload
  * `{x,y,w,h,offset,orgZoom,dstZoom}`; the region collapses to zeros unless `offset` is set. `dstZoom`
- * is the target factor. `mValue3:0`, as the app's own pinch-zoom
- * gesture sends it; NOT `mValue3:cmd` like the general `SET_PAYLOAD` default (see `setPayload`'s doc).
+ * is the target factor. `mValue3:0`, as every app `SET_PAYLOAD` envelope sends it.
  */
 export function zoomCommand(dstZoom: number, ctx: CommandContext, region?: ZoomRegion): Command {
   const r = region ?? {};
@@ -293,10 +292,7 @@ export function savePresetCommand(id: number, ctx: CommandContext): [Command, Co
  * the camera on `presetId` first — `preview(presetId)`, let the pan finish, then `setDefault(presetId)`.
  * Sent while the camera is elsewhere, it has no effect.
  *
- * Level-2 only, unlike `zoom` beside it: this frame carries the envelope's DEFAULT `mValue3` (the
- * sub-command), which the level-1 form cannot express — it writes 0. Downgrading it would send an
- * object nothing has captured, so it stays pinned and is unreachable on a keyless standalone camera
- * until one is. See `setPayload`'s two conditions.
+ * Level-2 only, unlike `zoom` beside it (see `setPayload`'s doc).
  */
 export function setDefaultPositionCommand(presetId: number, ctx: CommandContext): Command {
   return setPayload(PTZ_CMD.PTZ_SET_DEFAULT_POSITION, { index: presetId, settingstate: 0 }, ctx);

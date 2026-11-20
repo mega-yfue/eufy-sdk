@@ -56,3 +56,27 @@ describe("a level-1 pinned frame on a keyed session", () => {
     );
   });
 });
+
+describe("a 1350 envelope on a keyed session", () => {
+  it("sends mValue3 0 when the intent gives none, as the app's envelope", async () => {
+    const session = Object.assign(connectedSession(true), {
+      sendAcknowledged: vi.fn((send: () => boolean) => send()),
+      sendControlLevel2: vi.fn(() => true),
+    });
+    await onFakeTime(() =>
+      routerWithSession(session)
+        .dispatchCommand(STATION_SN, { kind: "set-payload", cmd: 1717, payload: { v: 1 }, channel: 2 })
+        .catch(() => undefined),
+    );
+    expect(session.sendControlLevel2).toHaveBeenCalledWith(
+      1717,
+      2,
+      ACCOUNT_ID,
+      { v: 1 },
+      0,
+      expect.anything(),
+      expect.anything(),
+      undefined,
+    );
+  });
+});

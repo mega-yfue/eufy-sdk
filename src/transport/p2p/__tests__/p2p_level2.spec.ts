@@ -156,17 +156,31 @@ describe("P2PSession.sendControlLevel2 envelope (mValue3)", () => {
     return seen;
   }
 
-  test("mValue3 defaults to the command id", () => {
+  test("mValue3 is 0 unless given, as the app's envelope", () => {
     const session = newSession();
     session.setLevel2Key(KEY);
-    const env = captureEnvelope(session, () => session.sendControlLevel2(1350, 6, "acct", { x: 1 }));
-    expect(env).toMatchObject({ account_id: "acct", cmd: 1350, mChannel: 6, mValue3: 1350, payload: { x: 1 } });
+    const env = captureEnvelope(session, () => session.sendControlLevel2(1293, 6, "acct", { x: 1 }));
+    expect(env).toMatchObject({ account_id: "acct", cmd: 1293, mChannel: 6, mValue3: 0, payload: { x: 1 } });
   });
+});
 
-  test("mValue3 override is honored (power-source: cmd 1293, mValue3 0)", () => {
+describe("P2PSession stream keepalive", () => {
+  test("sends 1139 header-only on the station channel 0xff, whatever camera channel it holds", () => {
     const session = newSession();
     session.setLevel2Key(KEY);
-    const env = captureEnvelope(session, () => session.sendControlLevel2(1293, 6, "acct", { charge_mode: 1 }, 0));
-    expect(env).toMatchObject({ account_id: "acct", cmd: 1293, mChannel: 6, mValue3: 0, payload: { charge_mode: 1 } });
+    const s = session as unknown as {
+      connectAddress: unknown;
+      send: (to: unknown, type: unknown, data: Buffer) => void;
+      liveStartedChannels: Map<number, string>;
+    };
+    s.connectAddress = { address: "127.0.0.1", port: 32100 };
+    const sent: Buffer[] = [];
+    s.send = (_to, _type, data) => sent.push(data);
+    s.liveStartedChannels.set(3, "l2");
+    session.startLiveMedia(3, "acct");
+    const frame = sent.at(-1)!;
+    const head = frame.indexOf("XZYH");
+    expect(frame.readUInt16LE(head + 4)).toBe(1139);
+    expect(frame[head + 12]).toBe(0xff);
   });
 });
