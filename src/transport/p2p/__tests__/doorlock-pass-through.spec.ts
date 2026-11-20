@@ -16,7 +16,6 @@ const frame = {
   shortUserId: 4,
   nickname: "someone",
   stationSn: STATION_SN,
-  channel: 0,
   seqNum: 1795125601,
   nowSec: 1795125600,
 };
@@ -102,7 +101,7 @@ describe("a door-lock pass-through actuation", () => {
     deviceSn: LOCK_SN,
   } as const;
 
-  it("sends one pass-through at level-2 on the lock's channel, sealed to its station", async () => {
+  it("sends one pass-through at level-2 on the lock's channel, with channel 0 inside the sealed blob", async () => {
     const { router, session } = makeRouter(true);
 
     await router.dispatchCommand(LOCK_SN, lockCmd);
@@ -113,7 +112,7 @@ describe("a door-lock pass-through actuation", () => {
     const decipher = createDecipheriv("aes-128-cbc", lockKey(ADMIN, STATION_SN), serialIv(STATION_SN));
     const plain = Buffer.concat([decipher.update(Buffer.from(payload.payload, "base64")), decipher.final()]);
     const inner = JSON.parse(plain.toString("utf-8").replace(/\0+$/, ""));
-    expect(inner).toMatchObject({ channel: 42, lock_cmd: 8 });
+    expect(inner).toMatchObject({ channel: 0, lock_cmd: 8 });
     expect(Buffer.from(inner.lock_payload, "base64").subarray(0, 7).toString("hex")).toBe("a1020004a20101");
   });
 

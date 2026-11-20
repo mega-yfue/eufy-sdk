@@ -2374,7 +2374,6 @@ export class P2PCommandRouter {
       shortUserId,
       nickname,
       stationSn: parentSn,
-      channel,
       seqNum,
     });
     (this.deps.logger ?? noopLogger).debug(

@@ -4,8 +4,9 @@
  *
  * The blob is base64 of AES-128-CBC (PKCS#7 over a zero-padded plaintext) under a key derived from the
  * station owner's 40-character admin id and the 16-character station serial, with the station serial as the
- * IV. The plaintext is JSON `{channel, lock_cmd, lock_payload, seq_num}`; for lock/unlock `lock_cmd` is 8 and
- * `lock_payload` is base64 of the on/off TLV {@link encodeLockOnOff}. Confirmed on hardware: a DeviceType 50
+ * IV. The plaintext is JSON `{channel, lock_cmd, lock_payload, seq_num}` with `channel` always 0: the lock's
+ * channel on its station rides only the P2P envelope (`mChannel` and the frame header). For lock/unlock
+ * `lock_cmd` is 8 and `lock_payload` is base64 of the on/off TLV {@link encodeLockOnOff}. Confirmed on hardware: a DeviceType 50
  * lock paired to a Wi-Fi bridge moves its bolt both ways on this blob.
  */
 import { createCipheriv } from "node:crypto";
@@ -76,8 +77,6 @@ export interface DoorlockPassThroughInput {
   nickname: string;
   /** The serial of the station the lock is paired to. */
   stationSn: string;
-  /** The lock's channel on that station. */
-  channel: number;
   /** The blob's sequence number. */
   seqNum: number;
   /** The TLV's timestamp in seconds; the current time when omitted. */
@@ -88,7 +87,7 @@ export interface DoorlockPassThroughInput {
 export function buildDoorlockPassThrough(input: DoorlockPassThroughInput): string {
   const inner = Buffer.from(
     JSON.stringify({
-      channel: input.channel,
+      channel: 0,
       lock_cmd: LOCK_CMD_ON_OFF,
       lock_payload: encodeLockOnOff(input.shortUserId, input.nickname, input.engage, input.nowSec).toString("base64"),
       seq_num: input.seqNum,
