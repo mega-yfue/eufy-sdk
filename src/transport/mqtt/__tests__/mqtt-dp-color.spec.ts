@@ -68,11 +68,13 @@ describe("MqttCommandRouter custom-colour dispatch", () => {
     vi.setSystemTime(new Date(0x01020304 * 1000));
     const dev = {
       sn: DEVICE_SN,
-      model: "T8L02",
+      // The topic names the product number (`device_new_pn`), not the model the record reports.
+      model: "T8L02X",
       category: "eufy_life",
       deviceClass: "light",
       api: "mega",
       realtime: "smqtt",
+      raw: { device_new_pn: "T8L02" },
     } as EufyDevice;
     let releasePublish!: () => void;
     const published = new Promise<void>((resolve) => (releasePublish = resolve));
@@ -110,7 +112,7 @@ describe("MqttCommandRouter custom-colour dispatch", () => {
   });
 
   it("rejects malformed transport intent without publishing or acknowledging", async () => {
-    const dev = { sn: DEVICE_SN, model: "T8L02", category: "eufy_life" } as EufyDevice;
+    const dev = { sn: DEVICE_SN, model: "T8L02", category: "eufy_life", raw: { device_new_pn: "T8L02" } } as EufyDevice;
     const publishSecure = vi.fn();
     const onCommandAck = vi.fn();
     const router = new MqttCommandRouter({

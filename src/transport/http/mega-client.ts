@@ -934,6 +934,15 @@ export class MegaHttpClient {
   }
 
   /**
+   * The product number the mega `things` service holds for a serial (`{ pn, device_sn }`), the lookup the
+   * v6 app's `snToPn` makes for a record without `device_new_pn`. `""` when the reply carries none.
+   */
+  async getPnBySn(deviceSn: string): Promise<string> {
+    const res = await this.post<{ pn?: unknown }>("things", "/app/things/get_pn_by_sn", { device_sn: deviceSn });
+    return typeof res?.pn === "string" ? res.pn : "";
+  }
+
+  /**
    * Fetch the **live param list** from the mega `devicemanage` service. Body keys off a
    * `device_sns` ARRAY (a bare `device_sn` 400s with "type mismatch"). Each returned entry is
    * `{ param_type, param_value, update_time }` — VALUES ONLY, no name/meaning (the param→meaning
