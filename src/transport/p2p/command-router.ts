@@ -394,7 +394,7 @@ export class P2PCommandRouter {
    * transport-neutral command. Keyed on the endpoint, NOT `classifyDevice`'s `realtime` tag: that tag is
    * `"p2p"` for the ENTIRE `eufy_security` category, so it can't tell a P2P lock (T8531, own `p2p_did`)
    * from an MQTT-only lock/garage (T85D0, empty `p2p_did`) — routing the latter to P2P throws
-   * `no P2P session`.
+   * `no P2P session`. A standalone video lock is claimed here but takes its `ff09` frames over secure MQTT.
    */
   static claimsDevice(dev: EufyDevice): boolean {
     return typeof dev.p2pDid === "string" && dev.p2pDid.length > 0;
