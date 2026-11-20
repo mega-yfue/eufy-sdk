@@ -215,12 +215,12 @@ describe("an ff09 lock command on a station that refused level-2", () => {
     deviceSn: LOCK_SN,
   } as const;
 
-  it("replays the unlock on the lock's channel, as every other unacknowledged command", async () => {
+  it("sends the unlock once on the lock's channel", async () => {
     const { router, session } = makeRouter(true);
 
     await onFakeTime(() => router.dispatchCommand(LOCK_SN, unlock));
 
-    expect(session.sendControlLevel2).toHaveBeenCalledTimes(5);
+    expect(session.sendControlLevel2).toHaveBeenCalledTimes(1);
     const [cmd, channel, , payload, mValue3, clearOnRefusal] = session.sendControlLevel2.mock.calls[0]!;
     expect([cmd, channel, mValue3, clearOnRefusal]).toEqual([1940, 0, 0, true]);
     expect(payload.apiCommand).toBe(LOCK_API_COMMAND.ON_OFF_LOCK);

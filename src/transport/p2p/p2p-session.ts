@@ -222,6 +222,12 @@ const LIVE_START_RETRANSMIT_MS = 150;
  */
 const LIVE_START_ACK_DEADLINE_MS = 3000;
 /**
+ * The DRW resend tick: `thread_recv_DRW` requeues the head of each channel's unacked queue once `time()` has
+ * moved 2 s past its last mark. No give-up count for an unacknowledged index is known; a closed session drops
+ * what it retained.
+ */
+const DRW_RESEND_MS = 2000;
+/**
  * Half the 16-bit sequence space: a datagram whose distance from the last one exceeds this is read as
  * arriving from behind rather than as a near-full-space jump forward, which is how the numbering wraps
  * without the datagram after the wrap looking like a huge gap.
@@ -615,8 +621,8 @@ export class P2PSession extends EventEmitter {
   private clearCommandCount = 0;
   private readonly unackedLiveStarts = new Map<number, RetainedDatagram & { channel: number }>();
   private liveStartRetransmitTimer?: ReturnType<typeof setInterval>;
-  /** Datagrams sent through {@link sendAcknowledged} and not yet acknowledged, keyed by sequence number. */
-  private readonly unackedCommands = new Map<number, RetainedDatagram>();
+  /** Datagrams sent through {@link sendAcknowledged} and not yet acknowledged, by sequence, oldest first. */
+  private readonly unackedCommands = new Map<number, Buffer>();
   private commandRetransmitTimer?: ReturnType<typeof setInterval>;
   /** The DATA datagrams sent while a {@link sendAcknowledged} call runs its send. */
   private capturedCommands?: Buffer[];
@@ -1593,12 +1599,12 @@ export class P2PSession extends EventEmitter {
   }
 
   /**
-   * Run `send` and repeat each DATA datagram it emits, byte-identically under its own sequence number, until
-   * the device acknowledges that sequence — the delivery the vendor app's transport gives every command (see
-   * {@link LIVE_START_RETRANSMIT_MS} for the measurement). A copy goes out only while the sequence is
-   * unacknowledged. The device answers a sequence once, however many copies arrive, and `onData` drops the
-   * repeats of that answer by their sequence. Repeats run on the live-start timing and stop at
-   * {@link LIVE_START_ACK_DEADLINE_MS}. Answers what `send` answered.
+   * Run `send` and retain each DATA datagram it emits under its own sequence until the device acknowledges
+   * that sequence, as the app's DRW channel holds an element in its unacked queue (`cs2p2p_DoDRWSend` sends
+   * each index once). Every {@link DRW_RESEND_MS} the oldest retained datagram, and only that one, goes again
+   * byte-identically (`thread_recv_DRW` moves the head of the channel's unacked queue back to ready), until a
+   * `DRWAck` lists it. The device answers a sequence once, however many copies arrive, and `onData` drops the
+   * repeats of that answer by their sequence. Answers what `send` answered.
    */
   sendAcknowledged(send: () => boolean): boolean {
     this.capturedCommands = [];
@@ -1610,19 +1616,12 @@ export class P2PSession extends EventEmitter {
       captured = this.capturedCommands;
       this.capturedCommands = undefined;
     }
-    const now = Date.now();
-    for (const data of captured) {
-      this.unackedCommands.set(data.readUInt16BE(2), { data, firstSentAt: now, sentAt: now, sends: 1 });
-    }
+    for (const data of captured) this.unackedCommands.set(data.readUInt16BE(2), data);
     if (this.unackedCommands.size && !this.commandRetransmitTimer) {
       this.commandRetransmitTimer = setInterval(() => {
-        const outstanding = this.retransmitUnacked(this.unackedCommands, {
-          retransmitMs: LIVE_START_RETRANSMIT_MS,
-          spent: (held) => Date.now() - held.firstSentAt >= LIVE_START_ACK_DEADLINE_MS,
-          onAbandoned: () => {},
-        });
-        if (!outstanding) this.clearCommandRetransmit();
-      }, LIVE_START_RETRANSMIT_MS / 2);
+        const [head] = this.unackedCommands.values();
+        if (head && this.connectAddress) this.send(this.connectAddress, RequestMessageType.DATA, head);
+      }, DRW_RESEND_MS);
       this.commandRetransmitTimer.unref?.();
     }
     return sent;

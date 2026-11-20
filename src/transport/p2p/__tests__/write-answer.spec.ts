@@ -162,17 +162,49 @@ function session() {
 }
 
 describe("an acknowledged send", () => {
-  it("repeats the same datagram, under its own sequence, until the device acknowledges it", () => {
+  it("goes once, and every 2 s only the oldest unacknowledged datagram goes again under its own sequence", () => {
     vi.useFakeTimers();
     const { real, sent, acknowledge } = session();
     real.sendAcknowledged(() => real.sendRawLevel1Bytes(Buffer.alloc(8), CHANNEL, PARAM));
-    vi.advanceTimersByTime(400);
-    const [first, ...repeats] = sent();
-    expect(repeats.length).toBeGreaterThan(0);
-    for (const repeat of repeats) expect(repeat.equals(first!)).toBe(true);
+    real.sendAcknowledged(() => real.sendRawLevel1Bytes(Buffer.alloc(8), CHANNEL, PARAM + 1));
+    const [first, second] = sent();
+    vi.advanceTimersByTime(1_999);
+    expect(sent()).toHaveLength(2);
+    vi.advanceTimersByTime(1);
+    expect(sent()).toHaveLength(3);
+    expect(sent()[2]!.equals(first!)).toBe(true);
     acknowledge(first!.readUInt16BE(6));
-    const count = sent().length;
-    vi.advanceTimersByTime(1_000);
-    expect(sent()).toHaveLength(count);
+    vi.advanceTimersByTime(2_000);
+    expect(sent()).toHaveLength(4);
+    expect(sent()[3]!.equals(second!)).toBe(true);
+    acknowledge(second!.readUInt16BE(6));
+    vi.advanceTimersByTime(10_000);
+    expect(sent()).toHaveLength(4);
+  });
+});
+
+describe("one command in flight per device", () => {
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it("holds the next command for the same device until the first is answered", async () => {
+    const { router, session } = station();
+    const first = router.dispatchCommand(DEVICE_SN, write);
+    const second = router.dispatchCommand(DEVICE_SN, { ...write, param: PARAM + 1 });
+    await flush();
+    expect(session.sendRawLevel2Bytes).toHaveBeenCalledTimes(1);
+    session.emit("commandResult", { code: 0, channel: CHANNEL, commandId: PARAM });
+    await first;
+    await flush();
+    expect(session.sendRawLevel2Bytes).toHaveBeenCalledTimes(2);
+    session.emit("commandResult", { code: 0, channel: CHANNEL, commandId: PARAM + 1 });
+    await expect(second).resolves.toBe(true);
+  });
+
+  it("runs another device's command while one is in flight", async () => {
+    const { router, session } = station();
+    void router.dispatchCommand(DEVICE_SN, write).catch(() => {});
+    await router.dispatchCommand(STATION_SN, { kind: "p2p-station-scalar", cmd: 1235, value: 1, channel: 255 });
+    expect(session.sendRawLevel2Bytes).toHaveBeenCalledTimes(2);
+    session.emit("commandResult", { code: 0, channel: CHANNEL, commandId: PARAM });
   });
 });
