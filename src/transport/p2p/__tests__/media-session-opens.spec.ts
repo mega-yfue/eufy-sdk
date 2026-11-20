@@ -50,9 +50,6 @@ class FakeSession extends EventEmitter {
   async awaitLevel2Key() {
     return this.hasKey && this.isConnected;
   }
-  repromptLevel2Key() {
-    return false;
-  }
   sent: unknown[][] = [];
   sendRawLevel2Bytes(...frame: unknown[]) {
     this.sent.push(frame);

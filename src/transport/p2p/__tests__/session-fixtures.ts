@@ -29,9 +29,6 @@ export interface FakeP2PSession extends EventEmitter {
   traceId: string;
   hasLevel2Key: boolean;
   awaitLevel2Key: ReturnType<typeof vi.fn>;
-  repromptLevel2Key: ReturnType<typeof vi.fn>;
-  /** What a second ask would achieve: `true` = the key arrives on the retry. Default: nothing to be had. */
-  keyArrivesOnReprompt: boolean;
   /** Sends once: delivery is the real session's concern, so the fake device takes each send as one command. */
   sendAcknowledged: ReturnType<typeof vi.fn>;
 }
@@ -54,26 +51,14 @@ export async function onFakeTime<T>(call: () => Promise<T>): Promise<T> {
   }
 }
 
-/**
- * A connected session that either has a level-2 key or has settled that it will not get one.
- *
- * The re-prompt belongs to the same set of answers: a session that settled without a key may still be worth
- * asking once more, and a fake that refused the wait while claiming a productive re-prompt — or the reverse —
- * describes a session that cannot exist. `keyArrivesOnReprompt` moves BOTH, so the two cannot drift.
- */
+/** A connected session that either has a level-2 key or has settled that it will not get one. */
 export function connectedSession(hasLevel2Key = true): FakeP2PSession {
   const session = new EventEmitter() as FakeP2PSession;
   session.isConnected = true;
   session.traceId = "station-fake";
   session.hasLevel2Key = hasLevel2Key;
-  session.keyArrivesOnReprompt = false;
   session.sendAcknowledged = vi.fn((send: () => boolean) => send());
   session.awaitLevel2Key = vi.fn(async () => session.hasLevel2Key);
-  session.repromptLevel2Key = vi.fn(() => {
-    if (session.hasLevel2Key || !session.keyArrivesOnReprompt) return false;
-    session.hasLevel2Key = true; // the station answered the second ask
-    return true;
-  });
   return session;
 }
 

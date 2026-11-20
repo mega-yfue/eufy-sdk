@@ -115,8 +115,7 @@ const KEEP_LEVEL1_SESSION_MODELS: ReadonlySet<string> = new Set(["T8423"]);
  *
  * `connect` applies to every call on a station, because nothing can be addressed to one before its session is
  * up, and it is the session's own connect deadline: a session that reaches it closes itself, so waiting past it
- * waits on a connection that can no longer answer. `level2Grace` applies twice where the key is required: the
- * negotiation is re-prompted once.
+ * waits on a connection that can no longer answer. `level2Grace` applies once where the key is required.
  */
 export const P2P_STATION_WAITS = {
   connect: CONNECT_TIMEOUT_MS,
@@ -521,11 +520,8 @@ export class P2PCommandRouter {
     const session = await this.openSession(mediaKey, parentSn);
     try {
       await this.awaitConnected(session, parentSn, signal);
-      let ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal);
-      if (!ready && session.repromptLevel2Key()) {
-        ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal);
-      }
-      if (!ready) throw new StationKeyUnavailableError(parentSn);
+      if (!(await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal)))
+        throw new StationKeyUnavailableError(parentSn);
       return session;
     } catch (error) {
       if (!signal?.aborted && this.manager.get(mediaKey) === session) {
@@ -1710,7 +1706,7 @@ export class P2PCommandRouter {
    *
    * `waitLevel2` states what the caller does about the key:
    *
-   *  - `true` — cannot frame without it. Waits the full grace, re-prompts once, and throws if refused.
+   *  - `true` — cannot frame without it. Waits the full grace and throws if refused.
    *  - `"settle"` — picks its seal once from {@link P2PSession.hasLevel2Key}. Waits {@link LEVEL2_SETTLE_MS}
    *    session-scoped for the negotiation to conclude either way, then proceeds. Never throws.
    *  - `"soft"` — frames per send and is re-issued, so it does not wait at all.
@@ -1722,9 +1718,6 @@ export class P2PCommandRouter {
    * A `"soft"` caller frames per send: an own-session start issued with no key rides level 1, and its own
    * re-issue rides level 2 once the key lands. Nothing bounds an unanswered `CMD_GATEWAYINFO`, so a waiting
    * caller's grace is the bound, charged from connect.
-   *
-   * Only a caller that REQUIRES the key re-prompts — see {@link P2PSession.repromptLevel2Key}, which explains
-   * why one settled negotiation is not the last word.
    *
    * A session whose {@link P2PSession.pathAnswering} is false is closed and re-resolved before it is handed
    * over: the station answers every heartbeat, so a path silent past several of them is gone. So is a session
@@ -1804,10 +1797,7 @@ export class P2PCommandRouter {
       const required = opts.waitLevel2 !== "soft" || (opts.requireLevel2ForAttached === true && homeBaseAttached);
       if (!required) return { session, parentSn, channel, accountId, homeBaseAttached };
       const sender = opts.level2Sender ?? "every";
-      let ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call", sender), opts.signal);
-      if (!ready && session.repromptLevel2Key()) {
-        ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call", sender), opts.signal);
-      }
+      const ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call", sender), opts.signal);
       const sendsClear =
         opts.clearFallback === true &&
         !homeBaseAttached &&

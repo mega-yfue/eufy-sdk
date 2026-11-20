@@ -126,11 +126,17 @@ export const CONNECT_TIMEOUT_MS = 45_000;
  */
 export const STATION_CHANNEL = 255;
 /**
- * CMD_GATEWAYINFO — sent once on connect to prompt the station to start reporting. The reply carries the
+ * CMD_GATEWAYINFO — sent header-only on connect to prompt the station to start reporting. The reply carries the
  * level-2 key envelope in one layout under either seal: level-1 encrypted (signCode 1) or in the clear
  * (signCode 0).
  */
 const CMD_GATEWAYINFO = 1100;
+/**
+ * How often the session asks again for `CMD_GATEWAYINFO` while no reply naming a `cipher_id` ≥ 1 has arrived:
+ * the app's `P2PSessionReceiver::checkAesKeyAndResend` re-sends the same 16-byte request on its third check,
+ * one check per second, with no limit, until that reply fills the session key.
+ */
+const GATEWAY_INFO_RESEND_MS = 3_000;
 const CMD_START_REALTIME_MEDIA = 1003;
 const CMD_STOP_REALTIME_MEDIA = 1004;
 /**
@@ -591,7 +597,7 @@ export class P2PSession extends EventEmitter {
    * The key branches with a negotiation in flight, by whether the GATEWAYINFO reply that started it is version 8.
    * A station answers with several replies of both versions, so a reply of the other branch still negotiates
    * while one runs. Each negotiation removes its branch when it concludes, so a later reply — the answer to
-   * {@link repromptLevel2Key} — negotiates again.
+   * a re-sent request — negotiates again.
    */
   private readonly level2Negotiating = new Set<boolean>();
   /**
@@ -601,8 +607,8 @@ export class P2PSession extends EventEmitter {
   private level2Pending: boolean;
   /** Waiters parked in {@link awaitLevel2Key}, woken the moment the negotiation settles either way. */
   private readonly level2Waiters: Array<(outcome: "key" | "terminal" | "closed") => void> = [];
-  /** Whether this connection has already been asked a second time for its gateway info — see {@link repromptLevel2Key}. */
-  private level2Reprompted = false;
+  /** Re-sends `CMD_GATEWAYINFO` every {@link GATEWAY_INFO_RESEND_MS} until a reply names a `cipher_id` ≥ 1. */
+  private gatewayInfoTimer?: ReturnType<typeof setInterval>;
   /** When this session connected — the instant the level-2 negotiation had its chance to start. */
   private connectedAtMs?: number;
   /** Connection generation that owns every asynchronous result derived from its gateway envelope. */
@@ -715,8 +721,7 @@ export class P2PSession extends EventEmitter {
    * The session grace runs from connect, when the station is prompted for `CMD_GATEWAYINFO`. A negotiation
    * beginning later does not restart it: best-effort media can proceed without the key, and restarting
    * would charge another grace to a source that may already be streaming. A session whose negotiation has
-   * settled answers without waiting at all: the answer stands until {@link repromptLevel2Key} re-opens the
-   * wait, since the station is prompted for `CMD_GATEWAYINFO` only on connect and on that re-prompt.
+   * settled answers without waiting at all, until the next re-sent `CMD_GATEWAYINFO` re-opens the wait.
    *
    * An own-session camera whose grace expires here is NOT thereby a camera that will fail to stream: some
    * own-session cameras never negotiate a key and stream normally at level-1. An expired grace therefore
@@ -777,31 +782,6 @@ export class P2PSession extends EventEmitter {
       this.trace({ phase: "level2-unavailable", reason: "session-closed" });
     }
     return served;
-  }
-
-  /**
-   * Ask the station for its gateway info a second time, re-opening a negotiation that concluded without a key.
-   *
-   * Without this the station is prompted once on connect, and a negotiation that settles without a key
-   * leaves {@link awaitLevel2Key} answering `false` at once for the rest of that connection. That is the
-   * right answer for best-effort media, which proceeds at level-1 — but an operation whose ONLY wire is
-   * level-2 is then refused for the whole life of that connection, while a fresh session over the same
-   * device negotiates a key normally. The reply to
-   * this ask runs the negotiation again and settles the re-opened wait either way.
-   *
-   * Bounded to one extra ask per connection, so a burst of such operations cannot turn a silent station into a
-   * flood, and answers whether it asked — `false` when a key is already held, when nothing can negotiate one,
-   * when the ask was already spent, or when there is nowhere to send it. Callers with a level-1 path must not
-   * use this: re-prompting on their behalf would be noise for an answer they do not need.
-   */
-  repromptLevel2Key(): boolean {
-    if (this.closed || this.level2KeyServes("set-payload") || this.level2Reprompted) return false;
-    if (!this.cfg.resolveCipherKey || !this.connectAddress) return false;
-    this.level2Reprompted = true;
-    this.level2Pending = true;
-    this.logger.debug(`[p2p] ${this.cfg.stationSn} asking again for the level-2 key`);
-    this.sendCommand(CMD_GATEWAYINFO);
-    return true;
   }
 
   /** Record that the level-2 negotiation has finished, with or without a key, and wake every waiter. */
@@ -972,7 +952,6 @@ export class P2PSession extends EventEmitter {
     if (!this.level2KeyServes("set-payload")) {
       this.level2Pending = this.cfg.resolveCipherKey !== undefined;
       this.level2Negotiating.clear();
-      this.level2Reprompted = false;
       this.gatewayCipherId = undefined;
       this.gatewayRefused = false;
       this.clearCommandCount = 0;
@@ -1353,8 +1332,11 @@ export class P2PSession extends EventEmitter {
     this.relay = undefined;
     this.logger.debug(`[p2p] ${this.cfg.stationSn} connected ${addr.host}:${addr.port}`);
 
-    // Nudge the station to start reporting, then heartbeat.
     this.sendCommand(CMD_GATEWAYINFO);
+    this.gatewayInfoTimer = setInterval(() => {
+      this.level2Pending = this.cfg.resolveCipherKey !== undefined;
+      this.sendCommand(CMD_GATEWAYINFO);
+    }, GATEWAY_INFO_RESEND_MS);
     this.send(addr, RequestMessageType.PING, this.lastPongData);
     this.heartbeatTimer = setInterval(() => {
       if (this.connectAddress) this.send(this.connectAddress, RequestMessageType.PING, this.lastPongData);
@@ -2755,6 +2737,7 @@ export class P2PSession extends EventEmitter {
       }
     }
     if (header.commandId === CMD_GATEWAYINFO && header.signCode <= 1) {
+      if (data.length >= 4 && data.readInt32LE(0) >= 1) clearInterval(this.gatewayInfoTimer);
       this.logger.debug(
         `[p2p] ${this.cfg.stationSn} level-2 gateway info v${header.version} ch ${header.channel} ${data.length}B (cipher_id ${gatewayInfoCipherId(data)})`,
       );
@@ -2878,6 +2861,7 @@ export class P2PSession extends EventEmitter {
     this.connecting = false;
     if (this.lookupTimer) clearInterval(this.lookupTimer);
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    clearInterval(this.gatewayInfoTimer);
     if (this.connectTimer) clearTimeout(this.connectTimer);
     this.relay = undefined;
     if (this.audioRetransmitTimer) clearInterval(this.audioRetransmitTimer);

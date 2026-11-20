@@ -90,20 +90,6 @@ describe("a station that refuses level-2 at gateway info", () => {
     });
   });
 
-  it("settles the one bounded re-ask on the next refusal", async () => {
-    const { session } = refusedSession();
-    const sent = collectSends(session);
-
-    expect(session.repromptLevel2Key()).toBe(true);
-    const wait = session.awaitLevel2Key(60_000, "call");
-    negotiate(session, gatewayResult());
-
-    await expect(wait).resolves.toBe(false);
-    expect(sent).toHaveLength(1);
-    expect(session.refusedLevel2).toBe(true);
-    expect(session.repromptLevel2Key()).toBe(false);
-  });
-
   it("is not a refused station when the reply named a cipher", () => {
     const session = new P2PSession({ stationSn: LOCK_SN, p2pDid: P2P_DID, resolveCipherKey: async () => undefined });
     negotiate(session, cipherGatewayInfo(7));

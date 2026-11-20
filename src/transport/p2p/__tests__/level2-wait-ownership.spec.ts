@@ -158,7 +158,7 @@ describe("a set-payload whose seal is the session's", () => {
   });
 
   /** The behaviour every still-pinned `setPayload` keeps, and the one the fix removed from the rest. */
-  it("refuses the same frame with no form, after spending both graces on a key that never comes", async () => {
+  it("refuses the same frame with no form, after spending its grace on a key that never comes", async () => {
     const { router, session } = setup(false, false);
 
     await expect(router.dispatchCommand(DEVICE_SN, envelope())).rejects.toBeInstanceOf(StationKeyUnavailableError);
@@ -183,40 +183,16 @@ describe("a set-payload whose seal is the session's", () => {
 });
 
 /**
- * A command that cannot be framed without the key gets ONE more ask before being refused.
- *
- * The negotiation is one-shot per connection, so a gateway reply that never landed otherwise refuses every
- * later such command on that connection, although a fresh session over the same device negotiates a key
- * normally: measured, a settled session refused every level-2-only operation until it was rebuilt, at which
- * point the station answered with a cipher id straight away.
+ * A command that cannot be framed without the key waits for it once: the session itself keeps asking the
+ * station for `CMD_GATEWAYINFO` until a reply names a cipher, as the app does, so the router has no ask of its own.
  */
-describe("a required level-2 key is asked for twice before refusing", () => {
-  it("proceeds when the station answers the second ask", async () => {
-    const { router, session } = setup(false);
-    session.keyArrivesOnReprompt = true;
-
-    await expect(router.p2pQuery(DEVICE_SN, 6237, { timeoutMs: 5 })).rejects.not.toBeInstanceOf(
-      StationKeyUnavailableError,
-    );
-
-    expect(session.repromptLevel2Key).toHaveBeenCalledTimes(1);
-    expect(session.awaitLevel2Key).toHaveBeenCalledTimes(2);
-  });
-
-  it("still refuses when there is no second ask to be had", async () => {
+describe("a required level-2 key is waited for once before refusing", () => {
+  it("refuses after one wait", async () => {
     const { router, session } = setup(false);
 
     await expect(router.p2pQuery(DEVICE_SN, 6237, { timeoutMs: 5 })).rejects.toBeInstanceOf(StationKeyUnavailableError);
 
-    expect(session.repromptLevel2Key).toHaveBeenCalledTimes(1);
-  });
-
-  it("never re-prompts a session that already holds a key", async () => {
-    const { router, session } = setup(true);
-
-    await router.p2pQuery(DEVICE_SN, 6237, { timeoutMs: 5 }).catch(() => {});
-
-    expect(session.repromptLevel2Key).not.toHaveBeenCalled();
+    expect(session.awaitLevel2Key).toHaveBeenCalledTimes(1);
   });
 });
 
