@@ -2345,7 +2345,8 @@ export class P2PCommandRouter {
    * member record. Sent once: the blob carries its own sequence number. Confirmed on hardware on a
    * DeviceType 50 lock paired to a Wi-Fi bridge — the bolt moves both ways and the lock reports each with a
    * lock-state push. The key is the station owner's, so it reads the station's member record rather than the
-   * lock's `accountId` from `resolveSession`.
+   * lock's `accountId` from `resolveSession`. Its `short_user_id` is hex, as on the `ff09` path, and anything
+   * but four hex digits throws rather than writing the wrong user.
    */
   private async sendDoorlockPassThrough(sn: string, cmd: Ff09Identity): Promise<void> {
     const { session, parentSn, channel } = await this.resolveSession(sn, {
@@ -2357,10 +2358,13 @@ export class P2PCommandRouter {
       unknown
     >;
     const adminUserId = typeof member.admin_user_id === "string" ? member.admin_user_id : cmd.adminUserId;
-    const shortUserId = Number.parseInt(String(member.short_user_id ?? cmd.shortUserId), 10);
-    if (Number.isNaN(shortUserId)) {
-      throw new Error(`door-lock pass-through: ${parentSn} has no numeric short_user_id for ${sn}`);
+    const shortUserIdHex = String(member.short_user_id ?? cmd.shortUserId);
+    if (!/^[0-9a-fA-F]{4}$/.test(shortUserIdHex)) {
+      throw new Error(
+        `door-lock pass-through: ${parentSn} has no 4-digit hex short_user_id for ${sn}, got ${JSON.stringify(shortUserIdHex)}`,
+      );
     }
+    const shortUserId = Number.parseInt(shortUserIdHex, 16);
     const nickname = typeof member.nick_name === "string" ? member.nick_name : cmd.username;
     const seqNum = (this.passThroughSeq.get(parentSn) ?? Math.trunc(Date.now() / 1000)) + 1;
     this.passThroughSeq.set(parentSn, seqNum);

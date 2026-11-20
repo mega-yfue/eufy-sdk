@@ -56,7 +56,7 @@ describe("the door-lock pass-through blob", () => {
 });
 
 describe("a door-lock pass-through actuation", () => {
-  const makeRouter = (hasKey: boolean) => {
+  const makeRouter = (hasKey: boolean, shortUserId = "0004") => {
     const session = connectedSession(hasKey) as FakeP2PSession & { sendControlLevel2: ReturnType<typeof vi.fn> };
     session.sendControlLevel2 = vi.fn(() => true);
     const lock = {
@@ -73,7 +73,7 @@ describe("a door-lock pass-through actuation", () => {
       stationSn: STATION_SN,
       channel: 0,
       p2pDid: P2P_DID,
-      raw: { member: { admin_user_id: ADMIN, short_user_id: "0004", nick_name: "someone" } },
+      raw: { member: { admin_user_id: ADMIN, short_user_id: shortUserId, nick_name: "someone" } },
     };
     const deps: P2PRouterDeps = {
       mega: {} as P2PRouterDeps["mega"],
@@ -116,6 +116,36 @@ describe("a door-lock pass-through actuation", () => {
     expect(inner).toMatchObject({ channel: 42, lock_cmd: 8 });
     expect(Buffer.from(inner.lock_payload, "base64").subarray(0, 7).toString("hex")).toBe("a1020004a20101");
   });
+
+  const userField = (payload: { payload: string }): string => {
+    const decipher = createDecipheriv("aes-128-cbc", lockKey(ADMIN, STATION_SN), serialIv(STATION_SN));
+    const plain = Buffer.concat([decipher.update(Buffer.from(payload.payload, "base64")), decipher.final()]);
+    const inner = JSON.parse(plain.toString("utf-8").replace(/\0+$/, ""));
+    return Buffer.from(inner.lock_payload, "base64").subarray(0, 4).toString("hex");
+  };
+
+  it.each([
+    ["0010", "a1020010"],
+    ["000a", "a102000a"],
+    ["00FF", "a10200ff"],
+  ])("writes short_user_id %s as hex, not decimal", async (id, field) => {
+    const { router, session } = makeRouter(true, id);
+
+    await router.dispatchCommand(LOCK_SN, lockCmd);
+
+    expect(userField(session.sendControlLevel2.mock.calls[0]![3])).toBe(field);
+  });
+
+  it.each(["4", "00004", "00g4", ""])(
+    "refuses a short_user_id of %j rather than writing the wrong user",
+    async (id) => {
+      const { router, session } = makeRouter(true, id);
+
+      await expect(router.dispatchCommand(LOCK_SN, lockCmd)).rejects.toThrow(/4-digit hex short_user_id/);
+
+      expect(session.sendControlLevel2).not.toHaveBeenCalled();
+    },
+  );
 
   it("refuses without a level-2 key", async () => {
     const { router, session } = makeRouter(false);
