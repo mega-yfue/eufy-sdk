@@ -1418,7 +1418,7 @@ export class P2PSession extends EventEmitter {
         action: "keepalive",
         level2: want === "l2",
       });
-      this.sendCommand(CMD_STREAM_KEEPALIVE, channel);
+      this.sendCommand(CMD_STREAM_KEEPALIVE);
     } else {
       this.trace({ phase: "media-command", topology: "own", action: "start", level2: want === "l2" });
       this.tracedDatagramGaps = 0;
@@ -1723,7 +1723,7 @@ export class P2PSession extends EventEmitter {
     channel: number,
     accountId: string,
     payload: Record<string, unknown>,
-    mValue3: number = cmd,
+    mValue3: number = 0,
     clearOnRefusal: boolean = false,
   ): boolean {
     if (!this.connectAddress || !(this.level2KeyServes("set-payload") || (clearOnRefusal && this.refusedLevel2))) {

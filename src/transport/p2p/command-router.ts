@@ -2016,7 +2016,7 @@ export class P2PCommandRouter {
           this.replayLevel2Send(
             sn,
             `set-payload cmd ${cmd}`,
-            ({ session, accountId }) => session.sendControlLevel2(cmd, channel, accountId, payload, mValue3 ?? cmd),
+            ({ session, accountId }) => session.sendControlLevel2(cmd, channel, accountId, payload, mValue3 ?? 0),
             undefined,
             answer,
           ),
@@ -2026,7 +2026,7 @@ export class P2PCommandRouter {
       sn,
       `set-payload cmd ${cmd}`,
       ({ session, accountId, sendsClear }) =>
-        session.sendControlLevel2(cmd, channel, accountId, payload, mValue3 ?? cmd, sendsClear),
+        session.sendControlLevel2(cmd, channel, accountId, payload, mValue3 ?? 0, sendsClear),
       resolved ?? (await this.resolveSession(sn, { waitLevel2: true, level2Sender })),
       answer,
     );
