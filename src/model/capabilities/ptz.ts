@@ -43,10 +43,10 @@ export const PTZ_CMD = {
    * A compound builder — the app follows it with PREVIEW (6035) + PTZ_PIC (6097) to refresh the
    * thumbnail; the default-set itself is this frame. */
   PTZ_SET_DEFAULT_POSITION: 6242,
-  /** How fast a rotate STEP travels. 1700 wrapper, `{value:1|3|5}`. Observed live: the app's
-   * Slow/Mid/Fast control on an indoor pan-tilt writes 1 / 3 / 5 and nothing else moves. The id sits
+  /** How fast a rotate STEP travels. 1700 wrapper, `{value:1|3|5}`: the app's
+   * Slow/Mid/Fast control writes 1 / 3 / 5. The id sits
    * inside the smart lock's `601x` block, so the shared param dictionary labels it `lockParam` — an id
-   * reused across product lines, and the camera's meaning is the observed one. */
+   * reused across product lines, and the camera's meaning is the rotate speed. */
   PTZ_ROTATE_SPEED: 6015,
   /** Automatic motion tracking, the description's `motion_track_status`. 1700 wrapper, `{value:0|1}`,
    * read back on the same param. */
@@ -159,7 +159,7 @@ export const PtzDirection = {
 export type PtzDirection = (typeof PtzDirection)[keyof typeof PtzDirection];
 
 /** Pan-tilt rotate motion → `rotate_type` (the on-wire code). Not re-exported by the barrel —
- * stays internal to the capability. Confirmed on hardware (T8425): 1=left, 2=right, 3=up, 4=down.
+ * stays internal to the capability. 1=left, 2=right, 3=up, 4=down.
  * `sweep` (0) is a full 360° pan (room scan), from the app's 360 button. */
 export const PTZ_ROTATE = { sweep: 0, left: 1, right: 2, up: 3, down: 4 } as const;
 
@@ -194,12 +194,12 @@ const PT_DEVICE_TYPES: readonly number[] = [
   DeviceType.CAMERA_POE_S4,
 ];
 
-/** Models whose app 360 button was captured sending `rotate_type` 0; `rotate360` binds on these alone. */
+/** Models whose app 360 button sends `rotate_type` 0; `rotate360` binds on these alone. */
 const ROTATE360_MODELS: ReadonlySet<string> = new Set(["T8410", "T8170", "T8E00"]);
 
 /**
- * Pan-tilt rotate as a transport-neutral {@link Command}. CONFIRMED wire command (captured on
- * T8425 ch3 during live-view): `{"commandType":6030,"data":{"cmd_type":1,"rotate_type":0..4,
+ * Pan-tilt rotate as a transport-neutral {@link Command}. Wire command, sent during
+ * live view: `{"commandType":6030,"data":{"cmd_type":1,"rotate_type":0..4,
  * "zoom":1.0}}` under the generic control wrapper `1700` on the camera channel. `cmd_type:1` =
  * move; `zoom` defaults to 1.0.
  *
@@ -215,8 +215,8 @@ export function rotateCommand(direction: keyof typeof PTZ_ROTATE, ctx: CommandCo
  * Digital-zoom as a transport-neutral {@link Command}. The V6 app's `SetPictureZoomParser` builds a
  * `SET_PAYLOAD` (1350) sub-command `COMMAND_DUAL_CAMERA_ZOOM` with the crop-window payload
  * `{x,y,w,h,offset,orgZoom,dstZoom}`; the region collapses to zeros unless `offset` is set. `dstZoom`
- * is the target factor. `mValue3:0` — verified byte-exact against a live capture of the real app's own
- * pinch-zoom gesture; NOT `mValue3:cmd` like the general `SET_PAYLOAD` default (see `setPayload`'s doc).
+ * is the target factor. `mValue3:0`, as the app's own pinch-zoom
+ * gesture sends it; NOT `mValue3:cmd` like the general `SET_PAYLOAD` default (see `setPayload`'s doc).
  */
 export function zoomCommand(dstZoom: number, ctx: CommandContext, region?: ZoomRegion): Command {
   const r = region ?? {};
@@ -258,8 +258,8 @@ export function deletePresetCommand(id: number, ctx: CommandContext): Command {
 
 /**
  * Preview-preset as a transport-neutral {@link Command}. The V6 app's `COMMAND_INDOOR_SPAN_CRUISE_PREVIEW`
- * sub-command carries `{value:<id>}`; the app moves the camera to preset `id` to preview it (decoded on
- * a T8170 SoloCam: `{"commandType":6035,"data":{"value":3}}`).
+ * sub-command carries `{value:<id>}`; the app moves the camera to preset `id` to preview it
+ * (`{"commandType":6035,"data":{"value":3}}`).
  */
 export function previewPresetCommand(id: number, ctx: CommandContext): Command {
   return setJson(PTZ_CMD.PTZ_PRESET_PREVIEW, { value: id }, ctx);
@@ -276,7 +276,7 @@ export function presetPicCommand(id: number, ctx: CommandContext): Command {
 
 /**
  * Save the camera's CURRENT position into preset `id`, as the two frames the V6 app emits to create a
- * preset (decoded on a T8170 SoloCam): `COMMAND_APP_SPAN_PTZ_PIC {value:id}` (thumbnail) then
+ * preset: `COMMAND_APP_SPAN_PTZ_PIC {value:id}` (thumbnail) then
  * `COMMAND_INDOOR_SPAN_CRUISE_POINT {settingstate:0, value:id}` (save). The save frame is byte-identical
  * to {@link gotoPresetCommand}; the camera creates vs moves by whether slot `id` is occupied.
  */
@@ -305,8 +305,7 @@ export function setDefaultPositionCommand(presetId: number, ctx: CommandContext)
 /**
  * Parse a `query_preset_positions` reply (`{points:[…]}`) into {@link PtzPreset}s. Mirrors the app's
  * `query_preset_positions_parse_payload`, which reads the reply's `points` array. The id field is
- * `index` — confirmed live on a T8171 SoloCam, whose reply entries are
- * `{index, enable, zoom, isdefault}` (8 slots, `enable:0` = empty). `id`/`value` are accepted as
+ * `index`; reply entries are `{index, enable, zoom, isdefault}` (8 slots, `enable:0` = empty). `id`/`value` are accepted as
  * fallbacks for other models; the full entry is preserved as `raw`.
  */
 export function parsePresetPoints(reply: Record<string, unknown> | undefined): PtzPreset[] {
@@ -357,14 +356,14 @@ const MOTION_TRACK = bundled(["motion_track_status"], PTZ_CMD.MOTION_TRACK);
  * as a parameter. Position arrives only while the camera moves, as the `ptzNotify` event {@link PTZ}
  * decodes from a live frame.
  *
- * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * Exported but NOT published: each entry states its wire id and its gate,
  * which the reference site does not carry.
  * @internal
  */
 export const PTZ_MEMBERS = {
   /**
    * How fast a rotate STEP travels, on the app's own three-position control: `1` slow, `3` mid, `5`
-   * fast. A `scalar` rather than an enum — the endpoints and the midpoint are observed, so 2 and 4 are
+   * fast. A `scalar` rather than an enum — the app writes only the endpoints and the midpoint, so 2 and 4 are
    * a prediction of the scale's shape and the wire is not known to reject them.
    *
    * Not the same thing as `rotate`'s `zoom` argument, which scales one step's SIZE rather than its
@@ -379,10 +378,8 @@ export const PTZ_MEMBERS = {
     type: "number",
     kind: "scalar",
     description:
-      "Pan/tilt rotate speed: 1 = slow, 3 = mid, 5 = fast (PTZ_ROTATE_SPEED 6015). ✅ Write confirmed " +
-      "live on a T8410 (mains, standalone): the app's Slow/Mid/Fast control identified 1/3/5, then 1 " +
-      "and 5 were sent consecutively through this member and read back on the cloud param. 2 and 4 " +
-      "are the scale's shape, not observed values. Absent until first written.",
+      "Pan/tilt rotate speed: 1 = slow, 3 = mid, 5 = fast (PTZ_ROTATE_SPEED 6015), the app's " +
+      "Slow/Mid/Fast control. 2 and 4 are the scale's shape, not app values. Absent until first written.",
     write: (v, ctx) => {
       const n = Number(v);
       if (!Number.isInteger(n) || n < 1 || n > 5) return undefined;

@@ -271,8 +271,8 @@ const CONTENDED_SESSION_HINT =
  * for some other reason (rate limit, captcha cooldown) — the difference between dropping a good session and
  * keeping it. The caller pairs this with the 401 status; neither alone is the signal.
  *
- * The vendor words the same rejection several ways, and only one carries a distinctive code. All of these were
- * observed on one account: {@link EufyCloudErrorCode.SESSION_KICKED} with `"token does not exist because it was
+ * The vendor words the same rejection several ways, and only one carries a distinctive code. All of these mean
+ * the same thing: {@link EufyCloudErrorCode.SESSION_KICKED} with `"token does not exist because it was
  * kicked out"` when another login displaced it, and the generic `401` with `"token error"` or `"token not
  * exist, token = …"` for the same thing. Matching the code alone leaves a displaced stored token looking like
  * an ordinary API error, which nothing recovers from.
@@ -538,8 +538,8 @@ export class MegaHttpClient {
    * is the login email's local-part (e.g. `someone+tag` for `someone+tag@example.com`) and falls back
    * to the whole email if it has no `@`.
    *
-   * The local-part is the string the app writes into the ff09 command's acting "username" field
-   * (verified against a captured T8531 unlock frame), so it is the faithful default. An override is a
+   * The local-part is the string the app writes into the ff09 command's acting "username" field,
+   * so it is the faithful default. An override is a
    * different LABEL for the same account, not a different identity: the session authenticates on the
    * token and the device record's member ids, neither of which this touches.
    */

@@ -2,7 +2,7 @@
  * One T9000 command session end to end: sign → signalling socket → `scall` → the hub's SDP offer →
  * our answer → ICE → DTLS → the command data channel open.
  *
- * The signalling exchange, as the portal runs it and as confirmed live:
+ * The signalling exchange, as the portal runs it:
  *
  *   → scall                          (action 3, channel 0, the hub's own session)
  *   ← scall {status: 100, turn}      the hub granted the session and handed out TURN credentials

@@ -4,7 +4,7 @@ import type { CapabilityModule } from "./types.js";
 
 /**
  * Robot-mower Tuya **DP ids** — the E15's Tuya product schema (`thing.m.device.ref.info.list` v5.4,
- * `schemaInfo.schema`, product `bvxrcjxom787vnit`), each id also reported by a live E15. The product
+ * `schemaInfo.schema`, product `bvxrcjxom787vnit`). The product
  * is built on Tuya's robot-vacuum template, so ids below 101 carry that template's codes; the mower's
  * own data points are 101-146.
  *
@@ -228,8 +228,8 @@ export const MOWER: CapabilityModule = {
   members: MOWER_MEMBERS,
   properties: propertiesOf(MOWER_MEMBERS),
   /**
-   * The T2880 (E15) only: its Tuya product schema and a live report are the evidence for every member.
-   * The E18 and C15 share the `mower` codec but neither has a schema or a report in hand.
+   * The T2880 (E15) only: every member comes from its Tuya product schema.
+   * The E18 and C15 share the `mower` codec but neither has a schema in hand.
    */
   detection: { detect: (record, codec) => codec === "mower" && record.model === "T2880" },
   decodeState(signal) {

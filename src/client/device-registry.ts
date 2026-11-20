@@ -206,16 +206,14 @@ export interface DeviceRegistryDeps {
  * How long a fetched device list is reused for a per-device read that needs a fresher one.
  *
  * The list is account-wide (`get_house_list` plus one `get_devs_list` per house), so a caller resolving a
- * fleet must not trigger one fetch per device — measured on a 14-device account that turned 6 list requests
- * into 90 and a 2 s resolve into 25 s. Short enough that a read-through refresh still observes a change
+ * fleet must not trigger one fetch per device. Short enough that a read-through refresh still observes a change
  * (the default staleness window is longer than this), long enough that resolving a whole fleet costs one list.
  */
 const LIST_REUSE_MS = 5_000;
 
 /**
- * The robot models whose `getDeviceRelationList` `dps` are checked to be keyed by the DP numbers their
- * realtime reports use: a T2351's answer carried points 150–180, DP 180 in the same `SceneResponse` its
- * MQTT reports send.
+ * The robot models whose `getDeviceRelationList` `dps` are keyed by the DP numbers their realtime reports
+ * use: the T2351 answers points 150–180, DP 180 in the same `SceneResponse` its MQTT reports send.
  */
 const CLOUD_DPS_MODELS: ReadonlySet<string> = new Set(["T2351"]);
 

@@ -29,11 +29,8 @@ export const CONTACT_CMD = {
 /**
  * The station's unsolicited sensor-status notify — inner `cmd` of a P2P notify frame
  * (`APP_CMD_DEV_SENSOR_NOTIFY`). It carries a `params` array of `{dev_type, param_type, param_value}` for
- * one attached sensor, volunteered on an IDLE session with no subscription, stream or stimulus.
- *
- * Verified live on a T8900 behind a T8010: five door movements across four sessions produced this
- * notify 2 to 2.7 s BEFORE the matching FCM push, over a LAN-direct session. Polarity locked by
- * anti-correlation with the push's own value field.
+ * one attached sensor, volunteered on an IDLE session with no subscription, stream or stimulus. It
+ * arrives seconds BEFORE the matching FCM push, with the same polarity as the push's value field.
  */
 const SENSOR_STATUS_CMD = 1829;
 
@@ -64,7 +61,7 @@ function statusParam(signal: InboundSignal, paramType: number): string | undefin
 /**
  * Normalise a raw contact value to `{ open }`, or `{}` when the signal didn't carry one. `"1"` is open,
  * anything else closed, as the app's `CusPushMode.isSensorOpen()` (`"1".equals(e)`) and the bundle's
- * `asBoolean` read it; confirmed on a T8900 through three open/close cycles. An absent value yields no
+ * `asBoolean` read it. An absent value yields no
  * field, so "closed" stays distinguishable from "this signal said nothing about the contact".
  */
 function contactOpen(raw: unknown): Record<string, unknown> {
@@ -121,14 +118,14 @@ export const CONTACT_MEMBERS = {
     kind: "boolean",
     description: "Contact state, true=open (1550, sensor_door_status).",
   },
-  /** The sensor was removed from its mount. Reported by a T8900; the meaning of a set value is the product bundle's. */
+  /** The sensor was removed from its mount. The meaning of a set value is the product bundle's. */
   tampered: {
     param: CONTACT_CMD.TAMPER,
     type: "bool",
     kind: "boolean",
     description: "Removed from its mount (61015, sensor_disassemble_status).",
   },
-  /** The alarm currently skips this sensor. Reported by a T8900; the meaning of a set value is the product bundle's. */
+  /** The alarm currently skips this sensor. The meaning of a set value is the product bundle's. */
   bypassed: {
     param: CONTACT_CMD.BYPASS,
     type: "bool",
@@ -203,7 +200,7 @@ export const CONTACT_MEMBERS = {
   /**
    * Turn the left-open alert on or off, with its delay. One frame carries both: `1350` SET_PAYLOAD,
    * sub-command 1290, `{door_enable, door_time_point}` — the product's settings bundle's own frame.
-   * Verified live on a T8900: param 1290 read back the written value and the app showed it.
+   * Reported back on param 1290.
    */
   setOpenAlert: method(
     ({ ctx, sink }) =>
@@ -221,7 +218,7 @@ export const CONTACT_MEMBERS = {
    * Turn the daily state check on or off, with its times of day. One frame carries both: `1350`
    * SET_PAYLOAD, sub-command 1291, `{door_enable, door_time_interval}` with each time as minutes since
    * midnight — the product's settings bundle's own frame.
-   * Verified live on a T8900: param 1291 read back the written times and the app showed them.
+   * Reported back on param 1291.
    */
   setDailyCheck: method(
     ({ ctx, sink }) =>
@@ -239,7 +236,7 @@ export const CONTACT_MEMBERS = {
   /**
    * The built-in alarm tone, offered where the product's description lists it: a sensor may report the
    * param while the app offers no such setting on it. Rejected, not clamped, outside the listed tones.
-   * Write: a direct-binary scalar `[ch][value][acct]` at signCode 8, captured live on a T90E0.
+   * Write: a direct-binary scalar `[ch][value][acct]` at signCode 8.
    */
   alarmSoundType: {
     param: CONTACT_CMD.ALARM_SOUND_TYPE,
@@ -258,7 +255,7 @@ export const CONTACT_MEMBERS = {
   /**
    * The built-in alarm volume, a device level 1-26, offered where the product's description lists it.
    * Write: `1350` SET_PAYLOAD with `mChannel` the device channel, `mValue3` 0, payload `{channel, volume,
-   * transaction}` — the app's own captured frame on a T90E0. Out of range is refused, not clamped.
+   * transaction}` — the app's own frame. Out of range is refused, not clamped.
    */
   alarmVolume: {
     param: CONTACT_CMD.ALARM_VOLUME,
@@ -293,11 +290,11 @@ export const CONTACT: CapabilityModule = {
     "daily state check, and the built-in alarm where the product has one.",
   members: CONTACT_MEMBERS,
   properties: propertiesOf(CONTACT_MEMBERS),
-  /** A reported entry-sensor contact param (1550) is the verified proof of a contact sensor. */
+  /** A reported entry-sensor contact param (1550) is the proof of a contact sensor. */
   detection: { evidenceParams: [CONTACT_CMD.STATUS] },
   /**
    * Inbound `contactState`: the contact param changing on a cloud poll, and the FCM door-sensor push
-   * (`CusPushEvent.DOOR_SENSOR`), whose state is the single-letter `e` — both verified live on a T8900.
+   * (`CusPushEvent.DOOR_SENSOR`), whose state is the single-letter `e`.
    */
   events: [
     {

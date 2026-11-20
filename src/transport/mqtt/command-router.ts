@@ -58,7 +58,7 @@ const pnFromSerial = (sn: string): string =>
 /**
  * The ff09 command topic — always the `eufy_security` scope, regardless of the device's own category
  * (garage/standalone lock records aren't necessarily `eufy_security`-categorized, but this is the one
- * topic that's live-verified to accept `head.cmd:9` commands).
+ * topic that accepts `head.cmd:9` commands).
  */
 export function ff09MqttTopic(pn: string, sn: string): string {
   return `cmd/eufy_security/${pn}/${sn}/req`;
@@ -133,7 +133,7 @@ function buildFf09QueryTrans(input: {
  * The device replies with just `{cmd:1940, payload:{dev_sn, lock_payload, time}}`, where `time` is a
  * **hex string** (not decimal) equal to the keyTime of the GET that triggered it — matched back to the
  * query's `time` to survive interleaved traffic. See `transport/ff09.ts`'s module doc. `time`'s
- * type is `string | number`: confirmed a hex string live, but a decimal is also accepted in case a
+ * type is `string | number`: a hex string on the wire, but a decimal is also accepted in case a
  * future firmware / a different lock family sends it that way (the P2P sibling `sendFf09Autolock` is
  * defensive the same way), rather than silently discarding a numeric reply as "not a match".
  */
@@ -353,10 +353,8 @@ export class MqttCommandRouter {
 
   /**
    * Fallback broker-instance IPs, tried alongside a fresh DNS resolution — the `aiot-mqtt-{region}
-   * .anker.com` NLB has been observed (2026-07-16) to answer a single DNS query with only 2 of its
-   * targets, and NOT necessarily including the one currently holding a given device's session (e.g.
-   * `3.139.229.186` held a live T85D0 session all evening but never once appeared in `dig`/`resolve4`
-   * output during that window). These are just previously-observed AWS infra IPs, not secrets — kept as
+   * .anker.com` NLB answers a single DNS query with only 2 of its targets, and NOT necessarily the one
+   * holding a given device's session. These are AWS infra IPs, not secrets — kept as
    * a small seed list so discovery doesn't depend on DNS happening to expose the right target.
    *
    * NOTE: this is a hardcoded FALLBACK, not a source of truth — a fresh `dig`/`resolve4` of
@@ -502,8 +500,8 @@ export class MqttCommandRouter {
    * live session (see {@link ensureSecurityMqttFor}), and publishes to `cmd/eufy_security/{pn}/{sn}/req`.
    * `cmd.engage` maps straight to the frame's direction byte (`true`=lock/close, `false`=unlock/open) — no inversion.
    *
-   * **What the `/res` reply actually means — a delivery ack, NOT "motion complete":** the device saying "I
-   * received the command", not "I finished moving". That's
+   * **What the `/res` reply actually means — a delivery ack, NOT "motion complete".** It answers within
+   * seconds, well before a garage door finishes its travel — so this is the device saying "I received the command", not "I finished moving". That's
    * why {@link FF09_ACK_TIMEOUT_MS} is one fixed, short window shared by every ff09 device regardless of
    * its actuator's physical speed: it's timing a network round-trip, not a door. (There is currently no
    * signal at all for actuation completion — that would need a different source, e.g. the device's own
@@ -688,9 +686,7 @@ export class MqttCommandRouter {
    * **Read the T85D0's current auto-lock settings over MQTT** — the `Ff09SettingsReader` implementation.
    * A pure GET, no SET: opens its own one-shot MQTT connection (same
    * lifecycle as {@link dispatchFf09Autolock}), reuses {@link fetchFf09SettingsGetReply}, then decrypts
-   * + decodes fields `a1`-`a5` per `transport/ff09.ts`'s response tag map. Live-verified only insofar
-   * as the underlying GET step already is (`setAutoLock`'s own read) — the standalone read path itself
-   * has not been independently exercised against a real device yet.
+   * + decodes fields `a1`-`a5` per `transport/ff09.ts`'s response tag map.
    */
   async getAutoLockState(sn: string, cmd: { adminUserId: string; deviceSn: string }): Promise<AutoLockSnapshot> {
     const dev = await this.ff09DeviceFor(sn);
@@ -812,7 +808,7 @@ export class MqttCommandRouter {
    * AIoT MQTT envelope ({@link buildCleanDpEnvelope}) and publishes fire-and-forget to the device's
    * `cmd/eufy_home/{pn}/{sn}/req` topic over the facade's persistent transport. The clean line uses
    * the DEFAULT credential (same as `eufy_mega` devices) — no separate MQTT connection needed; only
-   * `eufy_life` (smart lights) gets its own certificate. Confirmed live on T2351 (2026-07-30).
+   * `eufy_life` (smart lights) gets its own certificate.
    */
   private async dispatchAiotDp(sn: string, cmd: Extract<Command, { kind: "aiot-dp" }>): Promise<void> {
     const dev = await this.deviceFor(sn);

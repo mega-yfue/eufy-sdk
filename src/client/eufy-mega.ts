@@ -479,8 +479,8 @@ export class EufyMega extends EventEmitter {
       resolvePreset: (presetId) => resolveLightEffectHttp(this.mega, presetId),
       /**
        * Publish over the persistent transport for THIS device's credential scope — one connection per
-       * product line carrying both legs, as the app does. CONFIRMED live (2026-07-28) that the
-       * `eufy_life` credential grants the command leg as well as the reports.
+       * product line carrying both legs, as the app does. The `eufy_life` credential grants the
+       * command leg as well as the reports.
        *
        * Uses an already-installed transport directly rather than awaiting the bring-up memo, because
        * the path is re-entrant: bringing a scope up subscribes its devices and sends their
@@ -2459,7 +2459,6 @@ export class EufyMega extends EventEmitter {
    * A camera attached to a HomeBase is not — the same frame would restart its HomeBase — so its serial
    * throws, as does any non-camera serial, rather than doing nothing. The device drops its connection
    * and returns after a minute or two; a HomeBase takes everything behind it offline meanwhile.
-   * Verified on real hardware against a HomeBase and a standalone indoor camera.
    */
   async reboot(sn: string): Promise<void> {
     const ctx = await this.commandContext(sn);

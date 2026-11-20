@@ -206,6 +206,11 @@ host can decide whether to show a button`. Second person (`you`, `your host`) ne
 - **A JSDoc does not narrate its own history.** Not what an earlier version did, not what the old
   path was, not which guess was wrong, not what a fix corrected. Prose that needs editing when the
   next change lands is not ground truth. That reasoning belongs in the commit that makes the change.
+- **Shipped `src/` text names no evidence.** Its JSDoc, which ships in `dist/`, and model member
+  `description`s, which also ship in the manifest, state what a value is, its wire or frame, its gate
+  and the app fact behind them. They name no device a value was seen on and no capture, replay or
+  verification it went through. A model id stays only where it is the gate or a per-product wire fact.
+  The evidence goes in the pull request.
 - **Shipped `src/` cites its PEERS only — never a `.md` file.** `src/` ships in `dist/`, so a pointer
   to a companion prose file dangles for a consumer, and `docs/` is **generated from** this source's
   JSDoc — pointing back at it inverts the direction the site is built on. Reference modules, exported

@@ -238,7 +238,7 @@ export function codecFromModel(model: string | undefined): Codec | undefined {
   // precede the generic T8 camera residual below.
   if (/^T8L/.test(m)) return "light";
 
-  // eufy_mega Smart Display line — the T87Ax model prefix (only T87A0 observed so far). The model
+  // eufy_mega Smart Display line — the T87Ax model prefix. The model
   // code, not the cloud `category` ("eufy_mega"), is the one thing genuinely specific to this
   // product: `category` is echoed verbatim by `classifyDevice()` in core/types.ts as the residual
   // bucket for anything that isn't `eufy_security` and has no `p2p_did`, so it may be a broader
@@ -280,9 +280,8 @@ export function classify(rec: CloudRecord): Codec {
   // RoboVac whose `device_type` happens to fall in the security range. (`device_type` is not a
   // reliable vacuum signal; category + the T2 model code are.)
   // 3D printers are their own ecosystem (ankermake cloud) — decided from the device `category`, before
-  // the security DeviceType bucket below could swallow one. Category is the CANDIDATE signal, pending a
-  // bound printer: no printer was on the account during the capture, so these strings are inferred (from
-  // the ankermake brand/hosts), not an observed device category — a better inference than a model code,
+  // the security DeviceType bucket below could swallow one. Category is the CANDIDATE signal: these strings
+  // are inferred from the ankermake brand/hosts, not a device-reported category — a better inference than a model code,
   // not a confirmed one. A wrong guess here costs a misclassification, never a bad frame.
   if (rec.category && PRINTER_CATEGORY_RE.test(rec.category)) return "printer";
 
@@ -294,7 +293,7 @@ export function classify(rec: CloudRecord): Codec {
   if (byModel === "vacuum") return "vacuum";
 
   // eufy_life smart lighting (its `device_type` is namespaced per product line and can collide with a
-  // security type) and the Smart Display (T87A0 — confirmed live 2026-09-04 to connect over secure
+  // security type) and the Smart Display (T87A0 — it connects over secure
   // MQTT with no `p2p_did`, never P2P, yet its `device_type` 1 falls inside `isKnownSecurityType`'s
   // residual range) are each decided from the globally-unique model code, not the cloud `category` —
   // otherwise `codecForType`'s camera bucket could swallow either below. Nothing sits between them

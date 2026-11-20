@@ -14,7 +14,7 @@ import type { EufyDevice } from "../../core/types.js";
  * The station a device's traffic belongs to, from its cloud record and its own serial.
  *
  * `parent_sn` carries the parent on a HomeBase-attached device. `station_sn` is frequently absent there —
- * empty on every attached sensor of a T8010 — and serves only as a fallback. An empty string states no
+ * empty on an attached sensor — and serves only as a fallback. An empty string states no
  * station.
  *
  * A device naming no parent answers its own serial, so every device has a station.
@@ -31,7 +31,7 @@ export function resolvedStationSn(raw: Record<string, unknown>, sn: string): str
  * frame resolver attributes by.
  *
  * `parent_sn` on the cloud record is the field that is actually populated for a HomeBase-attached device, so
- * it wins; `stationSn` is frequently absent (observed empty on every attached sensor of a T8010), so keying on
+ * it wins; `stationSn` is frequently absent (empty on an attached sensor), so keying on
  * it alone silently resolves an attached device to ITSELF and no frame ever matches. Answering the device's
  * OWN serial is what "stands alone" means.
  */

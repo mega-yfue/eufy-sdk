@@ -10,8 +10,7 @@ import type { Command } from "../../core/contracts.js";
 /**
  * The siren's **state-backed param ids** — each is a param the device reports (and some are also
  * writable). Named `SIREN_PARAM` vs `SIREN_CMD` below (momentary triggers with no reported state) so
- * the split the code implements is explicit. Surveyed + write-captured on a real T90R0
- * (`SIREN_SENSOR_E20`, 2026-08-03).
+ * the split the code implements is explicit.
  */
 export const SIREN_PARAM = {
   /** Whether the siren is sounding (app `APP_CMD_DEV_RING_STATUS`). 1 = sounding, 0 = silent. */
@@ -33,13 +32,13 @@ export const SIREN_CMD = {
   ALARM_TEST: 1826,
   /** Manually stop a sounding alarm (app `APP_CMD_SIREN_SENSOR_MANUAL_STOP_ALARM`). */
   MANUAL_STOP: 1871,
-  /** Station-family HomeBase duration alarm, verified live on T8010 and T8030 (app `SET_TONE_FILE`). */
+  /** Station-family HomeBase (T8010, T8030) duration alarm (app `SET_TONE_FILE`). */
   HOMEBASE_TONE: 1201,
   /** HomeBase alarm volume percentage (app `CMD_SET_HUB_SPK_VOLUME`). */
   HUB_SPK_VOLUME: 1235,
   /** HomeBase alarm-tone selection (app `APP_CMD_HUB_ALARM_TONE`). */
   HUB_ALARM_TONE: 1281,
-  /** Attached-camera duration alarm, verified live on T8114 and T8210 (app `SET_DEVS_TONE_FILE`). */
+  /** Attached-camera duration alarm (app `SET_DEVS_TONE_FILE`). */
   CAMERA_TONE: 1202,
 } as const;
 
@@ -55,15 +54,15 @@ export const SirenVolume = { Low: 1, Mid: 2, High: 3 } as const;
 export type SirenVolumeValue = (typeof SirenVolume)[keyof typeof SirenVolume];
 
 /**
- * The alarm-duration presets the app offers, in seconds (1/5/10/15 minutes). These are the only
- * values captured, so `setAlarmDuration` accepts exactly these (rejecting others),
+ * The alarm-duration presets the app offers, in seconds (1/5/10/15 minutes).
+ * `setAlarmDuration` accepts exactly these (rejecting others),
  * the same way the arming capability makes its delay presets the parameter type.
  */
 export const SirenAlarmDuration = { Min1: 60, Min5: 300, Min10: 600, Min15: 900 } as const;
 /** A siren alarm duration in seconds — the value side of {@link SirenAlarmDuration}. */
 export type SirenAlarmDurationValue = (typeof SirenAlarmDuration)[keyof typeof SirenAlarmDuration];
 
-/** HomeBase alarm tone options, 1-indexed; both options were confirmed on a T8030. */
+/** HomeBase alarm tone options, 1-indexed. */
 export const HubAlarmTone = { Tone1: 1, Tone2: 2 } as const;
 /** A HomeBase alarm tone option. */
 export type HubAlarmToneValue = (typeof HubAlarmTone)[keyof typeof HubAlarmTone];
@@ -79,7 +78,7 @@ export type SirenActions = Surface<typeof SIREN_MEMBERS>;
 /** Reported HomeBase alarm params that prove the alarm-output configuration surface. */
 const HUB_ALARM_EVIDENCE = [SIREN_CMD.HUB_ALARM_TONE, 1282] as const;
 
-/** Whether this bound device uses the station-family manual HomeBase alarm wire (verified on T8010 and T8030). */
+/** Whether this bound device uses the station-family manual HomeBase alarm wire (T8010 and T8030). */
 function isStationAlarmOutput(ctx: CommandContext): boolean {
   return ctx.deviceType === DeviceType.STATION || ctx.deviceType === DeviceType.HB3;
 }
@@ -90,9 +89,8 @@ function isEvidencedStationAlarm(ctx: CommandContext): boolean {
 }
 
 /**
- * The camera models the portal's `1350` alarm form is evidenced on behind a HomeBase S1 Pro: a run on a
- * real T9000 in which that camera alone sounded and stopped. Another model there has no evidence for the
- * form, so it gets no alarm members.
+ * The camera models the portal's `1350` alarm form applies to behind a HomeBase S1 Pro (T9000). Any other
+ * model there gets no alarm members.
  */
 const S1_PRO_ALARM_MODELS: ReadonlySet<string> = new Set([
   "T8134",
@@ -105,7 +103,7 @@ const S1_PRO_ALARM_MODELS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Whether an attached camera reports the EAS slot verified with its own manual alarm output and, behind a
+ * Whether an attached camera reports the EAS slot that carries its own manual alarm output and, behind a
  * HomeBase S1 Pro, is a model in {@link S1_PRO_ALARM_MODELS}.
  */
 function isEvidencedAttachedCamera(ctx: CommandContext): boolean {
@@ -227,7 +225,7 @@ function validateTriggerDuration(seconds: number): number {
 }
 
 /**
- * A siren write: `1350` SET_PAYLOAD on the device channel with `mValue3` 0, the app's captured frame.
+ * A siren write: `1350` SET_PAYLOAD on the device channel with `mValue3` 0, the app's frame.
  * The `transaction` stamp is part of that frame; the sink injects `account_id`.
  *
  * Level-2 only, though the `mValue3` 0 would allow `"auto"`: every device reaching this is a HomeBase or
@@ -244,7 +242,7 @@ function sirenPayload(cmd: number, body: Record<string, number>, ctx: CommandCon
  * configuration, test, and stop; evidenced HomeBases expose alarm configuration plus trigger/stop;
  * verified attached cameras expose trigger/stop only.
  *
- * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * Exported but NOT published: each entry states its wire id and its gate,
  * which the reference site does not carry.
  * @internal
  */
@@ -259,9 +257,7 @@ export const SIREN_MEMBERS = {
     type: "bool",
     kind: "boolean",
     available: isSensorCodec,
-    description:
-      "Whether the siren is sounding (61008 APP_CMD_DEV_RING_STATUS). ✅ Confirmed boolean: a live " +
-      "test on a T90R0 pushed 1 (sounding) then 0 (silent).",
+    description: "Whether the siren is sounding (61008 APP_CMD_DEV_RING_STATUS): 1 = sounding, 0 = silent.",
   },
   /**
    * The levels the product's description lists (`audio_alert_volume`), else 1-3. Rejected, not clamped,
@@ -279,13 +275,13 @@ export const SIREN_MEMBERS = {
     args: [{ name: "level", kind: "scalar", description: "A device level 1-3 (Low/Mid/High), not a percentage." }],
     description:
       "Alarm volume (1825 APP_CMD_SIREN_SENSOR_SET_ALARM_VOL), a device level 1-3 (Low/Mid/High), NOT " +
-      "a percentage. Write verified live on a T90R0 (1350 SET_PAYLOAD {volume}).",
+      "a percentage. Write: 1350 SET_PAYLOAD {volume}.",
     write: (v, ctx) => {
       const level = coerceEnumValue(SirenVolume, v);
       return level === undefined ? undefined : sirenPayload(SIREN_PARAM.ALARM_VOLUME, { volume: level }, ctx);
     },
   },
-  /** The presets the product's description lists (`sensor_alarm_timeout`), else the four captured ones. */
+  /** The presets the product's description lists (`sensor_alarm_timeout`), else the app's four. */
   alarmDuration: {
     param: SIREN_PARAM.ALARM_TIMEOUT,
     type: "number",
@@ -298,15 +294,14 @@ export const SIREN_MEMBERS = {
     args: [{ name: "seconds", kind: "seconds", description: "One of the app's presets: 60/300/600/900." }],
     description:
       "How long an alarm sounds before stopping itself (61006 APP_CMD_DEV_ALARM_TIMEOUT), seconds. " +
-      "Write verified live on a T90R0 (1350 SET_PAYLOAD {value}); app presets 60/300/600/900.",
+      "Write: 1350 SET_PAYLOAD {value}; app presets 60/300/600/900.",
     write: (v, ctx) => {
       const seconds = coerceEnumValue(SirenAlarmDuration, v);
       return seconds === undefined ? undefined : sirenPayload(SIREN_PARAM.ALARM_TIMEOUT, { value: seconds }, ctx);
     },
   },
   /**
-   * Read-only: the id comes from the app and the only live evidence
-   * is a T90R0 reporting 0, which fixes neither the polarity's other value nor a write frame. Typed
+   * Read-only: the id comes from the app, which fixes neither the polarity nor a write frame. Typed
    * `bool` on the app's own naming; do not add a setter until a toggle is captured.
    */
   doNotDisturb: {
@@ -314,7 +309,7 @@ export const SIREN_MEMBERS = {
     type: "bool",
     kind: "boolean",
     available: isSensorCodec,
-    description: "Do-not-disturb (1828 APP_CMD_SENSOR_NOT_DISTURB). Observed 0 on a T90R0.",
+    description: "Do-not-disturb (1828 APP_CMD_SENSOR_NOT_DISTURB).",
   },
 
   /** HomeBase alarm volume is a percentage on a station-scalar wire, unlike standalone level 1-3. */
@@ -328,7 +323,7 @@ export const SIREN_MEMBERS = {
     requires: HUB_ALARM_EVIDENCE,
     min: 0,
     max: 100,
-    description: "HomeBase alarm volume 0..100 (1235 CMD_SET_HUB_SPK_VOLUME). Verified audible on a T8030.",
+    description: "HomeBase alarm volume 0..100 (1235 CMD_SET_HUB_SPK_VOLUME).",
     write: (v) => setStationScalar(SIREN_CMD.HUB_SPK_VOLUME, Number(v), STATION_CHANNEL),
   },
   /** HomeBase alarm tones, the ones the product's description lists (`alarm_tones_mode`), else both. */
@@ -342,9 +337,7 @@ export const SIREN_MEMBERS = {
     available: isHomeBase,
     requires: HUB_ALARM_EVIDENCE,
     args: [{ name: "tone", kind: "enum", description: "One of the app's alarm tones (1-indexed)." }],
-    description:
-      "HomeBase alarm tone selection (1281 APP_CMD_HUB_ALARM_TONE; 1350 SET_PAYLOAD {type}, mValue3 0). " +
-      "Wire verified live on a T8030.",
+    description: "HomeBase alarm tone selection (1281 APP_CMD_HUB_ALARM_TONE; 1350 SET_PAYLOAD {type}, mValue3 0).",
     write: (v, ctx) => {
       const tone = coerceEnumValue(HubAlarmTone, v);
       return tone === undefined ? undefined : setPayload(SIREN_CMD.HUB_ALARM_TONE, { type: tone }, ctx, 0);
