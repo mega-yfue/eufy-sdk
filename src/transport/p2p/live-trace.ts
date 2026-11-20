@@ -114,17 +114,6 @@ export type LiveTrace =
       waitedMs?: number;
     }
   /**
-   * A station's cipher was answered with material for a DIFFERENT cipher, which was used in its place.
-   *
-   * The one lookup outcome no other phase accounts for: material for the cipher the station named is followed
-   * by `level2-ready`, `level2-set-payload-only` or `level2-unavailable` with `derivation-failed`, an answer
-   * holding none by
-   * `no-cipher-key`, and a lookup that threw is reported as an error. Substituted material derives to
-   * nothing and otherwise reads as a station fault. `cipherId` is the cipher the station asked for,
-   * `answeredCipherId` the one whose material was used.
-   */
-  | { phase: "cipher-fallback"; cipherId: number; answeredCipherId: number }
-  /**
    * The station answered its gateway-info prompt, so a key derivation has begun under the cipher it named.
    *
    * What separates a station that never answered the prompt from one that answered and produced no usable key:

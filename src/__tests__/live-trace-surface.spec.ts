@@ -49,7 +49,6 @@ describe("live-trace vocabulary at the package entry point", () => {
       "level2-negotiating": true,
       "station-resolved": true,
       "station-channel-unresolved": true,
-      "cipher-fallback": true,
       warming: true,
       "media-command-unsent": true,
       "path-stale": true,

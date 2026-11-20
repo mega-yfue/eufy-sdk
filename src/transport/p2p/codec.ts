@@ -324,15 +324,16 @@ export function deriveLevel2KeyFromGatewayInfo(gwPayload: Buffer, eccPrivateKeyH
  * payload and the RSA private key of a cipher whose `get_ciphers` answer carries no ECC key.
  *
  * Layout of the decrypted payload: `cipher_id(2 LE) ‖ 0000 ‖ RSA ciphertext ‖ …`, the ciphertext as
- * long as the key's modulus. It is the 16-byte session key under PKCS#1 v1.5 encryption padding
- * (`00 02 ‖ ≥8 non-zero bytes ‖ 00 ‖ key`). The padding is checked here over the raw RSA result so a wrong
+ * long as the key's modulus. It is the session key under PKCS#1 v1.5 encryption padding
+ * (`00 02 ‖ ≥8 non-zero bytes ‖ 00 ‖ key`), read as the app reads it: a C string, its first 16 bytes,
+ * zero-padded (`ConnectKeyFactory`, native `zx_set_p2p_aeskey`). The padding is checked here over the raw RSA result so a wrong
  * key fails closed: under OpenSSL's implicit rejection, `RSA_PKCS1_PADDING` answers random bytes for it
  * instead of throwing, and those can be 16 bytes long.
  *
  * `rsaPrivateKey` is the `get_ciphers` `private_key`, PEM or base64 PKCS#8 DER.
  *
- * Returns the 16-byte key, or `undefined` when the key does not parse, the payload is short, or the
- * padding or key length is wrong (fails closed, never throws).
+ * Returns the 16-byte key, or `undefined` when the key does not parse, the payload is short, the padding
+ * is wrong or the key is empty (fails closed, never throws).
  */
 export function deriveLevel2KeyFromRsaGatewayInfo(gwPayload: Buffer, rsaPrivateKey: string): Buffer | undefined {
   try {
@@ -347,8 +348,12 @@ export function deriveLevel2KeyFromRsaGatewayInfo(gwPayload: Buffer, rsaPrivateK
     if (block[0] !== 0x00 || block[1] !== 0x02) return undefined;
     const separator = block.indexOf(0x00, 2);
     if (separator < 10) return undefined;
-    const sessionKey = block.subarray(separator + 1);
-    return sessionKey.length === 16 ? Buffer.from(sessionKey) : undefined;
+    const tail = block.subarray(separator + 1);
+    const end = Math.min(tail.includes(0) ? tail.indexOf(0) : tail.length, 16);
+    if (end === 0) return undefined;
+    const sessionKey = Buffer.alloc(16);
+    tail.copy(sessionKey, 0, 0, end);
+    return sessionKey;
   } catch {
     return undefined;
   }

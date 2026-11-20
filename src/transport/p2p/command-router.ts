@@ -628,7 +628,7 @@ export class P2PCommandRouter {
       localAddress,
       dskKey,
       noBroadcast: this.deps.noBroadcast,
-      resolveCipherKey: (cipherId: number) => this.cipherKeysFor(session, cipherId, adminUserId, stationSn),
+      resolveCipherKey: (cipherId: number) => this.cipherKeysFor(cipherId, adminUserId, stationSn),
       logger: this.deps.logger ?? noopLogger,
     });
     session.on("error", (e: Error) => this.reportError(e));
@@ -670,12 +670,10 @@ export class P2PCommandRouter {
 
   /**
    * The ECC and RSA private keys of `cipherId` (`ecc_private_key`, `private_key`), from the router's cache
-   * or one `get_ciphers` call. When the cloud answers with another cipher that carries an ECC key and the
-   * asked one does not, that one is used and traced on `session`. Only a successful lookup — one that
-   * yields either key — is cached.
+   * or one `get_ciphers` call, whose first answer is the key as the app takes it. Only a successful lookup —
+   * one that yields either key — is cached.
    */
   private async cipherKeysFor(
-    session: P2PSession,
     cipherId: number,
     userId: string,
     stationSn: string,
@@ -683,16 +681,8 @@ export class P2PCommandRouter {
     if (this.cipherKeyCache.has(cipherId)) return this.cipherKeyCache.get(cipherId);
     let cipher: { ecc_private_key?: string; private_key?: string } | undefined;
     try {
-      const ciphers = await this.deps.mega.getCiphers([cipherId], userId, stationSn);
-      cipher = ciphers.find((c) => Number(c.cipher_id) === cipherId);
-      if (cipher?.ecc_private_key === undefined && ciphers[0]?.ecc_private_key !== undefined) {
-        cipher = ciphers[0];
-        this.traceOnStation(session, {
-          phase: "cipher-fallback",
-          cipherId,
-          answeredCipherId: Number(ciphers[0].cipher_id),
-        });
-      }
+      // The app takes `data[0]` of `get_ciphers([cipher_id])` (`ConnectKeyFactory`).
+      cipher = (await this.deps.mega.getCiphers([cipherId], userId, stationSn))[0];
     } catch (e) {
       this.deps.onError(e instanceof Error ? e : new Error(String(e)));
     }
@@ -964,9 +954,7 @@ export class P2PCommandRouter {
     const { session, parentSn, channel, accountId } = await this.resolveSession(sn, { signal: opts.signal });
     const path = station.path(channel, opts.recording);
     if (!path) throw new RecordingDownloadError("invalid-recording", `no recording named ${opts.recording}`);
-    const eccKey = station.sealed
-      ? (await this.cipherKeysFor(session, opts.cipherId, accountId, parentSn))?.ecc
-      : undefined;
+    const eccKey = station.sealed ? (await this.cipherKeysFor(opts.cipherId, accountId, parentSn))?.ecc : undefined;
     if (station.sealed && !eccKey) {
       throw new RecordingDownloadError("key-unavailable", `cipher ${opts.cipherId} could not be obtained`);
     }

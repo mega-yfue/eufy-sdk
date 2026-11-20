@@ -99,19 +99,15 @@ describe("P2PCommandRouter.ensureStation — resolveCipherKey cache", () => {
     expect(getCiphers).toHaveBeenCalledTimes(1); // second resolve served from cache
   });
 
-  /**
-   * An answer that names a different cipher is used anyway, and derives to nothing — so without a record of
-   * the substitution the outcome reads as a station fault rather than as a lookup answering off-target.
-   */
-  it("states cipher material used in place of the cipher the station asked for", async () => {
-    const { logger, traces } = traceCollector();
-    const getCiphers = vi.fn().mockResolvedValue([{ cipher_id: 12, ecc_private_key: "cafebabe" }]);
-    const router = new P2PCommandRouter(makeDeps(getCiphers, logger));
+  it("takes the first cipher get_ciphers answers, as the app does", async () => {
+    const getCiphers = vi.fn().mockResolvedValue([
+      { cipher_id: 12, private_key: "rsa-a" },
+      { cipher_id: 97, ecc_private_key: "cafebabe" },
+    ]);
+    const router = new P2PCommandRouter(makeDeps(getCiphers));
 
     await router.ensureStation(DEVICE.sn);
-    expect((await resolveCipherKey(97))?.ecc).toBe("cafebabe");
-
-    expect(traces).toMatchObject([{ phase: "cipher-fallback", cipherId: 97, answeredCipherId: 12 }]);
+    expect(await resolveCipherKey(97)).toEqual({ ecc: undefined, rsa: "rsa-a" });
   });
 
   /**

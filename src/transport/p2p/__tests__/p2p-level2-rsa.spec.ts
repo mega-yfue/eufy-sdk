@@ -22,7 +22,8 @@ const STATION_SN = "T8790P0000000001";
 const P2P_DID = "XXXXXXX-000000-XXXXX";
 const ACCOUNT_ID = "0".repeat(40);
 const CIPHER_ID = 10;
-const SESSION_KEY = Buffer.from("00112233445566778899aabbccddeeff", "hex");
+/** A 16-character key, the C string the app reads (synthetic). */
+const SESSION_KEY = Buffer.from("0123456789abcdef", "latin1");
 
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 1024 });
 const PKCS8_B64 = privateKey.export({ type: "pkcs8", format: "der" }).toString("base64");
@@ -88,8 +89,21 @@ describe("deriveLevel2KeyFromRsaGatewayInfo", () => {
     expect(deriveLevel2KeyFromRsaGatewayInfo(gatewayInfo(rawBlock(shortPad)), PKCS8_B64)).toBeUndefined();
   });
 
-  test("answers undefined when the wrapped key is not 16 bytes", () => {
-    expect(deriveLevel2KeyFromRsaGatewayInfo(gatewayInfo(wrapped(Buffer.alloc(32, 1))), PKCS8_B64)).toBeUndefined();
+  test("reads the wrapped key as the app does: a C string, its first 16 bytes, zero-padded", () => {
+    const nul = Buffer.concat([SESSION_KEY, Buffer.from([0x00])]);
+    expect(deriveLevel2KeyFromRsaGatewayInfo(gatewayInfo(wrapped(nul)), PKCS8_B64), "16 chars and a NUL").toEqual(
+      SESSION_KEY,
+    );
+    const long = Buffer.from("0123456789abcdef0123456789abcdef", "latin1");
+    expect(deriveLevel2KeyFromRsaGatewayInfo(gatewayInfo(wrapped(long)), PKCS8_B64), "32 chars").toEqual(SESSION_KEY);
+    const short = Buffer.concat([Buffer.from("0123456789ab", "latin1"), Buffer.alloc(4)]);
+    expect(
+      deriveLevel2KeyFromRsaGatewayInfo(gatewayInfo(wrapped(Buffer.from("0123456789ab", "latin1"))), PKCS8_B64),
+    ).toEqual(short);
+    expect(
+      deriveLevel2KeyFromRsaGatewayInfo(gatewayInfo(wrapped(Buffer.from([0x00, 0x41]))), PKCS8_B64),
+      "empty",
+    ).toBeUndefined();
   });
 });
 
