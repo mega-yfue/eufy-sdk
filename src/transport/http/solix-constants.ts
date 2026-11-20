@@ -48,7 +48,7 @@ export const SOLIX_ENDPOINTS = {
    * POST (plain authed): read a site "device param" block by `param_type`. Body is
    * `{ site_id, param_type, cmd: 246 }`; the response's `data.param_data` is a JSON STRING the caller
    * parses. The Solarbank's SOC-limit settings live under `param_type "27"` (charge/discharge limits,
-   * backup reserve) — verified live on an AE103 (`"18"` returns empty for this device).
+   * backup reserve).
    */
   getSiteDeviceParam: "/power_service/v1/site/get_site_device_param",
   /**

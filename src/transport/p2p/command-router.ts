@@ -507,12 +507,8 @@ export class P2PCommandRouter {
    * start on it, so two cameras down one tunnel take it from each other in turn. Another connection is
    * how a station serves another camera.
    *
-   * The hardware was shown to do this before the SDK did. A first-party display showing four tiles was
-   * captured opening one PPCS session per camera, with three cameras' video arriving in the same second
-   * at 2304x1296, 1600x1200 and 3840x2160 — three geometries at once, which no composed stream can be.
-   * Reproduced here afterwards on a base carrying two attached cameras, one at 3840x2160, both holding
-   * full frame rate at once over a session each, where the same pair down one session could only take
-   * turns.
+   * The vendor's own multi-tile display opens one PPCS session per camera, as captured from it, with
+   * cameras of different geometries streaming at once — which no composed stream can be.
    *
    * It carries media alone. The station announces its state to every client that connects, so a session
    * wired to the same fan-out would report every event a second time; {@link makeSession} leaves this one
@@ -847,8 +843,8 @@ export class P2PCommandRouter {
 
   /**
    * Restart the station that owns `sn`'s P2P session. `RESTART_HUB` (1034) is a station-scalar on the
-   * broadcast channel 255 whose body is `[u32 value][account_id padded]`, value `0`. ✅ Wire-confirmed
-   * byte-exact as a level-2 frame from a capture of the app's own HomeBase Restart (2026-08-03).
+   * broadcast channel 255 whose body is `[u32 value][account_id padded]`, value `0`, sent as a level-2 frame
+   * as captured from the app's own HomeBase Restart.
    *
    * The seal follows the session, as {@link sendBySessionLevel} defines it: a keyed session takes the
    * level-2 frame, a keyless one — a standalone camera, which never negotiates a key — the same body
@@ -1003,9 +999,8 @@ export class P2PCommandRouter {
   /**
    * Open a {@link Talkback} on a device's camera channel.
    *
-   * **The camera only plays host audio while its media session is open** — verified live on three
-   * cameras: the identical start + audio frames produce silence with no media session and audible
-   * playback with one. So this attaches a consumer to the shared live source and holds it for the
+   * **The camera only plays host audio while its media session is open**: the identical start + audio
+   * frames produce silence with no media session and audible playback with one. So this attaches a consumer to the shared live source and holds it for the
    * talkback's lifetime, releasing it on stop. The source is shared and refcounted, so an already-open
    * stream costs nothing extra and a talkback on an otherwise idle camera opens the session it needs
    * instead of playing into silence.
@@ -1246,8 +1241,8 @@ export class P2PCommandRouter {
    *
    * A snapshot tile is nobody looking. Opening a live view in the Home app takes that cell fullscreen, so the
    * pulls refreshing the other cells are off screen, yet each goes on re-issuing its own media start every
-   * retry tick — measured as four pulls warming together off one HomeBase, a live request landing 1.4 s later,
-   * and the live consumer receiving nothing beyond the retained keyframe until its deadline fired. So a live
+   * retry tick, and a live request landing among them receives nothing beyond the retained keyframe until its
+   * deadline fires. So a live
    * request also takes the channel from a sibling held only by snapshots, while a snapshot request takes
    * nothing from anyone: a home page must not fight itself, and a viewer outranks a thumbnail in one
    * direction only.
@@ -1309,8 +1304,8 @@ export class P2PCommandRouter {
    *  - A live viewer attached: yes. That is the picture someone is looking at.
    *  - Held only for stills, while a sibling on this station has a live viewer: no. A still refreshes a
    *    tile that is off screen while the live view is on it, and one session serving one camera at a time
-   *    cannot satisfy both — and a still does not open a connection of its own. Measured: a still on a sibling halved a live view's frame rate for as long as
-   *    it took, and its own capture then took fifteen seconds because it was contending.
+   *    cannot satisfy both — and a still does not open a connection of its own. A still on a sibling halves a live view's frame rate for as long as it
+   *    takes, and its own capture slows because it contends.
    *
    * A still with no live sibling re-asserts, so a tile refreshing on a quiet station is
    * unaffected.
@@ -1709,11 +1704,10 @@ export class P2PCommandRouter {
    * level-2 key, level-1 otherwise. Both the `"auto"` scalar path and the JSON control path route
    * through here, so the rule is defined exactly once.
    *
-   * The discriminator is the key, NOT topology, because that is what the app does. Captured across five
-   * peers of four device families and both topologies, every peer used ONE seal for every command family
-   * it sent — level-2 for each keyed session including two own-session cameras, level-1 only for the two
-   * whose negotiation never completes. Reading attachment instead mispredicts those two own-session
-   * cameras, and a level-2-only wire chosen for a session that holds no key cannot be sent at all.
+   * The discriminator is the key, NOT topology, because that is what the app does. In the app's traffic
+   * every peer uses ONE seal for every command family it sends — level-2 for each keyed session, own-session
+   * cameras included, level-1 only for a session whose negotiation never completes. Reading attachment
+   * instead mispredicts those own-session cameras, and a level-2-only wire chosen for a session that holds no key cannot be sent at all.
    *
    * The key is waited for softly: a session that will not have one falls through to level-1, which is a
    * working wire here rather than a degraded guess, instead of spending a per-call grace to learn that.
@@ -2035,7 +2029,7 @@ export class P2PCommandRouter {
    * **Level follows topology** when `form` is `"auto"`, as in {@link resolveScalarParam}: a
    * HomeBase-attached device takes the GCM signCode-8 form, a standalone one the level-1 form. A
    * standalone camera never negotiates a level-2 key, so pinning this to level 2 makes the envelope
-   * unreachable on exactly the devices that serve their own RTSP stream. Verified live: a standalone
+   * unreachable on exactly the devices that serve their own RTSP stream; a standalone
    * camera accepts the level-1 form. With no `form` (default) it stays level-2 only and waits for the
    * key every level-2 sender uses; `level2Sender: "set-payload"` also takes an RSA cipher's AES-128-ECB
    * key (see {@link P2PSession.sendControlLevel2}). A `resolved` session keeps the wait its caller gave it.
@@ -2448,10 +2442,7 @@ export class P2PCommandRouter {
   /**
    * **`ff09-autolock` intent over P2P** — read-modify-write the T8531's auto-lock setting. The
    * P2P sibling of `MqttCommandRouter.dispatchFf09Autolock`; same GET-then-SET shape, same `ff09`
-   * frame/cipher. ✅ LIVE-VERIFIED end-to-end (2026-07-18): `dev.lock()?.setAutoLock(false)` THEN
-   * `setAutoLock(true)` driven through this exact codepath against a real T8531, both directions
-   * confirmed via the app UI showing autolock off then on afterward — not just byte-exact against a
-   * capture. Differs from the MQTT flow only in the envelope + reply matching:
+   * frame/cipher. Differs from the MQTT flow only in the envelope + reply matching:
    *
    * Resolves the session ONCE up front (needed to arm the reply listener before sending) and passes it
    * to both `sendSetPayloadEnvelope` calls (GET + SET) — skips the redundant re-resolve each would
@@ -2463,8 +2454,8 @@ export class P2PCommandRouter {
    *     arm-before-send ordering as {@link p2pQuery}), matching the reply by `f.json.cmd ===
    *     CMD_TRANSFER_PAYLOAD` (the device's `/res`-equivalent reply always carries this inner cmd,
    *     same as any other transfer-payload traffic on this channel — so `cmd` alone isn't enough) AND
-   *     `f.json.payload.time` equal to the GET's own `time`. **Confirmed live (2026-07-17) against a
-   *     real T8531 capture: the P2P reply's `time` field is a HEX STRING** (e.g. `"6A5908BD"`),
+   *     `f.json.payload.time` equal to the GET's own `time`. **The P2P reply's `time` field is a HEX
+   *     STRING** (e.g. `"6A5908BD"`),
    *     identical to the MQTT reply's convention — NOT the decimal the outbound `time` field uses. No
    *     reply within {@link FF09_SETTINGS_GET_TIMEOUT_MS} throws (same rationale as the MQTT side:
    *     guessing A7/A8 would be worse than failing loud).
@@ -2580,9 +2571,7 @@ export class P2PCommandRouter {
    * same GET step {@link sendFf09Autolock} runs internally to preserve A7/A8), then decrypts + decodes
    * fields `a1`-`a5` per `transport/ff09.ts`'s response tag map (`a1`=enabled, `a2`=delaySeconds,
    * `a3`=isSchedule, `a4`/`a5`=schedule start/end as raw `[hour,minute]` byte pairs — see
-   * {@link readFf09HourMinute}'s doc for why these aren't a packed number). Live-verified only insofar
-   * as the underlying GET step already is (`setAutoLock`'s own read) — the standalone read path itself
-   * has not been independently exercised against a real device yet.
+   * {@link readFf09HourMinute}'s doc for why these aren't a packed number).
    */
   async getAutoLockState(sn: string, cmd: { adminUserId: string; deviceSn: string }): Promise<AutoLockSnapshot> {
     const resolved = await this.resolveSession(sn, { waitLevel2: true });
@@ -2604,10 +2593,7 @@ export class P2PCommandRouter {
    * T8531 Rain Mode, `settingId` = `ff09.ts`'s `FF09_SETTING_ID.RAIN_MODE`). Unlike
    * {@link sendFf09Autolock}, this is a pure blind write — no GET pass, no reply wait — since the
    * compact frame ({@link buildFf09SettingToggleFrame}) only carries the one field being changed, same
-   * fire-and-forget shape as {@link sendFf09Actuate}. ✅ LIVE-VERIFIED end-to-end (2026-07-18):
-   * `dev.lock()?.setRainMode()` driven through this exact codepath against a real T8531, both
-   * directions confirmed via the app UI showing the new state afterward — not just byte-exact against a
-   * capture. See `transport/ff09.ts`'s "Rain Mode" doc section. The routing channel is re-resolved from
+   * fire-and-forget shape as {@link sendFf09Actuate}. See `transport/ff09.ts`'s "Rain Mode" doc section. The routing channel is re-resolved from
    * the device record — the capability never supplies it.
    */
   private async sendFf09SettingToggle(

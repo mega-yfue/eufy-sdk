@@ -22,8 +22,7 @@ export function isPrivateIpv4(s: string): boolean {
  *  - **params** (`{param_type, param_value, update_time}`) — self-reported by the device on each
  *    heartbeat, so a private-IP param value is timestamped and updates when the device roams.
  *  - **`ip_addr`** (top-level) — frozen at pairing, no timestamp; goes stale if the device moved
- *    to another subnet since (observed live: a SoloCam still advertising a 192.168.86.x pairing
- *    address while actually on 192.168.1.x).
+ *    to another subnet since.
  *  - **`local_ip`** — often empty, or the public WAN address.
  *
  * Strategy: collect every param whose value is a private IPv4, take the one with the newest

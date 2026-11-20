@@ -188,10 +188,9 @@ export type RoomScene = (typeof ROOM_SCENES)[number];
  * values ending at `MAX_PLUS = 4`. They agree from 0 to 3 and disagree at 4, so naming a room's
  * `Fan.suction` through the DP scale would report "BoostIQ" for a room the user set to Max+.
  *
- * A live capture showed DP 158 and `clean_param.fan` moving together, which is why the clean-parameter
- * read treats them as one scale — but that capture only covered 0 and 2, where both scales agree. The
- * divergence above is declared by the vendor, not contradicted by anything observed, so this follows
- * the proto the field is actually declared in.
+ * The clean-parameter read treats DP 158 and `clean_param.fan` as one scale, which holds only from 0
+ * to 3. The divergence above is declared by the vendor, so this follows the proto the field is
+ * actually declared in.
  */
 export const ROOM_SUCTIONS = ["quiet", "standard", "turbo", "max", "maxPlus"] as const;
 export type RoomSuction = (typeof ROOM_SUCTIONS)[number];

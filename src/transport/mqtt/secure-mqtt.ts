@@ -286,8 +286,8 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
    * is a pre-built envelope the caller supplies (the command router builds it). QoS 1 by default (the
    * broker acks). This is the outbound leg — commands, alongside the receive-only `/res` subscriptions.
    *
-   * NOTE: which cert scope is used does NOT gate publishing to a security device's topic — confirmed
-   * live, an `eufy_mega`-scoped cert and an `eufy_security`-scoped cert get the identical grant/deny
+   * NOTE: which cert scope is used does NOT gate publishing to a security device's topic — an
+   * `eufy_mega`-scoped cert and an `eufy_security`-scoped cert get the identical grant/deny
    * pattern. What actually matters is landing on the broker cluster the device's session lives on
    * (`ensureSecurityMqttFor` — a lock's is the `security-mqtt-*` cluster, which shares no routing with
    * the `aiot-mqtt-*` one).

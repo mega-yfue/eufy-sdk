@@ -25,8 +25,7 @@ const AUDIO_BODY_START = 44;
 /**
  * Whether an audio frame is sealed: after its header, a 16-byte GCM tag and a 12-byte nonce precede the
  * `u32@0` bytes its header declares, where a frame in the clear carries those bytes straight after the header.
- * A stream whose keyframes wrap their media key in an ECIES envelope seals its audio this way, measured on
- * HomeBase recordings and on HomeBase 3 live streams answering a P-256 start.
+ * A stream whose keyframes wrap their media key in an ECIES envelope seals its audio this way.
  */
 export function isSealedAudio(frame: Buffer): boolean {
   return frame.length >= AUDIO_BODY_START && frame.length >= AUDIO_BODY_START + frame.readUInt32LE(0);

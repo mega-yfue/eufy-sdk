@@ -10,26 +10,24 @@ import type { Command } from "../../core/contracts.js";
  * The P2P **feature-command ids** this audio capability drives — the outer-cmd IS the param id on the
  * camera side (direct-binary struct), or the inner cmd of a `1350` SET_PAYLOAD on the station side.
  * Capability-owned wire vocabulary (transport forwards `cmd.param` opaquely; full id→name catalog in
- * the generated `transport/p2p/commands.ts`). All ✅ wire-verified live — see the module JSDoc below.
+ * the generated `transport/p2p/commands.ts`). Wire shapes are in the module JSDoc below.
  */
 export const AUDIO_CMD = {
   /** Microphone on/off (app `AUDIO_MICROPHONE_SWITCH`), 1 = on. */
   AUDIO_MICROPHONE: 1240,
   /** Speaker on/off (app `AUDIO_SPEAKER_SWITCH`), 1 = on. */
   AUDIO_SPEAKER: 1241,
-  /** Speaker volume 0..100 (app `DOORBELL_AUDIO_VOLUME`). ✅ Same direct-binary wire; write verified live on T8214 (set 60 → param 60). */
+  /** Speaker volume 0..100 (app `DOORBELL_AUDIO_VOLUME`). Same direct-binary wire. */
   SPEAKER_VOLUME: 1230,
   /** Audio recording (app `DOORBELL_AUDIO_RECORDING_SWITCH`), `{channel, record_mute}` in the `1350` envelope. */
   AUDIO_RECORDING: 1288,
   /**
-   * Doorbell ringtone/chime volume 0..100 (app `DOORBELL_RINGTONE_VOLUME`). ✅ Wire verified live on
-   * T8214 — same direct-binary 136-byte struct, signCode 8. Doorbell-only: this capability adds it when
+   * Doorbell ringtone/chime volume 0..100 (app `DOORBELL_RINGTONE_VOLUME`): same direct-binary 136-byte struct, signCode 8. Doorbell-only: this capability adds it when
    * the device is a doorbell.
    */
   DOORBELL_RINGTONE_VOLUME: 1708,
   /**
-   * HomeBase voice **prompt** volume 0..100 (app `APP_CMD_SET_PROMPT_VOLUME`). ✅ Wire verified live on
-   * T8030 (audible): the `1350` SET_PAYLOAD wrapper on ch0 with `payload:{value}`. Station-only.
+   * HomeBase voice **prompt** volume 0..100 (app `APP_CMD_SET_PROMPT_VOLUME`): the `1350` SET_PAYLOAD wrapper on ch0 with `payload:{value}`. Station-only.
    */
   HUB_PROMPT_VOLUME: 1292,
 } as const;
@@ -44,7 +42,7 @@ export const AUDIO_CMD = {
  */
 export type AudioActions = Surface<typeof AUDIO_MEMBERS>;
 
-/** Camera/doorbell audio write — the direct-binary 136-byte struct (signCode 8), wire-verified on T8214. */
+/** Camera/doorbell audio write — the direct-binary 136-byte struct (signCode 8). */
 function audioCommand(param: number, value: number, ctx: CommandContext): Command {
   return setScalar(param, value, ctx, "direct-binary");
 }
@@ -61,7 +59,7 @@ const RECORDING = bundled(["audio_recording_on_off"], AUDIO_CMD.AUDIO_RECORDING)
  * the switches are written as the product's settings bundle sends them. HomeBase prompt volume `1292`
  * rides the `1350` SET_PAYLOAD wrapper on channel 0 with `payload:{value}` and is not cloud-reflected.
  *
- * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * Exported but NOT published: each entry states its wire id and its gate,
  * which the reference site does not carry.
  * @internal
  */
@@ -94,8 +92,7 @@ export const AUDIO_MEMBERS = {
     min: 0,
     max: 100,
     intentNames: ["volume"],
-    description:
-      "Speaker volume 0..100 (1230 DOORBELL_AUDIO_VOLUME). Write verified live on T8214 (set 60 → param 60).",
+    description: "Speaker volume 0..100 (1230 DOORBELL_AUDIO_VOLUME).",
     write: (v, ctx) => audioCommand(AUDIO_CMD.SPEAKER_VOLUME, Number(v), ctx),
   },
   /** Record audio with video, written and read with each param's polarity as the product's bundle states it. */
@@ -119,7 +116,7 @@ export const AUDIO_MEMBERS = {
     available: (ctx: AvailabilityContext) => hasCapability(ctx, "doorbell") && !isUntriedDoorbell(ctx),
     min: 0,
     max: 100,
-    description: "Doorbell ring/chime volume 0..100 (1708 DOORBELL_RINGTONE_VOLUME). Wire verified live on T8214.",
+    description: "Doorbell ring/chime volume 0..100 (1708 DOORBELL_RINGTONE_VOLUME).",
     write: (v, ctx) => audioCommand(AUDIO_CMD.DOORBELL_RINGTONE_VOLUME, Number(v), ctx),
   },
   /** HomeBase voice-prompt volume uses the 1350 SET_PAYLOAD wrapper on channel 0 and has no cloud readback. */
@@ -132,7 +129,7 @@ export const AUDIO_MEMBERS = {
     available: isHomeBase,
     min: 0,
     max: 100,
-    description: "HomeBase voice-prompt volume 0..100 (1292 APP_CMD_SET_PROMPT_VOLUME). Verified audible on a T8030.",
+    description: "HomeBase voice-prompt volume 0..100 (1292 APP_CMD_SET_PROMPT_VOLUME).",
     write: (v, ctx) => setPayload(AUDIO_CMD.HUB_PROMPT_VOLUME, { value: Number(v) }, ctx),
   },
 } as const satisfies Members;

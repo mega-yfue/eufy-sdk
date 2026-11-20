@@ -41,12 +41,12 @@ export const CAMERA_CMD = {
   DEV_LED_SWITCH: 1045,
   /**
    * Rotate the image 180° on/off. Direct param, value 0 = normal, 1 = flipped. The app's constant is
-   * `INDOOR_ROTATE_IMAGE`, but it is NOT indoor-only — ✅ verified live on an OUTDOOR floodlight cam
-   * (T8425), so we drop the misleading "indoor". App parser: `{cmd:1207, params:{enable:0|1}}`.
+   * `INDOOR_ROTATE_IMAGE`, but it is NOT indoor-only — outdoor cameras take it too, so the misleading
+   * "indoor" is dropped. App parser: `{cmd:1207, params:{enable:0|1}}`.
    */
   ROTATE_IMAGE: 1207,
   /**
-   * On-screen watermark / OSD overlay (app `CMD_SET_DEVS_OSD`). ✅ Wire verified live on T8425 (ch3):
+   * On-screen watermark / OSD overlay (app `CMD_SET_DEVS_OSD`):
    * a **3-value enum**, not a bool — 0 = off, 1 = timestamp, 2 = timestamp + logo. Direct-binary
    * `[channel][value]`. (Labels/enum in {@link Watermark}.)
    */
@@ -63,16 +63,15 @@ export const CAMERA_CMD = {
    * **Sound detection** switch — whether the camera triggers on what it hears, beside the motion
    * trigger it triggers on what it sees.
    *
-   * Wire observed live on an indoor pan-tilt (standalone, mains, own channel): the `1700`
-   * CONTROL_PAYLOAD wrapper, plaintext `{"commandType":6043,"data":{"status":0|1}}`. Both directions
-   * captured byte-exact and read back on the cloud param, twice each; no other parameter moved.
+   * Wire: the `1700` CONTROL_PAYLOAD wrapper, plaintext `{"commandType":6043,"data":{"status":0|1}}`,
+   * reported back on the cloud param.
    */
   SOUND_DETECTION: 6043,
   /**
    * How loud a sound has to be to trigger {@link CAMERA_CMD.SOUND_DETECTION} — the app's three-position
    * control writes `1` lowest, `3` mid, `5` highest.
    *
-   * Wire observed live on the same camera: `{"commandType":6044,"data":{"index":N}}` in the `1700`
+   * Wire: `{"commandType":6044,"data":{"index":N}}` in the `1700`
    * wrapper. The payload field is `index`, NOT the `value` its neighbours use — each of these
    * commands names its field differently, so there is no generic setter for the family.
    */
@@ -80,8 +79,8 @@ export const CAMERA_CMD = {
   /**
    * WHICH sounds trigger {@link CAMERA_CMD.SOUND_DETECTION} — all sound, or crying alone.
    *
-   * Wire observed live: `{"commandType":6046,"data":{"type":N}}` in the `1700` wrapper, both values
-   * captured and read back. (Values in {@link SoundDetectionType}.)
+   * Wire: `{"commandType":6046,"data":{"type":N}}` in the `1700` wrapper, reported back on the cloud
+   * param. (Values in {@link SoundDetectionType}.)
    */
   SOUND_DETECTION_TYPE: 6046,
   /**
@@ -97,24 +96,24 @@ export const CAMERA_CMD = {
   /**
    * RECORDING quality — what gets stored, not the live view; {@link CAMERA_CMD.STREAMING_QUALITY_SET}
    * below is the live one, and the app's name for this id is `multicamSetRecordQuailty`.
-   * Wire confirmed on a T8425 ch3: `1350` SET_PAYLOAD, inner cmd 2731,
+   * Wire: `1350` SET_PAYLOAD, inner cmd 2731,
    * `payload:{channel:0, mode:0, primary_view:0, quality:N}`, mValue3 0, on the device channel. Tiers
    * 1/2/3, named in {@link RECORDING_QUALITY_TIERS} — no tier 0 on this wire, where streaming has one.
-   * That is a fact about 2731 on the cameras it was confirmed on, not about recording everywhere. A
+   * That is a fact about 2731, not about recording everywhere. A
    * doorbell has no recording-quality setting at all, and its live-view quality rides neither 2730 nor
-   * 2731 but 1705, on a domain of its own (5 = Auto, 6/7/8 = Low/Medium/High, all four observed).
+   * 2731 but 1705, on a domain of its own (5 = Auto, 6/7/8 = Low/Medium/High).
    */
   RECORDING_QUALITY_SET: 2731,
   /**
    * LIVE-VIEW quality — a separate setting from {@link CAMERA_CMD.RECORDING_QUALITY_SET}, and the app's
    * names for the two invert what they suggest: 2730 is `multicamSetVideoQuailty` and drives the
    * Streaming Quality picker, while 2731 is `multicamSetRecordQuailty` and drives Recording Quality.
-   * Changing one leaves the other's parameter untouched, which is how they were told apart.
+   * Changing one leaves the other's parameter untouched.
    *
-   * Unlike recording it offers a tier 0, `Auto`. Wire verified live on a T8170 (standalone): the `1350`
+   * Unlike recording it offers a tier 0, `Auto`. Wire: the `1350`
    * SET_PAYLOAD envelope, signCode 8, plaintext `{"cmd":2730,"payload":{"transaction":"<epoch ms>",
-   * "quality":N,"channel":0,"mode":0,"primary_view":0},"account_id":…}`. All four tiers captured
-   * byte-exact and read back on parameter 1020; the station echoes the same payload back as a `1351`
+   * "quality":N,"channel":0,"mode":0,"primary_view":0},"account_id":…}`, reported back on parameter
+   * 1020; the station echoes the same payload back as a `1351`
    * NOTIFY_PAYLOAD carrying the same `transaction`.
    */
   STREAMING_QUALITY_SET: 2730,
@@ -130,8 +129,7 @@ export function hasReportedEasSwitch(source: {
   );
 }
 
-// Wire: CMD_INDOOR_DET_SET_SOUND_DETECT_TYPE 6046 — both values observed live on an indoor pan-tilt,
-// each read back on the cloud param. `Crying` is the value the camera shipped configured with.
+// Wire: CMD_INDOOR_DET_SET_SOUND_DETECT_TYPE 6046, reported back on the cloud param.
 export const SoundDetectionType = {
   /** Crying alone triggers a detection. */
   Crying: 1,
@@ -195,7 +193,7 @@ const ANTI_THEFT = bundled(["anti_theft_detection_switch"], CAMERA_CMD.EAS_SWITC
 
 /**
  * How this camera is powered, as every media egress needs to be told: a battery device is streamed
- * under a budget, a wired one unbounded. Read off the resolved capabilities, except that a confirmed
+ * under a budget, a wired one unbounded. Read off the resolved capabilities, except that a
  * mains-only model (see `cameraPowerTier` in battery.ts) is wired even with `battery` resolved. Given
  * to EVERY egress, since any of them may be the call that creates the shared source.
  */
@@ -245,9 +243,9 @@ function refuseUnsupportedSelection(media: MediaProvider, opts?: MediaSourceSele
  * could only drift from it — and each refusal message is generated from that same set.
  *
  * No `reboot`: it is a STATION operation with an unproven wire, shipped as the device-level
- * `EufyMega.reboot(sn)` (wire-confirmed station-scalar RESTART_HUB) rather than guessed at here.
+ * `EufyMega.reboot(sn)` (the station-scalar RESTART_HUB) rather than guessed at here.
  *
- * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * Exported but NOT published: each entry states its wire id and its gate,
  * which the reference site does not carry.
  * @internal
  */
@@ -308,16 +306,13 @@ export const CAMERA_MEMBERS = {
     type: "bool",
     kind: "boolean",
     available: cameraThing("sound_detection_status"),
-    description:
-      "Trigger on sound as well as motion (SOUND_DETECTION 6043). ✅ Write confirmed live on a T8410 " +
-      "(mains, standalone, own channel): both directions sent through this member and read back on " +
-      "the cloud param, and the app's own frame captured byte-exact for the same body.",
+    description: "Trigger on sound as well as motion (SOUND_DETECTION 6043, 1700 control-payload {status:0|1}).",
     write: (v, ctx) => setJson(CAMERA_CMD.SOUND_DETECTION, { status: asBool(v) ? 1 : 0 }, ctx),
   },
   /**
    * How loud a sound must be to trigger: `1` lowest, `3` mid, `5` highest, on the app's own
-   * three-position control. A `scalar` rather than an enum — the endpoints and the midpoint are
-   * observed, so 2 and 4 are a prediction of the scale's shape rather than values the wire is known to
+   * three-position control. A `scalar` rather than an enum — the app writes the endpoints and the
+   * midpoint, so 2 and 4 are a prediction of the scale's shape rather than values the wire is known to
    * take. Independent of {@link CAMERA_MEMBERS.soundDetection}: the camera stores it whether sound
    * detection is on or off.
    */
@@ -328,8 +323,7 @@ export const CAMERA_MEMBERS = {
     available: cameraThing("sound_detection_sensitivity"),
     description:
       "Sound-detection sensitivity: 1 = lowest, 3 = mid, 5 = highest (SOUND_DETECTION_SENSITIVITY " +
-      "6044). ✅ Write confirmed live on a T8410: 1 and 5 sent consecutively through this member and " +
-      "read back on the cloud param. 2 and 4 are the scale's shape, not observed values.",
+      "6044). 2 and 4 are the scale's shape, not values the app writes.",
     write: (v, ctx) => {
       const n = Number(v);
       if (!Number.isInteger(n) || n < 1 || n > 5) return undefined;
@@ -347,10 +341,7 @@ export const CAMERA_MEMBERS = {
     kind: "enum",
     enumValues: { 1: "Crying", 2: "All Sound" },
     available: cameraThing("sound_detection_type"),
-    description:
-      "Which sounds trigger a detection: crying alone, or any sound (SOUND_DETECTION_TYPE 6046). ✅ " +
-      "Write confirmed live on a T8410: both values sent consecutively through this member and read " +
-      "back on the cloud param.",
+    description: "Which sounds trigger a detection: crying alone, or any sound (SOUND_DETECTION_TYPE 6046).",
     write: (v, ctx) => {
       const type = coerceEnumValue(SoundDetectionType, v);
       return type == null ? undefined : setJson(CAMERA_CMD.SOUND_DETECTION_TYPE, { type }, ctx);

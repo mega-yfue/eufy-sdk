@@ -100,9 +100,9 @@ const RELAY_PACKET_COPIES = 4;
 /**
  * The receive buffer a session's socket asks the OS for.
  *
- * A station sends a keyframe as one burst: measured on a HomeBase 3, up to 161 video datagrams of 1074 bytes
- * within 10 ms. With the Linux default buffer of 212992 bytes, the kernel dropped part of such bursts before
- * the socket was read, and the frames those datagrams belonged to arrived incomplete. 4 MiB queues many
+ * A station sends a keyframe as one burst, up to 161 video datagrams of 1074 bytes within 10 ms. The Linux
+ * default buffer of 212992 bytes drops part of such a burst before the socket is read, and the frames those
+ * datagrams belong to arrive incomplete. 4 MiB queues many
  * such bursts, so a keyframe survives the event loop being busy elsewhere for a moment.
  */
 const RECEIVE_BUFFER_BYTES = 4 * 1024 * 1024;
@@ -145,12 +145,12 @@ const CMD_STREAM_KEEPALIVE = 1139;
 /**
  * The `1700` START_LIVE frame-header `type` byte.
  *
- * The current app does not derive this from the encryption level: it was captured sending 10 to one
- * own-session camera and 11 to another, both at signCode 8 (level-2 GCM), differing by model and firmware
- * generation rather than by cipher. Measured against the camera the app sends 11 to, a start carrying either
- * value is accepted and delivers a keyframe, so the byte does not gate the stream on that firmware.
+ * The current app does not derive this from the encryption level: it sends 10 to some own-session cameras
+ * and 11 to others, both at signCode 8 (level-2 GCM), by model and firmware generation rather than by
+ * cipher. A camera the app sends 11 to accepts either value and delivers a keyframe, so the byte does not
+ * gate the stream on that firmware.
  *
- * The values are kept split by level because that is the pairing each has been verified in — 10 with
+ * The values are kept split by level because that is the pairing each is known in — 10 with
  * level-2, 11 with level-1 — not because the level is known to select them.
  */
 const START_LIVE_FRAME_TYPE_L1 = 11;
@@ -161,9 +161,7 @@ const CMD_AUDIO_FRAME = 1301;
  * Talkback (host→device audio) start/stop. Which pair applies is a **topology** fact, exactly as it
  * is for the media start: a HomeBase-attached camera takes the direct `1005`/`1006` frames, an
  * own-session camera takes `CMD_CONTROL_PAYLOAD` (1700) wrapping inner `commandType` `1001`/`1002`.
- * Both were captured live on 2026-07-31 in one session — a HomeBase serving two cameras (channels 2
- * and 3) took `1005`/`1006`, and a standalone T8170 on channel 0 took `1700`/`1001`+`1002` and never
- * saw a `1005` at all. The app's own Android sources carry both pairs
+ * The app's own Android sources carry both pairs
  * (`security_device/p2p/TalkBackCmdKt.java:23,28,33,38`).
  */
 const CMD_START_TALKBACK = 1005;
@@ -175,13 +173,11 @@ const AUDIO_SEND_HEADER_BYTES = 16;
 /**
  * The outbound audio channel is **reliable and ordered**, unlike the ordinary control path.
  * The device acknowledges each frame and stalls on a gap: one lost datagram blocks every later frame
- * behind it, so playback stops dead rather than glitching. Measured on a live capture of the app
- * talking to a camera: 20 of 53 frames needed a retransmit (38% loss), acknowledgement latency ran
- * 7/57/660 ms (min/median/max), and the app kept at most 7 frames unacknowledged at once.
+ * behind it, so playback stops dead rather than glitching. In the app's own talkback the device's
+ * acknowledgements take up to 660 ms, and the app keeps at most 7 frames unacknowledged at once.
  *
- * Recovery mirrors that measurement: a frame still unacknowledged after {@link AUDIO_RETRANSMIT_MS} is
- * sent **once** more and then forgotten. Three properties are load-bearing, each verified against a
- * real camera:
+ * Recovery mirrors that: a frame still unacknowledged after {@link AUDIO_RETRANSMIT_MS} is
+ * sent **once** more and then forgotten. Three properties are load-bearing:
  *  - The timeout sits ABOVE the slowest acknowledgement the device is known to take (660 ms). Repeating
  *    a frame that was merely slow doubles the send rate, which delays acknowledgements further; the
  *    resulting spiral collapses the whole session — video included — within seconds.
@@ -204,8 +200,8 @@ const AUDIO_MAX_SENDS = 2;
  *
  * So it is retained and repeated byte-identically until the device acknowledges it. Byte-identical is what
  * makes repeating safe: the frame carries its sequence number and its ciphertext, and a device receiving the
- * same sequence repeatedly starts the stream once — captured acknowledging one start's sequence seventeen
- * times while streaming it once. A rebuilt start would instead read as a second, different start.
+ * same sequence repeatedly starts the stream once — it acknowledges every repeat of a start's sequence
+ * while streaming it once. A rebuilt start would instead read as a second, different start.
  *
  * Repeating until acknowledged is the app's own behaviour: it was captured sending the identical start 20
  * times across 272 ms to a camera still waking, which acknowledged after 238 ms, and once to a camera that
@@ -235,8 +231,8 @@ const SEQUENCE_LOOKBACK = 0x8000;
  * How far back a datagram may be numbered and still be read as a retransmission of something already
  * reassembled rather than as the device having restarted its numbering.
  *
- * Measured against the app's own captures of two own-session cameras: across 1758 video datagrams the
- * deepest repeat arrived 120 numbers behind the high-water mark, so this bound sits an order of magnitude
+ * In the app's own traffic the deepest repeat arrives about 120 numbers behind the high-water mark, so this
+ * bound sits an order of magnitude
  * clear of a genuine repeat. The bound is what the classification needs to exist at all, because the two
  * misreadings cost differently: a repeat mistaken for a restart discards one logical frame, while a restart
  * mistaken for a repeat discards every datagram until the new numbering climbs back past the frozen mark —
@@ -515,8 +511,7 @@ export class P2PSession extends EventEmitter {
    *
    * A stall is an episode, not a per-frame event: once the device stops acknowledging, EVERY later
    * frame is abandoned in turn, so reporting each one turns a single condition into hundreds of
-   * identical events. Measured live on a battery camera whose media session was stopped mid-clip by its
-   * power budget: 74 consecutive frames, one event each, all saying the same thing. The condition is
+   * identical events. The condition is
    * reported once and again only if the channel recovers and stalls afresh.
    */
   private audioStalled = false;
@@ -717,10 +712,8 @@ export class P2PSession extends EventEmitter {
    * settled answers without waiting at all: the answer stands until {@link repromptLevel2Key} re-opens the
    * wait, since the station is prompted for `CMD_GATEWAYINFO` only on connect and on that re-prompt.
    *
-   * An own-session camera whose grace expires here is NOT thereby a camera that will fail to stream. Measured
-   * on one account: own-session cameras of two device types negotiated a key, three others never did, and
-   * cameras from that second group streamed normally at level-1 — including one of the same firmware as an
-   * own-session camera that delivered no video at all for a reason of its own. An expired grace therefore
+   * An own-session camera whose grace expires here is NOT thereby a camera that will fail to stream: some
+   * own-session cameras never negotiate a key and stream normally at level-1. An expired grace therefore
    * separates nothing on this path, and a start failure on such a session is not evidence about it.
    *
    * Every `false` answer carries a `level2-unavailable` trace naming its reason, wherever the wait ended: a
@@ -787,8 +780,7 @@ export class P2PSession extends EventEmitter {
    * leaves {@link awaitLevel2Key} answering `false` at once for the rest of that connection. That is the
    * right answer for best-effort media, which proceeds at level-1 — but an operation whose ONLY wire is
    * level-2 is then refused for the whole life of that connection, while a fresh session over the same
-   * device negotiates a key normally. Measured: a session that had settled refused every such operation
-   * until it was rebuilt, at which point the station answered with a cipher id straight away. The reply to
+   * device negotiates a key normally. The reply to
    * this ask runs the negotiation again and settles the re-opened wait either way.
    *
    * Bounded to one extra ask per connection, so a burst of such operations cannot turn a silent station into a
@@ -1776,7 +1768,7 @@ export class P2PSession extends EventEmitter {
   /**
    * Send a **level-2 (GCM, signCode 8) frame whose plaintext is exactly `json`** — no
    * `{account_id,cmd,mChannel,…}` envelope. The target device is selected by the frame-header
-   * `channel`. This is the form the eufy app uses for control commands (confirmed by live capture:
+   * `channel`. This is the form the eufy app uses for control commands (as captured from the app:
    * floodlight = `{"commandType":1400,"data":{...}}`). Returns `false` if no level-2 key.
    */
   sendRawLevel2(json: string, channel: number, outerCmd: number = CMD_SET_PAYLOAD): boolean {
@@ -1908,8 +1900,8 @@ export class P2PSession extends EventEmitter {
    * data-type channel, plaintext (signCode 0) in both topologies — the audio itself is never
    * encrypted, only the start/stop control frames are. The 16-byte header the device expects ahead of
    * the payload is `[uint32 frameLength][uint32 channel][8 zero bytes]`, where `frameLength` repeats
-   * the ADTS header's own length field. The trailing 8 bytes were zero across all 418 frames of the
-   * 2026-07-31 capture, on three cameras spanning both topologies — the app never populates them.
+   * the ADTS header's own length field. The trailing 8 bytes are zero in both topologies — the app
+   * never populates them.
    *
    * The frames ride their own sequence counter, independent of the control channel's, starting at 0
    * for the session. Fire-and-forget: the device acknowledges the datagram, not the audio.
@@ -2130,8 +2122,7 @@ export class P2PSession extends EventEmitter {
    * Unwrap the RSA-wrapped AES media key from a keyframe. Standard PKCS#1 v1.5 — decrypt with
    * `RSA_PKCS1_PADDING`. This needs Node ≥24.5 (OpenSSL 3.5.1), which re-enabled PKCS1 `privateDecrypt`
    * after the intermediate OpenSSL (3.2–3.4) disabled it as a Marvin/CVE-2023-46809 mitigation — hence
-   * the pinned engine. Verified live: the strict path unwraps the 16-byte key on real E2E cameras
-   * (T8171 2560×1440, T8210 640×480). Returns `undefined` on failure (frame is skipped).
+   * the pinned engine. Returns `undefined` on failure (frame is skipped).
    */
   private rsaUnwrapKey(wrapped: Buffer): Buffer | undefined {
     if (!this.rsaPrivateKey) return undefined;
@@ -2182,8 +2173,7 @@ export class P2PSession extends EventEmitter {
    * A camera answering that start wraps each keyframe's AES-256-GCM media key in an ECIES envelope for this
    * key ({@link VideoFrameDecoder}). Generated once per session, like the RSA pair.
    *
-   * `undefined` unless the station is a HomeBase 3 (`T8030`): the app's P-256 start and the device runs
-   * that answered it were both observed on that station only.
+   * `undefined` unless the station is a HomeBase 3 (`T8030`).
    */
   get mediaEccPrivateKey(): Buffer | undefined {
     return this.cfg.stationSn.startsWith("T8030") ? this.mediaEccPair().privateKey : undefined;
@@ -2335,7 +2325,7 @@ export class P2PSession extends EventEmitter {
    * `cmd 10000` on `mChannel 255`. The HomeBase replies with the level-1 `CMD_DATABASE` response
    * (reassembled by `onData`, surfaced via `dbChunk`) listing every person: `{person_id, name,
    * relation, group_id, …}` — `stranger\d+` names are auto-assigned (unfamiliar). ~10 KB.
-   * Verified live against the app's own decrypted request. `account_id` must be the station
+   * Shaped as the app's own request. `account_id` must be the station
    * `admin_user_id` (a wrong/absent id or a camera session answers result `-104`).
    */
   requestFaces(opts: { accountId?: string; channel?: number } = {}): void {
@@ -2845,7 +2835,7 @@ export class P2PSession extends EventEmitter {
     // on. An allowlist of wrappers would keep those silent.
     //
     // A bare result is exactly four bytes, not merely long enough: on the wire a control reply is a
-    // 36-byte sign-8 frame carrying four bytes of plaintext, measured across two captures. A frame
+    // 36-byte sign-8 frame carrying four bytes of plaintext. A frame
     // the decrypt above could not open stays ciphertext — the level-1 path needs 16-byte alignment
     // and the level-2 path can decline — and ciphertext is neither JSON nor four bytes, so a length
     // test alone would read its first word and report a fabricated code for a command whose answer

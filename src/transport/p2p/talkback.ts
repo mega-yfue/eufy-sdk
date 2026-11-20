@@ -50,8 +50,8 @@ export interface TalkbackOptions {
   encoder?: AacEncoder;
   /**
    * Releases the media session this talkback is riding inside. Called once on {@link Talkback.stop}.
-   * The device only plays host audio while its media session is open (verified live: the identical
-   * frames are silent without one), so the session is held for the talkback's whole lifetime.
+   * The device only plays host audio while its media session is open (the identical frames are
+   * silent without one), so the session is held for the talkback's whole lifetime.
    */
   releaseMedia?(): void;
   /**

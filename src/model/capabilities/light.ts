@@ -12,28 +12,26 @@ import type { Command } from "../../core/contracts.js";
  * generated `transport/p2p/commands.ts`).
  */
 export const LIGHT_CMD = {
-  /** Spotlight momentary on/off; `{time,type,value}` under 1700. ✅ Verified via P2P state readback (3/3). */
+  /** Spotlight momentary on/off; `{time,type,value}` under 1700. */
   FLOODLIGHT_SWITCH: 1400,
   /**
-   * Spotlight brightness 1..100. ✅ SOLVED & verified live (T8425 + T8124): direct-binary command,
+   * Spotlight brightness 1..100: direct-binary command,
    * 136-byte struct `[u32 ch][u32 value][account_id pad→128]` (value = raw 1..100), NOT a JSON wrapper.
    */
   SPOTLIGHT_BRIGHTNESS: 1401,
-  /** Spotlight master enable — distinct from the on/off switch. ✅ Verified live T8124 (same 136-byte direct-binary struct as brightness). */
+  /** Spotlight master enable — distinct from the on/off switch. Same 136-byte direct-binary struct as brightness. */
   SPOTLIGHT_ENABLE: 1403,
-  /** Spotlight color temperature 0=warm..100=cool. ✅ Verified live T8124 (only tunable-white spotlights respond; T8425 is white-only). */
+  /** Spotlight color temperature 0=warm..100=cool. Only tunable-white spotlights respond. */
   SPOTLIGHT_COLOR_TEMP: 1410,
   /**
-   * Auto-spotlight = "motion-activated light" — light up when motion fires. ✅ Wire reversed from a live
-   * OUTBOUND P2P capture + replay-verified on T8425 (ch3, 2026-07-13, ON+OFF): the real command
+   * Auto-spotlight = "motion-activated light" — light up when motion fires. The command
    * is **cmd 1422**, carried in a `1350` SET_PAYLOAD envelope on the DEVICE channel (mChannel = device
    * channel, mValue3 0), with a COMPOSITE payload — NOT a bare bool:
    *   `{brightness:0..100, enable:0|1, latitude:"", longtitude:"" (sic), mode:1, schedule:[], sunset2rise:0, time}`
    * `enable` is the on/off; `time` = auto-off seconds; `mode`/`schedule`/`sunset2rise` are the scheduling
    * knobs. See {@link AutoSpotlightOptions}.
-   * NB: the app-JS constant `APP_CMD_SET_LIGHT_CTRL_PIR_SWITCH` (1408) is a RED HERRING for this device —
-   * the T8425 never emits 1408; three 1408 wire attempts all no-op'd. (No `1408` constant is defined — it's
-   * dead; do not add one.)
+   * NB: the app-JS constant `APP_CMD_SET_LIGHT_CTRL_PIR_SWITCH` (1408) is not this wire. No `1408` constant
+   * is defined; do not add one.
    */
   MOTION_ACTIVATE_LIGHT: 1422,
 } as const;
@@ -69,7 +67,7 @@ export type LightActions = Surface<typeof LIGHT_MEMBERS> & {
    * Enable/disable the **motion-activated light** (auto-spotlight): the spotlight lights up when the
    * camera detects motion.
    *
-   * ⚠️ This is a COMPOSITE write, and it is WRITE-ONLY: the setting is not reported back in the device's
+   * This is a COMPOSITE write, and it is WRITE-ONLY: the setting is not reported back in the device's
    * params, so the current config cannot be read and merged. Calling it with just `on` re-sends the
    * DEFAULT brightness/auto-off/mode ({@link AutoSpotlightOptions}), overwriting whatever the user set.
    * To preserve their config, pass the current values in `opts`. That is why this is a method and not a
@@ -88,7 +86,7 @@ const BRIGHTNESS_MAX = 100;
 
 /**
  * Build the SET_PAYLOAD command for the motion-activated light (1422). The device wants the FULL composite
- * config every time (see {@link AutoSpotlightOptions}); `enable` is the on/off. The captured frame sends
+ * config every time (see {@link AutoSpotlightOptions}); `enable` is the on/off. The frame sends
  * mChannel = device channel + mValue3 0 with no channel inside the payload — so `setPayload(..., 0)` leaves
  * `channel` at ctx.channel. Vendor's key `longtitude` is misspelled on the wire; we match it exactly.
  */
@@ -130,16 +128,15 @@ function autoSpotlightCommand(on: boolean, ctx: CommandContext, opts: AutoSpotli
  * the shared family classifier. Provisional split, to be confirmed against the decompiled V6 app /
  * a confirmed exchange:
  *  - `"json"`: JSON control-payload (`{commandType:1400,data:{time,type,value}}` under 1700) —
- *    FLOODLIGHT_8425, wall-light cams (incl. the Wall Light Cam S4, T86C1, deviceType 298, confirmed
- *    live), indoor pan/tilt (31/35) and CAMERA_4G_S330.
+ *    FLOODLIGHT_8425, wall-light cams (incl. the Wall Light Cam S4, T86C1, deviceType 298), indoor pan/tilt (31/35) and CAMERA_4G_S330.
  *  - `"int-string"`: level-1 int+string — indoor/outdoor 1080p/2K siblings, outdoor-PT/solo-E30,
- *    E330 Pro (T8600, deviceType 24, confirmed live), and the Cam2C/Cam2/Cam3 families.
+ *    E330 Pro (T8600, deviceType 24), and the Cam2C/Cam2/Cam3 families.
  *  - {@link ATTACHED_INT_STRING_MODELS} switch by topology: `"int-string"` only on a HomeBase.
  * NOTE: this is FRAME SHAPE only, not encryption LEVEL. The level (L1 vs L2) is a runtime topology
  * trait resolved at send time — never fixed by family here. The switch shape happens to be L1 for
  * both branches; brightness/colorTemp (below) are a separate, pinned case.
  * The switch WIRE is a vendor-family trait no reported param distinguishes (a T8425 and a T8442
- * both report 1400 yet send it differently — T8442 confirmed int-string by live capture).
+ * both report 1400 yet send it differently).
  */
 function lightSwitchWire(ctx: AvailabilityContext): "json" | "int-string" | undefined {
   if (ATTACHED_INT_STRING_MODELS.has(ctx.model ?? "") && ctx.homeBaseAttached === true) return "int-string";
@@ -153,7 +150,7 @@ function lightSwitchWire(ctx: AvailabilityContext): "json" | "int-string" | unde
 /**
  * DeviceTypes whose floodlight switch (1400) uses the JSON control-payload wire. The wall-light cams
  * are the whole {@link WALL_LIGHT_TYPES} family (reused from the classifier so a new wall-light model
- * is picked up in one place); the rest are individually wire-confirmed members, not whole families.
+ * is picked up in one place); the rest are individual members, not whole families.
  */
 const LIGHT_SWITCH_JSON_TYPES: ReadonlySet<number> = new Set<number>([
   DeviceType.FLOODLIGHT_CAMERA_8425,
@@ -194,7 +191,7 @@ function switchCommand(on: boolean, wire: "json" | "int-string", ctx: CommandCon
 
 /**
  * A brightness/color-temp/master-enable intent. Forced to the level-2 `"direct-binary"` frame — the
- * only form captured for these params.
+ * only known form for these params.
  *
  * TODO(L2-on-standalone): direct-binary needs a level-2 GCM key — standalone indoor/solo/outdoor-PT
  * cams never negotiate one, so these silently fail there (same class as the camera-power bug). Not
@@ -214,13 +211,13 @@ function directBinary(param: number, value: number, ctx: CommandContext): Comman
  * clobber whatever the user set. It stays the explicit `setAutoSpotlight(on, opts)` method, where the
  * composite is visible at the call site.
  *
- * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * Exported but NOT published: each entry states its wire id and its gate,
  * which the reference site does not carry.
  * @internal
  */
 export const LIGHT_MEMBERS = {
   /**
-   * Whether the lamp is lit RIGHT NOW — the momentary switch, not a setting. Measured on a T8170: 1400
+   * Whether the lamp is lit RIGHT NOW — the momentary switch, not a setting. 1400
    * goes to `1` when a client lights the spotlight and back to `0` when that client stops, so the value
    * tracks whoever is streaming rather than a preference anyone set. The vendor app lights the lamp for a
    * live view and drops it on quitting.
@@ -236,9 +233,7 @@ export const LIGHT_MEMBERS = {
     property: "light",
     type: "bool",
     kind: "boolean",
-    description:
-      "Light on/off (1400) — lit right now, not a setting: it follows whichever client is streaming. " +
-      "Verified via P2P state readback (3/3); session-scoped behaviour measured live on a T8170.",
+    description: "Light on/off (1400) — lit right now, not a setting: it follows whichever client is streaming.",
     write: (v, ctx) => {
       const wire = lightSwitchWire(ctx);
       return wire && switchCommand(asBool(v), wire, ctx);
@@ -250,7 +245,7 @@ export const LIGHT_MEMBERS = {
   /**
    * Manual level for the spotlight, 1-100 — the floor is 1 rather than 0 because a 0 reads as "off" and
    * that is `isOn`'s job. The write is pinned to the level-2 direct-binary frame (`directBinary`),
-   * the only shape captured for it, so a standalone camera that never negotiates a level-2 key cannot
+   * the only known shape for it, so a standalone camera that never negotiates a level-2 key cannot
    * set it even though the getter reads fine.
    */
   brightness: {
@@ -260,7 +255,7 @@ export const LIGHT_MEMBERS = {
     kind: "percent",
     min: BRIGHTNESS_MIN,
     max: BRIGHTNESS_MAX,
-    description: "Manual brightness, range 1-100 (1401). Verified live (T8425 + T8124).",
+    description: "Manual brightness, range 1-100 (1401).",
     write: (v, ctx) => directBinary(LIGHT_CMD.SPOTLIGHT_BRIGHTNESS, Number(v), ctx),
   },
   /**
@@ -284,19 +279,15 @@ export const LIGHT_MEMBERS = {
    * where `isOn` is the momentary switch. `writeAs` names the setter `setEnabled` rather than the
    * `setSpotlightEnabled` the key would derive, since the capability is already the spotlight.
    *
-   * Reported, so it is a read as well as a write. ✅ Verified live on a T8170: the cloud device list
-   * carries 1403, and its value tracks the vendor app's spotlight setting in both directions — `1` to `0`
-   * when the setting is switched off, `0` to `1` when it is switched back on, so the polarity is direct
-   * and 1 means enabled. The poll reports a param only when its PREVIOUS value differed, so the id is in
-   * the record rather than newly appearing. The param dictionary names it `floodlightTotalSwitch`
-   * (`app:FLOODLIGHT_TOTAL_SWITCH`) and lists the T8170 among its models.
+   * Reported, so it is a read as well as a write: the cloud device list carries 1403, and its value
+   * tracks the vendor app's spotlight setting in both directions. The polarity is direct, 1 means
+   * enabled. The param dictionary names it `floodlightTotalSwitch` (`app:FLOODLIGHT_TOTAL_SWITCH`).
    *
    * This is the switch a user changes and expects to STAY changed. {@link isOn} is a different fact:
    * the lamp being lit right now, driven by whichever
    * client is streaming — the vendor app lights it for a live view and drops it on quitting.
    *
-   * The T8423 write takes the session-chosen level; level-1 int+string was verified live on a standalone
-   * unit.
+   * The T8423 write takes the session-chosen level (level-1 int+string on a standalone unit).
    */
   spotlightEnabled: {
     param: LIGHT_CMD.SPOTLIGHT_ENABLE,
@@ -304,7 +295,7 @@ export const LIGHT_MEMBERS = {
     kind: "boolean",
     description:
       "The spotlight master switch, distinct from the on/off above — whether the spotlight may light at " +
-      "all. Read verified live on a T8170 (param 1403, direct polarity: 1 = enabled).",
+      "all (param 1403, direct polarity: 1 = enabled).",
     write: (v, ctx) =>
       setScalar(
         LIGHT_CMD.SPOTLIGHT_ENABLE,

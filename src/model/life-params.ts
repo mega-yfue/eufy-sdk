@@ -7,9 +7,8 @@
  * outbound leg (`0xa1` is a timestamp there, power here) — device→app and app→device are two separate
  * mappings over one tag range.
  *
- * CONFIRMED two ways (2026-07-28): decoded live off a real T8L02's status reports, matching the app's
- * own `deviceInfoPayloadDataParse` transcription field for field. Each entry's DP tag and the app's
- * field name for it are noted beside it.
+ * The layout is the app's own `deviceInfoPayloadDataParse` transcription. Each entry's DP tag and the
+ * app's field name for it are noted beside it.
  *
  * Names match the `PropertySpec.name`s in `capabilities/smart-light.ts` so a value resolves to the same
  * property whether it arrives through this dictionary or the capability's own spec table.

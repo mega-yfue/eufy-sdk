@@ -19,7 +19,7 @@ import type { Command, ScalarForm } from "../../core/contracts.js";
  * ## `ScalarForm`
  * - `"auto"` — a scalar int whose encryption level the **session** decides: L2 direct-binary when a
  *   level-2 key is negotiated, else L1 int-string. Correct for params that are the same bytes either
- *   way (camera power 1035 — verified live on standalone T8410 = L1 and HomeBase T8114 = L2).
+ *   way (camera power 1035).
  * - `"int-string"` — force the L1 int+string frame. For params the firmware only accepts as level-1
  *   even on a HomeBase (status LED 1045; the Cam2C/2/3 floodlight switch 1400).
  * - `"direct-binary"` — force the L2 binary "direct" frame (spotlight brightness/color-temp/enable).
@@ -53,7 +53,7 @@ export function setJson(param: number, data: Record<string, unknown> | number, c
  * Set a param carried as BARE JSON, no envelope at all — the wire's outer P2P command IS `cmd`
  * itself, GCM signCode 8, plaintext exactly `{account_id,...data}` (the sink injects `account_id`).
  * Distinct from {@link setJson}, which always wraps in the `1700` CONTROL_PAYLOAD `{commandType,data}`
- * shape. Reversed from a live capture of the app's own SET_SNOOZE_TIME (1271) frame.
+ * shape. The shape of the app's own SET_SNOOZE_TIME (1271) frame.
  *
  * `channel` overrides the device channel — pass it for a station-scoped bare write (e.g. the
  * alarm-delay config 1255, which rides the station broadcast channel 255, not `ctx.channel`). `form`

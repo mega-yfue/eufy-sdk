@@ -16,11 +16,11 @@
  *   const client = new tuya.TuyaClient({ sid });
  *
  * STATUS:
- *   ✅ sign = HMAC-SHA256(TUYA_SIGN_K, preimage) — reproduces a live-captured signature
- *   ✅ chKey = "7cbfe6d8" per-appId constant
- *   ✅ login() — username.token.get → RSA-encrypt(MD5(password)) → password.login.reg
- *      (shadow account must be provisioned via eufy Security app first)
- *   ✅ getDeviceDps / publishDps builders ready; publishDps gated behind allowUnverified
+ *   - sign = HMAC-SHA256(TUYA_SIGN_K, preimage)
+ *   - chKey = "7cbfe6d8" per-appId constant
+ *   - login() — username.token.get → RSA-encrypt(MD5(password)) → password.login.reg
+ *     (shadow account must be provisioned via eufy Security app first)
+ *   - getDeviceDps / publishDps builders; publishDps gated behind allowUnverified
  */
 export * from "./account.js";
 export * from "./sign.js";

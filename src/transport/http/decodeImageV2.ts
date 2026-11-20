@@ -23,8 +23,6 @@
  * implies and writes it into the DQT — which recovers the camera's own quality factor closely enough
  * that a thumbnail encoded at quality 30 comes back at 31, rather than washed out.
  *
- * Cracked keylessly 2026-06-04; verified against a live V6 production thumbnail (632×472, 4:4:4).
- *
  * @remarks
  * **Why the search reads the scan rather than decoding candidate frames.** "Does the scan fill this
  * frame?" can be asked by splicing a candidate header on and handing it to `jpeg-js`, since the decoder

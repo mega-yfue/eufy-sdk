@@ -1,8 +1,7 @@
 /**
  * Anker secure-MQTT topic vocabulary + the per-line credential scope.
  *
- * Two facts about this broker drive everything here, both CONFIRMED live (2026-07-28) against a real
- * `eufy_life` light and cross-read from the disassembled V6 app
+ * Two facts about this broker drive everything here, both read from the V6 app
  * (`com.anker.esiotkit.security_device.mqtt.SecurityMqttConstant`, `mqtt_serve.dart`):
  *
  *  - **The device→app leg is not `/res` for every line.** `eufy_life` reports land on `/app/res`;
@@ -21,11 +20,11 @@ import type { EufyDevice } from "../../core/types.js";
 
 /**
  * Which `get_user_mqtt_info` credential a device's realtime traffic rides on. `"default"` is the
- * headerless credential (observed `eufy_mega`-scoped) that serves every non-life MQTT device.
+ * headerless credential (`eufy_mega`-scoped) that serves every non-life MQTT device.
  *
  * A scope exists only where a DISTINCT credential does. `eufy_life` is one because its topic space is
  * denied to the default credential. The Clean line (`eufy_home`) is NOT: its
- * `cmd/eufy_home/<model>/<sn>/res` subscribe is confirmed against a T2351 on the
+ * `cmd/eufy_home/<model>/<sn>/res` subscribe is granted on the
  * default credential, which is the only one `get_user_mqtt_info` was ever asked for. Giving it a scope
  * of its own would open a second connection under the SAME `thing_name` — AWS IoT treats a duplicate
  * client id as a takeover and evicts the incumbent, so both lines would flap.
@@ -37,7 +36,7 @@ const EUFY_LIFE = "eufy_life";
 
 /**
  * The fixed topic prefix for clean-line devices (vacuum/mower) — `eufy_home` — regardless of what
- * `device.category` carries in the cloud record. Confirmed live against a T2351 (2026-07-30): the
+ * `device.category` carries in the cloud record. The
  * broker grants `cmd/eufy_home/…` on the default credential, and `device.category` may report
  * `"robovac"` or another string that is NOT the topic segment.
  */
@@ -83,11 +82,11 @@ export function secureTopic(device: EufyDevice, leg: "req" | "res"): string {
  * Every topic to subscribe for a device's inbound traffic.
  *
  * `eufy_life` (smart lights) gets the app's full four-topic set: `/app/res` (the state channel),
- * `/res` (present in the app's subscribe list but observed to carry nothing on this line),
+ * `/res` (present in the app's subscribe list but carrying nothing on this line),
  * `synq/…/state_info` (online/offline), and `/app/ota/res` (OTA progress).
  *
  * Clean-line devices (vacuum/mower) subscribe four topics on the `eufy_home` prefix:
- *   - `cmd/…/res` — device→app DP reports and command replies (confirmed live on T2351)
+ *   - `cmd/…/res` — device→app DP reports and command replies
  *   - `biz/…/res` — cloud→app business-layer responses (TopicManager.getBizReqTopic())
  *   - `biz/…/req` — cloud ACKs for app→cloud business requests (subscribe for ACKs)
  *   - `dt/…/param_info` — device-twin parameter push
