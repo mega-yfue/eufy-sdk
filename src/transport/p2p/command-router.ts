@@ -2087,7 +2087,7 @@ export class P2PCommandRouter {
             sn,
             `set-payload cmd ${cmd}`,
             ({ session, accountId }) =>
-              session.sendControlLevel2(cmd, channel, accountId, payload, mValue3 ?? cmd, false, unzip, counter),
+              session.sendControlLevel2(cmd, channel, accountId, payload, mValue3 ?? 0, false, unzip, counter),
             undefined,
             answer,
           ),
@@ -2097,7 +2097,7 @@ export class P2PCommandRouter {
       sn,
       `set-payload cmd ${cmd}`,
       ({ session, accountId, sendsClear }) =>
-        session.sendControlLevel2(cmd, channel, accountId, payload, mValue3 ?? cmd, sendsClear, unzip, counter),
+        session.sendControlLevel2(cmd, channel, accountId, payload, mValue3 ?? 0, sendsClear, unzip, counter),
       resolved ?? (await this.resolveSession(sn, { waitLevel2: true, level2Sender })),
       answer,
     );
