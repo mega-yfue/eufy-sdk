@@ -86,7 +86,9 @@ import {
   isNvrT8N00,
   isStation9000,
   isTuyaVacuum,
+  isVideoSmartLock,
 } from "../model/device-family.js";
+import { DeviceType } from "../model/device-types.js";
 import { cameraPowerTier } from "../model/capabilities/battery.js";
 import { DeviceRegistry, recordString, type DeviceRecord, type ParamChange } from "./device-registry.js";
 import { PushRepeats } from "./push-repeats.js";
@@ -126,6 +128,9 @@ function adminUserIdFrom(raw: unknown): string | undefined {
   const id = member?.admin_user_id;
   return typeof id === "string" && id ? id : undefined;
 }
+
+/** A parent that isn't the device itself means HomeBase-attached. */
+const homeBaseAttached = (raw: Record<string, any>, sn: string): boolean => !!raw.parent_sn && raw.parent_sn !== sn;
 
 /**
  * Extract the Tuya device id from a `eufy_home_tuya` device's raw cloud record.
@@ -1329,8 +1334,9 @@ export class EufyMega extends EventEmitter {
   /**
    * Choose the transport stack for one command — the routing half of {@link commandSinkFor}.
    *
-   * The `ff09-*` kinds share ONE frame that rides either transport, so each stack is asked whether it
-   * drives this device (`claimsDevice`) rather than inferring from the kind; `keyed-payload-actuate` (the
+   * The `ff09-*` kinds share ONE frame that rides either transport. A standalone video lock takes them over
+   * secure MQTT although it has a P2P endpoint; for any other device each stack is asked whether it drives
+   * it (`claimsDevice`) rather than inferring from the kind; `keyed-payload-actuate` (the
    * classic Wi-Fi lock) is routed the same way, a channel-less actuation claimed by the stack that drives
    * the lock. `registry.require` throws on an unloaded serial, so a routing decision never silently falls
    * through to the wrong transport.
@@ -1351,6 +1357,7 @@ export class EufyMega extends EventEmitter {
       cmd.kind === "keyed-payload-actuate"
     ) {
       const dev = this.registry.require(sn);
+      if (this.ff09OverMqtt(dev)) return this.mqtt.dispatchCommand(sn, cmd);
       if (P2PCommandRouter.claimsDevice(dev)) return this.p2p.dispatchCommand(sn, cmd);
       if (MqttCommandRouter.claimsDevice(dev)) return this.mqtt.dispatchCommand(sn, cmd);
       throw new Error(`no transport stack claims device ${sn} for a ${cmd.kind} command`);
@@ -1557,6 +1564,14 @@ export class EufyMega extends EventEmitter {
     return dev;
   }
 
+  /** A standalone video lock takes its `ff09` frames over secure MQTT although it has a P2P endpoint. */
+  private ff09OverMqtt(dev: EufyDevice): boolean {
+    const raw = (dev.raw ?? {}) as Record<string, any>;
+    const deviceType = raw.device_type;
+    const videoLock = isVideoSmartLock({ deviceType }) || deviceType === DeviceType.LOCK_85V0;
+    return videoLock && !homeBaseAttached(raw, dev.sn);
+  }
+
   /**
    * The {@link Ff09SettingsReader} behind `dev.lock()?.getAutoLockState()` — picks P2P vs MQTT the same
    * way {@link commandSinkFor} does for writes, so `lock.ts` never has to know which transport this
@@ -1574,7 +1589,7 @@ export class EufyMega extends EventEmitter {
     const deviceSn = ctx.serial ?? "";
     return {
       getAutoLockState: () =>
-        ctx.hasP2p
+        ctx.hasP2p && !this.ff09OverMqtt(this.registry.require(sn))
           ? this.p2p.getAutoLockState(sn, { adminUserId, deviceSn })
           : this.mqtt.getAutoLockState(sn, { adminUserId, deviceSn }),
     };
@@ -2530,8 +2545,7 @@ export class EufyMega extends EventEmitter {
       // The same claim the command sink routes on — a capability gates its P2P-only variants (e.g.
       // setRainMode) on this. Keyed on the P2P stack's own predicate (a usable `p2p_did` endpoint).
       hasP2p: P2PCommandRouter.claimsDevice(dev),
-      // Topology as the record states it: a parent that isn't the device itself means HomeBase-attached.
-      homeBaseAttached: !!raw.parent_sn && raw.parent_sn !== dev.sn,
+      homeBaseAttached: homeBaseAttached(raw, dev.sn),
       stationDeviceType: this.stationDeviceTypeOf(sn),
       refusedCommandKinds,
       dpCatalog,

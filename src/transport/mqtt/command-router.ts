@@ -261,7 +261,8 @@ export class MqttCommandRouter {
   /**
    * Whether this transport stack drives `dev`'s `ff09-*` commands — a **eufy-cloud device**
    * (`api === "mega"`) with NO usable P2P endpoint (empty `p2p_did`): a standalone lock/garage (T85D0),
-   * an appliance, and so on. Named positively by the plane it drives rather than "anything without a
+   * an appliance, and so on. A standalone video lock also takes its `ff09` frames on this stack, although its
+   * P2P endpoint keeps it unclaimed here. Named positively by the plane it drives rather than "anything without a
    * P2P id", so a device on another cloud (a printer, `api === "ankermake"`) is claimed by NEITHER this
    * stack nor {@link P2PCommandRouter.claimsDevice} instead of falling onto the eufy MQTT plane. (See
    * P2P's `claimsDevice` for why the endpoint, not the `realtime` tag, is the routing fact.)
@@ -272,8 +273,8 @@ export class MqttCommandRouter {
 
   /**
    * Route a transport-neutral {@link Command} to the secure-MQTT wire — the MQTT half of the command
-   * sink. The `ff09-actuate`/`ff09-autolock` (locks/garage) and `mqtt-dp`/`mqtt-dp-color`/`mqtt-dp-preset`
-   * (`eufy_life` lights) kinds reach here (the facade fans everything else to the P2P router); any
+   * sink. The `ff09-actuate`/`ff09-autolock` (a lock/garage without a P2P endpoint, or a standalone video lock)
+   * and `mqtt-dp`/`mqtt-dp-color`/`mqtt-dp-preset` (`eufy_life` lights) kinds reach here (the facade fans everything else to the P2P router); any
    * other kind is a routing bug, so fail loud rather than resolve as a silent success.
    */
   async dispatchCommand(sn: string, cmd: Command): Promise<void> {
@@ -297,7 +298,7 @@ export class MqttCommandRouter {
         await this.dispatchAiotDp(sn, cmd);
         return;
       default:
-        // The facade sink routes an ff09-* command here only for an MQTT device (no P2P endpoint).
+        // An ff09-* command reaches here for a device with no P2P endpoint or a standalone video lock.
         // `ff09-setting-toggle` (Rain Mode) has no MQTT form, so one reaching here is a routing bug; fail
         // loud rather than guess a shape that is not known to exist. Same for any non-ff09 or non-aiot-dp
         // kind (the facade routes those to P2P).
@@ -471,7 +472,7 @@ export class MqttCommandRouter {
   }
 
   /**
-   * The `ff09-actuate` intent handler over MQTT — a standalone lock/garage door (T85D0) with no P2P endpoint.
+   * The `ff09-actuate` intent handler over MQTT: sends one lock or unlock frame to the device.
    * Builds the same `ff09` frame the P2P lock uses (`transport/ff09.ts`), wraps it in the MQTT `trans`
    * envelope (`buildFf09Trans`/`buildFf09MqttEnvelope`, this module), discovers which broker instance holds the device's
    * live session (see {@link ensureSecurityMqttFor}), and publishes to `cmd/eufy_security/{pn}/{sn}/req`.
