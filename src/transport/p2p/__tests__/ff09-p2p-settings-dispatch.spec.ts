@@ -99,6 +99,7 @@ function makeRouter(opts: {
         });
       });
     }
+    queueMicrotask(() => session.emit("commandResult", { code: 0, channel, commandId: 1350 }));
     return true;
   });
 

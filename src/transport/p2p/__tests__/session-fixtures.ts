@@ -39,8 +39,8 @@ export interface FakeP2PSession extends EventEmitter {
 /**
  * Run `call` on fake timers, every timed wait in it expired at once, then hand back its outcome.
  *
- * The router replays an unacknowledged command five times 200 ms apart; on real timers each such spec
- * sleeps through it. A rejection that lands while the timers run is the caller's to assert.
+ * The router holds a device's slot until a command's answer or its deadline; on real timers each such spec
+ * waits through it. A rejection that lands while the timers run is the caller's to assert.
  */
 export async function onFakeTime<T>(call: () => Promise<T>): Promise<T> {
   vi.useFakeTimers();

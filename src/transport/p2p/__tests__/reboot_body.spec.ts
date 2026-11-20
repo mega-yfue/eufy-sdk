@@ -43,7 +43,7 @@ describe("RESTART_HUB reboot frame", () => {
  * sealed level-1, since a level-2 frame cannot be built without the key.
  */
 describe("RESTART_HUB on a keyless session", () => {
-  it("sends the captured body sealed level-1 on channel 255, replayed", async () => {
+  it("sends the captured body sealed level-1 on channel 255, once", async () => {
     const session = Object.assign(connectedSession(false), {
       sendRawLevel2Bytes: vi.fn(() => true),
       sendRawLevel1Bytes: vi.fn(() => true),
@@ -55,6 +55,6 @@ describe("RESTART_HUB on a keyless session", () => {
       255,
       P2P_ENVELOPE.RESTART_HUB,
     );
-    expect(session.sendRawLevel1Bytes.mock.calls.length).toBeGreaterThan(1);
+    expect(session.sendRawLevel1Bytes).toHaveBeenCalledTimes(1);
   });
 });
