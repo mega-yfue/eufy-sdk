@@ -51,10 +51,6 @@ import { dpPresetFields, dpLevelFields, type DpPresetSpec } from "../dp-preset.j
 import { dpColorFields } from "./dp-color.js";
 import { buildCleanDpEnvelope } from "./clean-codec.js";
 
-/** The app's `snToPn` fallback for a lock serial: the T8520 range splits on its 7th character. */
-const pnFromSerial = (sn: string): string =>
-  sn.startsWith("T8520") ? ({ "8": "T8510P", "9": "T8520P" }[sn.charAt(6)] ?? "T8520") : sn.slice(0, 5);
-
 /**
  * The ff09 command topic — always the `eufy_security` scope, regardless of the device's own category
  * (garage/standalone lock records aren't necessarily `eufy_security`-categorized, but this is the one
@@ -342,13 +338,36 @@ export class MqttCommandRouter {
   }
 
   /**
-   * The record with `model` set to the product number `ff09` topics name: `device_new_pn`, else the app's
-   * serial-derived fallback, never `device_model` (a C30 reports `T85D0C` and answers only on `T85D0`).
+   * The record with `model` set to the product number its topics name, as the app's `snToPn`: `device_new_pn`,
+   * else the serial ({@link pnFromSerial}), never `device_model` (a C30 reports `T85D0C` and answers only on `T85D0`).
    */
-  private async ff09DeviceFor(sn: string): Promise<EufyDevice> {
+  private async pnDeviceFor(sn: string): Promise<EufyDevice> {
     const dev = await this.deviceFor(sn);
     const pn = (dev.raw as { device_new_pn?: unknown } | undefined)?.device_new_pn;
-    return { ...dev, model: typeof pn === "string" && pn ? pn : pnFromSerial(sn) };
+    return { ...dev, model: typeof pn === "string" && pn ? pn : await this.pnFromSerial(sn) };
+  }
+
+  /**
+   * `get_pn_by_sn` answers per serial, kept like the app's `DevicePnCache`: a failed call keeps `""`. The
+   * promise is kept, so commands racing on a serial share one call.
+   */
+  private readonly cloudPn = new Map<string, Promise<string>>();
+
+  /**
+   * The app's `snToPn` past `device_new_pn` (`CoreSnKtxKt.snToPn`): a serial of 6 characters or fewer is its own
+   * product number; else the app's prefix rules, a product number already given as is, then the cloud's
+   * `get_pn_by_sn`, and an empty answer takes the serial's first five characters.
+   */
+  private async pnFromSerial(sn: string): Promise<string> {
+    if (sn.length <= 6) return sn;
+    const ruled = serialPn(sn);
+    if (ruled !== undefined) return ruled;
+    let pn = this.cloudPn.get(sn);
+    if (!pn) {
+      pn = this.deps.mega.getPnBySn(sn).catch(() => "");
+      this.cloudPn.set(sn, pn);
+    }
+    return (await pn) || sn.slice(0, 5);
   }
 
   /**
@@ -514,7 +533,7 @@ export class MqttCommandRouter {
    * unlike a fixed-sleep-then-teardown, where a late reply arrives after the subscription is already gone.
    */
   private async dispatchFf09Actuate(sn: string, cmd: Extract<Command, { kind: "ff09-actuate" }>): Promise<void> {
-    const dev = await this.ff09DeviceFor(sn);
+    const dev = await this.pnDeviceFor(sn);
     const trans = this.sequenced(
       sn,
       buildFf09Trans({
@@ -588,7 +607,7 @@ export class MqttCommandRouter {
    *     as-is rather than adding keyTime correlation this ack doesn't otherwise need.
    */
   private async dispatchFf09Autolock(sn: string, cmd: Extract<Command, { kind: "ff09-autolock" }>): Promise<void> {
-    const dev = await this.ff09DeviceFor(sn);
+    const dev = await this.pnDeviceFor(sn);
 
     const { mqtt, instanceIp } = await this.ensureSecurityMqttFor(dev);
     try {
@@ -689,7 +708,7 @@ export class MqttCommandRouter {
    * + decodes fields `a1`-`a5` per `transport/ff09.ts`'s response tag map.
    */
   async getAutoLockState(sn: string, cmd: { adminUserId: string; deviceSn: string }): Promise<AutoLockSnapshot> {
-    const dev = await this.ff09DeviceFor(sn);
+    const dev = await this.pnDeviceFor(sn);
     const { mqtt, instanceIp } = await this.ensureSecurityMqttFor(dev);
     try {
       await mqtt.subscribeDevice(dev);
@@ -751,7 +770,7 @@ export class MqttCommandRouter {
    * ({@link buildDpFrame} prepends the `a1` timestamp + `a2` account id) and publishes it.
    */
   private async dispatchMqttDp(sn: string, cmd: Extract<Command, { kind: "mqtt-dp" }>): Promise<void> {
-    const dev = await this.deviceFor(sn);
+    const dev = await this.pnDeviceFor(sn);
     if (dev.category !== "eufy_life") return this.dispatchLockDp(sn, cmd);
     const accountId = this.requireAccountId(dev);
     const frame = buildDpFrame(cmd.cmdCode, accountId, cmd.fields);
@@ -765,7 +784,7 @@ export class MqttCommandRouter {
    * envelope under `head.cmd = mqttCmdCode`, on the device's `eufy_security` topic.
    */
   private async dispatchLockDp(sn: string, cmd: Extract<Command, { kind: "mqtt-dp" }>): Promise<void> {
-    const dev = await this.ff09DeviceFor(sn);
+    const dev = await this.pnDeviceFor(sn);
     const adminUserId = this.requireAccountId(dev);
     const frame = buildFf09TlvFrame({
       cmdCode: cmd.cmdCode,
@@ -795,7 +814,7 @@ export class MqttCommandRouter {
 
   /** Serialize and publish one semantic RGB DP action without changing configured brightness. */
   private async dispatchDpColor(sn: string, cmd: Extract<Command, { kind: "mqtt-dp-color" }>): Promise<void> {
-    const dev = await this.deviceFor(sn);
+    const dev = await this.pnDeviceFor(sn);
     const accountId = this.requireAccountId(dev);
     const fields = dpColorFields(cmd);
     const frame = buildDpFrame(cmd.cmdCode, accountId, fields);
@@ -811,7 +830,7 @@ export class MqttCommandRouter {
    * `eufy_life` (smart lights) gets its own certificate.
    */
   private async dispatchAiotDp(sn: string, cmd: Extract<Command, { kind: "aiot-dp" }>): Promise<void> {
-    const dev = await this.deviceFor(sn);
+    const dev = await this.pnDeviceFor(sn);
     if (!this.deps.resolveAccountId) {
       throw new Error(`aiot-dp for ${sn}: resolveAccountId dependency not wired`);
     }
@@ -836,7 +855,7 @@ export class MqttCommandRouter {
     if (!this.deps.resolvePreset) {
       throw new Error(`mqtt-dp-preset for ${sn}: resolvePreset dependency not wired`);
     }
-    const dev = await this.deviceFor(sn);
+    const dev = await this.pnDeviceFor(sn);
     const accountId = this.requireAccountId(dev);
     const spec = await this.deps.resolvePreset(cmd.presetId);
     const effectFrame = buildDpFrame(cmd.cmdCode, accountId, dpPresetFields(spec));
@@ -847,4 +866,46 @@ export class MqttCommandRouter {
     }
     this.deps.onCommandAck({ sn, kind: "mqtt-dp-preset", presetId: cmd.presetId, acked: true });
   }
+}
+
+/** The product numbers `snToPn` returns as given. */
+const PN_AS_IS = new Set([
+  "T2276T",
+  "T2080A",
+  "T2261EV",
+  "T2261A",
+  "T2261B",
+  "T2262A",
+  "T2262EV",
+  "T2262_77",
+  "T2262B",
+  "T2255D",
+  "T2256D",
+  "T2272D",
+  "T2273D",
+  "T2270D",
+  "T2270",
+  "T2254D",
+  "T2272DS",
+  "T2273DS",
+  "T2253DS",
+  "T2253D",
+  "T2250DS",
+  "T2250D",
+  "T2292B",
+  "T2880B",
+  "T2801B",
+]);
+
+/** `snToPn`'s serial rules for a serial over 6 characters, `undefined` where it asks the cloud. */
+export function serialPn(sn: string): string | undefined {
+  const c7 = sn.charAt(6);
+  if (sn.startsWith("T8W11P")) return "T8W11C";
+  if (sn.startsWith("T8420")) return c7 === "6" ? "T8420X" : "T8420";
+  if (sn.startsWith("T8520")) return c7 === "8" ? "T8510P" : c7 === "9" ? "T8520P" : "T8520";
+  if (sn.startsWith("T2276T")) return "T2276T";
+  if (sn.startsWith("T2080A")) return "T2080A";
+  if (sn.startsWith("T8210")) return c7 === "8" ? "T8210C" : "T8210";
+  if (sn.startsWith("T8410")) return c7 === "5" ? "T8410C" : "T8410";
+  return PN_AS_IS.has(sn) ? sn : undefined;
 }

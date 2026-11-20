@@ -13,7 +13,12 @@ const SN = "T8531Q0000000000";
 const ADMIN = "0000000000000000000000000000000000000000";
 
 function lockRouter() {
-  const dev = { sn: SN, category: "eufy_security", model: "T8531", raw: {} } as unknown as EufyDevice;
+  const dev = {
+    sn: SN,
+    category: "eufy_security",
+    model: "T8531",
+    raw: { device_new_pn: "T8531" },
+  } as unknown as EufyDevice;
   const router = new MqttCommandRouter({
     mega: {} as never,
     listDevices: () => [dev],
