@@ -112,7 +112,7 @@ describe("resolving a session defers the level-2 wait to the session", () => {
   it("asks with the full grace where the key is a requirement", async () => {
     const { router, session } = setup(true);
     await router.p2pQuery(DEVICE_SN, 6237, { timeoutMs: 5 }).catch(() => {});
-    expect(session.awaitLevel2Key).toHaveBeenCalledWith(HARD_GRACE_MS, "call", "every");
+    expect(session.awaitLevel2Key).toHaveBeenCalledWith(HARD_GRACE_MS, "call");
   });
 
   /** A requirement the session reports it cannot meet is a refusal now, not a wait that ends in one. */
@@ -163,7 +163,7 @@ describe("a set-payload whose seal is the session's", () => {
 
     await expect(router.dispatchCommand(DEVICE_SN, envelope())).rejects.toBeInstanceOf(StationKeyUnavailableError);
 
-    expect(session.awaitLevel2Key).toHaveBeenCalledWith(HARD_GRACE_MS, "call", "every");
+    expect(session.awaitLevel2Key).toHaveBeenCalledWith(HARD_GRACE_MS, "call");
     expect(session.sendSetPayload).not.toHaveBeenCalled();
   });
 

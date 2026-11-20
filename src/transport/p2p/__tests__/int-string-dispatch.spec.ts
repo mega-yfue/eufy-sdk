@@ -64,7 +64,7 @@ describe("P2P int-plus-string command dispatch", () => {
     pair.writeUInt32LE(1, 0);
     pair.writeUInt32LE(3, 4);
     expect(session.sendIntStringCommand).not.toHaveBeenCalled();
-    expect(session.sendRawLevel2Bytes).toHaveBeenCalledWith(pair, 1, 1013, 8);
+    expect(session.sendRawLevel2Bytes).toHaveBeenCalledWith(pair, 1, 1013);
   });
 
   it("rejects missing account identity without sending", async () => {

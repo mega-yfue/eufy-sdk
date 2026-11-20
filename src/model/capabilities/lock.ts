@@ -69,7 +69,6 @@ function openLid(ctx: CommandContext, sink: CommandSink): Promise<void> {
     payload: { isOpen: 1, userIndex: 0 },
     channel: ctx.channel,
     mValue3: 0,
-    level2Sender: "set-payload",
   });
 }
 

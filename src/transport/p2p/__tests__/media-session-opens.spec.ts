@@ -195,7 +195,7 @@ describe("a second live camera on a claimed station session", () => {
     built[0].emit("level2Ready", { cipherId: 1 });
     built[1].emit("level2Ready", { cipherId: 1 });
 
-    expect(built[0].sent).toEqual([[Buffer.from("ff00000087030000", "hex"), 0, 1103, 8]]);
+    expect(built[0].sent).toEqual([[Buffer.from("ff00000087030000", "hex"), 0, 1103]]);
     expect(built[1].sent).toEqual([]);
   });
 

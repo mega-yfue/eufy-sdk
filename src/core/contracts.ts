@@ -445,11 +445,6 @@ export type Command = (
       channel: number;
       mValue3?: number;
       form?: ScalarForm;
-      /**
-       * `"set-payload"`: a level-2 key that seals only this envelope (an RSA cipher's AES-128-ECB key)
-       * may seal it. Absent, the send waits for the key every level-2 sender uses.
-       */
-      level2Sender?: "set-payload";
       /** The payload's keys at the top level of the envelope, in place of `payload` (`unzipParams`). */
       unzip?: true;
       /** Header byte 14: the session's counter bumped, or as it stands, as the app writes it for 1025. */

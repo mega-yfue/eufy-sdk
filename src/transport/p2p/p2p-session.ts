@@ -345,8 +345,7 @@ export interface P2PSessionConfig {
    * negotiation. When provided, the session auto-negotiates the **level-2** session key on connect: it
    * reads the `cipher_id` + envelope from the `CMD_GATEWAYINFO` reply and derives the key. With an ECC
    * key that is the ECIES unwrap and `setLevel2Key()` — so signCode 2/8 frames (camera info, event DB,
-   * event images) decrypt live. A cipher with no ECC key carries the key RSA-encrypted instead, and only
-   * {@link P2PSession.sendControlLevel2} seals with it.
+   * event images) decrypt live. A version-1 reply carries the key RSA-encrypted instead, unwrapped with the RSA key.
    */
   resolveCipherKey?: (cipherId: number) => Promise<string | { ecc?: string; rsa?: string } | undefined>;
   /** Diagnostics sink. Omit for silence. */
@@ -578,9 +577,10 @@ export class P2PSession extends EventEmitter {
   /** Negotiated 32-byte level-2/gateway key (AES-256-GCM). Set via setLevel2Key once known. */
   private level2Key?: Buffer;
   /**
-   * Negotiated 16-byte level-2 key of a cipher with no ECC key (RSA-encrypted in `CMD_GATEWAYINFO`). Only
-   * {@link sendControlLevel2} seals with it, AES-128-ECB in the level-1 layout at encryption type 2, and only
-   * while no {@link level2Key} is held; a connection may hold both, one per gateway-info version.
+   * Negotiated 16-byte level-2 key of a version-1 `CMD_GATEWAYINFO` (RSA-encrypted), the app's session slot
+   * `+0xd8` at sign mode 2. While no {@link level2Key} is held it seals every level-2 send, AES-128-ECB at version
+   * byte 1 and sign byte 2, and opens every sign-2 frame whose version byte is not 8; a connection may hold both,
+   * one per gateway-info version.
    */
   private level2EcbKey?: Buffer;
   private level2Seq = 0;
@@ -691,24 +691,13 @@ export class P2PSession extends EventEmitter {
     this.settleLevel2();
   }
 
-  /** Whether the AES-256-GCM level-2 session key has been negotiated/set. */
+  /** Whether a level-2 key is held: the AES-256-GCM key, or the AES-128-ECB key of a version-1 gateway info. */
   get hasLevel2Key(): boolean {
-    return !!this.level2Key;
-  }
-
-  /**
-   * Whether the held level-2 key can frame for `sender`: every level-2 sender needs the AES-256-GCM key,
-   * and `"set-payload"` ({@link sendControlLevel2}) also takes the AES-128-ECB key of an RSA cipher.
-   */
-  private level2KeyServes(sender: "every" | "set-payload"): boolean {
-    return !!this.level2Key || (sender === "set-payload" && !!this.level2EcbKey);
+    return !!(this.level2Key || this.level2EcbKey);
   }
 
   /**
    * Resolve with whether a level-2 key is available, waiting only while waiting can still change that.
-   * `sender` names who will frame with it: by default every level-2 sender, which needs the AES-256-GCM
-   * key; `"set-payload"` is {@link sendControlLevel2} alone, which also takes the AES-128-ECB key of an RSA
-   * cipher, so `true` for it does not imply {@link hasLevel2Key}.
    *
    * A `"session"` grace is measured once, not restarted per call. Best-effort media uses it because every
    * egress asks this same session and can proceed without the key on an own-session camera; a per-call
@@ -731,16 +720,12 @@ export class P2PSession extends EventEmitter {
    * `terminal` outcome is the one already stated where the negotiation concluded, since that is where the
    * cipher and the cause are known, and re-stating it here would double every settled negotiation.
    */
-  async awaitLevel2Key(
-    graceMs: number,
-    graceFrom: "call" | "session" = "call",
-    sender: "every" | "set-payload" = "every",
-  ): Promise<boolean> {
+  async awaitLevel2Key(graceMs: number, graceFrom: "call" | "session" = "call"): Promise<boolean> {
     if (this.closed) {
       this.trace({ phase: "level2-unavailable", reason: "session-closed" });
       return false;
     }
-    if (this.level2KeyServes(sender)) return true;
+    if (this.hasLevel2Key) return true;
     if (!this.level2Pending) {
       this.trace({ phase: "level2-unavailable", reason: "not-negotiating" });
       return false;
@@ -771,7 +756,7 @@ export class P2PSession extends EventEmitter {
       deadline.unref?.();
       waiters.push(wake);
     });
-    const served = outcome === "key" || (outcome === "terminal" && this.level2KeyServes(sender));
+    const served = outcome === "key";
     if (outcome === "timeout") {
       this.logger.debug(`[p2p] ${this.cfg.stationSn} level-2 key did not arrive within its grace`);
       this.trace({ phase: "level2-unavailable", reason: "grace-elapsed", waitedMs: remaining });
@@ -787,7 +772,7 @@ export class P2PSession extends EventEmitter {
   /** Record that the level-2 negotiation has finished, with or without a key, and wake every waiter. */
   private settleLevel2(reason: "terminal" | "closed" = "terminal"): void {
     this.level2Pending = false;
-    const outcome = this.level2Key ? "key" : reason;
+    const outcome = this.hasLevel2Key ? "key" : reason;
     for (const wake of this.level2Waiters.splice(0)) wake(outcome);
   }
 
@@ -796,11 +781,11 @@ export class P2PSession extends EventEmitter {
    * `cipher_id`, resolve that cipher's private keys once (cloud `get_ciphers`, via the configured
    * `resolveCipherKey`), run the ECIES unwrap with the ECC key, and `setLevel2Key()`. The frame's header
    * `version` picks the key, as the app's `NotifyInterceptor` does: 8 takes the ECC key, any other takes the
-   * RSA key and holds the RSA-decrypted 16-byte key as the AES-128-ECB level-2 key. Emits `level2Ready` only when the AES-256-GCM key is negotiated, traces
-   * `level2-set-payload-only` instead for the AES-128-ECB key, and emits `error` when the ECC unwrap
-   * fails; an RSA unwrap failure is only traced (non-fatal either way — level-1 traffic keeps working).
+   * RSA key and holds the RSA-decrypted 16-byte key as the AES-128-ECB level-2 key. Emits `level2Ready` for
+   * either key, and `error` when the ECC unwrap fails; an RSA unwrap failure is only traced (non-fatal either
+   * way — level-1 traffic keeps working).
    *
-   * The wait in {@link awaitLevel2Key} settles once the AES-256-GCM key is negotiated, or once the last negotiation in flight concludes, so a later
+   * The wait in {@link awaitLevel2Key} settles once a key is negotiated, or once the last negotiation in flight concludes, so a later
    * command is told at once rather than left to time out against a key that is not coming. Only that
    * concluding failure is traced: one failing while the other branch runs, or after the key is held, is
    * not the answer. Concluding re-opens the branch, so a later GATEWAYINFO reply in the same connection
@@ -812,7 +797,7 @@ export class P2PSession extends EventEmitter {
     const ecc = version === 8;
     const conclude = (unavailable?: LiveTrace): void => {
       this.level2Negotiating.delete(ecc);
-      if (this.level2Key || this.level2Negotiating.size) return;
+      if (this.hasLevel2Key || this.level2Negotiating.size) return;
       if (unavailable) this.trace(unavailable);
       this.settleLevel2();
     };
@@ -847,18 +832,15 @@ export class P2PSession extends EventEmitter {
           if (eccPrivHex) this.emit("error", new Error(`level-2 key derivation failed (cipher_id ${cipherId})`));
           return;
         }
-        if (eccPrivHex) {
-          this.setLevel2Key(key);
-          conclude();
-          this.logger.debug(`[p2p] ${this.cfg.stationSn} level-2 key negotiated (cipher_id ${cipherId})`);
-          this.trace({ phase: "level2-ready", cipherId });
-          this.emit("level2Ready", { cipherId });
-        } else {
+        if (eccPrivHex) this.setLevel2Key(key);
+        else {
           this.level2EcbKey = key;
-          this.logger.debug(`[p2p] ${this.cfg.stationSn} level-2 set-payload key negotiated (cipher_id ${cipherId})`);
-          this.trace({ phase: "level2-set-payload-only", cipherId });
-          conclude();
+          this.settleLevel2();
         }
+        conclude();
+        this.logger.debug(`[p2p] ${this.cfg.stationSn} level-2 key negotiated (cipher_id ${cipherId})`);
+        this.trace({ phase: "level2-ready", cipherId });
+        this.emit("level2Ready", { cipherId });
       } catch (e) {
         if (this.closed || generation !== this.connectionGeneration) return;
         conclude({ phase: "level2-unavailable", reason: "derivation-failed", cipherId });
@@ -878,8 +860,14 @@ export class P2PSession extends EventEmitter {
    * (signCode 2 carries the station's content — `CMD_CAMERA_INFO`, `CMD_DATABASE` responses,
    * `CMD_DATABASE_IMAGE` JPEGs, notify results. signCode 2 and 8 share the one AES-256-GCM session
    * key; only the ciphertext offset differs, by the 4 sub-header bytes present on signCode 8.)
+   *
+   * A signCode 2 frame whose version byte is not 8 opens AES-128-ECB under {@link level2EcbKey} where one is
+   * held, as `P2PSessionReceiver::decryptNotifyData` opens it with the session key `+0xd8`.
    */
-  private decryptLevel2(payload: Buffer, signCode: number): Buffer | undefined {
+  private decryptLevel2(payload: Buffer, signCode: number, version: number): Buffer | undefined {
+    if (signCode === 2 && version !== 8 && this.level2EcbKey) {
+      return payload.length % 16 === 0 ? decryptP2PData(payload, this.level2EcbKey) : undefined;
+    }
     const ctOffset = signCode === 8 ? 32 : 28; // sign-8 has the 4-byte [seq,03,02,01] sub-header
     // tag(16)+nonce(12)=28 are at the front; ciphertext (possibly empty) follows at ctOffset.
     if (!this.level2Key || payload.length < ctOffset) return undefined;
@@ -949,7 +937,7 @@ export class P2PSession extends EventEmitter {
     this.ackedRounds = undefined;
     this.attachedStartKeys.clear();
     this.resetInboundSequencing();
-    if (!this.level2KeyServes("set-payload")) {
+    if (!this.hasLevel2Key) {
       this.level2Pending = this.cfg.resolveCipherKey !== undefined;
       this.level2Negotiating.clear();
       this.gatewayCipherId = undefined;
@@ -1377,18 +1365,24 @@ export class P2PSession extends EventEmitter {
   ): void {
     if (homeBaseAttached) {
       this.tracedDatagramGaps = 0;
-      const key = this.connectAddress && this.level2Key ? this.attachedStartKey(channel) : undefined;
+      const key = this.connectAddress && this.hasLevel2Key ? this.attachedStartKey(channel) : undefined;
       this.trace({
         phase: "media-command",
         topology: "attached",
         action: "start",
-        level2: !!this.level2Key,
+        level2: this.hasLevel2Key,
         key,
       });
       this.sendMediaPayloadLevel2(CMD_START_REALTIME_MEDIA, channel, accountId, {}, key);
       return;
     }
-    const want = this.level2Key ? "l2" : this.sendsInTheClear() ? "clear" : this.refusedLevel2 ? "set-payload" : "l1";
+    const want = this.hasLevel2Key
+      ? "l2"
+      : this.sendsInTheClear()
+        ? "clear"
+        : this.refusedLevel2
+          ? "set-payload"
+          : "l1";
     if (opts?.force) {
       for (const pending of this.unackedLiveStarts.values()) if (pending.channel === channel) return;
       this.liveStartedChannels.delete(channel);
@@ -1480,12 +1474,10 @@ export class P2PSession extends EventEmitter {
     let magic: [number, number];
     let frameType: number;
     let command = CMD_CONTROL_PAYLOAD;
-    if (this.level2Key) {
-      const enc = this.encryptLevel2(this.startLiveJson(channel, accountId));
-      if (!enc) return;
-      payload = enc;
-      signCode = 8;
-      magic = [0x08, 0x00];
+    if (this.hasLevel2Key) {
+      const sealed = this.sealLevel2(this.startLiveJson(channel, accountId));
+      if (!sealed) return;
+      ({ body: payload, signCode, magic } = sealed);
       frameType = START_LIVE_FRAME_TYPE_L2;
     } else if (this.sendsInTheClear()) {
       magic = this.nextClearCommandBytes();
@@ -1678,7 +1670,7 @@ export class P2PSession extends EventEmitter {
    * no key that frames a set-payload is held.
    */
   get refusedLevel2(): boolean {
-    return this.gatewayRefused && !this.level2KeyServes("set-payload");
+    return this.gatewayRefused && !this.hasLevel2Key;
   }
 
   /**
@@ -1692,15 +1684,11 @@ export class P2PSession extends EventEmitter {
   }
 
   /**
-   * Send a **level-2 (AES-256-GCM, signCode 8) control payload** to a HomeBase-attached device. The
+   * Send a **level-2 control payload** ({@link sealLevel2}) to a HomeBase-attached device. The
    * target camera is selected by `channel` (= device_channel) + the `mChannel` envelope — the same
    * mechanism proven for camera selection in media start. Use for control commands routed through a
    * HomeBase (where level-1 ECB is rejected). Returns `false` if the level-2 key isn't negotiated
    * yet (caller can fall back to {@link sendStringPayloadCommand}).
-   *
-   * On a session holding only the AES-128-ECB level-2 key of an RSA cipher, the frame is the level-1
-   * layout ({@link sendRawLevel1Bytes}) sealed under that key at encryption type 2: the encryption-type
-   * byte names the key the body is sealed with (1 = level-1 key, 2 = the negotiated key).
    *
    * With `clearOnRefusal` on a session that {@link refusedLevel2}, the frame goes in the clear in the vendor
    * app's form for such a device: header bytes `[01 00]`, signCode 0, and a body of `{cmd, payload}` alone.
@@ -1717,7 +1705,7 @@ export class P2PSession extends EventEmitter {
     unzip: boolean = false,
     counter?: "bump" | "current",
   ): boolean {
-    if (!this.connectAddress || !(this.level2KeyServes("set-payload") || (clearOnRefusal && this.refusedLevel2))) {
+    if (!this.connectAddress || !(this.hasLevel2Key || (clearOnRefusal && this.refusedLevel2))) {
       return false;
     }
     const value = Buffer.from(
@@ -1731,12 +1719,10 @@ export class P2PSession extends EventEmitter {
       "utf-8",
     );
     let sealed: Buffer;
-    if (this.level2Key) {
-      const body = this.encryptLevel2(value);
-      if (!body) return false;
-      sealed = buildRawCommandPayload(body, channel, 8, [0x08, 0x00], this.headerCounter(counter));
-    } else if (this.level2EcbKey) {
-      sealed = buildRawCommandPayload(encryptP2PData(paddingP2PData(value), this.level2EcbKey), channel, 2);
+    if (this.hasLevel2Key) {
+      const seal = this.sealLevel2(value);
+      if (!seal) return false;
+      sealed = buildRawCommandPayload(seal.body, channel, seal.signCode, seal.magic, this.headerCounter(counter));
     } else {
       sealed = buildRawCommandPayload(Buffer.from(JSON.stringify({ cmd, payload }), "utf-8"), channel);
     }
@@ -1747,7 +1733,7 @@ export class P2PSession extends EventEmitter {
   }
 
   /**
-   * Send a **level-2 (GCM, signCode 8) frame whose plaintext is exactly `json`** — no
+   * Send a **level-2 frame whose plaintext is exactly `json`** — no
    * `{account_id,cmd,mChannel,…}` envelope. The target device is selected by the frame-header
    * `channel`. This is the form the eufy app uses for control commands (as captured from the app:
    * floodlight = `{"commandType":1400,"data":{...}}`). Returns `false` if no level-2 key.
@@ -1758,19 +1744,15 @@ export class P2PSession extends EventEmitter {
 
   /**
    * Like {@link sendRawLevel2} but the plaintext is a raw byte buffer, not a UTF-8 string. Some
-   * "direct" commands (e.g. CAMERA_SWITCH 1035) carry a binary struct, not JSON.
+   * "direct" commands (e.g. CAMERA_SWITCH 1035) carry a binary struct, not JSON. Sealed by {@link sealLevel2}.
    */
-  sendRawLevel2Bytes(payload: Buffer, channel: number, outerCmd: number = CMD_SET_PAYLOAD, signCode = 8): boolean {
-    if (!this.connectAddress || !this.level2Key) return false;
-    const body = this.encryptLevel2(payload);
-    if (!body) return false;
-    // Outer command MUST match the family: media=1350 (CMD_SET_PAYLOAD), device control=1700 (the
-    // generic JSON control wrapper) — verified by diffing our frame against the app's captured frame.
-    // `signCode` is the frame-header sign byte: 8 for the JSON control wrapper, 1 for direct binary
-    // commands like CAMERA_SWITCH (matched to the app's captured frames).
+  sendRawLevel2Bytes(payload: Buffer, channel: number, outerCmd: number = CMD_SET_PAYLOAD): boolean {
+    if (!this.connectAddress) return false;
+    const sealed = this.sealLevel2(payload);
+    if (!sealed) return false;
     const data = Buffer.concat([
       buildCommandHeader(this.seqNumber, outerCmd),
-      buildRawCommandPayload(body, channel, signCode, [0x08, 0x00], 0),
+      buildRawCommandPayload(sealed.body, channel, sealed.signCode, sealed.magic, 0),
     ]);
     this.seqNumber = (this.seqNumber + 1) & 0xffff;
     this.send(this.connectAddress, RequestMessageType.DATA, data);
@@ -1815,9 +1797,9 @@ export class P2PSession extends EventEmitter {
     }
     const body = Buffer.allocUnsafe(4);
     body.writeUInt32LE(channel >>> 0, 0);
-    if (this.level2Key && !homeBaseAttached) {
-      this.sendRawLevel2Bytes(body, channel, CMD_STOP_REALTIME_MEDIA, 8);
-    } else if (this.level2Key) {
+    if (this.hasLevel2Key && !homeBaseAttached) {
+      this.sendRawLevel2Bytes(body, channel, CMD_STOP_REALTIME_MEDIA);
+    } else if (this.hasLevel2Key) {
       this.sendMediaPayloadLevel2(CMD_STOP_REALTIME_MEDIA, channel, accountId, {});
     } else if (!homeBaseAttached && (this.sendsInTheClear() || this.refusedLevel2) && this.connectAddress) {
       const magic: [number, number] = this.sendsInTheClear() ? this.nextClearCommandBytes() : [0x01, 0x00];
@@ -1865,13 +1847,13 @@ export class P2PSession extends EventEmitter {
     if (homeBaseAttached) {
       const body = Buffer.allocUnsafe(4);
       body.writeUInt32LE(channel >>> 0, 0);
-      return this.sendRawLevel2Bytes(body, channel, start ? CMD_START_TALKBACK : CMD_STOP_TALKBACK, 8);
+      return this.sendRawLevel2Bytes(body, channel, start ? CMD_START_TALKBACK : CMD_STOP_TALKBACK);
     }
     const json = JSON.stringify({
       commandType: start ? CMD_START_SPEAK : CMD_END_SPEAK,
       data: { transaction: String(Date.now()) },
     });
-    if (this.level2Key) return this.sendRawLevel2(json, channel, CMD_CONTROL_PAYLOAD);
+    if (this.hasLevel2Key) return this.sendRawLevel2(json, channel, CMD_CONTROL_PAYLOAD);
     this.sendStringPayloadCommand(CMD_CONTROL_PAYLOAD, json, channel);
     return true;
   }
@@ -2025,7 +2007,7 @@ export class P2PSession extends EventEmitter {
     payload: Record<string, unknown>,
     key?: "ecc" | "rsa",
   ): void {
-    if (!this.connectAddress || !this.level2Key) {
+    if (!this.connectAddress || !this.hasLevel2Key) {
       this.trace({
         phase: "media-command-unsent",
         reason: this.connectAddress ? "level2-key" : "address",
@@ -2051,14 +2033,13 @@ export class P2PSession extends EventEmitter {
       mValue3: subCmd,
       payload: innerPayload,
     });
-    const body = this.encryptLevel2(Buffer.from(value, "utf-8"));
-    if (!body) return;
-    // v6.0.41 level-2 media frame header: magic byte 0x08 (NOT the legacy 0x01), and a per-stream
-    // slot id at the "type" byte (channel 0 = slot 0; other cameras get an incrementing slot).
+    const sealed = this.sealLevel2(Buffer.from(value, "utf-8"));
+    if (!sealed) return;
+    // Per-stream slot id at the "type" byte (channel 0 = slot 0; other cameras get an incrementing slot).
     const streamId = channel === STATION_CHANNEL || channel === 0 ? 0 : 0x0a + (this.level2Seq & 0x7f);
     const data = Buffer.concat([
       buildCommandHeader(this.seqNumber, CMD_SET_PAYLOAD),
-      buildRawCommandPayload(body, channel, 8, [0x08, 0x00], streamId),
+      buildRawCommandPayload(sealed.body, channel, sealed.signCode, sealed.magic, streamId),
     ]);
     this.seqNumber = (this.seqNumber + 1) & 0xffff;
     this.send(this.connectAddress, RequestMessageType.DATA, data);
@@ -2207,6 +2188,21 @@ export class P2PSession extends EventEmitter {
     return Buffer.concat([c.getAuthTag(), nonce, sub, ct]);
   }
 
+  /**
+   * Seal a level-2 command body under the held key, with the frame fields that key takes in the app's
+   * `sendP2PSessionCommand`: the AES-256-GCM key ({@link encryptLevel2}) at version byte 8 and sign byte 8,
+   * else the {@link level2EcbKey} of a version-1 gateway info, AES-128-ECB zero-padded, at version byte 1 and
+   * sign byte 2 (sign mode 2 on a non-v8 session). Answers `undefined` when no level-2 key is held.
+   */
+  private sealLevel2(plaintext: Buffer): { body: Buffer; signCode: number; magic: [number, number] } | undefined {
+    const gcm = this.encryptLevel2(plaintext);
+    if (gcm) return { body: gcm, signCode: 8, magic: [0x08, 0x00] };
+    if (this.level2EcbKey) {
+      return { body: encryptP2PData(paddingP2PData(plaintext), this.level2EcbKey), signCode: 2, magic: [0x01, 0x00] };
+    }
+    return undefined;
+  }
+
   /** Send a no-arg command frame (e.g. CMD_GATEWAYINFO) on a channel (default: the station channel). */
   private sendCommand(commandType: number, channel: number = STATION_CHANNEL): void {
     if (!this.connectAddress) return;
@@ -2293,7 +2289,7 @@ export class P2PSession extends EventEmitter {
    * and holds no level-2 key.
    */
   private databasePayload(value: string, channel: number): Buffer {
-    return !this.level2Key && this.sendsInTheClear()
+    return !this.hasLevel2Key && this.sendsInTheClear()
       ? buildRawCommandPayload(Buffer.from(value, "utf-8"), channel, 0, this.nextClearCommandBytes(), 0)
       : buildStringCommandPayload(value, channel, this.level1Key, 1);
   }
@@ -2721,8 +2717,8 @@ export class P2PSession extends EventEmitter {
     let openedLevel2 = false;
     if (isMedia) {
       /* leave raw */
-    } else if ((header.signCode === 2 || header.signCode === 8) && this.level2Key) {
-      const dec = this.decryptLevel2(payload, header.signCode);
+    } else if ((header.signCode === 2 || header.signCode === 8) && this.hasLevel2Key) {
+      const dec = this.decryptLevel2(payload, header.signCode, header.version);
       if (dec) {
         data = dec;
         openedLevel2 = true;

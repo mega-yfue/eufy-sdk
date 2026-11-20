@@ -655,7 +655,7 @@ export class P2PCommandRouter {
       this.tearDownStation(stationSn);
     });
     session.on("level2Ready", ({ cipherId }: { cipherId: number }) => {
-      session.sendRawLevel2Bytes(STATION_TABLE_QUERY, 0, P2P_ENVELOPE.GET_CAMERA_INFO, 8);
+      session.sendRawLevel2Bytes(STATION_TABLE_QUERY, 0, P2P_ENVELOPE.GET_CAMERA_INFO);
       this.deps.onLevel2Ready(stationSn, cipherId);
     });
     session.on("peerAnswer", (atMs: number) => {
@@ -770,7 +770,6 @@ export class P2PCommandRouter {
             cmd.mValue3,
             undefined,
             cmd.form,
-            cmd.level2Sender,
             true,
             cmd.unzip,
             cmd.counter,
@@ -1735,7 +1734,6 @@ export class P2PCommandRouter {
     opts: {
       waitLevel2?: boolean | "soft" | "settle";
       requireLevel2ForAttached?: boolean;
-      level2Sender?: "set-payload";
       clearFallback?: boolean;
       signal?: AbortSignal;
     } = {},
@@ -1796,8 +1794,7 @@ export class P2PCommandRouter {
       }
       const required = opts.waitLevel2 !== "soft" || (opts.requireLevel2ForAttached === true && homeBaseAttached);
       if (!required) return { session, parentSn, channel, accountId, homeBaseAttached };
-      const sender = opts.level2Sender ?? "every";
-      const ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call", sender), opts.signal);
+      const ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), opts.signal);
       const sendsClear =
         opts.clearFallback === true &&
         !homeBaseAttached &&
@@ -1830,7 +1827,7 @@ export class P2PCommandRouter {
     return this.sendAnswered(
       sn,
       { commandId: outerCmd, channel: resolved.channel },
-      ({ session, channel, accountId }) => session.sendRawLevel2Bytes(body(accountId, channel), channel, outerCmd, 8),
+      ({ session, channel, accountId }) => session.sendRawLevel2Bytes(body(accountId, channel), channel, outerCmd),
       resolved,
       !answered,
     );
@@ -1857,7 +1854,7 @@ export class P2PCommandRouter {
         sn,
         answer,
         ({ session, accountId }) =>
-          session.sendRawLevel2Bytes(buildDirectBinaryBody(value, accountId), channel, outerCmd, 8),
+          session.sendRawLevel2Bytes(buildDirectBinaryBody(value, accountId), channel, outerCmd),
         resolved,
         true,
       );
@@ -1897,7 +1894,7 @@ export class P2PCommandRouter {
         this.sendAnswered(
           sn,
           answer,
-          ({ session, accountId }) => session.sendRawLevel2Bytes(body(accountId), channel, cmd, 8),
+          ({ session, accountId }) => session.sendRawLevel2Bytes(body(accountId), channel, cmd),
           undefined,
           true,
         ),
@@ -1983,8 +1980,7 @@ export class P2PCommandRouter {
    * standalone camera never negotiates a level-2 key, so pinning this to level 2 makes the envelope
    * unreachable on exactly the devices that serve their own RTSP stream; a standalone
    * camera accepts the level-1 form. With no `form` (default) it stays level-2 only and waits for the
-   * key every level-2 sender uses; `level2Sender: "set-payload"` also takes an RSA cipher's AES-128-ECB
-   * key (see {@link P2PSession.sendControlLevel2}). A `resolved` session keeps the wait its caller gave it.
+   * key. A `resolved` session keeps the wait its caller gave it.
    * `"int-string"` pins the level-1 form whatever the session holds, as the app seals 1350/1001.
    *
    * Either seal goes once through {@link sendAnswered}, which holds the device's slot until the `SET_PAYLOAD`
@@ -1998,7 +1994,6 @@ export class P2PCommandRouter {
     mValue3?: number,
     resolved?: ResolvedSession,
     form?: ScalarForm,
-    level2Sender?: "set-payload",
     answered = false,
     unzip = false,
     counter?: "bump" | "current",
@@ -2036,7 +2031,7 @@ export class P2PCommandRouter {
       answer,
       ({ session, accountId, sendsClear }) =>
         session.sendControlLevel2(cmd, channel, accountId, payload, mValue3 ?? 0, sendsClear, unzip, counter),
-      resolved ?? (await this.resolveSession(sn, { waitLevel2: true, level2Sender })),
+      resolved ?? (await this.resolveSession(sn, { waitLevel2: true })),
       !answered,
     );
   }

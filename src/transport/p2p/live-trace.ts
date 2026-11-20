@@ -88,7 +88,6 @@ export type LiveTrace =
    * The station's cipher negotiated only the AES-128-ECB level-2 key of an RSA cipher, under the cipher it
    * selected. That key seals a level-2 set-payload and nothing else, so this is not `level2-ready`.
    */
-  | { phase: "level2-set-payload-only"; cipherId: number }
   /**
    * The station's key is not coming, why, and the cipher where a station named one.
    *
