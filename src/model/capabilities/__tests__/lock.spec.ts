@@ -84,6 +84,14 @@ describe("lock capability — Bluetooth lock family", () => {
     expect(sent[0]).toMatchObject({ engage: true, adminUserId: bluetoothCtx.adminUserId, shortUserId: "0004" });
     expect(sent[1]).toMatchObject({ engage: false, deviceSn: bluetoothCtx.serial });
   });
+
+  it("withholds the ff09 auto-lock members, which its bridge has no key to send", () => {
+    const ff09Settings = { getAutoLockState: vi.fn() } as unknown as Ff09SettingsReader;
+    const { acts } = lockOf(bluetoothCtx, ff09Settings);
+    expect("setAutoLock" in acts).toBe(false);
+    expect(acts.getAutoLockState).toBeUndefined();
+    expect(lockOf(p2pCtx, ff09Settings).acts.getAutoLockState).toBeTypeOf("function");
+  });
 });
 
 describe("lock capability — classic Wi-Fi lock family", () => {

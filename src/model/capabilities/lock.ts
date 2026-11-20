@@ -181,9 +181,13 @@ function nativeReport(signal: InboundSignal): Record<string, unknown> | undefine
 /**
  * Whether the device speaks the `ff09` settings frames at all. The classic Wi-Fi lock actuates over its
  * own keyed envelope and never negotiates the session key those frames ride on, so a settings write
- * aimed at it can only time out — the members are withheld there rather than offered and failing.
+ * aimed at it can only time out — the members are withheld there rather than offered and failing. The
+ * Bluetooth lock is withheld too: on the one unit tried, its T8021 bridge's session held only the set-payload
+ * key, so the SDK refused the settings frame before sending it. Whether the lock would accept a settings frame
+ * at all is untested.
  */
-const speaksFf09Settings = (ctx: CommandContext): boolean => !isClassicWifiLock(ctx) && !isSmartDrop(ctx);
+const speaksFf09Settings = (ctx: CommandContext): boolean =>
+  !isClassicWifiLock(ctx) && !isBluetoothLock(ctx) && !isSmartDrop(ctx);
 
 /**
  * Rain Mode's gate: the P2P video lock, and only a device that takes the `ff09` settings frame. Not the
@@ -423,7 +427,9 @@ export const LOCK_MEMBERS = {
     ...provided(
       "ff09Settings",
       (f, { ctx }) =>
-        isVideoSmartLock(ctx) || isSmartDrop(ctx) ? undefined : (): Promise<AutoLockSnapshot> => f.getAutoLockState(),
+        isVideoSmartLock(ctx) || isSmartDrop(ctx) || isBluetoothLock(ctx)
+          ? undefined
+          : (): Promise<AutoLockSnapshot> => f.getAutoLockState(),
       "Read the current auto-lock settings via a live round-trip.",
     ),
     answers: true,
