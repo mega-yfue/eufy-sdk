@@ -1058,17 +1058,6 @@ export class MegaHttpClient {
       token,
       voip_token: "",
     });
-
-    await this.securityAppPost("/v1/apppush/register_push_token", {
-      is_notification_enable: true,
-      token,
-      transaction: String(Date.now()),
-    });
-
-    await this.securityAppPost("/v1/app/review/app_push_check", {
-      app_type: "eufySecurity",
-      transaction: String(Date.now()),
-    });
   }
 
   /** Download raw bytes from a push-media URL using the active account session. */
