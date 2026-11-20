@@ -72,8 +72,7 @@ export const DOORBELL_CMD = {
    * Doorbell chime ("ding-dong") volume — app `APP_CMD_BAT_DOORBELL_SET_DINGDONG_VOLUME`. UNLIKE the 1703/1704 direct-binary switches above, this rides the
    * `SET_PAYLOAD` (1350) JSON envelope: `{account_id,cmd:1717,mChannel:<deviceCh>,mValue3:0,
    * payload:{dingdong_volume:N}}`, GCM signCode 8, on the doorbell's `device_channel` (always use
-   * `ctx.channel`, don't hardcode). `mValue3` is an EXPLICIT `0`, not the
-   * `SET_PAYLOAD` default of `mValue3:cmd` (see {@link module:./intent setPayload}'s doc comment).
+   * `ctx.channel`, don't hardcode).
    * A 0-100 loudness level, distinct from the already-shipped `ringtoneVolume` (1708,
    * direct-binary, `audio.ts`), which is a DIFFERENT control.
    */
