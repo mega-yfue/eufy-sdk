@@ -335,8 +335,8 @@ export interface StateConvergenceFailure {
  *
  * A command is acknowledged when the transport has carried it, which is delivery and not convergence, and
  * the observation a member declares is what decides the second question. Where that observation times out
- * the write was accepted by the wire and never applied by the device — measured on a battery camera whose
- * power write is acknowledged and simply ignored — so this is a distinct outcome from a transport fault and
+ * the write was accepted by the wire and never applied by the device — a battery camera can
+ * acknowledge a power write and ignore it — so this is a distinct outcome from a transport fault and
  * carries the attribution that names which member on which device is unconfirmed.
  */
 export class StateConvergenceError extends Error {
@@ -674,10 +674,9 @@ export interface LiveVideoFrame {
    * Frame geometry as the station's own frame header states it — {@link height} is the same field.
    *
    * A camera reconfigures its live source WITHIN one session, so these change between frames of one
-   * stream. Measured on eight cameras and both codecs: four of them changed, 2 to 9 times per 25-60 s,
-   * oscillating up and down a ladder rather than only climbing it; the other four held one geometry
-   * throughout. A change arriving on a keyframe carrying fresh parameter sets is what every run but one
-   * showed, and that run is not accounted for, so it is not a property to rely on.
+   * stream, up to several times a minute, oscillating up and down a ladder rather than only climbing it;
+   * others hold one geometry throughout. A change usually, but not always, arrives on a keyframe carrying
+   * fresh parameter sets, so that is not a property to rely on.
    *
    * This is what the station REPORTED. The size a decoder will actually produce is stated by the
    * parameter sets, and a consumer is told it through {@link LiveStreamConsumer} rather than having to
@@ -700,8 +699,8 @@ export interface LiveVideoFrame {
  * will produce from the parameter sets in force.
  *
  * The geometry is the CODED one, read out of the sequence parameter set and cropped by the offsets it
- * declares, not the geometry a frame header reports. Those agreed on all but 28 of some 6000 measured
- * frames, but only one of them is the size a decoder produces: 1080 is not a multiple of the 16-sample
+ * declares, not the geometry a frame header reports. The two mostly agree, but only one of them is the size
+ * a decoder produces: 1080 is not a multiple of the 16-sample
  * macroblock, so a 1080p H.264 stream codes 1088 rows and crops 8 away, and the frame header is a report
  * about that rather than the definition of it.
  *
@@ -906,8 +905,8 @@ export interface LiveStreamConsumer extends LiveStreamHandle {
  * How a caller abandons ONE media call, without touching the shared pull other callers hold.
  *
  * Acquiring media can wait a long time before it can succeed or fail: a station has to connect, a level-2
- * key has to be negotiated or given up on, and a camera has to produce a keyframe. Measured at twenty
- * seconds and more on a battery camera.
+ * key has to be negotiated or given up on, and a camera has to produce a keyframe — twenty seconds
+ * and more on a battery camera.
  *
  * Aborting settles the call with an `AbortError` and gives back whatever it had taken, so a pull nothing
  * else holds is released rather than left running for a caller that has gone. It never disturbs a pull
@@ -1010,8 +1009,7 @@ export interface MediaProvider {
    * Several cameras behind one station stream at the same time, each over its own connection to it. One
    * connection serves one camera — a station answers the most recent start on a session, so two cameras
    * sharing one take it from each other in turn — so a camera asked for while its station is already
-   * serving another gets a connection of its own. Measured on a base carrying two attached cameras, one
-   * at 3840x2160: both held full frame rate at once. Each handle receives only the frames the station
+   * serving another gets a connection of its own. Each handle receives only the frames the station
    * tagged for ITS camera.
    *
    * @example

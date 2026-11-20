@@ -18,7 +18,7 @@
  * opcode value itself — a future actuator (e.g. a curtain) reusing this wire would just be a new
  * opcode constant, not a new encoder.
  *
- * ## Wire (verified byte-exact against captured T8531 lock+unlock frames)
+ * ## Wire
  *
  * **Outer frame** (`lockPayload`, hex):
  * ```
@@ -46,33 +46,25 @@
  *    `floor(unixSec) | floor(random*100)` — the low bits are randomized. We reproduce that:
  *    `keyTime = unixSec | nonce`, and the TLV `A1` stamp carries the un-noised `unixSec`.
  *
- * ## Settings GET/SET (T85D0 garage/lock auto-lock, 2026-07-16 capture — same cipher/frame family)
+ * ## Settings GET/SET (garage/lock auto-lock — same cipher/frame family)
  *
- * Two more `apiCommand`/`commandCode` pairs on the SAME outer frame + cipher as above, verified
- * byte-exact against a live GET query + a live GET response + two live SET writes (off→on) on a
- * T85D0:
+ * Two more `apiCommand`/`commandCode` pairs on the SAME outer frame + cipher as above:
  *  - **GET** (`LOCK_API_COMMAND.GET_SETTINGS` 6016 / `LOCK_COMMAND_CODE.GET_SETTINGS` 53/0x35,
  *    {@link buildFf09QueryFrame}): plaintext is JUST `[A1 time][A2 adminUserId]` — no user-attribution
  *    fields at all (narrower than even `omitUserFields`, which still keeps A3).
  *  - **SET** (`LOCK_API_COMMAND.SET_SETTINGS` 6015 / `LOCK_COMMAND_CODE.SET_SETTINGS` 52/0x34,
  *    {@link buildFf09SettingsFrame}): `[A1 time][A2 adminUserId][A3 1B][A4 1B enable][A5 2B LE delay-
  *    seconds][A6 1B][A7 2B][A8 2B][A9 1B]`. `A3` is the same **setting-type selector** the Rain Mode
- *    compact write uses (see below) — `0x00` selects auto-lock. `A4`-`A8` are now FULLY CONFIRMED
- *    against the app's own JS (`smartLockSetParamsDataParse`'s `case 0`, carved from a live `/proc/mem`
- *    dump, 2026-07-18 — not just a capture-derived guess): `A4`=`isAutoLock`, `A5`=`autoLockTime`
+ *    compact write uses (see below) — `0x00` selects auto-lock. `A4`-`A8` are named by the app's own
+ *    `smartLockSetParamsDataParse` `case 0`: `A4`=`isAutoLock`, `A5`=`autoLockTime`
  *    (seconds, LE u16), `A6`=`isSchedule` (bool), `A7`=`scheduleStartTime`, `A8`=`scheduleEndTime`.
  *    `A7`/`A8` are each `[hourByte, minuteByte]` (the app encodes them as `hour.toString(16)‖
  *    minute.toString(16)`, NOT a packed LE u16) — we still treat them as an opaque 2-byte passthrough
  *    (read from a prior GET, written back unchanged), which stays correct either way since we never
- *    interpret their contents, only preserve them. **`A9` is UNRESOLVED, not "confirmed reserved" —
- *    the app's own `case 0` builder writes exactly 5 fields (`A4`-`A8`) and produces no 6th field at
- *    all.** The original capture this encoder was built from showed a 6th real tagged byte
- *    (`0xA9`, value `0x00`) after `A8`; two independent copies of the app's JS (including a newer
- *    15-case build variant) agree there's no `A9` in `case 0`. This is a genuine, unresolved
- *    discrepancy between the captured wire bytes and the decompiled source — not yet re-verified with
- *    a fresh capture. Left as-is in the shipped encoder (still sends `A9=0x00`) since changing it
- *    without a fresh capture risks breaking a live-verified write over an unconfirmed hypothesis; the
- *    device has never rejected the extra field in any live test.
+ *    interpret their contents, only preserve them. **`A9` is UNRESOLVED, not "confirmed reserved"**:
+ *    the app's `case 0` builder writes exactly 5 fields (`A4`-`A8`), while the app's wire frame carries
+ *    a 6th tagged byte (`0xA9`, value `0x00`) after `A8`. The encoder sends `A9=0x00`, as the wire
+ *    does, and the device accepts it.
  *  - **The device's `/res` reply to a GET** is NOT a normal command ack: no `mChannel`/`mValue3`/
  *    `apiCommand`/`seq_num`, just `{cmd:1940, payload:{dev_sn, lock_payload, time}}` where `time` is a
  *    **hex string** (not decimal) that equals the keyTime of the GET that triggered it — matched back
@@ -80,12 +72,10 @@
  *    (`0x48xx` not `0x40xx`) but decodes with the exact same key/iv derivation. Decrypted plaintext:
  *    a leading `0x00` status byte, then TLV fields using the same `sep|len|bytes` encoding but the
  *    response's OWN independent tag numbering (does not line up positionally with the GET/SET request
- *    TLVs) — our own capture only ever showed `a1..ad` (13 fields, tags `0xa1`-`0xad`), but this is NOT
- *    the auto-lock write's own reply scoped to auto-lock: **a single `GET_SETTINGS` reply is a FLAT
- *    DUMP of the device's ENTIRE settings state**, one field per tag, covering every setting in the
- *    `A3`/setting-type enum below (not just the one being written) — confirmed against
- *    the app's own `smartLockGetParamsDataParse` (2026-07-18, same JS dump as the case-0 finding
- *    above), which explicit-tag-reads (not sequentially, `getByteParam(<tag>)`/`getSecondParam(<tag>)`/
+ *    TLVs), and it is NOT the auto-lock write's own reply scoped to auto-lock: **a single `GET_SETTINGS`
+ *    reply is a FLAT DUMP of the device's ENTIRE settings state**, one field per tag, covering every
+ *    setting in the `A3`/setting-type enum below (not just the one being written) — per the app's own
+ *    `smartLockGetParamsDataParse`, which explicit-tag-reads (not sequentially, `getByteParam(<tag>)`/`getSecondParam(<tag>)`/
  *    `getTimeParam(<tag>)`) THIRTY-FOUR fields, tags `0xa1` through `0xc2`:
  *
  *    | tag  | field                              | tag  | field                              |
@@ -115,31 +105,22 @@
  *    `sendFf09Autolock`/`dispatchFf09Autolock`, which only pull `a2`/`a4`/`a5`). Not yet
  *    wired into any code path — flagged here as a documented opportunity, not a shipped read.
  *    See {@link decryptFf09Frame} + {@link parseFf09SettingsResponse}.
- *  - **Also live-verified on the T8531 over P2P** (2026-07-18): the same GET/SET frame shape, live-
- *    captured off the P2P wire and confirmed byte-identical in structure to the T85D0 capture above
- *    (same key derivation, same TLV layout, `A5`'s captured value there was 120s/"2 min" vs. this
- *    doc's 90s/"1.5 min" — different device, same field semantics). `dev.lock()?.setAutoLock()` driven
- *    end-to-end through the P2P command router against a real T8531, both directions confirmed via the
- *    app UI — not just byte-exact against a capture. See `transport/p2p/command-router.ts`'s
- *    `sendFf09Autolock`.
+ *  - **The T8531 speaks the same GET/SET frame over P2P** (same key derivation, same TLV layout). See
+ *    `transport/p2p/command-router.ts`'s `sendFf09Autolock`.
  *
- * ## Rain Mode (T8531, 2026-07-18 capture — a SECOND, shorter `SET_SETTINGS` shape)
+ * ## Rain Mode (T8531 — a SECOND, shorter `SET_SETTINGS` shape)
  *
  * Same `apiCommand`/`commandCode` pair as the auto-lock SET above (6015/52), but a genuinely different,
- * SHORTER plaintext — captured live off the P2P wire toggling Rain Mode off→on: `[A1 time]
+ * SHORTER plaintext: `[A1 time]
  * [A2 adminUserId][A3 1B settingId][A4 1B value]`, nothing past `A4` (no `A5`-`A9` at all). `A3` here
  * is NOT the unconfirmed constant from the full-blob write above — it's a setting-id SELECTOR (`0x07`
  * for Rain Mode), making this a compact single-setting write rather than a read-modify-write of a fixed
  * blob. Because it doesn't touch any field besides the one being set, it's a pure blind write — no GET
  * pass needed first. See {@link FF09_SETTING_ID} + {@link buildFf09SettingToggleFrame}. The `A3`
- * selector addresses at least 14 T8531 settings — the app's own decompiled JS
- * (`smartLockSetParamsDataParse`, 2026-07-18) confirmed the id→setting map; `RAIN_MODE` is the only one
- * independently WIRE-CAPTURED so far, and 6 more (one-touch lock/scramble/wifi/enable-log/privacy/
- * one-touch-rear) are wired but THROW "wire unverified" until each clears that bar — see
- * {@link FF09_SETTING_ID} for the full id list.
- * ✅ LIVE-VERIFIED end-to-end (2026-07-18): `dev.lock()?.setRainMode()` driven through the P2P command
- * router against a real T8531, both directions (off→on and on→off) confirmed via the app UI showing
- * the new state afterward — not just byte-exact against a capture. See
+ * selector addresses at least 14 T8531 settings — the app's own `smartLockSetParamsDataParse` gives the
+ * id→setting map; `RAIN_MODE` is the only one whose frame comes from the app's wire, and 6 more
+ * (one-touch lock/scramble/wifi/enable-log/privacy/one-touch-rear) are wired but THROW "wire unverified"
+ * until each clears that bar — see {@link FF09_SETTING_ID} for the full id list. See
  * `transport/p2p/command-router.ts`'s `sendFf09SettingToggle`.
  */
 
@@ -149,30 +130,25 @@ import type { AutoLockSnapshot } from "../core/contracts.js";
 
 /**
  * `apiCommand` values for the `TRANSFER_PAYLOAD` (1940) envelope `payload`. `ON_OFF_LOCK` (6018)
- * is THE lock/unlock command for both the video lock (T8531) and the garage door (T85D0) — proven
- * end-to-end against a T8531 (unlock/lock/unlock/lock capture) and, 2026-07-16, against the garage
- * door too (2 independent live captures of the real app closing it, both `apiCommand 6018`, matching
- * eufy-sdk's own already-verified open path). Direction is the ff09 frame's `A3` byte, not the
+ * is THE lock/unlock command for both the video lock (T8531) and the garage door (T85D0), open and
+ * close alike. Direction is the ff09 frame's `A3` byte, not the
  * apiCommand: both lock and unlock issue `apiCommand 6018`.
  */
 export const LOCK_API_COMMAND = {
   /** Lock / unlock the deadbolt — video lock AND garage door, both directions (see above). */
   ON_OFF_LOCK: 6018,
   /**
-   * NOT used by this encoder — kept only as a real, observed constant. `apiCommand 6012` genuinely
-   * appears in live traffic (captured from a real but UNIDENTIFIED iOS app instance on the same
-   * account, 2026-07-16), but sending it from eufy-sdk never once produced a physical actuation in
-   * several live tests. The app's own `ESLCommand` enum (carved from a live `/proc/mem` dump,
-   * 2026-07-18) names 6012 `QUERY_STATUS_IN_LOCK` — a read-only status POLL, not an actuator at all,
-   * which is exactly why it never once opened/closed anything. The name `OPEN_DOOR` is a misnomer,
+   * NOT used by this encoder — kept only as a real wire constant. The app's traffic carries
+   * `apiCommand 6012`, and the app's own `ESLCommand` enum names it `QUERY_STATUS_IN_LOCK` — a read-only
+   * status POLL, not an actuator, so sending it opens or closes nothing. The name `OPEN_DOOR` is a misnomer,
    * kept as-is to avoid API churn on a constant that is not usable — do not use it for open, close, or
    * a status read (this encoder has no query-status support; `GET_SETTINGS`/6016 is the only supported
    * read path).
    */
   OPEN_DOOR: 6012,
-  /** Read the current auto-lock/settings TLV — {@link buildFf09QueryFrame}. Verified live 2026-07-16. */
+  /** Read the current auto-lock/settings TLV — {@link buildFf09QueryFrame}. */
   GET_SETTINGS: 6016,
-  /** Write the auto-lock/settings TLV — {@link buildFf09SettingsFrame}. Verified live 2026-07-16. */
+  /** Write the auto-lock/settings TLV — {@link buildFf09SettingsFrame}. */
   SET_SETTINGS: 6015,
 } as const;
 
@@ -206,9 +182,9 @@ export interface Ff09FrameInput {
   /** The acting member's short id (`member.short_user_id`, hex, e.g. `"0003"`) — the `A5` field. Omitted when {@link omitUserFields}. */
   shortUserId?: string;
   /**
-   * Skip the user-attribution TLV fields (A4 username, A5 shortUserId). ✅ The garage-door OPEN command
-   * (`apiCommand 6012` / opcode 34) omits them — its plaintext is just `[A1 time, A2 adminUserId, A3 byte]`
-   * — verified byte-exact from a live capture. Lock/unlock + garage CLOSE keep them (default false).
+   * Skip the user-attribution TLV fields (A4 username, A5 shortUserId). The garage-door OPEN command
+   * (`apiCommand 6012` / opcode 34) omits them — its plaintext is just `[A1 time, A2 adminUserId, A3 byte]`.
+   * Lock/unlock + garage CLOSE keep them (default false).
    */
   omitUserFields?: boolean;
   /** The lock's serial number — the AES IV (zero-padded to 16). */
@@ -487,7 +463,7 @@ export interface Ff09SettingsFrameInput {
   deviceSn: string;
   /** `A4` — auto-lock enable (confirmed semantics). */
   autoLockEnabled: boolean;
-  /** `A5` (u16 LE) — auto-lock delay in seconds (confirmed semantics; captured value 90 = "1.5 min"). */
+  /** `A5` (u16 LE) — auto-lock delay in seconds (confirmed semantics). */
   autoLockDelaySeconds: number;
   /**
    * `A7` (u16 LE) — semantics UNCONFIRMED, but the value IS readable back from a GET response
@@ -508,7 +484,7 @@ export interface Ff09SettingsFrameInput {
 /**
  * Build the settings **SET** frame (`LOCK_COMMAND_CODE.SET_SETTINGS`) — plaintext is `[A1 time]
  * [A2 adminUserId][A3 1B][A4 1B enable][A5 2B LE delay][A6 1B][A7 2B LE][A8 2B LE][A9 1B]`. `A3`/`A6`/
- * `A9` are sent as the literal `0x00` observed in the one capture available (semantics unconfirmed —
+ * `A9` are sent as the literal `0x00` the app's frame carries (semantics unconfirmed —
  * see the module doc). `A7`/`A8` are NOT hardcoded here — the caller (the read-modify-write orchestration
  * in the client) is expected to pass through values just read from a GET response.
  */
@@ -547,12 +523,11 @@ export function buildFf09SettingsFrame(input: Ff09SettingsFrameInput): Ff09Frame
 /**
  * Setting-id selectors for the COMPACT single-setting `SET_SETTINGS` write ({@link
  * buildFf09SettingToggleFrame}) — a SHORTER TLV than the full-blob write ({@link buildFf09SettingsFrame},
- * which always sends `A3=0x00` plus all of `A4`-`A9` together for auto-lock). Captured live on a T8531
- * (2026-07-18): toggling Rain Mode off→on produced just `[A1 time][A2 adminUserId][A3=0x07][A4 0/1]` —
- * nothing past `A4`, and `A3` here is a setting-id SELECTOR rather than an unconfirmed constant. The
- * app's own decompiled JS (2026-07-18) mapped the full selector enum (≥14 settings); `RAIN_MODE` is the
- * only one independently wire-captured, the other 6 ids below ship throwing "wire unverified" pending
- * their own capture. See the module doc's "Rain Mode" section.
+ * which always sends `A3=0x00` plus all of `A4`-`A9` together for auto-lock). On the T8531 a Rain Mode
+ * toggle is just `[A1 time][A2 adminUserId][A3=0x07][A4 0/1]` — nothing past `A4`, and `A3` here is a
+ * setting-id SELECTOR rather than an unconfirmed constant. The app's own JS maps the full selector enum
+ * (≥14 settings); `RAIN_MODE` is the only one whose frame comes from the app's wire, the other 6 ids
+ * below ship throwing "wire unverified" until theirs does. See the module doc's "Rain Mode" section.
  *
  * NOT consulted by {@link buildFf09SettingToggleFrame} or anything else on the production path — the
  * wire byte actually comes from the `Command`'s opaque `settingId` field, sourced from `model/`'s OWN
@@ -562,19 +537,19 @@ export function buildFf09SettingsFrame(input: Ff09SettingsFrameInput): Ff09Frame
  * catch the two copies drifting apart; see `lock.ts`'s doc for that caveat.
  */
 export const FF09_SETTING_ID = {
-  /** One-touch lock toggle. Structurally confirmed via the app's own JS (2026-07-18) — not independently wire-captured. */
+  /** One-touch lock toggle. Named by the app's own JS; its frame is not from the app's wire. */
   ONE_TOUCH_LOCK: 1,
-  /** Scramble-passcode toggle. Structurally confirmed via the app's own JS (2026-07-18) — not independently wire-captured. */
+  /** Scramble-passcode toggle. Named by the app's own JS; its frame is not from the app's wire. */
   SCRAMBLE_PASSCODE: 3,
-  /** Wifi-status toggle. Structurally confirmed via the app's own JS (2026-07-18) — not independently wire-captured. */
+  /** Wifi-status toggle. Named by the app's own JS; its frame is not from the app's wire. */
   WIFI_STATUS: 5,
-  /** Event-log-enable toggle. Structurally confirmed via the app's own JS (2026-07-18) — not independently wire-captured. */
+  /** Event-log-enable toggle. Named by the app's own JS; its frame is not from the app's wire. */
   ENABLE_LOG: 6,
-  /** Rain Mode toggle on the T8531 video lock. `A4` = 0 off / 1 on. Verified live 2026-07-18. */
+  /** Rain Mode toggle on the T8531 video lock. `A4` = 0 off / 1 on. */
   RAIN_MODE: 7,
-  /** Privacy-mode toggle. Structurally confirmed via the app's own JS (2026-07-18) — not independently wire-captured. */
+  /** Privacy-mode toggle. Named by the app's own JS; its frame is not from the app's wire. */
   PRIVACY_MODE: 9,
-  /** One-touch rear-lock toggle. Structurally confirmed via the app's own JS (2026-07-18) — not independently wire-captured. */
+  /** One-touch rear-lock toggle. Named by the app's own JS; its frame is not from the app's wire. */
   ONE_TOUCH_REAR_LOCK: 11,
 } as const;
 

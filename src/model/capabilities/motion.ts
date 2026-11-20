@@ -23,32 +23,30 @@ import type { Command } from "../../core/contracts.js";
  */
 export const MOTION_CMD = {
   /**
-   * Motion / PIR detection on-off (app `CAMERA_PIR`). ✅ Wire reversed from a
-   * live outbound capture + replay-verified on T8425 (ch3): the direct-binary 136-byte struct
+   * Motion / PIR detection on-off (app `CAMERA_PIR`). The direct-binary 136-byte struct
    * `[u32 ch][u32 value][account_id pad128]`, signCode 8 — SAME shape as watermark 1214. 1 = on, 0 = off.
    */
   CAMERA_PIR: 1011,
   /**
    * Motion sensitivity (app `SET_MOTION_DETECTION_SENSITIVITY_DOORBELL`, despite the name NOT
-   * doorbell-specific — see below). ✅ Wire captured live on a T8170 ( 2026-07-23,
-   * confirmed exchange), moving the sensitivity slider twice: `1350`
+   * doorbell-specific — see below). `1350`
    * SET_PAYLOAD, cmd 1276, mChannel `<deviceCh>`, explicit mValue3:0, `payload:{sensitivity:<int>,
-   * channel:<deviceCh>}`. Two real values captured: slider position 0 → `sensitivity:1`, slider
+   * channel:<deviceCh>}`. Slider position 0 → `sensitivity:1`, slider
    * position 6 → `sensitivity:7` — the wire is **1-indexed**, one higher than the app UI's 0-indexed
-   * display. Captured on a T8170; no other model is assumed to share it.
+   * display.
    */
   MOTION_SENSITIVITY: 1276,
   /**
    * PIR sensitivity on a standalone motion **sensor** (app `APP_CMD_MOTION_SENSOR_SET_PIR_SENSITIVITY`).
    * The same user-facing setting as {@link MOTION_SENSITIVITY}, under a DIFFERENT id — a camera takes
-   * 1276, a sensor takes this. ✅ Captured live 2026-08-03 on a T8910: the app sent 1609 as a
-   * direct-binary 136-byte frame on the sensor's channel, and the value reads back on the cloud param
+   * 1276, a sensor takes this: a
+   * direct-binary 136-byte frame on the sensor's channel, reported back on the cloud param
    * of the same id. Sending a camera's 1276 to a sensor is a fire-and-forget no-op that looks like a
    * success, which is why the two are kept apart rather than merged.
    *
-   * ⚠️ The value is NOT the app's slider index. Its picker offers five steps (low → high, annotated
-   * with a detection distance), while two sensors on one account read 8 and 37 — so the mapping from
-   * a step to this number is unknown, and no range can be validated beyond rejecting below 1. A caller
+   * The value is NOT the app's slider index. Its picker offers five steps (low → high, annotated
+   * with a detection distance) on the inverted ladder in `SENSITIVITY_SCALES`, so no range is validated
+   * here beyond rejecting below 1. A caller
    * setting this is passing through a raw device value, not choosing a documented level.
    *
    * A change applies after about a minute, or immediately if the sensor is triggered — the app says so
@@ -58,7 +56,7 @@ export const MOTION_CMD = {
   /**
    * Enter a motion sensor's **user test mode** (app `APP_CMD_MOTION_SENSOR_ENTER_USER_TEST_MODE`).
    *
-   * ✅ Decrypted from the app's own frame and replayed live on a T8910 (2026-08-03): a `1350`
+   * A `1350`
    * SET_PAYLOAD whose payload carries the sensor's channel — `{"cmd":1613,"payload":{"channel":<ch>}}`.
    * The channel MUST be in the payload; passing it only as the envelope's `mChannel` with an empty
    * payload is refused with `-1`. The station acknowledges with `0` and confirms by reporting
@@ -68,7 +66,7 @@ export const MOTION_CMD = {
   /**
    * Leave a motion sensor's user test mode (app `APP_CMD_MOTION_SENSOR_EXIT_USER_TEST_MODE`).
    *
-   * ✅ Replayed live on a T8910, confirmed by {@link SENSOR_WORK_MODE} reporting `0`. NOT the same
+   * Acknowledged by {@link SENSOR_WORK_MODE} reporting `0`. NOT the same
    * shape as its {@link SENSOR_ENTER_TEST_MODE} counterpart: this is a direct-binary frame with the id
    * as the outer command, and each is refused in the other's shape.
    */
@@ -83,26 +81,21 @@ export const MOTION_CMD = {
    * AI detection TYPE — which classifications trigger a detection (person / pet / vehicle / …).
    * From the app's own JS parser (command_schema.json): `1350` SET_PAYLOAD, inner cmd `AI_DETECT_TYPE`
    * (1298), `payload:{ai_detect_type:<bitmask>, channel:<deviceCh>}` — same envelope shape as the
-   * ✅-verified night-vision (1277). 1298 holds the detailed BITMASK. ✅ Bits decoded live + confirmed
-   * vs the app (see {@link AiDetectType} / {@link encodeAiDetectType}). ✅ WRITE HW-verified live on
-   * T8124 (each write landed byte-exact + read back: 0x30003 → 0x8 → 0x3000b).
+   * night-vision (1277). 1298 holds the detailed BITMASK (see {@link AiDetectType} /
+   * {@link encodeAiDetectType}).
    */
   AI_DETECT_TYPE: 1298,
   /**
-   * Notification **snooze** — temporarily silence motion/detection notifications for N seconds. ✅ WIRE
-   * CONFIRMED on a T8170 (2026-07-23,
-   * app force-relaunched to guarantee a fresh handshake): a **bare JSON frame, NOT a `1350`/`1700`
+   * Notification **snooze** — temporarily silence motion/detection notifications for N seconds. A
+   * **bare JSON frame, NOT a `1350`/`1700`
    * envelope** — outer P2P cmd IS `1271` itself, plaintext exactly `{account_id,...}` (see
-   * {@link module:./intent setJsonRaw}). Three real writes captured on the device channel (ch2):
-   * `{snooze_time:21600,chime_onoff:0,homebase_onoff:1,motion_notify_onoff:1,startTime:1784794716}`,
-   * `{snooze_time:0}` (clearing/cancelling — the bare shape, no extra fields), and
-   * `{snooze_time:3600,chime_onoff:0,homebase_onoff:0,motion_notify_onoff:1,startTime:1784794730}`.
-   * Confirms `command_schema.json`'s field names exactly; it is a real P2P frame, not the cloud-only
+   * {@link module:./intent setJsonRaw}), on the device channel:
+   * `{snooze_time:3600,chime_onoff:0,homebase_onoff:0,motion_notify_onoff:1,startTime:<now>}` to set,
+   * `{snooze_time:0}` to clear (the bare shape, no extra fields).
+   * Field names match `command_schema.json`; it is a P2P frame, not the cloud-only
    * HTTP path a `paramValue = base64(JSON.stringify(payload))` shape might suggest.
-   * `chime_onoff`/`homebase_onoff`/`motion_notify_onoff` meanings are NOT independently verified
-   * (only observed alongside 2 different snooze picks) — `setSnoozeTime` ships the exact 2nd-capture
-   * values as fixed defaults rather than exposing them, since their semantics aren't confirmed enough
-   * to make configurable without risking a wrong guess on a fire-and-forget write.
+   * `chime_onoff`/`homebase_onoff`/`motion_notify_onoff` meanings are unknown, so `setSnoozeTime` sends
+   * them as fixed defaults rather than exposing them on a fire-and-forget write.
    */
   SNOOZE_TIME: 1271,
   /**
@@ -111,22 +104,18 @@ export const MOTION_CMD = {
    * the DEVICE channel — which is set by NOT passing `setPayload`'s explicit-channel arg, and is
    * independent of what keys the payload carries. (Contrast 1277/1298, which DO carry a `channel`
    * payload key AND pass mChannel 0 explicitly; the two are separate choices, not linked.)
-   *
-   * ⚠️ Replay + readback confirmed on a HomeBase-attached T8425 (1719 `0`→`1`→`0`), NOT byte-captured.
    */
   HUMAN_ONLY_AT_NIGHT: 1719,
   /**
    * Loitering detection (app `APP_CMD_DUALCAM_SET_RADAR_WD_SWITCH`) — alert on lingering, not passing.
    * `1350` SET_PAYLOAD, inner cmd 2706, `payload:{radar_wd_switch:0|1}`, mValue3 0, mChannel = device
-   * channel. Observed on the T8214 doorbell only.
+   * channel.
    *
    * **READ is object-OR-scalar.** The app reads it as
    * `typeof v === "object" ? v.radar_wd_switch : v`, so the stored value may be a JSON object
    * `{radar_wd_switch,…}` OR a bare scalar — a plain bool coercion reports `false` for the object
    * form, so a feature that is on reads as off.
    * Decoded by {@link decodeRadarWdSwitch} to match the app.
-   *
-   * ⚠️ Replay + readback confirmed on a T8214 (2706 `0`→`1`→`0`), NOT byte-captured.
    */
   LOITERING_DETECTION: 2706,
   /**
@@ -143,9 +132,6 @@ export const MOTION_CMD = {
   /**
    * Motion detection on-off on a camera reporting it (app `INDOOR_MOTION_ENABLE`). `1700` control payload
    * `{"commandType":6040,"data":{"status":0|1}}`, the params the app's per-product bundle sends.
-   *
-   * ✅ Write + cloud readback both ways on standalone T8410, T8442, T8400; on a T8170 the app showed the off
-   * and the cloud followed the on. A T8171 followed the on; its off was not observed. NOT byte-captured.
    */
   INDOOR_MOTION_ENABLE: 6040,
   /**
@@ -157,9 +143,8 @@ export const MOTION_CMD = {
 } as const;
 
 /**
- * AI detection type bits — the `ai_detect_type` bitmask, decoded on-device and cross-checked against
- * the app. `enabledBase` (0x30000) is the "AI detection on" flag, set on every camera and always OR'd
- * into a value. `humanRecognition` (face) and `humanDetection` always co-occur in observed data; the app
+ * AI detection type bits — the `ai_detect_type` bitmask, as the app decodes it. `enabledBase` (0x30000) is the "AI detection on" flag, set on every camera and always OR'd
+ * into a value. `humanRecognition` (face) and `humanDetection` always co-occur; the app
  * lists them in this order. (Some indoor cams set extra high bits — sound/crying — not modelled here.)
  */
 export const AiDetectType = {
@@ -188,7 +173,7 @@ const CAMERA_AI_CLAIM: EventClaim = {
 
 /**
  * Evidence a device classifies vehicles: it reports the AI-detection-type bitmask that HAS a vehicle
- * bit ({@link AiDetectType} bit2, decoded live and confirmed against the app).
+ * bit ({@link AiDetectType} bit2).
  *
  * The push id cannot carry this. 3107 is `VEHICLE_DETECTION` in the doorbell, indoor and
  * HB3-paired vocabularies alike — the integer is the vendor's meaning for the classification, not a
@@ -226,12 +211,12 @@ export type MotionActions = Surface<typeof MOTION_MEMBERS> & {
   /**
    * Set the detection-sensitivity step, from 1 (least sensitive) up to `sensitivitySteps`.
    *
-   * A step, not a device value: the five device families this is captured on use four different
+   * A step, not a device value: the five known device families use four different
    * command ids, three frame shapes and two opposite numeric directions, so a raw number means the
    * opposite thing depending on what it is sent to. Step 1 is always the least sensitive.
    *
-   * Rejects a step outside the device's own range, and throws for a model whose scale has not been
-   * captured — a wrong id is a fire-and-forget no-op that would otherwise look like it worked.
+   * Rejects a step outside the device's own range, and throws for a device whose scale is not
+   * known — a wrong id is a fire-and-forget no-op that would otherwise look like it worked.
    */
   setSensitivityStep(step: number): Promise<void>;
 };
@@ -263,7 +248,7 @@ interface SensitivityScale {
  * something outside it. So a scale whose ladder is distinctive is matched on the value, and only then
  * do the identity-ladder scales fall back to which id is present at all.
  *
- * ✅ Every ladder captured live 2026-08-03 from the app sweeping its own picker step by step.
+ * Each ladder is the app's own picker, step by step.
  *
  * KNOWN GAP. The app's own parser carries a FOURTH camera table for this setting — three sparse steps
  * emitting 1, 3 and 5 — and those values sit INSIDE the identity ladder below, so a device on it would
@@ -272,7 +257,7 @@ interface SensitivityScale {
  * device class in the disassembled app instantiates that table for sensitivity (only for a recording
  * setting), so it is either dead code or belongs to a module absent from the artifact — and nothing
  * observable would separate such a device from the identity scale anyway, since both are read and
- * written on the same id. Closing it needs a capture from a device actually on it.
+ * written on the same id.
  */
 const SENSITIVITY_SCALES: readonly SensitivityScale[] = [
   /** Standalone PIR sensor: five steps counting DOWN. */
@@ -381,13 +366,10 @@ function decodeAiDetectTypeParam(raw: unknown): number | undefined {
 }
 
 /**
- * Build the `SET_SNOOZE_TIME` (1271) JSON body (see `MOTION_CMD.SNOOZE_TIME` for the capture
- * citation). `seconds<=0` sends the bare captured "clear" shape (`{snooze_time:0}`, no extra fields —
- * matches the real clear/cancel frame byte-for-byte). A positive duration sends the exact
- * `chime_onoff`/`homebase_onoff`/`motion_notify_onoff` VALUES from the live capture's 2nd real write
- * (fixed, not exposed as options — their semantics aren't independently confirmed enough to make
- * configurable without risking a wrong guess on a fire-and-forget write) plus a fresh `startTime`
- * (the app sends "now", not the original capture's timestamp).
+ * Build the `SET_SNOOZE_TIME` (1271) JSON body (see `MOTION_CMD.SNOOZE_TIME`). `seconds<=0` sends the
+ * bare "clear" shape (`{snooze_time:0}`, no extra fields). A positive duration sends fixed
+ * `chime_onoff`/`homebase_onoff`/`motion_notify_onoff` values (not exposed — their meaning is unknown)
+ * plus `startTime` = now, as the app does.
  */
 function snoozePayload(seconds: number): Record<string, unknown> {
   if (seconds <= 0) return { snooze_time: 0 };
@@ -446,31 +428,30 @@ function sensitivityCommand(step: unknown, scale: SensitivityScale, ctx: Command
 }
 
 /**
- * The value the app puts in the exit frame's value slot, replayed byte-for-byte.
+ * The value the app puts in the exit frame's value slot, sent byte-for-byte.
  *
  * Its meaning is unknown: the slot holds `00 30 30 30` where the sibling sensitivity command carries a
- * plain integer, and the account-id field that follows is unaffected. Replaying the observed bytes is
- * verified to work; a plain `0` returns the same result code but was only ever sent to a sensor
- * already out of the mode, so it is not known to work and is not what ships.
+ * plain integer, and the account-id field that follows is unaffected. A plain `0` is not known to
+ * leave the mode, so it is not what ships.
  */
 const EXIT_TEST_MODE_VALUE = 0x30303000;
 
 /**
  * A device reporting {@link MOTION_CMD.INDOOR_MOTION_ENABLE}, whose motion switch is that param rather than
  * {@link MOTION_CMD.CAMERA_PIR}. The app reads 6040 on a standalone camera and 1011 behind a HomeBase; a
- * HomeBase 3-attached T8410 reports both and only 6040 follows the app.
+ * device reporting both follows the app on 6040 only.
  */
 function reportsIndoorSwitch(ctx: AvailabilityContext): boolean {
   return ctx.paramIds?.has(MOTION_CMD.INDOOR_MOTION_ENABLE) === true;
 }
 
 /**
- * Reject a write on a device family its wire was never captured on.
+ * Reject a write on a device family its wire does not belong to.
  *
- * The two families do not share this capability's wire vocabulary: the one setting captured on both
+ * The two families do not share this capability's wire vocabulary: the one setting both take
  * answers a different id on each (see `MOTION_CMD.SENSOR_PIR_SENSITIVITY`), and the test-mode
  * pair exists only on sensors. Since P2P writes are fire-and-forget, a frame sent to the wrong family
- * is silently dropped while the call reports success — so an unverified pairing throws instead.
+ * is silently dropped while the call reports success — so a mismatched pairing throws instead.
  * A thing description names the sensor family by its `sensor_entry_test_mode` action; the codec
  * answers only where no description is held.
  */
@@ -520,7 +501,7 @@ export function decodeRadarWdSwitch(raw: unknown): boolean | undefined {
  * all four by the methods in `actions()`. They stay in the schema because the device reports them and a
  * diagnosis may want the raw number.
  *
- * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * Exported but NOT published: each entry states its wire id and its gate,
  * which the reference site does not carry.
  * @internal
  */
@@ -528,7 +509,7 @@ export const MOTION_MEMBERS = {
   /**
    * The master motion/PIR switch. `writeAs` names the setter `setDetection` rather than the
    * `setDetectionEnabled` the key would derive. The write calls `requireFamily` first, because
-   * this frame is captured on cameras only and a P2P write is fire-and-forget — sent to a sensor it
+   * this frame is a camera-family wire and a P2P write is fire-and-forget — sent to a sensor it
    * would be dropped silently while the call reported success, so it throws instead.
    */
   detectionEnabled: {
@@ -539,7 +520,7 @@ export const MOTION_MEMBERS = {
     readAvailable: (ctx) => !reportsIndoorSwitch(ctx),
     readAliases: [{ paramType: MOTION_CMD.INDOOR_MOTION_ENABLE, available: reportsIndoorSwitch }],
     description:
-      "Motion/PIR detection enabled (verified: param 1011 = CAMERA_PIR; a device reporting " +
+      "Motion/PIR detection enabled (param 1011 = CAMERA_PIR; a device reporting " +
       "INDOOR_MOTION_ENABLE 6040 reads and writes that instead).",
     write: (v, ctx) => {
       requireFamily("motionDetection", ctx, "camera");
@@ -563,11 +544,11 @@ export const MOTION_MEMBERS = {
     unexposed: true,
     description:
       "Motion sensitivity, raw wire value (1-indexed; the app's own picker UI is 0-indexed — see " +
-      "MOTION_CMD.MOTION_SENSITIVITY). ✅ Write wire-confirmed live on T8170 (observed 1 and 7).",
+      "MOTION_CMD.MOTION_SENSITIVITY).",
   },
   /**
-   * 1298 holds the detailed AI-type BITMASK (live-observed: `0x30000` enabled-base | type bits, e.g. a
-   * T8425 reads `0x3000f`). Cams also report 1299 (`hbAiDetectType`) but that is a separate, simpler
+   * 1298 holds the detailed AI-type BITMASK (`0x30000` enabled-base | type bits, e.g.
+   * `0x3000f`). Cams also report 1299 (`hbAiDetectType`) but that is a separate, simpler
    * value (1) — NOT this bitmask, so 1298 is the read/write id.
    *
    * The value arrives in two shapes, both read by the app's 1298 parser: a bare bitmask, or a JSON
@@ -579,11 +560,10 @@ export const MOTION_MEMBERS = {
     decode: decodeAiDetectTypeParam,
     decodedKind: "bitfield",
     description:
-      "AI detection type bitmask — which classes trigger detection. ✅ Bits decoded live + confirmed " +
-      "vs the app: 0x30000 = enabled base, bit0 = human recognition, bit1 = human detection, bit2 = " +
-      "vehicle, bit3 = pet (see AiDetectType / encodeAiDetectType). ✅ WRITE HW-verified live on T8124 " +
-      "(1350 SET_PAYLOAD, {ai_detect_type, channel}): each write landed byte-exact + read back " +
-      "(0x30003 → 0x8 → 0x3000b).",
+      "AI detection type bitmask — which classes trigger detection: " +
+      "0x30000 = enabled base, bit0 = human recognition, bit1 = human detection, bit2 = " +
+      "vehicle, bit3 = pet (see AiDetectType / encodeAiDetectType). Write: " +
+      "1350 SET_PAYLOAD, {ai_detect_type, channel}.",
     write: (v, ctx) => {
       requireFamily("aiDetectType", ctx, "camera");
       const n = Number(v);
@@ -601,7 +581,7 @@ export const MOTION_MEMBERS = {
     type: "number",
     kind: "scalar",
     unexposed: true,
-    description: "Raw sensitivity a solo camera reports (verified: param 6070).",
+    description: "Raw sensitivity a solo camera reports (param 6070).",
   },
   /**
    * The raw sensitivity an indoor camera reports, on the one id whose write takes a `1700` control
@@ -617,7 +597,7 @@ export const MOTION_MEMBERS = {
     type: "number",
     kind: "scalar",
     unexposed: true,
-    description: "Raw sensitivity an indoor camera reports (verified: param 6041).",
+    description: "Raw sensitivity an indoor camera reports (param 6041).",
     decode: (raw) => (typeof raw === "number" ? raw : undefined),
   },
   /**
@@ -631,7 +611,7 @@ export const MOTION_MEMBERS = {
     type: "number",
     kind: "scalar",
     unexposed: true,
-    description: "Raw sensitivity reported on the inverted seven-step scale (verified: param 1210).",
+    description: "Raw sensitivity reported on the inverted seven-step scale (param 1210).",
   },
   /**
    * The raw sensitivity a standalone PIR sensor reports, on its own inverted five-step ladder — the
@@ -644,7 +624,7 @@ export const MOTION_MEMBERS = {
     type: "number",
     kind: "scalar",
     unexposed: true,
-    description: "Raw sensitivity a standalone PIR sensor reports (verified: param 1609, inverted ladder).",
+    description: "Raw sensitivity a standalone PIR sensor reports (param 1609, inverted ladder).",
   },
   /**
    * A standalone motion sensor's user test mode — the ONLY state in which such a sensor reports
@@ -662,7 +642,7 @@ export const MOTION_MEMBERS = {
     kind: "boolean",
     description:
       "Whether a standalone motion sensor is in the app's user test mode — the only state in which it " +
-      "reports detections over P2P. ✅ Observed live on a T8910 both ways. P2P-only: the cloud record " +
+      "reports detections over P2P. P2P-only: the cloud record " +
       "never carries this id, so it is present once the station has reported it and absent before that.",
     write: (v, ctx) => {
       requireFamily("setTestMode", ctx, "sensor");
@@ -677,7 +657,7 @@ export const MOTION_MEMBERS = {
    * describes the blob while `decodeSnoozeSeconds` lifts the duration out of it on read. The
    * `decode`'s return type is what a caller gets, so the getter answers a number.
    *
-   * Writing a positive duration re-sends the capture's fixed companion fields rather than exposing them
+   * Writing a positive duration sends fixed companion fields rather than exposing them
    * (`snoozePayload`); writing 0 sends the bare clear shape. Camera-family only.
    */
   snoozeTime: {
@@ -702,9 +682,7 @@ export const MOTION_MEMBERS = {
     param: MOTION_CMD.HUMAN_ONLY_AT_NIGHT,
     type: "bool",
     kind: "boolean",
-    description:
-      "Restrict AI classification to night-time only (1719). ⚠️ Replay + readback confirmed on a " +
-      "HomeBase-attached T8425, not byte-captured.",
+    description: "Restrict AI classification to night-time only (1719).",
     requires: [MOTION_CMD.HUMAN_ONLY_AT_NIGHT],
     write: (v, ctx) => {
       requireFamily("humanOnlyAtNight", ctx, "camera");
@@ -721,8 +699,8 @@ export const MOTION_MEMBERS = {
     kind: "boolean",
     coerce: (raw) => decodeRadarWdSwitch(raw) ?? false,
     description:
-      "Loitering detection — alert on lingering rather than passing (2706). Observed on the T8214 " +
-      "doorbell only; the read is object-OR-scalar, matching the app's own decode.",
+      "Loitering detection — alert on lingering rather than passing (2706). " +
+      "The read is object-OR-scalar, matching the app's own decode.",
     requires: [MOTION_CMD.LOITERING_DETECTION],
     write: (v, ctx) => {
       requireFamily("loiteringDetection", ctx, "camera");
@@ -744,7 +722,7 @@ export const MOTION: CapabilityModule = {
   members: MOTION_MEMBERS,
   properties: propertiesOf(MOTION_MEMBERS),
   /**
-   * Only the sensitivity STEP, which no member can hold: the five families this is captured on report
+   * Only the sensitivity STEP, which no member can hold: the five known families report
    * their ladder under four different ids and two of them run inverted, so the step is resolved across
    * all of them rather than read off one param.
    *
@@ -805,7 +783,7 @@ export const MOTION: CapabilityModule = {
   /**
    * Inbound FCM motion pushes → `"motion"`: 3101 is camera-family AI motion
    * (`DoorbellPushEvent`/`IndoorPushEvent.MOTION_DETECTION`), 14 is a standalone PIR motion sensor
-   * (`CusPushEvent.MOTION_SENSOR_PIR`) — verified live on a T8910.
+   * (`CusPushEvent.MOTION_SENSOR_PIR`).
    *
    * Inbound detection pushes. Each kind gets its OWN event name rather than one `motion` event with a
    * discriminator: they are separate detections, the same shape the existing pet/package events follow.

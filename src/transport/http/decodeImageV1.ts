@@ -3,8 +3,7 @@
  *
  * Wire format: `eufysecurity:<SERIAL(16)>:<CODE(10)>:<DATA>`. V1 encrypts the first 256 bytes of
  * `DATA` with AES-128-ECB and leaves the remaining JPEG bytes in plaintext. The key is derived from
- * the camera serial, station `p2p_did`, and per-image code. This decoder is verified against a V6
- * production push thumbnail: the decrypted result is a structurally valid, viewable JPEG.
+ * the camera serial, station `p2p_did`, and per-image code.
  */
 import { createDecipheriv, createHash } from "node:crypto";
 import { decodeImageV2, isV2Image } from "./decodeImageV2.js";

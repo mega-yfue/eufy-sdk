@@ -4,9 +4,8 @@ import { propertiesOf, type Members, type Surface } from "./members.js";
 /**
  * `display` — a eufy Smart Display's charge.
  *
- * One typed read, and the smallness is the finding rather than a gap. The captured unit (a T87A0,
- * 2026-09-04) connects over secure MQTT with no `p2p_did`, so it speaks no P2P at all, and it reported
- * six params in an id range no other line uses. Only one of them tells a caller something it could not
+ * One typed read, and the smallness is the finding rather than a gap. A Smart Display connects over
+ * secure MQTT with no `p2p_did`, so it speaks no P2P at all, and it reports six params in an id range no other line uses. Only one of them tells a caller something it could not
  * get another way:
  *
  *  - 8005 and 8006 restate the model's retail name and code, which `info` already answers from the
@@ -47,10 +46,7 @@ export const DISPLAY_MEMBERS = {
    * The id is in the device's cloud record; the NAME comes from the hardware's owner rather than the
    * cloud data-point list, and `"100"` fits brightness, volume or charge equally.
    *
-   * The scale is `percent` on the reading itself, not on convention alone: a full charge reads `255` on a
-   * 0-255 scale and `1000` on a 0-1000 one, so `"100"` on a charged unit is positive evidence for 0-100
-   * rather than merely consistent with it. What nobody has done is watch it MOVE, which is why a value
-   * frozen at 100 would not yet be distinguishable from a healthy one.
+   * The scale is `percent`: a full charge reads `"100"`, not the `255` or `1000` of a wider scale.
    */
   battery: {
     param: DISPLAY_PARAM.BATTERY,

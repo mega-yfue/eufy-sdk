@@ -5,8 +5,8 @@
  *
  * Two video frame variants are handled:
  *  - **Plaintext** (`signCode 0`, e.g. HomeBase-attached cameras): a fixed 22-byte frame header
- *    (`parseVideoFrameHeader`) followed directly by Annex-B NAL units — verified live (960×540,
- *    keyframe = header flag bit0). We strip the 22-byte header.
+ *    (`parseVideoFrameHeader`) followed directly by Annex-B NAL units (keyframe = header
+ *    flag bit0). We strip the 22-byte header.
  *  - **Encrypted keyframes**: either the AES-256-GCM body under a media key wrapped in an ECIES envelope
  *    for an offered P-256 key ({@link VideoFrameDecoder}), or an AES-ECB head under a media key wrapped for
  *    the session's RSA key ({@link P2PSession.decodeVideoFrame}). An attached camera's start on a station
@@ -55,14 +55,11 @@ const MAX_TRACED_DECODE_FAILURES = 3;
 /**
  * How often the media start is re-issued to hold a stream open, when a caller expresses no preference.
  *
- * This is **on by default** because some cameras stop sending without it. With the nudge disabled, a
- * T8170 went quiet 13.6 s into a plain `live()` — no `stop`, no `error`, the feed simply stopped — and
- * ran the full window with it on (185 frames vs 704 over 40 s).
+ * This is **on by default** because some cameras stop sending without it — no `stop`, no `error`, the
+ * feed simply stops.
  *
  * Which cameras need it does **not** follow topology or power source, so there is no predicate to gate
- * it on: measured across four cameras, an own-session T8410 and both HomeBase-attached cameras (T8210,
- * T8114) held a 40 s stream up with the nudge disabled, while the own-session T8170 did not. All four
- * are battery. Since a camera that needs it goes silent rather than reporting anything, the default
+ * it on. Since a camera that needs it goes silent rather than reporting anything, the default
  * covers the one that fails.
  *
  * What the nudge costs differs by topology, and only one branch is a true keepalive: an own-session
@@ -71,10 +68,9 @@ const MAX_TRACED_DECODE_FAILURES = 3;
  * that path.
  *
  * That restart is harmless on a station serving ONE camera and harmful on a station serving several: it
- * re-asserts this camera's channel every interval, so two attached streams contend continuously. Measured on
- * a real base as a full start every 3 s from each. So an attached stream stops nudging as soon as the station
- * delivers a frame of its own channel — see the private `settleKeepalive`. The measurement that justifies it
- * is the one above: the attached cameras held their window with the nudge disabled outright.
+ * re-asserts this camera's channel every interval, so two attached streams contend continuously. So an
+ * attached stream stops nudging as soon as the station delivers a frame of its own channel — see the private
+ * `settleKeepalive`: an attached camera holds its stream with the nudge disabled outright.
  */
 export const DEFAULT_KEEPALIVE_MS = 3000;
 
@@ -209,13 +205,11 @@ export class LiveStream extends EventEmitter {
    * keepalive, while an attached camera has no such state and re-sends the FULL media start. Over one session,
    * which serves one camera at a time, that restart re-asserts this channel against whatever else is warm on
    * it, so two
-   * attached streams restart every interval and contend for the station continuously — measured on a real base
-   * as a full start every 3 s from each.
+   * attached streams restart every interval and contend for the station continuously.
    *
    * A frame of this camera's own channel is the station stating it is serving THIS camera, which is the only
-   * thing the restart was trying to bring about. The SDK's own measurement agrees it is then unnecessary: both
-   * attached cameras held a 40 s stream with the nudge disabled, while the own-session camera that needs it
-   * went quiet at 13.6 s without it — so an own-session stream keeps its ping.
+   * thing the restart was trying to bring about. An attached camera holds its stream with the nudge disabled,
+   * while an own-session camera that needs it goes quiet without it — so an own-session stream keeps its ping.
    *
    * The warm-up retry a shared source runs is untouched: it recovers a start that raced the level-2 key, and
    * it stops at the first keyframe by its own rule.
@@ -382,10 +376,8 @@ export class LiveStream extends EventEmitter {
    * Whether this stream may take `frame` — the demultiplexer for a station that serves several cameras.
    *
    * Every stream over a station's session reads the same inbound feed, so with two cameras warm each stream
-   * sees both. The station DOES say which camera a media frame belongs to: measured with two cameras of
-   * different geometry streaming at once on one HomeBase, the frame's channel field partitioned them
-   * exactly — 43 frames of 1920x1080 on the started channel 0 and 28 of 640x480 on channel 2, video and
-   * audio alike — while each handle was delivered both cameras' frames.
+   * sees both. The station DOES say which camera a media frame belongs to: the frame's channel field
+   * partitions them exactly, video and audio alike, while each handle is delivered both cameras' frames.
    *
    * The tag is only meaningful where a station fans out to several cameras. A camera that owns its session
    * numbers its stream for itself: one was started on channel 0 and tagged its frames channel 1, so

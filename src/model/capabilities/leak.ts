@@ -19,7 +19,7 @@ export const LEAK_PARAM = {
  * (`asBoolean` for the two states, `asInt` for the threshold); no water sensor has been read yet, so
  * each getter is present only where a sensor reports its param.
  *
- * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * Exported but NOT published: each entry states its wire id and its gate,
  * which the reference site does not carry.
  * @internal
  */

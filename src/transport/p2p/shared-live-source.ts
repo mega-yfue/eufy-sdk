@@ -602,7 +602,7 @@ export class SharedLiveSource {
    * A forced start that a whole interval later has still produced nothing is a session that acknowledges and
    * does not serve: a fresh session on the same camera delivers a keyframe within a second, so a warm-up asks
    * for one rather than forcing starts onto this one until its deadline. Wired only: a cold battery camera is
-   * slow rather than deaf, measured at about 8 s to first media, and replacing its session would cost a wake.
+   * slow rather than deaf, seconds to first media, and replacing its session would cost a wake.
    */
   private reissueStart(): void {
     const current = this.stream;

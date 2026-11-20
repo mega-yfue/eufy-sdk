@@ -51,8 +51,7 @@ export async function openLiveStream(session: P2PSession, opts: LiveStreamOption
  * The consumer is detached the moment the collected run is complete, and the decode that follows holds no
  * station: it works on bytes already in memory. One session serves one camera at a time and a still never
  * opens a second one, so a still that kept its pull attached across its own decode would deny
- * that station to every live request for the length of an FFmpeg run — measured on a real base as a live
- * request refused 370ms after the still it was waiting on had already collected everything it needed.
+ * that station to every live request for the length of an FFmpeg run.
  *
  * `signal` ends the collection itself, not only the wait for it, and rejects with the signal's own reason
  * because the abandonment is the caller's fact and not a failure of the source. It reaches only the
@@ -172,8 +171,8 @@ export async function captureSnapshotFromShared(
  * **Bounded in both phases, so it always settles.** The first phase is bounded by `timeoutMs` waiting for the
  * keyframe the clip starts at; the second is bounded by the clip's own window, which is armed as a deadline
  * the moment capture starts rather than being read off the next frame to arrive. A camera that goes quiet
- * mid-clip delivers no further frame to compare a clock against — measured on an own-session camera that
- * stopped 13.6 s into a stream with no `stop` and no `error` — so a clip whose end is decided inside a frame
+ * mid-clip delivers no further frame to compare a clock against — it stops with no `stop` and no
+ * `error` — so a clip whose end is decided inside a frame
  * handler has no end at all, and the promise stays pending for the life of the process. The deadline answers
  * with the run collected up to it: the window the caller asked for has elapsed, and frames the camera never
  * sent cannot be waited into existence.
@@ -353,9 +352,8 @@ export function jpegGeometry(jpeg: Buffer): { width: number; height: number } | 
  * `-pix_fmt yuvj420p` pins the JPEG-range output the encoder requires. Camera streams signal limited
  * ("tv") range, and the mjpeg encoder refuses a non-full-range input under default compliance — whether
  * it sees one depends on which pixel format format-negotiation happens to settle on, so leaving it
- * unpinned makes the decode fail on some bursts and not others from the same camera. Verified against a
- * captured live burst: the flag produces byte-identical output where negotiation already chose this
- * format, so it constrains only the case that would otherwise error.
+ * unpinned makes the decode fail on some bursts and not others from the same camera. Where negotiation
+ * already chose this format the flag changes no output byte, so it constrains only the case that would otherwise error.
  *
  * A burst can also yield no image while ffmpeg exits 0 — asked for one frame, it finds no complete frame
  * in the data and reports success having encoded none. That is a property of the burst, so it carries the

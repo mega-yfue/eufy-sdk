@@ -9,16 +9,15 @@ import type { Command } from "../../core/contracts.js";
 const STATION_CHANNEL = 255;
 
 /**
- * The guard modes `setMode` can SET — every mode a station reports, all nine confirmed against real
- * hardware. `ArmingMode` is both the const value-object (`ArmingMode.home`) and the union type of its
+ * The guard modes `setMode` can SET — every mode a station reports. `ArmingMode` is both the const value-object (`ArmingMode.home`) and the union type of its
  * values, so callers pass the named constant: `setMode(ArmingMode.home)`.
  *
  * The domain of `setMode` (cmd 1224) alone. The alarm-delay write (cmd 1255) carries its own mode integer
- * on a separate wire and takes {@link AlarmDelayMode}, which stays NARROWER — evidence for one command is
- * not evidence for the other, and 1255 still has no capture beyond its byte-captured three.
+ * on a separate wire and takes {@link AlarmDelayMode}, which stays NARROWER — a mode integer on one
+ * command says nothing about the other.
  *
- * A mode belongs here only once its write is confirmed against real hardware, because a fire-and-forget
- * wire makes a wrong mode look exactly like success; `ARMING_MODE_WIRE` carries the per-value evidence.
+ * A mode belongs here only once its write is confirmed, because a fire-and-forget
+ * wire makes a wrong mode look exactly like success.
  * The union is also what `ARMING_MODE_WIRE` is keyed by, so the table cannot name a mode this does not.
  */
 export const ArmingMode = {
@@ -45,12 +44,12 @@ export type ArmingMode = (typeof ArmingMode)[keyof typeof ArmingMode];
 
 /**
  * The modes the alarm-delay write (cmd 1255) accepts a `mode_id` for — the three guard modes whose wire
- * integer is byte-captured.
+ * integer is known on that command.
  *
  * A domain of its own, because the two mode integers ride different commands: `setMode` writes `mode_type`
  * on cmd 1224, and cmd 1255 carries `mode_id`. Neither wire validates the integer, so each union IS its
- * command's gate, and evidence for one is not evidence for the other. `custom1` is confirmed on 1224 only;
- * 1255 has no capture carrying mode 3, and no known GET to read one back — the app's own replies
+ * command's gate. `custom1` is known on 1224 only;
+ * 1255 has no known frame carrying mode 3, and no known GET to read one back — the app's own replies
  * `{count:0,data:null}` — so it is absent here. Narrower than {@link ArmingMode} by exactly that value.
  */
 export const AlarmDelayMode = {
@@ -70,20 +69,12 @@ export type AlarmDelayMode = (typeof AlarmDelayMode)[keyof typeof AlarmDelayMode
  */
 export const ARMING_CMD = {
   /**
-   * Guard/arming mode (app `GUARD_MODE`). ✅ Wire ENVELOPE verified live on a T8030 (
-   * 2026-07-23), cycling Away→Disarmed→Home in the
-   * real app: `1350` SET_PAYLOAD, cmd 1224 (SAME id as the read param), mChannel 0, explicit
-   * mValue3:0, `payload:{mode_type:<int>, user_name:<string>}`.
+   * Guard/arming mode (app `GUARD_MODE`). `1350` SET_PAYLOAD, cmd 1224 (SAME id as the read param),
+   * mChannel 0, explicit mValue3:0, `payload:{mode_type:<int>, user_name:<string>}`. All nine
+   * {@link ARMING_MODE_WIRE} values are settable; each write is answered by a MODE_SWITCH push.
    *
-   * ⚠️ Only 3 of the 9 modes were exercised in that capture — `mode_type` 0 (away), 63 (disarmed), 1
-   * (home), all confirmed byte-exact. Re-confirmed live 2026-08-05: each reported its own MODE_SWITCH push
-   * within ~5s of the write. The remaining six are live confirmations rather than captures — `custom1` 3
-   * first, then `schedule` 2, `custom2` 4, `custom3` 5, `off` 6 and `geo` 47 — each sent as this exact
-   * frame and each observed to bring MODE_SWITCH back, so all nine are settable. `ARMING_MODE_WIRE` has
-   * the per-value evidence and the dates.
-   *
-   * The ENCRYPTION LEVEL is the session's to pick (`"auto"`), not this command's: the T8030 the envelope
-   * was captured on holds a level-2 key and seals it level-2, while an own-session camera that never
+   * The ENCRYPTION LEVEL is the session's to pick (`"auto"`), not this command's: a station holding a
+   * level-2 key seals it level-2, while an own-session camera that never
    * negotiates one carries the same envelope level-1. See `armingCommand`.
    *
    * A T8410C and a T8410 take the mode as a direct frame instead of this envelope; see
@@ -92,32 +83,29 @@ export const ARMING_CMD = {
   SET_ARMING: 1224,
   /**
    * One guard mode's per-device action table (app `CMD_SET_ALL_ACTION`), which carries the alarm delays
-   * and each device's actions in that mode. ✅ WIRE CAPTURED live on a T8030 (
-   * 2026-07-23, both directions): a **bare
+   * and each device's actions in that mode. A **bare
    * JSON frame, no `1350`/`1700` envelope** — outer P2P cmd IS `1255` itself, station channel 255,
    * plaintext `{account_id, count_down_alarm:{channel_list,delay_time},
    * count_down_arm:{channel_list,delay_time}, devices:[{action,device_channel}], mode_id,
    * siren_sensor_action:[{action,device_channel}]}`.
    *
-   * **Disambiguated from a live-countdown-state echo** (2026-07-23): a full arm→wait-through-exit-
-   * delay→disarm cycle produced ZERO traffic on this cmd, while every edit of the app's "Alarm Delay"
-   * screen did — so this is a genuine settings WRITE, not a realtime push.
+   * A settings WRITE, not a countdown-state echo: an arm→exit-delay→disarm cycle sends nothing on this
+   * cmd, while every edit of the app's "Alarm Delay" screen does.
    *
    * **Why `setAlarmDelayConfig` takes the FULL config, not just a duration**: `channelList` identifies
-   * WHICH sensor channels get the delay (confirmed: setting 45s on one specific sensor produced
+   * WHICH sensor channels get the delay (45s on one sensor is
    * `channel_list:[<that sensor's channel>], delay_time:45`) — it is not a simple on/off. The
-   * corresponding GET command (`1310`/inner cmd `40003`, sent by the app right before editing) always
-   * replied `{count:0,data:null}` in every capture — genuinely empty, not a decrypt failure (confirmed
-   * via the same bidirectional decrypt this finding used) — so the app does NOT read the current
+   * corresponding GET command (`1310`/inner cmd `40003`, sent by the app right before editing) replies
+   * `{count:0,data:null}` — genuinely empty — so the app does NOT read the current
    * config this way; a T8010 reports it on its own params instead, see below. Without a working GET,
    * safely PATCHING just one channel in or out of an existing list isn't possible without risking
    * clobbering the rest — so
    * this ships as a caller-supplies-everything write instead of guessing a merge.
    * `devices`/`siren_sensor_action` are even less understood (raw per-device action codes, meaning
-   * unconfirmed) and MUST come from a value independently read/captured for the target mode —
+   * unknown) and MUST come from a value independently read for the target mode —
    * see `AlarmDelayConfig`'s field docs.
    *
-   * ✅ On a T8010 the app writes the same command for the Device Control screen: header channel 0, the
+   * On a T8010 the app writes the same command for the Device Control screen: header channel 0, the
    * whole table of the mode `{mode_id, devices, count_down_alarm, count_down_arm}`, acked by an all-zero
    * 1255 reply. The T8010 reports each table on its own params, Home on 1157 and Away on 1158, and the
    * reported table follows a write within 15 s. See {@link DEVICE_NOTIFY_FLAG}.
@@ -133,30 +121,24 @@ export const ARMING_CMD = {
 const DEVICE_NOTIFY_FLAG = 0x08;
 
 /**
- * The guard modes whose device notification is read and written. Home and away are replayed on a T8010;
- * `custom1` (wire 3) is captured on a T8170, whose own params report it on 1148.
+ * The guard modes whose device notification is read and written. `custom1` (wire 3) is reported on a
+ * standalone camera's own param 1148.
  */
 export type DeviceNotificationMode = Extract<ArmingMode, "home" | "away" | "custom1">;
 
 /**
- * The standalone cameras whose own Device Control write is confirmed: cmd 1255 to the camera itself with only
+ * The standalone cameras that take their own Device Control write: cmd 1255 to the camera itself with only
  * its own entry `{mode_id, devices:[{device_channel, action}]}`, the new flags reported back after it.
- * ✅ T8170: wire-captured (2026-10-09, 2026-10-11). ✅ T8171: confirmed live both ways (2026-10-12, Home
- * 9 → 1 → 9 in its cloud params). ✗ A T8400, T8442 and T8410 did not acknowledge it within 20 s and kept
- * their flags (2026-10-12), so they are read only.
+ * A T8400, T8442 and T8410 do not acknowledge it and keep their flags, so they are read only.
  */
 const STANDALONE_ACTION_MODELS: ReadonlySet<string> = new Set(["T8170", "T8171"]);
 
 /**
  * The models whose guard-mode write is the direct frame: outer command 1224 itself at level 2, body
  * `u32 LE mode_type ‖ admin account id zero-padded to 128 bytes` (the `p2p-station-scalar` frame), rather
- * than the `1350` set-payload envelope. Taken from the vendor app's own frame on a T8410C, where Home
- * (`mode_type` 1) and Away (`mode_type` 0) were captured and decrypted 2026-10-17, and where the camera
- * answers the `1350` form with result -103 at both level 1 and level 2. Away (0), Home (1) and Disarmed
- * (63) were each also sent as this frame live on 2026-10-17: the camera answered each on outer 1224 with
- * result 0 and param 1224 reported the requested mode within the readback window. Schedule (2), custom1 (3),
- * custom2 (4), custom3 (5), off (6) and geo (47) were each sent as this frame live on a T8410C by
- * 2026-11-05 and confirmed applied, so all nine modes in {@link ARMING_MODE_WIRE} are written.
+ * than the `1350` set-payload envelope, which a T8410C answers with result -103 at both level 1 and
+ * level 2. The camera answers this frame on outer 1224 with result 0 and reports the requested mode on
+ * param 1224; all nine modes in {@link ARMING_MODE_WIRE} are written.
  */
 const DIRECT_ARMING_MODELS: ReadonlySet<string> = new Set(["T8410C"]);
 
@@ -164,16 +146,13 @@ const DIRECT_ARMING_MODELS: ReadonlySet<string> = new Set(["T8410C"]);
  * The models whose guard-mode write is the direct frame on the station broadcast channel 255, sealed at the
  * session's own level ({@link STATION_CHANNEL}, `form` `"auto"`): the same 132-byte body as
  * {@link DIRECT_ARMING_MODELS}. A standalone T8410's session is level-1, and it leaves the `1350` set-payload
- * envelope unapplied: the write is sent, and param 1224 keeps the old mode through the 20 s readback.
- * Away (0), Home (1), Schedule (2), Geofencing (47) and Disarmed (63) were each sent as this frame live on
- * 2026-10-28, on a level-1 session, and each was confirmed applied; for Disarmed, param 1151 in the
- * camera's own 1103 report moved from 0 to 63 and the readback converged. custom1 (3), custom2 (4), custom3 (5)
- * and off (6) were each sent as this frame live on a T8410 by 2026-11-05 and confirmed applied, so all nine
+ * envelope unapplied: the write is sent, and param 1224 keeps the old mode. This frame applies on a
+ * level-1 session, and the camera's own 1103 report carries the new mode on param 1151; all nine
  * modes in {@link ARMING_MODE_WIRE} are written.
  */
 const BROADCAST_ARMING_MODELS: ReadonlySet<string> = new Set(["T8410"]);
 
-/** The standalone cameras whose own flags are read live: the two above plus the three that stay read only. */
+/** The standalone cameras whose own flags are read: the two above plus the three that stay read only. */
 const STANDALONE_READ_MODELS: ReadonlySet<string> = new Set([...STANDALONE_ACTION_MODELS, "T8400", "T8442", "T8410"]);
 
 /**
@@ -202,27 +181,15 @@ function actionTable(read: CapabilityStateReader, mode: DeviceNotificationMode):
  * model-dependent) — the single source of truth {@link ARMING_MODE_LABELS} (the `armingMode`
  * PropertySpec's `enumValues`) derives from.
  *
- * Read and write are the same nine as of the confirmations below, so this table is the whole domain in
+ * Read and write are the same nine, so this table is the whole domain in
  * both directions — {@link SETTABLE_MODES} and {@link ARMING_MODE_LABELS} are both derived from it rather
  * than listed again. {@link AlarmDelayMode}, the domain cmd 1255 takes, is a SEPARATE decision on a
- * separate wire and stays at its byte-captured three: never widen it because `setMode` gained a mode.
+ * separate wire and stays at its three: never widen it because `setMode` gained a mode.
  *
  * **The names and integers are the V6 app's own** (`SecurityGuardConstants`, mirrored by `GuardConstant`),
- * so the mapping is APK ground truth rather than a borrowed label. Provenance for a NAME was never
- * authority for a WRITE, which is why the write side was confirmed value by value:
- *
- * ✅ WIRE-CAPTURED (byte-exact, a T8030 2026-07-23; all three re-confirmed live 2026-08-05, each reporting
- * its own MODE_SWITCH push within ~5s): `away` 0, `home` 1, `disarmed` 63.
- * ✅ CONFIRMED LIVE, not byte-captured (a T8030 2026-09-12): `custom1` 3 — accepted and reporting its own
- * MODE_SWITCH push within the convergence window on each of two writes, cycling custom1→home→custom1.
- * ✅ CONFIRMED LIVE, not byte-captured (2026-09-13): `schedule` 2, `custom2` 4, `custom3` 5, `off` 6,
- * `geo` 47 — the five that had no capture behind them, each sent as exactly this frame and each observed
- * to bring MODE_SWITCH back. That observation is the evidence rather than an inference from it: the client
- * emits `armingModeChanged` only once its own bounded readback has CONVERGED on the mode asked for, so a
- * station that ignored the write would have produced silence instead.
- *
- * A live confirmation is the same frame `setMode` builds, differing only in `mode_type` — so what it
- * establishes is that this command carries that integer, not that some other command exists.
+ * so the mapping is APK ground truth rather than a borrowed label. Every value is accepted on
+ * {@link ARMING_CMD.SET_ARMING} and answered by MODE_SWITCH; the client emits `armingModeChanged` only once
+ * its bounded readback has CONVERGED on the mode asked for, so an ignored write produces silence.
  */
 const ARMING_MODE_WIRE: Record<ArmingMode, number> = {
   away: 0,
@@ -260,17 +227,16 @@ function armingModeOf(v: boolean | number | string): ArmingMode | undefined {
 
 /**
  * Build the {@link ARMING_CMD.SET_ARMING} write intent, or throw if the context has no account
- * identity. `user_name` — the real app's own capture showed a MASKED value (`"max***"`, presumably
- * the app's own privacy-display truncation of the account's email local-part), not the unmasked
- * acting name `ctx.accountName` carries. Untested whether the device validates this field strictly;
- * sending the acting name as it stands is the more correct choice regardless — it's almost certainly
+ * identity. `user_name` — the app sends a MASKED value (its privacy-display truncation of the
+ * account's email local-part), not the unmasked acting name `ctx.accountName` carries. Sending the
+ * acting name as it stands is the more correct choice — it's almost certainly
  * just attribution (e.g. "who armed the system" in event history), not a value the device checks
  * against anything.
  *
  * `"auto"` on both counts `setPayload` names: `mValue3` is passed 0 explicitly, so both seals carry the
- * byte-identical JSON the T8030 capture recorded; and every device carrying `arming` is its own station
+ * byte-identical JSON; and every device carrying `arming` is its own station
  * or a HomeBase, the former being exactly the case that may hold no key. A T8410's session is level-1 —
- * the same fact `access.ts` records beside camera power 1035, verified live on that model — so pinned
+ * the same fact `access.ts` records beside camera power 1035 — so pinned
  * level-2 made the one control a standalone camera most needs the one it could not be sent.
  */
 function armingCommand(mode: ArmingMode, ctx: CommandContext): Command {
@@ -299,8 +265,8 @@ function armingCommand(mode: ArmingMode, ctx: CommandContext): Command {
  * value-object (`AlarmDelaySeconds.sec45`) and the union type of its values, so callers pass the
  * named constant: `{delaySeconds: AlarmDelaySeconds.sec45}`.
  *
- * **NOT a wire constraint** — the device itself does NOT validate against this list: a live test sent
- * `50` (off this list) and the app reflected it correctly, no rejection. Typed as a closed set anyway
+ * **NOT a wire constraint** — the device itself does NOT validate against this list: `50` (off this
+ * list) is accepted. Typed as a closed set anyway
  * so `setAlarmDelayConfig` callers get the same choices a human editing the same setting in the app
  * would see, rather than an arbitrary int that could silently diverge from every value the real UI
  * can actually produce.
@@ -327,8 +293,8 @@ export type AlarmDelayCountdown = {
 /** One device's participation entry in {@link AlarmDelayConfig.devices} / `.sirenSensorAction`. */
 export type AlarmDelayDeviceAction = {
   deviceChannel: number;
-  /** Raw per-device action code. Meaning NOT independently confirmed — pass through verbatim from a
-   * value read/captured for this exact mode, never invented. */
+  /** Raw per-device action code. Meaning unknown — pass through verbatim from a
+   * value read for this exact mode, never invented. */
   action: number;
 };
 
@@ -338,14 +304,14 @@ export type AlarmDelayDeviceAction = {
  * `setEntryDelay(seconds)` toggle.
  */
 export type AlarmDelayConfig = {
-  /** Per-sensor ENTRY/alarm delay — the app's "Alarm Delay" UI setting. Confirmed on-device: a delay
+  /** Per-sensor ENTRY/alarm delay — the app's "Alarm Delay" UI setting. A delay
    * set on one sensor lands as that sensor's channel plus the chosen duration. */
   countDownAlarm: AlarmDelayCountdown;
-  /** A second, distinct countdown carried alongside `countDownAlarm`. It stayed empty across every
-   * observed `countDownAlarm` edit, so its own trigger condition is UNCONFIRMED. */
+  /** A second, distinct countdown carried alongside `countDownAlarm`. It stays empty across a
+   * `countDownAlarm` edit; its own trigger condition is unknown. */
   countDownArm: AlarmDelayCountdown;
-  /** Every device's participation + action for THIS mode. UNCONFIRMED semantics (the action code's
-   * meaning is unknown) — it stayed identical across every `countDownAlarm`-only edit within the same
+  /** Every device's participation + action for THIS mode. Unknown semantics (the action code's
+   * meaning is unknown) — it is unchanged by a `countDownAlarm`-only edit within the same
    * mode, so pass through exactly what was read back for that mode; never invent a value. */
   devices: AlarmDelayDeviceAction[];
   /** Siren behavior per device for this mode. Same caveat as `devices`. */
@@ -355,7 +321,7 @@ export type AlarmDelayConfig = {
 /**
  * Build the alarm-delay `cmd 1255` write intent. Bare JSON, no envelope (`setJsonRaw`) — see
  * the full config. Pinned to the station broadcast channel (255), NOT
- * `ctx.channel` (which resolves to 0 for a station context) — the capture put this frame on channel
+ * `ctx.channel` (which resolves to 0 for a station context) — the frame rides channel
  * 255 explicitly, same as every other station-scoped bare/scalar write in the router.
  */
 function alarmDelayCommand(mode: AlarmDelayMode, config: AlarmDelayConfig, ctx: CommandContext): Command {
@@ -414,7 +380,7 @@ export type ArmingActions = Surface<typeof ARMING_MEMBERS>;
 /**
  * Every `arming` feature, declared once.
  *
- * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * Exported but NOT published: each entry states its wire id and its gate,
  * which the reference site does not carry.
  * @internal
  */
@@ -431,7 +397,7 @@ export const ARMING_MEMBERS = {
    * The setter takes either vocabulary — see `armingModeOf` — because the getter answers the wire integer,
    * and a value a caller just read has to be one it can write back.
    *
-   * MODE_SWITCH carries no value. Live qualification on a standalone camera showed that authoritative
+   * MODE_SWITCH carries no value. On a standalone camera, authoritative
    * readback requires a bounded cloud-list refresh, and that its P2P session must be reset after
    * convergence before a following mode write; an attached device must never reset its shared HomeBase.
    * A standalone T8423's level-1 session is kept open instead.
@@ -443,10 +409,9 @@ export const ARMING_MEMBERS = {
     kind: "enum",
     enumValues: ARMING_MODE_LABELS,
     description:
-      "Guard mode (verified: param 1224 = GUARD_MODE, read/write mechanism confirmed). Reads and SETS all " +
-      "9 modes the app defines — away/home/schedule/custom1/custom2/custom3/off/geo/disarmed. Three are " +
-      "byte-captured writes and six are live-confirmed (each sent and observed to report its own " +
-      "MODE_SWITCH); see ARMING_MODE_WIRE in arming.ts for the per-value evidence.",
+      "Guard mode (param 1224 = GUARD_MODE). Reads and SETS all " +
+      "9 modes the app defines — away/home/schedule/custom1/custom2/custom3/off/geo/disarmed; " +
+      "each write is answered by a MODE_SWITCH push.",
     observation: {
       event: "armingModeChanged",
       reflects: (value) => ({ param: ARMING_CMD.SET_ARMING, expected: ARMING_MODE_WIRE[armingModeOf(value)!] }),
@@ -464,14 +429,14 @@ export const ARMING_MEMBERS = {
    * Write the FULL per-mode alarm/arm-delay configuration. The device accepts the whole config as one
    * write, not a single duration field, so a partial update is not possible. An expert/advanced API: the
    * caller is responsible for supplying `devices`/`sirenSensorAction` (and the `countDownAlarm`/
-   * `countDownArm` entries they are NOT changing) from a value they have independently read/captured for
+   * `countDownArm` entries they are NOT changing) from a value they have independently read for
    * this mode — there is no known GET to fetch it automatically, and a wrong guess here can silently
    * misconfigure which sensors arm/trigger for real.
    *
    * Takes {@link AlarmDelayMode}, not {@link ArmingMode}: a delay is configurable only for a mode whose
-   * integer is captured on THIS command, and `custom1` is confirmed on cmd 1224 only. The frame carries
+   * integer is known on THIS command, and `custom1` is known on cmd 1224 only. The frame carries
    * that integer in `mode_id` with no runtime validation and no readback, so a mode outside this union
-   * would be the same unverified guess `setMode` refuses.
+   * would be a guess.
    */
   setAlarmDelayConfig: method(
     ({ ctx, sink }) =>
@@ -512,7 +477,7 @@ export const ARMING_MEMBERS = {
    * changed. A standalone camera is sent a one-entry `{mode_id, devices}` table built from its own flags,
    * for its own channel only. Rejects, sending nothing, where the table does not list `channel`. A write
    * builds on the last one sent for that mode until the device reports a table (`${mode}Action` on a
-   * standalone camera) observed 15 s after it, so a second write does not revert it; a write whose dispatch
+   * standalone camera) 15 s after it, so a second write does not revert it; a write whose dispatch
    * rejects is not built on.
    */
   setDeviceNotification: method(
@@ -556,9 +521,8 @@ function decodeAlarmPhase(signal: InboundSignal): Record<string, unknown> {
 }
 
 /**
- * `arming` — guard/arming mode. `armingMode` (see {@link ARMING_CMD.SET_ARMING}) has a verified read/write
- * MECHANISM, and all 9 modes it reports are now confirmed as writes — the {@link ArmingMode} union is the
- * whole set. See `ARMING_MODE_WIRE` for which three are byte-captured and which six are live-confirmed.
+ * `arming` — guard/arming mode. `armingMode` (see {@link ARMING_CMD.SET_ARMING}) reads and writes
+ * all 9 modes — the {@link ArmingMode} union is the whole set.
  * The alarm-delay write (cmd 1255) is unaffected and keeps its narrower {@link AlarmDelayMode}.
  */
 export const ARMING: CapabilityModule = {
@@ -566,7 +530,7 @@ export const ARMING: CapabilityModule = {
   description: "Station/device guard (arming) mode.",
   members: ARMING_MEMBERS,
   properties: propertiesOf(ARMING_MEMBERS),
-  // A reported guard-mode param is the verified proof; every station-codec device also owns an
+  // A reported guard-mode param is the proof; every station-codec device also owns an
   // arming surface as part of its baseline.
   detection: { evidenceParams: [ARMING_CMD.SET_ARMING], codecs: ["station"] },
   ownedByStation: true,
@@ -578,7 +542,7 @@ export const ARMING: CapabilityModule = {
    * The alarm ids carry a `phase` so one event name covers the whole lifecycle: the countdown push a
    * static `"delayed"`, the alarm push a `"triggered"` or `"stopped"` read from its alarm type (see
    * {@link decodeAlarmPhase}). The mode-switch push is known to identify WHICH mode and
-   * what triggered the change, but neither has been observed on the wire here, so this emits the bare
+   * what triggered the change, but neither field's wire shape is known, so this emits the bare
    * transition and refreshes the `mode` read rather than trusting a decoded field.
    */
   events: [

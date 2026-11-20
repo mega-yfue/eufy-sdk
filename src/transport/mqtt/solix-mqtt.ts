@@ -8,7 +8,7 @@
  * family as {@link parseFf09SettingsResponse}), so this module only adds the Solix topic + a small
  * ff09 param decoder on top of the reused transport.
  *
- * Frame layout (observed on a Smart Meter Gen 2 / AE1X0):
+ * Frame layout (Smart Meter Gen 2 / AE1X0):
  *   ff09 | len(u16 LE, incl. trailing XOR checksum) | 5-byte header | TLV fields | xor
  * each TLV field is `tag(1) | len(1) | value(len)`; measurement fields carry `type(1) | 4 bytes`,
  * type `0x05` = float32 LE. Field `a2` is the device serial (ASCII after a leading type byte).
@@ -114,7 +114,7 @@ export const SOLIX_METER_PRODUCT_PREFIXES: readonly string[] = ["AE1X0"];
 export const SOLIX_SOLARBANK_PRODUCT_PREFIX = "AE10";
 
 /**
- * Confirmed ff09 tag → field bindings for the gen-4 Solarbank (`ats_ax170`), correlated live against the
+ * Confirmed ff09 tag → field bindings for the gen-4 Solarbank (`ats_ax170`), matched to the
  * app UI. Power values in watts; signed fields note their sign convention:
  * - `0xac` battery power, SIGNED (+ charging / − discharging) — the measured net pack power.
  * - `0xbc` charge power (0 unless charging); `0xad` discharge power (0 unless discharging).
@@ -302,21 +302,20 @@ export function solixReadings(frame: SolixParamFrame, productCode: string): Reco
  *   byte one after it. The parse is **self-validated**: the SOC byte inside the blob must equal tag
  *   `0xa3`, else the blob is a different/empty variant (the realtime frame carries an empty `0xa4`) and
  *   both are withheld rather than read from the wrong offset. `batteryHealth` is a CANDIDATE: its offset
- *   in the BMS blob is confirmed and its value (100 on a captured pack) fits a state-of-health percentage
- *   and the app's own `bmsHealth` field, but that it is SOH specifically is not yet hardware-correlated.
+ *   in the BMS blob is known and its value fits a state-of-health percentage and the app's own
+ *   `bmsHealth` field, but that it is SOH specifically is not established.
  * - **SOC limits** (`dischargeLimit`/`chargeLimit`, %) come from tag `0xb5`'s 4-byte SETTINGS-blob
- *   variant — type `0x04`, payload `[discharge, output cutoff, charge]`. Confirmed live: moving discharge
- *   10%→5% moved `b5[1]` 0x0a→0x05 while charge held at `b5[3]`=0x64.
+ *   variant — type `0x04`, payload `[discharge, output cutoff, charge]`.
  * - **Backup reserve** (`backupReserve`, %) comes from tag `0xb5`'s 25-byte FAST-frame variant (type
- *   `0x04`), which leads with `[backupReserve, discharge, charge, …]`. Confirmed by write-readback (it
- *   tracked the app setting 0→5→15 while the min-SOC held), so it is a distinct field from the discharge
+ *   `0x04`), which leads with `[backupReserve, discharge, charge, …]`. It tracks the app setting while
+ *   the min-SOC holds, so it is a distinct field from the discharge
  *   floor. The gate is exact-length-25: the 4-byte SETTINGS blob shares these offsets and is read above,
  *   so other `b5` layouts must not fall through here. `getSafetySocParams().backupReserve` (HTTP, paired
  *   with its enable switch) carries the same name from a second source; whether the two agree while that
  *   switch is OFF is not yet verified.
  * - **Grid power limits** (`gridImportLimit`/`gridExportLimit`, W) come from tag `0xdf`'s type-`0x04`
  *   blob: a `uint16` LE at offset 3 = the max power drawn FROM the grid, at offset 5 = the max power fed
- *   TO the grid. Both confirmed by write-readback in both directions. The length gate (≥7) keeps a
+ *   TO the grid. The length gate (≥7) keeps a
  *   short/empty variant from reading past its end.
  * - **Ambient light** is NOT emitted here. Tag `0xba` bit `0x20` tracks only this SDK's own
  *   `set_device_attrs` write; an app-side toggle goes via an `…/req` cmd-17 `a4` and leaves `ba`
@@ -717,12 +716,12 @@ export function extractFf09Payload(raw: unknown): Buffer | null {
  *   `ff09 | len(u16 LE, TOTAL bytes incl. ff09+len+xor) | 5-byte header | a1 01 22
  *    [| a2 02 01 01 | a3 03 02 2c 01] | fe … <ts32 LE> | xor`
  * `fe` carries a fresh unix-timestamp nonce; the trailing byte is XOR of every preceding byte (the same
- * checksum the meter's telemetry frames use — verified to reproduce the captured frames exactly).
+ * checksum the meter's telemetry frames use).
  */
 /**
  * Build the display screen-off-timeout command frame (ff09 msgtype `0x68`, tag `a5 = [01, index]`),
  * captured live from the app on `cmd/anker_power/<pc>/<sn>/req` (cmd 17). `index` is the 1-based
- * position in the app dropdown `[10s,20s,30s,1m,5m,30m]` — live-confirmed 10s=1, 30s=3, 1m=4. "Never"
+ * position in the app dropdown `[10s,20s,30s,1m,5m,30m]`. "Never"
  * is a separate command (not this one). Byte-identical to the captured frames modulo the index byte.
  */
 export function buildDisplayTimeoutFrame(index: number): Buffer {

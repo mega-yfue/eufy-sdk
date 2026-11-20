@@ -122,7 +122,7 @@ export interface ValueMember {
   /**
    * Install the WRITE only on a device that reported one of these params.
    *
-   * Distinct from the getter's own evidence gate: a siren's volume write was captured on a real siren,
+   * Distinct from the getter's own evidence gate: a siren's volume write is a siren wire,
    * and the evidence that a device IS one is that it reports a siren param — so handing the write to a
    * camera the name hint gave this capability to would send a frame that family never accepts. A member
    * that declares this lands OPTIONAL on the surface, since whether it exists is a runtime fact.

@@ -1,8 +1,7 @@
 /**
  * `eufy_life` secure-MQTT "DP" TLV frame codec — the wire framing shared by the T8L0x smart-light
- * family (other eufy_life appliances plausibly reuse the shape, unconfirmed). CONFIRMED live
- * (2026-07): magic bytes, header, XOR checksum, and the universal `a1`=timestamp / `a2`=account-id
- * opener are byte-for-byte verified against real captures + real device writes.
+ * family (other eufy_life appliances plausibly reuse the shape, unconfirmed): magic bytes, header, XOR
+ * checksum, and the universal `a1`=timestamp / `a2`=account-id opener.
  *
  * This module owns the DP framing for both write frames on this family:
  *  - `0x0201` device-info (on/off + brightness) — generic tag/value fields the capability supplies.
@@ -105,7 +104,7 @@ export function buildDpEnvelope(opts: {
  *
  * The high byte of the frame command distinguishes the two inbound shapes: `0x0A__` frames answer a
  * request (`0x0A00` answers `0x0200`, `0x0A01` answers `0x0201`) and are prefixed with a status byte;
- * `0x02__` frames are unsolicited reports and start their TLVs immediately. CONFIRMED live (2026-07-28).
+ * `0x02__` frames are unsolicited reports and start their TLVs immediately.
  */
 const RESPONSE_CMD_HI = 0x0a;
 

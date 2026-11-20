@@ -18,7 +18,7 @@
  *    station-scoped scalar (alarm/speaker volume `1235`); the hub is addressed by the outer frame
  *    channel 255, so there is no leading channel word.
  *
- * Both forms are wire-verified live (T8214 camera / T8030 hub audible test tone). `account_id` is
+ * `account_id` is
  * **sliced to 128** (`Buffer.write` would otherwise silently truncate) and must be **non-empty** —
  * an all-zero account field is rejected by the HomeBase and the caller's fallback chain can resolve
  * to `""`, so we fail loud instead.

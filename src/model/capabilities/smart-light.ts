@@ -41,7 +41,7 @@ import { asBool, clamp } from "../../core/util.js";
 const LIGHT_MQTT_CMD = 17;
 
 /**
- * The envelope `head.cmd` a device→app message carries — CONFIRMED live (2026-07). The two directions
+ * The envelope `head.cmd` a device→app message carries. The two directions
  * use **different** dispatch ids: {@link LIGHT_MQTT_CMD} is outbound only, this one inbound only.
  */
 const LIGHT_MQTT_REPORT_CMD = 16;
@@ -67,7 +67,7 @@ const LIGHT_CMD = {
 
 /**
  * `get_device_info`'s `a3` request bitmask. `0x1FFF` (13 bits) = every field — the app's own default,
- * WIRE-CONFIRMED from a live capture of the request the app fires when a device screen opens.
+ * sent when a device screen opens.
  */
 const GET_DEVICE_INFO_ALL = 0x1fff;
 
@@ -202,11 +202,11 @@ function presetCommand(lightId: number): Command {
 }
 
 /**
- * Models whose `0x020D` light-effect frame encoding is reverse-engineered + captured. Every device in
+ * Models whose `0x020D` light-effect frame encoding is reverse-engineered. Every device in
  * the line HAS light effects — this gates what has been CONFIRMED, not what the hardware offers. The
  * effect frame is **per-family**: across the `T8L0x` line the layer blobs differ (extra trailing
- * fields, colour fields at different widths) and the RGBCW mixing constants were derived from ONE
- * captured SKU (T8L02). `setEffect` is gated to these; on any other family member it throws rather
+ * fields, colour fields at different widths) and the RGBCW mixing constants were derived from
+ * T8L02 alone. `setEffect` is gated to these; on any other family member it throws rather
  * than send T8L02's bytes (a fire-and-forget wire makes a mis-packed frame look like success).
  * on/off/brightness are the shared `setDeviceInfoPayloadData` frame and are NOT gated.
  *
@@ -215,7 +215,7 @@ function presetCommand(lightId: number): Command {
  */
 const CONFIRMED_EFFECT_MODELS: ReadonlySet<string> = new Set(["T8L02"]);
 
-/** Models whose plain custom-colour frame has been captured and physically verified. */
+/** Models whose plain custom-colour frame encoding is confirmed. */
 const CONFIRMED_COLOR_MODELS: ReadonlySet<string> = new Set(["T8L02"]);
 
 /** Largest segment count representable by `[count, ...positions]` in a one-byte-length DP field. */
@@ -264,7 +264,7 @@ export type SmartLightActions = Surface<typeof SMART_LIGHT_MEMBERS> & {
  * only over the light's own MQTT wire — so the capability's own detection is the evidence, and each
  * getter reads `undefined` until the first report lands.
  *
- * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * Exported but NOT published: each entry states its wire id and its gate,
  * which the reference site does not carry.
  * @internal
  */
@@ -282,8 +282,7 @@ export const SMART_LIGHT_MEMBERS = {
     type: "bool",
     kind: "boolean",
     realtime: true,
-    description:
-      "Power state, DP tag 0xa1. ✅ Source-confirmed in the app's own report parser, then live-decoded off a T8L02 status report.",
+    description: "Power state, DP tag 0xa1, as the app's own report parser reads it.",
     write: (v) => deviceInfoCommand({ isOn: asBool(v) }),
     writeAs: "set",
     aliases: { on: true, off: false },
@@ -305,7 +304,7 @@ export const SMART_LIGHT_MEMBERS = {
     max: BRIGHTNESS_MAX,
     description:
       "Brightness 0-100, DP tag 0xa2. Persists across off — it is the configured level, not the live " +
-      "output. ✅ Source-confirmed in the app's own report parser, then echoed back the value written, live.",
+      "output, as the app's own report parser reads it.",
     write: (v) => deviceInfoCommand({ level: Number(v) }),
   },
   /**
@@ -440,7 +439,7 @@ export const SMART_LIGHT_MEMBERS = {
         }
         return sink.dispatch(colorCommand(color, segmentCount));
       },
-    "Set one plain RGB colour across all reported segments on verified T8L02 lights. Preserves configured brightness; completion acknowledges publication, not observed colour.",
+    "Set one plain RGB colour across all reported segments on T8L02 lights. Preserves configured brightness; completion acknowledges publication, not observed colour.",
     (ctx) => CONFIRMED_COLOR_MODELS.has(modelKey(ctx.model)),
   ),
 } as const satisfies Members;
