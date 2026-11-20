@@ -23,7 +23,8 @@ const KEY_SEED = [104, -83, -72, 38, -107, 99, -110, 17, -95, -121, 54, 57, -46,
 
 /**
  * The lock/unlock TLV: the short user id (uint16 BE), the direction (1 = lock, 0 = unlock), the time in seconds
- * (uint32 LE) and the UTF-8 nickname.
+ * (uint32 LE) and the UTF-8 nickname. The nickname is cut at 255 bytes because its length field is one byte, and
+ * a longer name would mislabel every byte after it.
  */
 export function encodeLockOnOff(
   shortUserId: number,
@@ -35,21 +36,29 @@ export function encodeLockOnOff(
   user.writeUInt16BE(shortUserId & 0xffff, 0);
   const time = Buffer.alloc(4);
   time.writeUInt32LE(Math.trunc(nowSec) >>> 0, 0);
-  const name = Buffer.from(nickname, "utf-8");
+  const name = Buffer.from(nickname, "utf-8").subarray(0, 0xff);
   return Buffer.concat([
     Buffer.from([TAG.USER, 2]),
     user,
     Buffer.from([TAG.DIRECTION, 1, engage ? 1 : 0, TAG.TIME, 4]),
     time,
-    Buffer.from([TAG.NAME, name.length & 0xff]),
+    Buffer.from([TAG.NAME, name.length]),
     name,
   ]);
 }
 
-/** The AES-128 lock key from the station owner's admin id (40 characters) and the station serial (16). */
+/**
+ * The AES-128 lock key from the station owner's admin id (40 characters) and the station serial (16). Any other
+ * length throws: a shorter input indexes past its end and still yields a key, just one the lock silently ignores.
+ */
 export function lockKey(adminUserId: string, stationSn: string): Buffer {
   const owner = Buffer.from(adminUserId, "utf-8");
   const station = Buffer.from(stationSn, "utf-8");
+  if (owner.length !== 40 || station.length !== 16) {
+    throw new Error(
+      `door-lock pass-through: expected a 40-character admin id and 16-character station serial, got ${owner.length} and ${station.length}`,
+    );
+  }
   const out = Buffer.alloc(16);
   for (let i = 0; i < 16; i++) {
     out[i] = (KEY_SEED[i]! + station[(station[i]! * 3 + 5) % 16]! + owner[(owner[i]! * 3 + 5) % 40]!) & 0xff;

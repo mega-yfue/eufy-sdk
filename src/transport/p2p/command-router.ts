@@ -357,6 +357,9 @@ export class P2PCommandRouter {
    */
   private readonly keyedSequences = new Map<string, number>();
 
+  /** Per-station door-lock pass-through sequence numbers, seeded from the clock in seconds. */
+  private readonly passThroughSeq = new Map<string, number>();
+
   /** The answered command in flight per {@link serializeAnswered} key, which the next one for that key waits on. */
   private readonly answeredQueue = new Map<string, Promise<void>>();
 
@@ -2335,16 +2338,14 @@ export class P2PCommandRouter {
     );
   }
 
-  /** Per-station door-lock pass-through sequence numbers, seeded from the clock in seconds. */
-  private readonly passThroughSeq = new Map<string, number>();
-
   /**
    * **`doorlock-pass-through-actuate` intent** — `CMD_DOORLOCK_DATA_PASS_THROUGH` at level-2 inside the
    * `CMD_SET_PAYLOAD` envelope, `mValue3=0`, on the lock's channel of the station it is paired to, its
    * `payload` the sealed blob from {@link buildDoorlockPassThrough} keyed to that station and its owner's
    * member record. Sent once: the blob carries its own sequence number. Confirmed on hardware on a
    * DeviceType 50 lock paired to a Wi-Fi bridge — the bolt moves both ways and the lock reports each with a
-   * lock-state push.
+   * lock-state push. The key is the station owner's, so it reads the station's member record rather than the
+   * lock's `accountId` from `resolveSession`.
    */
   private async sendDoorlockPassThrough(sn: string, cmd: Ff09Identity): Promise<void> {
     const { session, parentSn, channel } = await this.resolveSession(sn, {
@@ -2357,6 +2358,9 @@ export class P2PCommandRouter {
     >;
     const adminUserId = typeof member.admin_user_id === "string" ? member.admin_user_id : cmd.adminUserId;
     const shortUserId = Number.parseInt(String(member.short_user_id ?? cmd.shortUserId), 10);
+    if (Number.isNaN(shortUserId)) {
+      throw new Error(`door-lock pass-through: ${parentSn} has no numeric short_user_id for ${sn}`);
+    }
     const nickname = typeof member.nick_name === "string" ? member.nick_name : cmd.username;
     const seqNum = (this.passThroughSeq.get(parentSn) ?? Math.trunc(Date.now() / 1000)) + 1;
     this.passThroughSeq.set(parentSn, seqNum);

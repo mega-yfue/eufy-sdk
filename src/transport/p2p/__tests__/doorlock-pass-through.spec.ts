@@ -42,6 +42,17 @@ describe("the door-lock pass-through blob", () => {
       "a1020004a20101a3046071ff6aa407736f6d656f6e65",
     );
   });
+
+  it("caps the nickname at the one-byte length field", () => {
+    const tlv = encodeLockOnOff(4, "x".repeat(300), true, 1795125600);
+    expect(tlv[14]).toBe(0xff);
+    expect(tlv.length).toBe(15 + 0xff);
+  });
+
+  it("refuses an admin id or station serial of the wrong length rather than derive a wrong key", () => {
+    expect(() => lockKey(ADMIN.slice(1), STATION_SN)).toThrow(/40-character admin id/);
+    expect(() => lockKey(ADMIN, STATION_SN.slice(1))).toThrow(/16-character station serial/);
+  });
 });
 
 describe("a door-lock pass-through actuation", () => {
