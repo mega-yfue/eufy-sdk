@@ -122,10 +122,13 @@ describe("P2P frame — command result", () => {
     expect(results(1700, padded(-108, 132, STALE_TAIL))).toEqual([{ code: -108, channel: 0, commandId: 1700 }]);
   });
 
-  it("reports nothing for the padded shape on another command or at another length", () => {
-    // The read is pinned to the shape measured, not generalised from it: that body under some other
-    // command, or at some other length, is not the answer this device gives.
-    expect(results(1246, padded(-110))).toEqual([]);
+  it("reads the clear 132-byte answer to a direct scalar, under the scalar's own command", () => {
+    // A camera answers a level-2 1013 or 1045 write with this body under 1013 or 1045, header version 8.
+    expect(results(1013, padded(0))).toEqual([{ code: 0, channel: 0, commandId: 1013 }]);
+    expect(results(1045, padded(-110, 132, STALE_TAIL))).toEqual([{ code: -110, channel: 0, commandId: 1045 }]);
+  });
+
+  it("reports nothing for the padded shape at another length", () => {
     expect(results(1350, padded(-110, 64))).toEqual([]);
     expect(results(1350, padded(-110, 148))).toEqual([]);
   });
