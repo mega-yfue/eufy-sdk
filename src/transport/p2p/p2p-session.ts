@@ -2840,10 +2840,9 @@ export class P2PSession extends EventEmitter {
     // and the level-2 path can decline — and ciphertext is neither JSON nor four bytes, so a length
     // test alone would read its first word and report a fabricated code for a command whose answer
     // was never recovered. Media is excluded because its bodies are never control plaintext.
-    const paddedResult =
-      (header.commandId === CMD_SET_PAYLOAD || header.commandId === CMD_CONTROL_PAYLOAD) &&
-      header.signCode === 0 &&
-      data.length === PADDED_RESULT_BYTES;
+    // A device answers a wrapper (1350, 1700) and a direct scalar (1013, 1045) alike with a clear 132-byte body,
+    // the result first and stale buffer content after it, under the written command.
+    const paddedResult = header.signCode === 0 && data.length === PADDED_RESULT_BYTES;
     if (!isMedia && !frame.json && (data.length === 4 || paddedResult)) {
       this.emit("commandResult", { code: data.readInt32LE(0), channel: header.channel, commandId: header.commandId });
     }
