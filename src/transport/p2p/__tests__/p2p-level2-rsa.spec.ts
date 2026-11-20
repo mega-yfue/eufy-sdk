@@ -327,6 +327,12 @@ describe("routing on an RSA session", () => {
   it("sends the set-payload that names the set-payload key under the negotiated key at encryption type 2, and nothing else", async () => {
     const { session } = await negotiatedSession(ROUTER_STATION_SN);
     const sent = capture(session);
+    const internals = session as unknown as SessionInternals;
+    const send = internals.send;
+    internals.send = (...args) => {
+      send(...args);
+      queueMicrotask(() => session.emit("commandResult", { code: 0, channel: 0, commandId: 1350 }));
+    };
     const router = routerWithSession(session as unknown as FakeP2PSession);
 
     await onFakeTime(() =>

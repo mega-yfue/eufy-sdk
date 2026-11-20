@@ -12,7 +12,9 @@ interface FakeSession extends FakeP2PSession {
 /** A fake station session with both send wires spied, keyed (level-2) or not (standalone level-1). */
 function session(hasLevel2Key: boolean): FakeSession {
   const s = connectedSession(hasLevel2Key) as FakeSession;
-  s.sendIntStringCommand = vi.fn();
+  s.sendIntStringCommand = vi.fn((commandId: number, _v: number, _vs: number, _a: string, channel: number) =>
+    queueMicrotask(() => s.emit("commandResult", { code: 0, channel, commandId })),
+  );
   s.sendRawLevel2Bytes = vi.fn(() => true);
   return s;
 }
@@ -24,7 +26,7 @@ describe("P2PCommandRouter.readReportedRtspUrl", () => {
       const s = session(false); // a standalone camera negotiates no level-2 key → the int-string wire
       const router = routerWithSession(s);
       const read = router.readReportedRtspUrl(DEVICE_SN);
-      await vi.advanceTimersByTimeAsync(500); // both provokes' first datagram have gone out
+      await vi.advanceTimersByTimeAsync(500); // both provokes have gone out, the test after the switch's answer
 
       expect(s.sendIntStringCommand).toHaveBeenCalledWith(CMD_NAS_SWITCH, 1, 1, ACCOUNT_ID, 1);
       expect(s.sendIntStringCommand).toHaveBeenCalledWith(CMD_NAS_TEST, 1, 1, ACCOUNT_ID, 1);

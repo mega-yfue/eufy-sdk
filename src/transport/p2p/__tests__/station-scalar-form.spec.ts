@@ -13,7 +13,7 @@ describe("p2p-station-scalar seal", () => {
       sendRawLevel1Bytes: vi.fn(() => true),
     });
 
-  it("auto on a keyless session → level-1 on the given channel, replayed", async () => {
+  it("auto on a keyless session → level-1 on the given channel, once", async () => {
     const session = withSends(false);
     await onFakeTime(() =>
       routerWithSession(session).dispatchCommand(STATION_SN, {
@@ -26,7 +26,7 @@ describe("p2p-station-scalar seal", () => {
     );
     expect(session.sendRawLevel2Bytes).not.toHaveBeenCalled();
     expect(session.sendRawLevel1Bytes).toHaveBeenCalledWith(buildDirectBinaryBody(63, ACCOUNT_ID), 255, 1224);
-    expect(session.sendRawLevel1Bytes.mock.calls.length).toBeGreaterThan(1);
+    expect(session.sendRawLevel1Bytes).toHaveBeenCalledTimes(1);
   });
 
   it("auto on a keyed session → level-2, signCode 8", async () => {
