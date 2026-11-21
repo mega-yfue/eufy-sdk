@@ -38,13 +38,14 @@ import { assertNever, isStationSerial } from "../../core/util.js";
 import { setTimeout as sleep } from "node:timers/promises";
 import { CONNECT_TIMEOUT_MS, P2PSession, STATION_CHANNEL, type P2PFrame } from "./p2p-session.js";
 import { buildDirectBinaryBody, buildStringBody } from "./write-commands.js";
-import { buildDoorlockPassThrough } from "./doorlock-pass-through.js";
+import { buildDoorlockPassThrough, sealStationPayload } from "./doorlock-pass-through.js";
 import { CommandType } from "./commands.js";
 import {
   buildFf09Frame,
   buildFf09QueryFrame,
   buildFf09SettingToggleFrame,
   buildFf09AutolockSetFrame,
+  buildFf09TlvFrame,
   decryptFf09Frame,
   parseFf09SettingsResponse,
   decodeFf09AutoLockSnapshot,
@@ -717,7 +718,7 @@ export class P2PCommandRouter {
           (await this.sendSetPayloadEnvelope(
             sn,
             cmd.cmd,
-            cmd.payload,
+            cmd.lock ? { ...(await this.lockParams(sn, cmd.lock)), ...cmd.payload } : cmd.payload,
             cmd.channel,
             cmd.mValue3,
             undefined,
@@ -1831,6 +1832,44 @@ export class P2PCommandRouter {
       0,
       resolved,
     );
+  }
+
+  /** Per lock, the last `seq_num` a v2 lock setting carried (`SecuritySeqNumManager`); unseen, the clock in seconds. */
+  private readonly lockSeq = new Map<string, number>();
+
+  /**
+   * The params a v2 lock setting over its station replaces the descriptor's with (`handleV2Payload`): the `ff09`
+   * frame of its fields for the lock, sealed with the lock owner's key when the descriptor asks, the next per-lock
+   * `seq_num`, the descriptor's `cmd` as `apiCommand`, and the frame's key time.
+   */
+  private async lockParams(sn: string, lock: NonNullable<Extract<Command, { kind: "set-payload" }>["lock"]>) {
+    const { accountId, parentSn } = await this.resolveSession(sn);
+    if (lock.version === 4) {
+      // `createPayloadForZhixingStationBle`: the lock's counter + 1, stored under the station (the lock's never moves).
+      const seqNum = (this.lockSeq.get(sn) ?? Math.trunc(Date.now() / 1000)) + 1;
+      this.lockSeq.set(parentSn, seqNum);
+      return {
+        payload: sealStationPayload({
+          adminUserId: accountId,
+          stationSn: parentSn,
+          lockCmd: lock.bleCommand,
+          lockPayload: lock.payload,
+          seqNum,
+        }),
+      };
+    }
+    const frame = buildFf09TlvFrame({
+      cmdCode: lock.cmdCode,
+      fields: lock.fields,
+      adminUserId: accountId,
+      deviceSn: sn,
+      encrypt: lock.encrypt,
+      subVersion: lock.subVersion,
+      functionType: lock.functionType,
+    });
+    const seqNum = (this.lockSeq.get(sn) ?? Math.trunc(Date.now() / 1000)) + 1;
+    this.lockSeq.set(sn, seqNum);
+    return { lock_payload: frame.lockPayload, seq_num: seqNum, apiCommand: lock.apiCommand, time: frame.time };
   }
 
   /**

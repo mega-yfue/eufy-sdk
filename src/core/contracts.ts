@@ -406,6 +406,26 @@ export type Command =
         unzip?: true;
         /** Header byte 14: the session's counter bumped, or as it stands, as the app writes it for 1025. */
         counter?: "bump" | "current";
+        /**
+         * A lock setting over its station (v2): the transport builds the params as the app's `handleV2Payload`,
+         * `{lock_payload, seq_num, apiCommand, time}`, the `ff09` frame of these fields for the lock.
+         */
+        lock?:
+          | {
+              version?: 2;
+              cmdCode: number;
+              apiCommand: number;
+              fields: ReadonlyArray<{ tag: number; value: Buffer }>;
+              subVersion: number;
+              functionType: number;
+              encrypt: boolean;
+            }
+          | {
+              /** v4 (`createPayloadForZhixingStationBle`): the TLV, sealed by the transport under the station key. */
+              version: 4;
+              bleCommand: number;
+              payload: Buffer;
+            };
       }
     | {
         kind: "p2p-station-scalar";
