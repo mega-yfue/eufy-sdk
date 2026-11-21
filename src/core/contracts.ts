@@ -406,6 +406,18 @@ export type Command =
         unzip?: true;
         /** Header byte 14: the session's counter bumped, or as it stands, as the app writes it for 1025. */
         counter?: "bump" | "current";
+        /**
+         * A lock setting over its station (v2): the transport builds the params as the app's `handleV2Payload`,
+         * `{lock_payload, seq_num, apiCommand, time}`, the `ff09` frame of these fields for the lock.
+         */
+        lock?: {
+          cmdCode: number;
+          apiCommand: number;
+          fields: ReadonlyArray<{ tag: number; value: Buffer }>;
+          subVersion: number;
+          functionType: number;
+          encrypt: boolean;
+        };
       }
     | {
         kind: "p2p-station-scalar";

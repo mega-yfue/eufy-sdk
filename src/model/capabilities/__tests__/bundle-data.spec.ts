@@ -202,3 +202,29 @@ describe("device_set_outdoor_mode", () => {
     expect(data.wires.device_set_outdoor_mode).toEqual({ T814X: { override: "java" } });
   });
 });
+
+/** A lock setting over its station (`lock-over-station.md` §3): the `ble` TLV as the fields the transport frames. */
+describe("smart_lock_rain_mode_switch on a T8531 behind a HomeBase", () => {
+  it("is a 1350/1940 whose params the transport builds from the v2 ble descriptor", () => {
+    const ctx = contextOf({
+      identifier: "smart_lock_rain_mode_switch",
+      type: "bool",
+      model: "T8531",
+      variant: "",
+      topology: "hb2",
+    });
+    const command = thingWrite("smart_lock_rain_mode_switch", "1", ctx) as { kind: string; cmd: number; lock?: any };
+    expect([command.kind, command.cmd]).toEqual(["set-payload", 1940]);
+    expect(command.lock).toMatchObject({
+      cmdCode: 52,
+      apiCommand: 6015,
+      subVersion: 3,
+      functionType: 2,
+      encrypt: true,
+    });
+    expect(command.lock.fields.map((f: { tag: number; value: Buffer }) => [f.tag, f.value.toString("hex")])).toEqual([
+      [0xa3, "07"],
+      [0xa4, "01"],
+    ]);
+  });
+});

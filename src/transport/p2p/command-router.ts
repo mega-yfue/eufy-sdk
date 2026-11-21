@@ -45,6 +45,7 @@ import {
   buildFf09QueryFrame,
   buildFf09SettingToggleFrame,
   buildFf09AutolockSetFrame,
+  buildFf09TlvFrame,
   decryptFf09Frame,
   parseFf09SettingsResponse,
   decodeFf09AutoLockSnapshot,
@@ -717,7 +718,7 @@ export class P2PCommandRouter {
           (await this.sendSetPayloadEnvelope(
             sn,
             cmd.cmd,
-            cmd.payload,
+            cmd.lock ? { ...(await this.lockParams(sn, cmd.lock)), ...cmd.payload } : cmd.payload,
             cmd.channel,
             cmd.mValue3,
             undefined,
@@ -1831,6 +1832,30 @@ export class P2PCommandRouter {
       0,
       resolved,
     );
+  }
+
+  /** Per lock, the last `seq_num` a v2 lock setting carried (`SecuritySeqNumManager`); unseen, the clock in seconds. */
+  private readonly lockSeq = new Map<string, number>();
+
+  /**
+   * The params a v2 lock setting over its station replaces the descriptor's with (`handleV2Payload`): the `ff09`
+   * frame of its fields for the lock, sealed with the lock owner's key when the descriptor asks, the next per-lock
+   * `seq_num`, the descriptor's `cmd` as `apiCommand`, and the frame's key time.
+   */
+  private async lockParams(sn: string, lock: NonNullable<Extract<Command, { kind: "set-payload" }>["lock"]>) {
+    const { accountId } = await this.resolveSession(sn);
+    const frame = buildFf09TlvFrame({
+      cmdCode: lock.cmdCode,
+      fields: lock.fields,
+      adminUserId: accountId,
+      deviceSn: sn,
+      encrypt: lock.encrypt,
+      subVersion: lock.subVersion,
+      functionType: lock.functionType,
+    });
+    const seqNum = (this.lockSeq.get(sn) ?? Math.trunc(Date.now() / 1000)) + 1;
+    this.lockSeq.set(sn, seqNum);
+    return { lock_payload: frame.lockPayload, seq_num: seqNum, apiCommand: lock.apiCommand, time: frame.time };
   }
 
   /**

@@ -64,6 +64,16 @@ export interface BundleFrame extends SessionFrame {
   timeout?: number | string;
   next?: BundleFrame[];
   after?: BundleFrame;
+  /** A lock setting over its station: the `ble` the app builds the 1350 params from. */
+  lock?: {
+    version: number;
+    tlv: string;
+    cmdCode?: number;
+    apiCommand?: number;
+    subVersion?: number;
+    functionType?: number;
+    needEncrypt?: boolean;
+  };
 }
 
 /**
@@ -373,16 +383,11 @@ function tlvBytes(type: unknown, v: unknown): Buffer | undefined {
 }
 
 /**
- * The secure-MQTT write a `mqtt` frame of `type: "ble"` is: its `payload`, the TLV the bundle writes as hex
- * with placeholders (`A104{nowS:u32le}A228{userId}A301{value:u8}`), read into fields after `A1` (the time)
- * and `A2` (the user id), which the transport adds as it does for every frame; `{value:<type>}` is the
- * written value. `undefined` for a `json` frame, any other placeholder, or a field whose bytes miss its length.
+ * A bundle's TLV hex (`A104{nowS:u32le}A228{userId}A301{value:u8}`) as fields after `A1` (the time) and `A2` (the
+ * user id), which the transport adds; `{value:<type>}` is the written value. `undefined` for any other placeholder or
+ * a field whose bytes miss its length.
  */
-function mqttCommand(frame: BundleFrame, value: unknown): Command | undefined {
-  const tlv = frame.payload;
-  if (frame.type !== "ble" || typeof frame.mqttCmdCode !== "number" || typeof frame.cmdCode !== "number")
-    return undefined;
-  if (typeof tlv !== "string") return undefined;
+function tlvFields(tlv: string, value: unknown): { tag: number; value: Buffer }[] | undefined {
   const fields: { tag: number; value: Buffer }[] = [];
   for (let i = 0; i < tlv.length;) {
     const tag = parseInt(tlv.slice(i, i + 2), 16);
@@ -402,6 +407,22 @@ function mqttCommand(frame: BundleFrame, value: unknown): Command | undefined {
     if (!bytes || bytes.length !== len || Number.isNaN(tag)) return undefined;
     fields.push({ tag, value: bytes });
   }
+  return fields;
+}
+
+/**
+ * The secure-MQTT write a `mqtt` frame of `type: "ble"` is: its `payload`, the TLV the bundle writes as hex
+ * with placeholders (`A104{nowS:u32le}A228{userId}A301{value:u8}`), read into fields after `A1` (the time)
+ * and `A2` (the user id), which the transport adds as it does for every frame; `{value:<type>}` is the
+ * written value. `undefined` for a `json` frame, any other placeholder, or a field whose bytes miss its length.
+ */
+function mqttCommand(frame: BundleFrame, value: unknown): Command | undefined {
+  const tlv = frame.payload;
+  if (frame.type !== "ble" || typeof frame.mqttCmdCode !== "number" || typeof frame.cmdCode !== "number")
+    return undefined;
+  if (typeof tlv !== "string") return undefined;
+  const fields = tlvFields(tlv, value);
+  if (!fields) return undefined;
   return {
     kind: "mqtt-dp",
     mqttCmdCode: frame.mqttCmdCode,
@@ -459,6 +480,23 @@ function sessionCommand(frame: BundleFrame, fill: (x: unknown) => unknown, ctx: 
   if (frame.counter !== undefined && !counter) return undefined;
   if (frame.body === "json1350" && (object || Array.isArray(filled))) {
     const command = setPayload(sub, (object ?? filled) as readonly unknown[], c, frame.mValue3, header);
+    if (frame.lock) {
+      // v2 only: a v4 station-sealed body is built by no frame the data ships with a value of its own.
+      const l = frame.lock;
+      const fields = l.version === 2 ? tlvFields(l.tlv, undefined) : undefined;
+      if (!fields) return undefined;
+      return {
+        ...command,
+        lock: {
+          cmdCode: l.cmdCode ?? 0,
+          apiCommand: l.apiCommand ?? 0,
+          fields,
+          subVersion: l.subVersion ?? 0,
+          functionType: l.functionType ?? 0,
+          encrypt: l.needEncrypt ?? false,
+        },
+      } as Command;
+    }
     return {
       ...command,
       ...(frame.unzipParams && object && { unzip: true as const }),
