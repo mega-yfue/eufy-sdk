@@ -678,6 +678,12 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
     $station: ctx.stationSerial ?? ctx.serial,
   };
   const input = parse(value) ?? {};
+  // `$input.<key>[|weekDays]`: the host's field, its `week` lists as `[{day}]` where the bundle's schedule parser sends that.
+  const inputOf = (ref: string) => {
+    const [key, transform] = ref.split("|");
+    const v = input[key!];
+    return transform === "weekDays" ? weekDays(v) : v;
+  };
   let unfilled = false;
   const param = (x: string) => {
     const [, id, path, op, m, fallback] =
@@ -697,15 +703,25 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
     return out;
   };
   const token = (x: string) =>
-    x.startsWith("$input.") ? input[x.slice(7)] : x.startsWith("$param:") ? param(x) : tokens[x];
+    x.startsWith("$input.") ? inputOf(x.slice(7)) : x.startsWith("$param:") ? param(x) : tokens[x];
   const fill = (x: unknown): unknown =>
     typeof x === "string" && (x in tokens || x.startsWith("$input.") || x.startsWith("$param:"))
       ? token(x)
       : Array.isArray(x)
         ? x.map(fill)
         : x && typeof x === "object"
-          ? Object.fromEntries(Object.entries(x).flatMap(([k, v]) => (v === "$userId" ? [] : [[k, fill(v)]])))
+          ? spread(x as Record<string, unknown>)
           : x;
+  // `"$input": "..."` (`"...|weekDays"`): the parser passes the host's object through there, so it is spread in.
+  const spread = (o: Record<string, unknown>) => {
+    const rest = Object.fromEntries(
+      Object.entries(o).flatMap(([k, v]) => (v === "$userId" || k === "$input" ? [] : [[k, fill(v)]])),
+    );
+    const mark = o["$input"];
+    if (typeof mark !== "string" || !mark.startsWith("...")) return rest;
+    const host = mark === "...|weekDays" ? weekDays(input) : input;
+    return { ...(host as Record<string, unknown>), ...rest };
+  };
   const transport = frame.transport ?? "p2p";
   const head =
     transport === "p2p"
@@ -741,6 +757,19 @@ export function thingWrite(identifier: string, value: string, ctx: CommandContex
         ? Number(value)
         : value);
   return frame && frameCommand(frame, typed, ctx);
+}
+
+/** `x` with every `week` list of plain values as `[{day: <int>}]`, as the bundles' schedule parsers rewrite it. */
+function weekDays(x: unknown): unknown {
+  if (Array.isArray(x)) return x.map(weekDays);
+  if (!x || typeof x !== "object") return x;
+  return Object.fromEntries(
+    Object.entries(x).map(([k, v]) =>
+      k === "week" && Array.isArray(v) && v.every((d) => typeof d !== "object")
+        ? [k, v.map((d) => ({ day: Math.trunc(Number(d)) }))]
+        : [k, weekDays(v)],
+    ),
+  );
 }
 
 /** `value` as a `{paramType, param}` settings write, or undefined when it is not one. */

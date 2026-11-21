@@ -320,3 +320,37 @@ describe("writes framed from their real payload shape", () => {
     });
   });
 });
+
+/** A frame whose parser passes the host's object through (`"$input": "..."`) sends that object, spread in. */
+describe("a config write the parser passes through", () => {
+  it("spreads the host's object into T8010's arming schedule", () => {
+    const ctx = contextOf({
+      identifier: "arming_schedule_config",
+      type: "text",
+      model: "T8010",
+      variant: "",
+      topology: "standalone",
+    });
+    const value = JSON.stringify({ schedule: [{ start: "08:00", end: "18:00" }], mode: 1 });
+    const command = thingWrite("arming_schedule_config", value, ctx) as { data?: Record<string, unknown> };
+    expect(command.data).toMatchObject({ schedule: [{ start: "08:00", end: "18:00" }], mode: 1 });
+    expect(command.data).not.toHaveProperty("$input");
+  });
+});
+
+describe("auto_cruise_schedule_list on a T8171", () => {
+  it("sends the host's schedules with each week as [{day}], as AutoCruiseScheduleListParser does", () => {
+    const ctx = contextOf({
+      identifier: "auto_cruise_schedule_list",
+      type: "text",
+      model: "T8171",
+      variant: "",
+      topology: "standalone",
+    });
+    const value = JSON.stringify({ loop: [{ start_time: "08:00", end_time: "09:00", week: [1, 3] }] });
+    const command = thingWrite("auto_cruise_schedule_list", value, ctx) as { data?: { schedules?: unknown } };
+    expect(command.data?.schedules).toEqual({
+      loop: [{ start_time: "08:00", end_time: "09:00", week: [{ day: 1 }, { day: 3 }] }],
+    });
+  });
+});
