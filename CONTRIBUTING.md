@@ -90,6 +90,8 @@ synthetic fixtures. Add tests for new wire logic and capability behaviour.
 ## Commits & PRs
 
 - **Conventional Commits** (`feat:`, `fix:`, `docs:`, `refactor:`, …).
+- **Branch named for the change**: `<type>/<short-name>`, the type matching the PR title's
+  (`fix(motion): …` from `fix/solocam-pir-level1`). A fork PR from any other name is closed.
 - **Sign your commits** (GPG / `-S`).
 - **PRs: concise, dev-to-dev, to the point.** Say what changed and why; call out anything unverified
   or deferred. Before opening one, check the list in AGENTS.md under Before you open a pull request.

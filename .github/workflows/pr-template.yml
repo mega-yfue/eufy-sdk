@@ -6,7 +6,8 @@
 # The sections "Who needs this", "What changed", "Why" and "Verified how" each hold text once the
 # template's HTML comments are removed, "Evidence" is present (n/a is an answer), and three boxes are
 # ticked: the duplicate search, the one-point rule and `npm run verify`. That is the part of the
-# template a reviewer cannot recover from the diff.
+# template a reviewer cannot recover from the diff. The branch is named `<type>/<short-name>` with the
+# title's Conventional Commit type, so it says what it carries and cannot pose as a release branch.
 #
 # ── Who is checked ──────────────────────────────────────────────────────────────────────────────
 # Pull requests from a fork only. Dependabot, the beta release branches and maintainers push to this
@@ -39,6 +40,8 @@ jobs:
         id: check
         env:
           BODY: ${{ github.event.pull_request.body }}
+          TITLE: ${{ github.event.pull_request.title }}
+          HEAD_REF: ${{ github.head_ref }}
         run: |
           node <<'JS' > missing.md
           const body = (process.env.BODY ?? "").replace(/<!--[\s\S]*?-->/g, "");
@@ -62,6 +65,10 @@ jobs:
           ]) {
             const line = verified.split("\n").find((l) => box.test(l));
             if (!line || !/^\s*-\s*\[[xX]\]/.test(line)) missing.push(`the box for ${label} is not ticked`);
+          }
+          const type = /^(\w+)[(:!]/.exec(process.env.TITLE ?? "")?.[1];
+          if (!type || !new RegExp(`^${type}/[a-z0-9][a-z0-9._-]*$`).test(process.env.HEAD_REF ?? "")) {
+            missing.push(`the branch \`${process.env.HEAD_REF}\` is not named for the change: \`<type>/<short-name>\`, the type matching the title's (\`fix(motion): …\` → \`fix/solocam-pir-level1\`)`);
           }
           for (const item of missing) console.log(`- ${item}`);
           JS
