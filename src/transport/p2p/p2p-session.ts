@@ -129,6 +129,8 @@ export const STATION_CHANNEL = 255;
  * (signCode 0).
  */
 const CMD_GATEWAYINFO = 1100;
+/** The app's station ping: header only, on 0xff, never sealed, through the command sender (`zx_p2p_send_command`). */
+const CMD_PING = 1139;
 /**
  * The app's notify reader checks, after a channel-2 frame and at most once per this many ms, whether the slot holds a
  * key, and sends the header-only `CMD_GATEWAYINFO` again on every third check that finds none.
@@ -254,7 +256,7 @@ const SIGN0_POLL_MS = 50;
 const SIGN0_POLLS = 29;
 
 /** Commands the app's sender frames on header channel 0xff whatever channel they address. */
-const STATION_HEADER_COMMANDS = new Set([1001, 1002, 1054, 1060]);
+const STATION_HEADER_COMMANDS = new Set([1001, 1002, 1054, 1060, CMD_PING]);
 
 /**
  * The header byte-14 counter some frames carry, cycling 10..251: one byte for the whole native library, shared by
@@ -1746,7 +1748,7 @@ export class P2PSession extends EventEmitter {
       this.ecbKey = this.level1Key;
       this.signMode = 1;
     }
-    if (this.signMode < 1) return clear;
+    if (this.signMode < 1 || cmd === CMD_PING) return clear;
     const v8 = this.sessionVersion === 8;
     const ecbOnly =
       cmd === 1001 || cmd === 1054 || cmd === 1060 || (cmd === CMD_SET_PAYLOAD && jsonCmdOf(plaintext) === 1001);
@@ -1812,6 +1814,11 @@ export class P2PSession extends EventEmitter {
       go(true);
     };
     setTimeout(poll, SIGN0_POLL_MS).unref?.();
+  }
+
+  /** Send the app's 1139 ping: no body, header channel 0xff, unsealed, counted and waited for like any command. */
+  sendPing(): void {
+    this.transmit(CMD_PING, STATION_CHANNEL, Buffer.alloc(0));
   }
 
   /** Send a no-arg command frame (e.g. CMD_GATEWAYINFO) on a channel (default: the station channel). */

@@ -94,6 +94,15 @@ import { stationChannels, stationOf } from "./station-channels.js";
  */
 const GET_PARAMS_BODY = Buffer.from("ff00000087030000", "hex");
 
+/**
+ * The app's esiotkit pinger (`P2PPingManagerImpl`, `PingTask`): one 1139 every `PING_INTERVAL_MS` per parent serial
+ * that is not a station, for `PING_WINDOW_MS` after each command and device-list change, without end while live view
+ * plays and for `PING_WINDOW_MS` after it stops; a windowed task ends `PING_TASK_MAX_MS` after it began.
+ */
+const PING_INTERVAL_MS = 3_000;
+const PING_WINDOW_MS = 300_000;
+const PING_TASK_MAX_MS = 30 * 60_000;
+
 /** The serial prefixes the app's request builder counts as a station (`SnKtx.isStation`): such a device is on 255. */
 const REQUEST_STATION_PREFIXES = [
   "T8001",
@@ -362,6 +371,8 @@ export class P2PCommandRouter {
    */
   private readonly keyedSequences = new Map<string, number>();
 
+  /** Per parent serial, the app's ping task: pinging until `until` (`Infinity` during live), begun at `since`. */
+  private readonly pings = new Map<string, { until: number; since: number; timer: ReturnType<typeof setInterval> }>();
   /** The answered command in flight per {@link serializeAnswered} key, which the next one for that key waits on. */
   private readonly answeredQueue = new Map<string, Promise<void>>();
 
@@ -440,6 +451,8 @@ export class P2PCommandRouter {
 
   /** Close every P2P session and drop them. */
   async closeAll(): Promise<void> {
+    for (const { timer } of this.pings.values()) clearInterval(timer);
+    this.pings.clear();
     const talking = [...this.talkbacks.values()];
     this.talkbacks.clear();
     await Promise.all(talking.map((t) => t.stop().catch(() => {})));
@@ -708,6 +721,7 @@ export class P2PCommandRouter {
    * arrives as the station's camera-info notify. A read that cannot go is only logged, as the app does.
    */
   async getParams(sn: string): Promise<void> {
+    this.pingFor(sn, PING_WINDOW_MS);
     try {
       const dev = await this.deviceFor(sn);
       await this.ensureStation(stationOf(dev));
@@ -779,7 +793,42 @@ export class P2PCommandRouter {
    * when the device answered the write with success ({@link sendAnswered}, the keyed lock actuation), `false`
    * when it was sent unread.
    */
+  /**
+   * Open or move the ping window of `sn`'s parent, as the app's pinger does on a request (`forMs` the window), a live
+   * start (`Infinity`) and a live stop (the window from now, ending an unbounded one). A parent that is a station is
+   * never pinged. Each tick skips while a command to the parent is waiting for its answer.
+   */
+  private pingFor(sn: string, forMs: number, stop = false): void {
+    const dev = this.recordFor(sn);
+    const parentSn = dev ? stationOf(dev) : sn;
+    if (REQUEST_STATION_PREFIXES.some((prefix) => parentSn.startsWith(prefix))) return;
+    const now = Date.now();
+    const held = this.pings.get(parentSn);
+    if (held) {
+      held.until = forMs === Infinity || stop ? now + forMs : held.until === Infinity ? Infinity : now + forMs;
+      return;
+    }
+    const task = {
+      until: now + forMs,
+      since: now,
+      timer: setInterval(() => {
+        const at = Date.now();
+        if (at > task.until || (task.until !== Infinity && at - task.since > PING_TASK_MAX_MS)) {
+          clearInterval(task.timer);
+          this.pings.delete(parentSn);
+          return;
+        }
+        const session = this.manager.get(parentSn);
+        if (!session?.isConnected || this.answeredQueue.has(parentSn)) return;
+        session.sendPing();
+      }, PING_INTERVAL_MS),
+    };
+    task.timer.unref?.();
+    this.pings.set(parentSn, task);
+  }
+
   async dispatchCommand(sn: string, cmd: Command): Promise<boolean> {
+    this.pingFor(sn, PING_WINDOW_MS);
     switch (cmd.kind) {
       // ── Intents — the transport picks the encryption level (see resolveScalarParam / setJson). ──
       case "set-param":
@@ -1204,8 +1253,14 @@ export class P2PCommandRouter {
         budgetGraceMs: opts.budgetGraceMs,
         logger,
         label: key,
-        onActive: () => this.manager.retain(sessionKey),
-        onIdle: () => this.manager.release(sessionKey),
+        onActive: () => {
+          this.pingFor(sn, Infinity);
+          this.manager.retain(sessionKey);
+        },
+        onIdle: () => {
+          this.pingFor(sn, PING_WINDOW_MS, true);
+          this.manager.release(sessionKey);
+        },
         onStopped: () => this.closeMediaSession(key),
         onStartFailed: () => this.onLiveStartFailed(sn, key),
         onSessionUnreachable: () => this.replaceUnreachableSession(sn, key, held),

@@ -55,4 +55,12 @@ describe("the app's seal", () => {
     expect(frames()[0]).toMatchObject({ signCode: 0, body: Buffer.from([1, 2, 3, 4]) });
     expect((session as unknown as { signMode: number }).signMode).toBe(-2);
   });
+
+  it("sends the 1139 ping header-only on 0xff, unsealed at any sign mode, counted like any command", () => {
+    const session = new P2PSession({ stationSn: SN, p2pDid: DID });
+    const frames = capture(session);
+    withGcmKey(session, Buffer.alloc(32, 7));
+    session.sendPing();
+    expect(frames()[0]).toMatchObject({ version: 1, channel: 0xff, signCode: 0, body: Buffer.alloc(0) });
+  });
 });
