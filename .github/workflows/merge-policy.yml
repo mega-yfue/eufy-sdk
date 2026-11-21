@@ -57,8 +57,16 @@ jobs:
         id: source
         env:
           HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         run: |
           set -euo pipefail
+
+          # A fork names its branches freely, so neither exemption below means anything from one.
+          if [ "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]; then
+            echo "$HEAD_REF comes from the fork $HEAD_REPO — not allowed."
+            echo "allowed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           case "$HEAD_REF" in
             dependabot/*)
