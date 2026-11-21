@@ -65,3 +65,12 @@ describe("liveFrames", () => {
     expect(liveFrames("T8500", OWN("T8500"), [])).toBeUndefined();
   });
 });
+
+/** HB3 `v7` (T8600): the NVR start above parent firmware 4.2.0.0 (`parentExtraData.firmware_main_version`), else 1700. */
+describe("a T8600 on a HomeBase 3", () => {
+  it("takes the NVR start above parent firmware 4.2.0.0", () => {
+    const hb3 = "T8030P0000000000";
+    expect(liveFrames("T8600", hb3, [], "4.1.9.9")!.start.cmd).toBe(1700);
+    expect(liveFrames("T8600", hb3, [], "4.2.0.1")!.start.cmd).toBe(1350);
+  });
+});
