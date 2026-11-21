@@ -175,3 +175,24 @@ export function u32be(n: number): Buffer {
   b.writeUInt32BE(n >>> 0);
   return b;
 }
+
+/** The serial prefixes the app's request builder counts as a station (`SnKtx.isStation`). */
+const STATION_SERIAL_PREFIXES = [
+  "T8001",
+  "T8002",
+  "T8020",
+  "T8010",
+  "T8030",
+  "T8040",
+  "T8023",
+  "T8021",
+  "T9000",
+  "T8N00",
+  "T7000",
+  "T8025",
+];
+
+/** Whether the app counts `sn` as a station, whose requests go on channel 255. @internal */
+export function isStationSerial(sn: string): boolean {
+  return STATION_SERIAL_PREFIXES.some((prefix) => sn.startsWith(prefix));
+}

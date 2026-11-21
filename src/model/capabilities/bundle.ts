@@ -6,8 +6,8 @@
  *
  * @module model/capabilities/bundle
  */
-import { asBool } from "../../core/util.js";
-import { aiotDp, setJson, setJsonRaw, setPayload, setScalar, setStationScalar, isStationCodec } from "./access.js";
+import { asBool, isStationSerial } from "../../core/util.js";
+import { aiotDp, setJson, setJsonRaw, setPayload, setScalar, setStationScalar } from "./access.js";
 import type { AvailabilityContext, CommandContext } from "./types.js";
 import { reflectCommand, type Command, type LiveFrames, type SessionFrame } from "../../core/contracts.js";
 import type { ThingMember } from "./thing-description.js";
@@ -450,7 +450,8 @@ function sessionCommand(frame: BundleFrame, fill: (x: unknown) => unknown, ctx: 
   if (frame.seal) return undefined;
   if (frame.body === "json1700" && (object || typeof filled === "number"))
     return setJson(sub, object ?? (filled as number), c);
-  if (frame.body === "native") return nativeCommand(frame, object, isStationCodec(ctx) ? 255 : ctx.channel);
+  if (frame.body === "native")
+    return nativeCommand(frame, object, isStationSerial(ctx.serial ?? "") ? 255 : ctx.channel);
   if (scalar === undefined) return undefined;
   if (frame.body === "groupA") return setScalar(cmd, scalar, c);
   if (frame.body === "pair") return setScalar(cmd, scalar, c, "int-pair");
@@ -551,7 +552,7 @@ function cloudCommand(frame: BundleFrame, fill: (x: unknown) => unknown): Comman
 export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandContext): Command | undefined {
   const tokens: Record<string, unknown> = {
     $value: value,
-    $channel: isStationCodec(ctx) ? 255 : ctx.channel,
+    $channel: isStationSerial(ctx.serial ?? "") ? 255 : ctx.channel,
     $now: String(Date.now()),
     $nowS: Math.floor(Date.now() / 1000),
     $sn: ctx.serial,
