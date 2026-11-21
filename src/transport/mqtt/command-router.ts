@@ -66,6 +66,15 @@ export type Ff09TransInput = Omit<Ff09FrameInput, "omitUserFields" | "username" 
   shortUserId: string;
 };
 
+/** `sendRequestWithJson`'s `SecurityMqttPayloadInfo`: the descriptor's `cmd` and its JSON `payload`. */
+export interface MqttJsonTrans {
+  cmd: number;
+  account_id: "";
+  payload: unknown;
+  mValue3: 0;
+  mChannel: 0;
+}
+
 /** The inner `trans` object (before base64) — `{cmd:1940, account_id:"", payload:{apiCommand:1940,…}, …}`. */
 export interface Ff09Trans {
   cmd: number;
@@ -184,7 +193,7 @@ function parseFf09SettingsResponseTrans(raw: unknown): Ff09SettingsResponseTrans
  * injectable for deterministic tests; default to fresh/random.
  */
 export function buildFf09MqttEnvelope(input: {
-  trans: Ff09Trans;
+  trans: Ff09Trans | MqttJsonTrans;
   clientId: string;
   accountId: string;
   deviceSn: string;
@@ -193,8 +202,14 @@ export function buildFf09MqttEnvelope(input: {
   seed?: string;
   /** `head.cmd`, the descriptor's `mqttCmdCode`; 9 by default. */
   cmd?: number;
+  /** The descriptor's `needAck`: `cmd_status` 1, or 2 when false. */
+  needAck?: boolean;
+  /** `sendRequestWithJson`'s two passes on the serialised trans: `\\"` → `"`, then `\\\\"` → `"`. */
+  unescape?: boolean;
 }): string {
-  const transB64 = Buffer.from(JSON.stringify(input.trans), "utf-8").toString("base64");
+  const json = JSON.stringify(input.trans);
+  const trans = input.unescape ? json.replaceAll('\\"', '"').replaceAll('\\\\"', '"') : json;
+  const transB64 = Buffer.from(trans, "utf-8").toString("base64");
   const payload = JSON.stringify({
     account_id: input.accountId,
     device_sn: input.deviceSn,
@@ -211,7 +226,7 @@ export function buildFf09MqttEnvelope(input: {
     seed: input.seed ?? randomBytes(16).toString("hex"),
     timestamp: input.timestamp ?? Math.floor(Date.now() / 1000),
     // `needAck ? 1 : 2`, and a lock descriptor states no `needAck`: the app's default, 1 (`MqttRequest`).
-    cmd_status: 1,
+    cmd_status: input.needAck === false ? 2 : 1,
     cmd: input.cmd ?? 9,
     sign_code: 0,
   };
@@ -303,6 +318,9 @@ export class MqttCommandRouter {
         return;
       case "mqtt-dp":
         await this.dispatchMqttDp(sn, cmd);
+        return;
+      case "mqtt-json":
+        await this.dispatchMqttJson(sn, cmd);
         return;
       case "mqtt-dp-preset":
         await this.dispatchDpPreset(sn, cmd);
@@ -704,6 +722,44 @@ export class MqttCommandRouter {
       cmd.retryCount,
     );
     this.deps.onCommandAck({ sn, kind: "mqtt-dp", cmdCode: cmd.cmdCode, acked: reply ?? false });
+  }
+
+  /**
+   * A `type: "json"` MQTT write, as the app's `sendRequestWithJson`: `{cmd, account_id: "", payload, mValue3: 0,
+   * mChannel: 0}`, its escaped quotes undone, base64 in the security envelope under `head.cmd = mqttCmdCode` on the
+   * device's `eufy_security` topic; no `ff09`, no seal. A reply is waited for (and the request sent again) when the
+   * descriptor asks an ack.
+   */
+  private async dispatchMqttJson(sn: string, cmd: Extract<Command, { kind: "mqtt-json" }>): Promise<void> {
+    const dev = await this.pnDeviceFor(sn);
+    const adminUserId = this.requireAccountId(dev);
+    const mqtt = await this.securityMqtt();
+    const trans: MqttJsonTrans = { cmd: cmd.cmd, account_id: "", payload: cmd.payload, mValue3: 0, mChannel: 0 };
+    const topic = ff09MqttTopic(dev.model, sn);
+    const envelope = () =>
+      buildFf09MqttEnvelope({
+        trans,
+        clientId: mqtt.id,
+        accountId: adminUserId,
+        deviceSn: sn,
+        cmd: cmd.mqttCmdCode,
+        needAck: cmd.needAck,
+        unescape: true,
+      });
+    if (cmd.needAck === false) {
+      await mqtt.publish(topic, envelope(), { qos: 1 });
+      this.deps.onCommandAck({ sn, kind: "mqtt-json", cmd: cmd.cmd, acked: true });
+      return;
+    }
+    const reply = await this.request(
+      mqtt,
+      topic,
+      envelope,
+      (m) => (MqttCommandRouter.isReply(m, sn, cmd.mqttCmdCode) ? true : undefined),
+      (cmd.timeoutS ?? 5) * 1000,
+      cmd.retryCount,
+    );
+    this.deps.onCommandAck({ sn, kind: "mqtt-json", cmd: cmd.cmd, acked: reply ?? false });
   }
 
   /** Serialize and publish one semantic RGB DP action without changing configured brightness. */

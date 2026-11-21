@@ -26,7 +26,7 @@ import DATA from "./bundle-wires.generated.json" with { type: "json" };
  * - `http`: a cloud call, its `method`, `path`, `body`, `query` and `headers` on the `domain` host;
  * - `mqtt`: a `type: "ble"` frame, `mqttCmdCode` and `cmdCode`, its `ff09` header (`subVersion`,
  *   `functionType`, `needEncrypt`) and its `payload`, the TLV as hex with placeholders; a `type: "json"`
- *   one is not sent;
+ *   one its `cmd` and JSON `payload`;
  * - `ble`: not sent.
  *
  * Payloads, values and bodies carry `$value`, `$channel`, `$now`, `$nowS`, `$sn` and `$station` tokens, and
@@ -63,6 +63,7 @@ export interface BundleFrame extends SessionFrame {
   /** MQTT: seconds the app waits for the reply, and how many times it sends again while none comes. */
   timeout?: number | string;
   retryCount?: number;
+  needAck?: boolean;
   next?: BundleFrame[];
   after?: BundleFrame;
   /** A lock setting over its station: the `ble` the app builds the 1350 params from. */
@@ -419,6 +420,28 @@ function tlvFields(tlv: string, value: unknown): { tag: number; value: Buffer }[
   return fields;
 }
 
+/** A `type: "json"` frame's write: its `cmd` and the JSON its `payload` string holds, as `sendRequestWithJson` parses it. */
+function mqttJsonCommand(frame: BundleFrame): Command | undefined {
+  if (typeof frame.mqttCmdCode !== "number" || typeof frame.cmd !== "number") return undefined;
+  let payload: unknown = {};
+  if (typeof frame.payload === "string") {
+    try {
+      payload = JSON.parse(frame.payload);
+    } catch {
+      return undefined;
+    }
+  }
+  return {
+    kind: "mqtt-json",
+    mqttCmdCode: frame.mqttCmdCode,
+    cmd: frame.cmd,
+    payload,
+    ...(typeof frame.needAck === "boolean" && { needAck: frame.needAck }),
+    ...(typeof frame.timeout === "number" && { timeoutS: frame.timeout }),
+    ...(typeof frame.retryCount === "number" && { retryCount: frame.retryCount }),
+  };
+}
+
 /**
  * A v4 lock TLV as bytes: its hex with `{nowS:u32le}` the clock and `{param.<key>:<type>}` the written field, as the
  * settings parser writes them; `undefined` for any other placeholder or a field that does not fit.
@@ -442,10 +465,11 @@ function tlvHexOf(tlv: string, value: unknown): Buffer | undefined {
  * The secure-MQTT write a `mqtt` frame of `type: "ble"` is: its `payload`, the TLV the bundle writes as hex
  * with placeholders (`A104{nowS:u32le}A228{userId}A301{value:u8}`), read into fields after `A1` (the time)
  * and `A2` (the user id), which the transport adds as it does for every frame; `{value:<type>}` is the
- * written value. `undefined` for a `json` frame, any other placeholder, or a field whose bytes miss its length.
+ * written value. `undefined` for any other placeholder, or a field whose bytes miss its length.
  */
 function mqttCommand(frame: BundleFrame, value: unknown): Command | undefined {
   const tlv = frame.payload;
+  if (frame.type === "json") return mqttJsonCommand(frame);
   if (frame.type !== "ble" || typeof frame.mqttCmdCode !== "number" || typeof frame.cmdCode !== "number")
     return undefined;
   if (typeof tlv !== "string") return undefined;

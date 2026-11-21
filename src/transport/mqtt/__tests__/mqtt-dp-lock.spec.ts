@@ -104,3 +104,24 @@ describe("a bundle mqtt-dp write to a lock", () => {
     expect(acks.map((a) => a.acked)).toEqual([false, true]);
   });
 });
+
+/** `sendRequestWithJson`: `{cmd, account_id: "", payload, mValue3: 0, mChannel: 0}` in the security envelope. */
+describe("a type json MQTT write", () => {
+  it("publishes the descriptor's cmd and JSON payload, cmd_status 2 when no ack is asked", async () => {
+    const { router, mqtt } = lockRouter();
+    await router.dispatchCommand(SN, {
+      kind: "mqtt-json",
+      mqttCmdCode: 9,
+      cmd: 1235,
+      payload: { volume: 1 },
+      needAck: false,
+    });
+    expect(mqtt.publish).toHaveBeenCalledTimes(1);
+    const [topic, body] = mqtt.publish.mock.calls[0] as unknown as [string, string];
+    const outer = JSON.parse(body);
+    const trans = JSON.parse(Buffer.from(JSON.parse(outer.payload).trans, "base64").toString("utf8"));
+    expect(topic).toBe(`cmd/eufy_security/T8531/${SN}/req`);
+    expect(outer.head).toMatchObject({ cmd: 9, cmd_status: 2 });
+    expect(trans).toEqual({ cmd: 1235, account_id: "", payload: { volume: 1 }, mValue3: 0, mChannel: 0 });
+  });
+});

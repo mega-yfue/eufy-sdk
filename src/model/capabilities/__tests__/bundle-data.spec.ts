@@ -129,7 +129,7 @@ function expected(f: BundleFrame, value: unknown, ctx: CommandContext): object {
 }
 
 describe("every write of the shipped data, as the member identifiers send it", () => {
-  // `type: "json"` MQTT frames are not sent (`bundle.ts`).
+  // `type: "json"` MQTT frames have their own command shape (`mqtt-json`, bundle.spec.ts).
   const sent = rows.filter((r) => !(r.frame.transport === "mqtt" && r.frame.type === "json"));
 
   it("covers the data", () => {

@@ -799,6 +799,7 @@ export class P2PCommandRouter {
       case "cloud-request":
         throw new Error(`cloud-request ${cmd.path} is a cloud write and must not reach the P2P router (routing bug)`);
       case "mqtt-dp":
+      case "mqtt-json":
       case "mqtt-dp-preset":
       case "mqtt-dp-color":
         // The `eufy_life` DP writes are secure-MQTT-only — the facade routes them to MqttCommandRouter.

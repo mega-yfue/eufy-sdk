@@ -485,6 +485,17 @@ export type Command =
         /** The descriptor's `retryCount`: sends again while no reply comes (1 when it states none). */
         retryCount?: number;
       }
+    // `mqtt-json` — a `type: "json"` secure-MQTT write: the descriptor's `cmd` and JSON `payload` in the security envelope.
+    | {
+        kind: "mqtt-json";
+        mqttCmdCode: number;
+        cmd: number;
+        payload: unknown;
+        /** The descriptor's `needAck`; the reply is waited for unless it is `false`. */
+        needAck?: boolean;
+        timeoutS?: number;
+        retryCount?: number;
+      }
     // `mqtt-dp-preset` — a DP write whose payload is too large to pass inline, named by a **cloud catalog
     // id** the router resolves through an injected lookup and serializes. Named for that wire shape, not
     // for the feature that uses it (as `ff09-actuate` is named for the action, not for locks): any
