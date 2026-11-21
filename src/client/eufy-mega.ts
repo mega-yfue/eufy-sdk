@@ -2276,11 +2276,8 @@ export class EufyMega extends EventEmitter {
    * stations open on demand (command / stream, or an opted-in event pre-warm) and idle-detach — so this
    * map grows and shrinks over time.
    *
-   * A station's own session is keyed by its serial, and `p2pConnect(stationSn)` / `p2pClose(stationSn)`
-   * track those. A station serving more than one camera at once also holds a session per extra camera,
-   * keyed `<stationSn>#live:<channel>` — these carry media alone and raise no connection events, because
-   * a station announces its state to every client that connects and reporting each copy would double
-   * every event the station's own session already delivers.
+   * One session per station, keyed by its serial, as the app holds one connection per serial;
+   * `p2pConnect(stationSn)` / `p2pClose(stationSn)` track them.
    */
   getP2pSessions(): Map<string, P2PSession> {
     return this.p2p.getSessions();
