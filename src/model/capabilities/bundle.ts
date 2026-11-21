@@ -172,18 +172,35 @@ function topologyOf(parent: string): string {
   return m80 ? `m802${m80}` : (hub[parent.slice(0, 5)] ?? "standalone");
 }
 
+/** The bundles' `compareVersions(a, b) > 0`: dotted numbers compared part by part, a missing part 0. */
+function newerThan(a: string, b: string): boolean {
+  const x = a.split(".").map(Number);
+  const y = b.split(".").map(Number);
+  for (let i = 0; i < Math.max(x.length, y.length); i++)
+    if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
+  return false;
+}
+
 /**
  * The frames the app's `open_live_stream`, `close_live_stream`, `start_intercom` and `stop_intercom` send for
  * `model` under `parentSn` (its own serial when it is its own station), with the ability the app reads off the
  * first of `params` (the parent's, then the device's) whose param 1103 is an integer
- * (`DefaultLiveMediaStrategy.getDeviceAbilityData`). `undefined` for a product the bundles give no live view.
+ * (`DefaultLiveMediaStrategy.getDeviceAbilityData`). A product given the parent's `firmware_main_version`
+ * (`parentFirmware`) takes its `<topology>>4.2.0.0` frames above that version. `undefined` for a product the
+ * bundles give no live view.
  */
 export function liveFrames(
   model: string,
   parentSn: string,
   params: readonly (Readonly<Record<number, string>> | undefined)[],
+  parentFirmware?: string,
 ): LiveFrames | undefined {
-  const entry = memberOf(memberOf(BUNDLE_WIRES.live, model), topologyOf(parentSn));
+  const byTopology = memberOf(BUNDLE_WIRES.live, model);
+  const topology = topologyOf(parentSn);
+  const entry =
+    (parentFirmware && newerThan(parentFirmware, "4.2.0.0")
+      ? memberOf(byTopology, `${topology}>4.2.0.0`)
+      : undefined) ?? memberOf(byTopology, topology);
   if (!entry) return undefined;
   const frames = BUNDLE_WIRES.frames ?? [];
   const ability = params.map((p) => p?.[1103]).find((v) => v !== undefined && /^[+-]?\d+$/.test(v));
