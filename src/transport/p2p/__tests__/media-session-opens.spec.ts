@@ -1,6 +1,6 @@
 import { EventEmitter, once } from "node:events";
 import { describe, expect, it, vi } from "vitest";
-import { p2pVideoFrame } from "./live-source-fixtures.js";
+import { p2pVideoFrame, LIVE_FRAMES } from "./live-source-fixtures.js";
 
 /**
  * A camera that finds the station's own session claimed opens a SECOND connection, and that connection
@@ -93,6 +93,7 @@ function router() {
     raw: { parent_sn: parent, device_channel: channel, p2p_did: DID, member: { admin_user_id: ACCOUNT_ID } },
   });
   return new P2PCommandRouter({
+    liveFramesFor: () => LIVE_FRAMES,
     mega: { getDskKeys: async () => ({}), auth: { userId: ACCOUNT_ID } } as never,
     listDevices: () => [record(STATION_SN, 0), record(CAM_A, 0, STATION_SN), record(CAM_B, 2, STATION_SN)] as never,
     ensureDevices: async () => {},
@@ -230,44 +231,20 @@ describe("a second live camera on a claimed station session", () => {
     expect(events).toEqual([]);
   });
 
-  /**
-   * An attached camera's media start has no level-1 form, so a connection without the level-2 key cannot
-   * carry it: the start is dropped and the stream shows nothing until a keepalive tick happens to find the
-   * key. The station's own session waits for that key before it is handed out; this one has to as well, or
-   * the second camera's first start is silently thrown away.
-   */
-  it("refuses a media session that connects without a level-2 key, rather than returning a mute one", async () => {
+  /** The app's start waits for no key, so neither does the connection that carries it. */
+  it("hands over a media session that connects without a level-2 key", async () => {
     const r = router();
     (await openLive(r, CAM_A)).attach();
 
     nextSessionHasNoKey = true;
-    await expect(openLive(r, CAM_B)).rejects.toMatchObject({ name: "StationKeyUnavailableError" });
-  });
-
-  /**
-   * Nothing else releases a refused session: a wired station's session never idles out and no source holds
-   * it. Its `close` lands only after its END send, so an open in that window must already find it gone, and
-   * the late `close` must leave the new connection's claim alone.
-   */
-  it("closes a media session it refuses, so the camera's next open dials a fresh connection", async () => {
-    const r = router();
-    (await openLive(r, CAM_A)).attach();
-    nextSessionHasNoKey = true;
-    await expect(openLive(r, CAM_B)).rejects.toMatchObject({ name: "StationKeyUnavailableError" });
-
-    (await openLive(r, CAM_B)).attach();
-    await once(built[1], "close");
-
-    expect(built).toHaveLength(3);
-    expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(`${STATION_SN}#live:2`);
+    await expect(openLive(r, CAM_B)).resolves.toBeDefined();
   });
 
   /**
    * A relay connect lands about 25 s after `connect()` resolves, so a key wait begun at the open would run
-   * out on the connect rather than on the key. The media session is handed over once it connects and holds
-   * its key.
+   * out on the connect. The media session is handed over once it connects.
    */
-  it("waits for a media session's path to connect before it waits for the key", async () => {
+  it("waits for a media session's path to connect before handing it over", async () => {
     vi.useFakeTimers();
     try {
       const r = router();

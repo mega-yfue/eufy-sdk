@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { LIVE_FRAMES } from "./live-source-fixtures.js";
 import { P2PCommandRouter, type P2PRouterDeps } from "../command-router.js";
 import { connectedSession, type FakeP2PSession } from "./session-fixtures.js";
 
@@ -26,6 +27,7 @@ const SOLO_B = "T8410P0000000000";
 function router() {
   const session = connectedSession(true) as FakeP2PSession;
   const deps: P2PRouterDeps = {
+    liveFramesFor: () => LIVE_FRAMES,
     mega: {} as P2PRouterDeps["mega"],
     listDevices: () =>
       [
@@ -277,6 +279,7 @@ describe("an attached camera on a HomeBase 3", () => {
       raw: { parent_sn: HB3, device_channel: channel, member: { admin_user_id: ACCOUNT_ID } },
     });
     const built = new P2PCommandRouter({
+      liveFramesFor: () => LIVE_FRAMES,
       mega: {} as P2PRouterDeps["mega"],
       listDevices: () =>
         [

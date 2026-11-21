@@ -19,7 +19,13 @@
  */
 import { EventEmitter } from "node:events";
 import { Writable } from "node:stream";
-import type { AacEncoder, StreamBudgetNotice, TalkbackCodec, TalkbackHandle } from "../../core/contracts.js";
+import type {
+  AacEncoder,
+  SessionFrame,
+  StreamBudgetNotice,
+  TalkbackCodec,
+  TalkbackHandle,
+} from "../../core/contracts.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import {
   AAC_FRAME_MS,
@@ -31,13 +37,12 @@ import {
 } from "./adts.js";
 
 /**
- * The subset of the session this needs — start/stop the path, push one frame, and report a frame the
+ * The subset of the session this needs — send the start/stop frame, push one audio frame, and report a frame the
  * device never acknowledged. The audio channel is ordered, so an abandoned frame is a permanent hole
  * that stalls everything behind it; the listener pair lets that surface instead of going silent.
  */
 export interface TalkbackSink {
-  startTalkback(channel: number, homeBaseAttached: boolean): boolean;
-  stopTalkback(channel: number, homeBaseAttached: boolean): boolean;
+  sendFrame(frame: SessionFrame, channel: number): void;
   sendAudioFrame(channel: number, frame: Buffer): void;
   on?(event: "audioGap", listener: (seq: number) => void): unknown;
   off?(event: "audioGap", listener: (seq: number) => void): unknown;
@@ -45,7 +50,9 @@ export interface TalkbackSink {
 
 export interface TalkbackOptions {
   channel: number;
-  homeBaseAttached: boolean;
+  /** The frames the app opens and closes this device's talkback with (`start_intercom`, `stop_intercom`). */
+  start: SessionFrame;
+  stop: SessionFrame;
   /** Converts PCM to ADTS when the caller feeds PCM instead of AAC. */
   encoder?: AacEncoder;
   /**
@@ -149,9 +156,7 @@ export class Talkback extends EventEmitter implements TalkbackHandle {
   }
 
   /**
-   * Open the device's talkback path and begin the pacing tick. Throws when the topology's control
-   * frame could not be sent — for a HomeBase-attached camera that means the level-2 key was never
-   * negotiated, which would otherwise leave a silent session that accepts audio nobody hears.
+   * Open the device's talkback path and begin the pacing tick. Throws when the start frame could not be sent.
    *
    * `codec` is the codec the camera's speaker plays; it fixes the input this talkback accepts and the pacing step.
    */
@@ -162,9 +167,7 @@ export class Talkback extends EventEmitter implements TalkbackHandle {
     }
     this.codec = codec;
     this.frameMs = codec === "aac-eld" ? TALKBACK_ELD_FRAME_MS : AAC_FRAME_MS;
-    if (!this.sink.startTalkback(this.opts.channel, this.opts.homeBaseAttached)) {
-      throw new Error(`talkback: could not open the audio path on channel ${this.opts.channel}`);
-    }
+    this.sink.sendFrame(this.opts.start, this.opts.channel);
     this.started = true;
     const now = Date.now();
     this.nextDueAt = now + this.frameMs;
@@ -382,7 +385,7 @@ export class Talkback extends EventEmitter implements TalkbackHandle {
       this.releaseWriter();
       if (dropped) this.logger.debug?.(`talkback: dropped ${dropped} queued frame(s) on stop`);
       this.opts.encoder?.close?.();
-      if (this.started) this.sink.stopTalkback(this.opts.channel, this.opts.homeBaseAttached);
+      if (this.started) this.sink.sendFrame(this.opts.stop, this.opts.channel);
     } finally {
       this.opts.releaseMedia?.();
       this.emit("stop");

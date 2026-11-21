@@ -53,7 +53,7 @@ describe("a session at sign mode 0", () => {
       vi.advanceTimersByTime(1_449);
       expect(sent).toHaveLength(0);
       vi.advanceTimersByTime(1);
-      s.stopLiveMedia(0, ACCOUNT_ID, false);
+      s.sendFrame({ cmd: 1004, body: "native", payload: {}, layout: "u32-ch" }, 0, ACCOUNT_ID);
 
       expect(sent.map(commandOf).map(({ command, counter, signCode }) => ({ command, counter, signCode }))).toEqual([
         { command: 1350, counter: [1, 0], signCode: 0 },

@@ -564,7 +564,7 @@ stream.on("budget", (notice) => {
 Defaults: 45 s budget, 10 s grace. A host tunes only the **timings** (not the power decision):
 
 ```ts
-await cam?.live?.({ batteryBudgetMs: 8000, budgetGraceMs: 5000, keepAliveMs: 3000 });
+await cam?.live?.({ batteryBudgetMs: 8000, budgetGraceMs: 5000 });
 ```
 
 A wired camera ignores all of this and streams until you `stop()`.
@@ -578,9 +578,8 @@ session idle-detaches so a battery device sleeps — see [Connectivity & battery
 - **UDP retransmissions.** Each data type is sequenced independently. Duplicate and stale datagrams are
   acknowledged and ignored without discarding a different frame being assembled, and the numbering may wrap
   without a false gap. A missing datagram still drops that incomplete frame so corrupt media is never
-  delivered. An unacknowledged own-session `START_LIVE` is repeated with identical bytes until the camera
-  acknowledges it, and abandoned after 3s — at which point that channel is no longer treated as started, so
-  the next keepalive tick issues a real start instead of nudging a stream that never began. A new connection
+  delivered. The media start is the frame the app sends for the camera's product and its parent, sent once and
+  resent byte-identically by the channel's own retransmission until the camera acknowledges it. A new connection
   starts the numbering over, so its first datagrams are never read as stale — and so does a camera that
   begins a fresh stream on a connection already up, which sequencing follows onto the restarted numbering
   rather than waiting for it to climb back.

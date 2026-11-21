@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
+import { LIVE_FRAMES } from "./live-source-fixtures.js";
 import { P2PCommandRouter, type P2PRouterDeps } from "../command-router.js";
 import { connectedSession, type FakeP2PSession } from "./session-fixtures.js";
 
@@ -19,6 +20,7 @@ const CAMERA = "T8114P0000000000";
 function router(hasLevel2Key = true) {
   const session = connectedSession(hasLevel2Key) as FakeP2PSession;
   const deps: P2PRouterDeps = {
+    liveFramesFor: () => LIVE_FRAMES,
     mega: {} as P2PRouterDeps["mega"],
     listDevices: () =>
       [
@@ -83,7 +85,7 @@ describe("a media call the caller abandons", () => {
    */
   it("abandons a wait already in progress, rather than sitting out its window", async () => {
     const { router: r, session } = router();
-    session.awaitLevel2Key = vi.fn(() => new Promise<boolean>(() => {})); // a negotiation that never settles
+    session.isConnected = false; // a station that never connects
     const controller = new AbortController();
     const started = Date.now();
 

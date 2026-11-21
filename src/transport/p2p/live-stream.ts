@@ -8,21 +8,20 @@
  *    (`parseVideoFrameHeader`) followed directly by Annex-B NAL units (keyframe = header
  *    flag bit0). We strip the 22-byte header.
  *  - **Encrypted keyframes**: either the AES-256-GCM body under a media key wrapped in an ECIES envelope
- *    for an offered P-256 key ({@link VideoFrameDecoder}), or an AES-ECB head under a media key wrapped for
- *    the session's RSA key ({@link P2PSession.decodeVideoFrame}). An attached camera's start on a station
- *    with a {@link P2PSession.mediaEccPrivateKey} offers that P-256 key first, so its stream decodes with
- *    that pair unless `eccPrivateKey` names another.
+ *    for the P-256 key the start offered ({@link VideoFrameDecoder}, the session's
+ *    {@link P2PSession.mediaEccPrivateKey} unless `eccPrivateKey` names another), or an AES-ECB head under a
+ *    media key wrapped for the session's RSA key ({@link P2PSession.decodeVideoFrame}).
  *
  * Emits: `video` ({@link LiveVideoFrame} — Annex-B), `audio` ({@link LiveAudioFrame}), `start`, `stop`,
  * `error`.
  */
 import { EventEmitter } from "node:events";
 import { STATION_CHANNEL, type P2PSession, type P2PFrame } from "./p2p-session.js";
-import { AccessUnitAssembler, VideoFrameDecoder, beginsAccessUnit } from "./video.js";
+import { AccessUnitAssembler, VideoFrameDecoder } from "./video.js";
 import { sniffAnnexbCodec } from "./annexb.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { traceLiveStart, type LiveTrace } from "./live-trace.js";
-import type { LiveAudioFrame, LiveVideoFrame, VideoCodec } from "../../core/contracts.js";
+import type { LiveAudioFrame, LiveFrames, LiveVideoFrame, VideoCodec } from "../../core/contracts.js";
 import {
   AUDIO_CODECS,
   AUDIO_HEADER_LEN,
@@ -52,29 +51,9 @@ const AAC_ELD_AUDIO_SPECIFIC_CONFIG = Buffer.from("f8f03000", "hex");
  */
 const MAX_TRACED_DECODE_FAILURES = 3;
 
-/**
- * How often the media start is re-issued to hold a stream open, when a caller expresses no preference.
- *
- * This is **on by default** because some cameras stop sending without it — no `stop`, no `error`, the
- * feed simply stops.
- *
- * Which cameras need it does **not** follow topology or power source, so there is no predicate to gate
- * it on. Since a camera that needs it goes silent rather than reporting anything, the default
- * covers the one that fails.
- *
- * What the nudge costs differs by topology, and only one branch is a true keepalive: an own-session
- * camera's `startLiveMedia` tracks that the stream is already started and sends the small ping, while a
- * HomeBase-attached camera has no such state and re-sends the full media start — a genuine restart on
- * that path.
- *
- * That restart is harmless on a station serving ONE camera and harmful on a station serving several: it
- * re-asserts this camera's channel every interval, so two attached streams contend continuously. So an
- * attached stream stops nudging as soon as the station delivers a frame of its own channel — see the private
- * `settleKeepalive`: an attached camera holds its stream with the nudge disabled outright.
- */
-export const DEFAULT_KEEPALIVE_MS = 3000;
-
 export interface LiveStreamOptions {
+  /** The frames the app starts and stops this device's live view with, and the ability its key form reads. */
+  frames: LiveFrames;
   /**
    * Camera channel to START (the device's `device_channel`) — sent in CMD_START_REALTIME_MEDIA to
    * select which camera on a multi-camera HomeBase streams. Defaults to the station channel.
@@ -86,42 +65,15 @@ export interface LiveStreamOptions {
    */
   channel?: number;
   /**
-   * P-256 private key (32B) whose public point the camera wraps each keyframe's media key for. Defaults, on an
-   * attached camera, to the session's `P2PSession.mediaEccPrivateKey`, the pair its start offers.
+   * P-256 private key (32B) whose public point the camera wraps each keyframe's media key for. Defaults to the
+   * session's `P2PSession.mediaEccPrivateKey`, once its start offered that pair.
    */
   eccPrivateKey?: Buffer;
-  /** Admin account id — required for the level-2 (`signCode 8`) media-start payload selecting a camera. */
+  /** The admin user id the start carries (`$userId`). */
   accountId?: string;
   /**
-   * Re-send the media start every N ms to hold the stream open. Defaults to
-   * {@link DEFAULT_KEEPALIVE_MS}; pass `0` to disable.
-   */
-  keepAliveMs?: number;
-  /**
-   * How long an attached stream tolerates silence on its own channel before re-asserting again, in ms.
-   *
-   * The re-assert is settled by the first own-channel frame, because settling it is what stops two attached
-   * streams contending over one session, which serves one camera at a time. Silence for this long says the station
-   * is no longer serving this camera, which is the only condition the re-assert was for. Defaults to twice
-   * the keepalive interval, so a stream whose media flows never reaches it.
-   */
-  stallMs?: number;
-  /**
-   * Whether re-asserting this camera's channel is still wanted, consulted each time the stall window
-   * elapses. Absent means always wanted.
-   *
-   * A re-assert on an attached camera is a full media start, so it takes the station from whichever camera
-   * it was serving. Whether that is wanted depends on who is attached to this pull and to its siblings,
-   * which this stream cannot see. Its owner can, so it asks rather than assuming.
-   *
-   * The watch keeps re-arming while this answers false, so a pull that gains a consumer re-asserts at the
-   * next window rather than staying silent for the rest of its life.
-   */
-  reassertWanted?: () => boolean;
-  /**
-   * Runtime topology fact (from the device record: `parent_sn && parent_sn !== sn`): true = the camera
-   * rides a HomeBase's session (start via the level-2 `1003` payload), false = own-session camera
-   * (start via the `1700`/`cmd 1000` path, level-2 or level-1 per the session key). NOT a family trait.
+   * Runtime topology fact (from the device record: `parent_sn && parent_sn !== sn`): true = the camera rides a
+   * HomeBase's session, which tags its media with the camera's channel, and this stream takes only its own.
    */
   homeBaseAttached?: boolean;
   /** Diagnostics sink. Omit for silence. */
@@ -131,7 +83,6 @@ export interface LiveStreamOptions {
 export class LiveStream extends EventEmitter {
   private listening = false;
   private decoder?: VideoFrameDecoder;
-  private kaTimer?: ReturnType<typeof setInterval>;
   /** Last codec sniffed off a keyframe; delta frames (no config NAL) inherit it. Default h264. */
   private lastCodec: VideoCodec = "h264";
   /** Rebuilds an access unit the station split across several frames — see {@link AccessUnitAssembler}. */
@@ -148,32 +99,20 @@ export class LiveStream extends EventEmitter {
   private tracedFirstVideoUnit = false;
   private tracedFirstKeyframe = false;
   private tracedDecodeFailures = 0;
-  /** How the frame that opened the latest access unit was read; see {@link settleStartKey}. */
-  private unitOpenedBy: "ecc" | "rsa" | "plain" = "plain";
   private tracedFirstForeignFrame = false;
-  private stallTimer?: ReturnType<typeof setTimeout>;
-  /**
-   * The channel this stream starts, stops, traces under and matches its own abandonment on. An omitted
-   * channel resolves to {@link STATION_CHANNEL} — the value the session resolves it to.
-   */
+  /** The channel this stream starts, stops and traces under; an omitted one is {@link STATION_CHANNEL}. */
   private readonly channel: number;
   private readonly handler = (f: P2PFrame) => this.onFrame(f);
-  /** Forwards `liveStartUnacknowledged` only where it carries this stream's own channel. */
-  private readonly unackedHandler = (channel: number) => {
-    if (channel === this.channel) this.emit("unacknowledged");
-  };
   private readonly logger: Logger;
 
   constructor(
     private readonly session: P2PSession,
-    private readonly opts: LiveStreamOptions = {},
+    private readonly opts: LiveStreamOptions,
   ) {
     super();
     this.logger = opts.logger ?? noopLogger;
     this.channel = opts.channel ?? STATION_CHANNEL;
     if (opts.homeBaseAttached && opts.channel !== undefined) this.mediaChannel = opts.channel;
-    const eccPrivateKey = opts.eccPrivateKey ?? (opts.homeBaseAttached ? session.mediaEccPrivateKey : undefined);
-    if (eccPrivateKey) this.decoder = new VideoFrameDecoder(eccPrivateKey);
   }
 
   /** Emit a live trace under its session's handle and the channel this stream pulls. */
@@ -182,100 +121,34 @@ export class LiveStream extends EventEmitter {
     traceLiveStart(this.logger, trace, session ? `${session}:${this.channel}` : undefined);
   }
 
-  /** Begin streaming: attach the frame listener and tell the station to start realtime media. */
+  /**
+   * Begin streaming: attach the frame listener and send the start, then read keyframes with the P-256 key it
+   * offered, if it offered one.
+   */
   start(): this {
     if (this.listening) return this;
     this.listening = true;
     this.session.on("data", this.handler);
     this.session.on("videoGap", this.videoGapHandler);
-    this.session.on("liveStartUnacknowledged", this.unackedHandler);
     this.sendStart();
-    const keepAliveMs = this.opts.keepAliveMs ?? DEFAULT_KEEPALIVE_MS;
-    if (keepAliveMs > 0) {
-      this.kaTimer = setInterval(() => this.sendStart(), keepAliveMs);
-    }
+    const eccPrivateKey = this.opts.eccPrivateKey ?? this.session.mediaEccPrivateKey;
+    if (eccPrivateKey) this.decoder = new VideoFrameDecoder(eccPrivateKey);
     this.emit("start");
     return this;
   }
 
-  /**
-   * Stop re-issuing the media start once this camera's own media has arrived, on an attached camera.
-   *
-   * The nudge differs by topology and only one branch is a ping: an own-session camera sends a small
-   * keepalive, while an attached camera has no such state and re-sends the FULL media start. Over one session,
-   * which serves one camera at a time, that restart re-asserts this channel against whatever else is warm on
-   * it, so two
-   * attached streams restart every interval and contend for the station continuously.
-   *
-   * A frame of this camera's own channel is the station stating it is serving THIS camera, which is the only
-   * thing the restart was trying to bring about. An attached camera holds its stream with the nudge disabled,
-   * while an own-session camera that needs it goes quiet without it — so an own-session stream keeps its ping.
-   *
-   * The warm-up retry a shared source runs is untouched: it recovers a start that raced the level-2 key, and
-   * it stops at the first keyframe by its own rule.
-   */
-  private settleKeepalive(): void {
-    if (!this.opts.homeBaseAttached) return;
-    this.armStallWatch();
-    if (!this.kaTimer) return;
-    clearInterval(this.kaTimer);
-    this.kaTimer = undefined;
-    this.logger.debug(`[live ch${this.channel}] station is serving this camera — holding off the attached restart`);
+  /** Send the start again while listening: the shared source's warm-up retry. */
+  nudge(): void {
+    if (this.listening) this.sendStart();
   }
 
-  /**
-   * Re-arm the attached re-assert if this camera's own media goes silent.
-   *
-   * Holding the re-assert off is right while the station is serving this camera and wrong the moment it stops:
-   * a station that switches to a sibling leaves this stream with no frames, no error and no `stop`, and the
-   * warm-up watch that would have caught it was cleared by the first frame. Silence is therefore the condition
-   * the re-assert exists for, and the only one — re-arming while media flows is the contention this settle was
-   * introduced to remove.
-   *
-   * Replaced on every own-channel frame, so the window is measured from the last one.
-   *
-   * Gated on {@link LiveStreamOptions.reassertWanted}: silence with nobody attached is not a condition to
-   * act on, because the re-assert would take the station from a camera someone is watching.
-   */
-  private armStallWatch(): void {
-    if (this.stallTimer) clearTimeout(this.stallTimer);
-    const keepAliveMs = this.opts.keepAliveMs ?? DEFAULT_KEEPALIVE_MS;
-    if (keepAliveMs <= 0) return;
-    const stallMs = this.opts.stallMs ?? keepAliveMs * 2;
-    this.stallTimer = setTimeout(() => {
-      this.stallTimer = undefined;
-      if (!this.listening || this.kaTimer) return;
-      if (this.opts.reassertWanted?.() === false) {
-        this.trace({ phase: "channel-silent", silentMs: stallMs, outcome: "declined" });
-        this.logger.debug(
-          `[live ch${this.channel}] no own media for ${stallMs}ms, and its owner does not want this channel re-asserted — staying quiet`,
-        );
-        this.armStallWatch();
-        return;
-      }
-      this.trace({ phase: "channel-silent", silentMs: stallMs, outcome: "reasserted" });
-      this.logger.debug(`[live ch${this.channel}] no own media for ${stallMs}ms — re-asserting this camera's channel`);
-      this.sendStart();
-      this.kaTimer = setInterval(() => this.sendStart(), keepAliveMs);
-    }, stallMs);
-    this.stallTimer.unref?.();
-  }
-
-  /**
-   * Re-issue the start command (idempotent while listening) — the media-start / keepalive nudge. The
-   * shared source calls this to retry a start that raced key negotiation, until frames flow. Safe to
-   * call repeatedly: `startLiveMedia` self-selects start vs keepalive per the session state.
-   */
-  nudge(force?: boolean): void {
-    if (this.listening) this.sendStart(force);
-  }
-
-  private sendStart(force?: boolean): void {
+  private sendStart(): void {
+    const { frames, accountId } = this.opts;
     try {
-      this.session.startLiveMedia(this.opts.channel, this.opts.accountId, this.opts.homeBaseAttached, { force });
+      this.session.sendFrame(frames.start, this.channel, accountId, frames.ability);
     } catch (e) {
       // Non-fatal: the session may be mid-reconnect; the warm-up retry will re-issue the start.
-      this.logger.debug(`[live] startLiveMedia deferred (session not ready): ${e instanceof Error ? e.message : e}`);
+      this.logger.debug(`[live] start deferred (session not ready): ${e instanceof Error ? e.message : e}`);
     }
   }
 
@@ -286,15 +159,10 @@ export class LiveStream extends EventEmitter {
     this.session.off("data", this.handler);
     this.session.off("videoGap", this.videoGapHandler);
     this.awaitingKeyframeAfterGap = false;
-    this.session.off("liveStartUnacknowledged", this.unackedHandler);
-    if (this.kaTimer) clearInterval(this.kaTimer);
-    this.kaTimer = undefined;
-    if (this.stallTimer) clearTimeout(this.stallTimer);
-    this.stallTimer = undefined;
     try {
-      this.session.stopLiveMedia(this.opts.channel, this.opts.accountId, this.opts.homeBaseAttached);
+      this.session.sendFrame(this.opts.frames.stop, this.channel, this.opts.accountId);
     } catch (e) {
-      this.logger.debug(`[live] stopLiveMedia ignored: ${e instanceof Error ? e.message : e}`);
+      this.logger.debug(`[live] stop ignored: ${e instanceof Error ? e.message : e}`);
     }
     this.emit("stop");
   }
@@ -336,11 +204,7 @@ export class LiveStream extends EventEmitter {
           }
           // Sniff the codec only on a keyframe (it carries the parameter sets); delta frames have no
           // config NAL, so they inherit the last-known codec.
-          if (unit.keyframe) {
-            this.lastCodec = sniffAnnexbCodec(unit.data) ?? this.lastCodec;
-            this.settleStartKey();
-          }
-          this.settleKeepalive();
+          if (unit.keyframe) this.lastCodec = sniffAnnexbCodec(unit.data) ?? this.lastCodec;
           this.emit("video", {
             sourceTimestamp: unit.sourceTimestamp,
             keyframe: unit.keyframe,
@@ -412,34 +276,16 @@ export class LiveStream extends EventEmitter {
    * key. The session's RSA path cannot: on Node ≥ 24.5, PKCS#1 v1.5 decryption of a key not wrapped for it
    * returns pseudo-random bytes instead of throwing (implicit rejection), which would decode an ECC
    * keyframe into noise. The session's decode, which also passes plaintext frames, and the header strip
-   * follow. A payload that opens an access unit records how it was read: by the ECIES path, or otherwise by
-   * its sign code, sealed (`"rsa"`) or in the clear (`"plain"`).
+   * follow.
    */
   private annexbOf(payload: Buffer, signCode: number): Buffer | undefined {
     const decoded = this.decoder?.decodeFrame(payload)?.h264;
-    if (decoded) {
-      if (beginsAccessUnit(decoded)) this.unitOpenedBy = "ecc";
-      return decoded;
-    }
+    if (decoded) return decoded;
     const annexb = this.session.decodeVideoFrame?.(payload, signCode) ?? this.plaintextAnnexB(payload);
     if (!annexb && this.tracedDecodeFailures++ < MAX_TRACED_DECODE_FAILURES) {
       this.trace({ phase: "video-decode-empty", signCode });
     }
-    if (annexb && beginsAccessUnit(annexb)) this.unitOpenedBy = signCode > 0 ? "rsa" : "plain";
     return annexb;
-  }
-
-  /**
-   * Tell the session how this keyframe was opened, which answers the attached starts on this channel
-   * ({@link P2PSession.settleAttachedKey}), and re-issue the start when the session asks for one: a plaintext
-   * keyframe answering the session's P-256 offer, from a camera that did not use the point, which the next
-   * start asks with RSA. Only a delivered keyframe answers: a frame no key opens, or a continuation without the
-   * frame that opened its unit, delivers nothing.
-   */
-  private settleStartKey(): void {
-    if (!this.session.settleAttachedKey?.(this.channel, this.unitOpenedBy)) return;
-    this.logger.debug(`[live ch${this.channel}] plaintext keyframe answered the P-256 offer — re-starting with RSA`);
-    this.sendStart();
   }
 
   /**
@@ -479,10 +325,8 @@ export interface LiveStream {
   // Structural conformance to LiveStreamHandle; the upstream stream never emits "budget" itself
   // (the shared source raises it on the consumer side), but the type must be assignable.
   on(event: "budget", listener: (notice: import("../../core/contracts.js").StreamBudgetNotice) => void): this;
-  /** This channel's media start was abandoned unacknowledged — see {@link LiveStreamHandle}. */
-  on(event: "unacknowledged", listener: () => void): this;
   emit(event: "video", frame: LiveVideoFrame): boolean;
   emit(event: "audio", frame: LiveAudioFrame): boolean;
-  emit(event: "start" | "stop" | "unacknowledged"): boolean;
+  emit(event: "start" | "stop"): boolean;
   emit(event: "error", err: Error): boolean;
 }

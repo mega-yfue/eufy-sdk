@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { LIVE_FRAMES } from "./live-source-fixtures.js";
 import { P2PCommandRouter } from "../command-router.js";
 
 /**
@@ -24,6 +25,7 @@ function routerFor(sn: string) {
   const resetWhenUnused: string[] = [];
   const opened: string[] = [];
   const router = new P2PCommandRouter({
+    liveFramesFor: () => LIVE_FRAMES,
     mega: {} as never,
     listDevices: () =>
       [
