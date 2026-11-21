@@ -17,8 +17,7 @@ import type { P2PSession } from "../p2p-session.js";
  * gap: an idle-detach and a deferred reset are closes with no caller to clean up after them.
  *
  * The router therefore also tears down on {@link SessionManagerOpts.onAutoClose}. A close a CALLER made is
- * deliberately NOT routed there, because `closeAll` disposes its own sources and
- * `replaceUnreachableSession` keeps its source on purpose to rewarm it on the replacement.
+ * deliberately NOT routed there, because `closeAll` disposes its own sources.
  */
 const STATION = "T8000P0000000000";
 
@@ -114,7 +113,7 @@ describe("a station's session closing without a caller", () => {
     expect(closedStations).toEqual([]);
   });
 
-  it("leaves a caller's own close alone, so a session being replaced keeps its source to rewarm", async () => {
+  it("leaves a caller's own close alone", async () => {
     const { manager, sources, talkbacks, closedStations } = routerFor();
     const { dispose, stop } = seedRiders(sources, talkbacks);
 
@@ -123,7 +122,7 @@ describe("a station's session closing without a caller", () => {
     manager.register(STATION, fakeSession());
     await manager.closeAll();
 
-    expect(dispose, "replaceUnreachableSession closes, then rewarms the SAME source").not.toHaveBeenCalled();
+    expect(dispose).not.toHaveBeenCalled();
     expect(stop).not.toHaveBeenCalled();
     expect(closedStations).toEqual([]);
   });

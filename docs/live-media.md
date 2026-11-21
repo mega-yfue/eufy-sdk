@@ -583,13 +583,12 @@ session idle-detaches so a battery device sleeps — see [Connectivity & battery
   starts the numbering over, so its first datagrams are never read as stale — and so does a camera that
   begins a fresh stream on a connection already up, which sequencing follows onto the restarted numbering
   rather than waiting for it to climb back.
-- **No silent hang.** `live()` re-issues the media-start (`nudge`) until the first keyframe arrives; if
-  none arrives within the warm-up window the stream emits a `LiveStreamStartError` rather than hanging
+- **No silent hang.** `live()` sends the media start once, as the app does; if no keyframe arrives within the
+  warm-up window (25 s, the app's player timeout) the stream emits a `LiveStreamStartError` rather than hanging
   forever. It carries everything needed to tell the failures apart without transport logs: `reason`
   (deadline elapsed / source error / source ended), `stage` (`awaiting-first-frame` when the source
   delivered nothing at all, `audio-only` when it was streaming audio and never sent a video frame,
-  `awaiting-keyframe` when video units arrived but none was decodable), `timeoutMs`, and `attempts` —
-  the media starts actually issued. Handle `error`.
+  `awaiting-keyframe` when video units arrived but none was decodable) and `timeoutMs`. Handle `error`.
 - **A camera that is switched off looks like a broken transport.** It keeps its session, accepts the media
   start, and then sends audio and never a video frame — measured: 234 audio frames, no video, no
   stream-status report and no lost datagrams across a 20s window, then 217 video access units with nothing

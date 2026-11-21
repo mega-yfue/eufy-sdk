@@ -9,12 +9,7 @@ import { P2PCommandRouter } from "../command-router.js";
  * over the session resolved when it was first built — so a camera that stopped delivering frames stayed
  * that way until the client restarted.
  *
- * Two devices: one standalone (its station key is its own serial) and one attached to a HomeBase. Closing
- * a shared HomeBase session would drop every other camera on it, so the recycle is only ever safe for the
- * standalone case, and that asymmetry is the thing most likely to be got wrong.
- *
- * The last case drives a REAL warm-up timeout through a fake stream, so the source→router wiring is proven
- * rather than assumed; the others invoke the report directly, which keeps them independent of the timing.
+ * Two devices: one standalone (its station key is its own serial) and one attached to a HomeBase.
  */
 const STANDALONE = "T8000P0000000000";
 const ATTACHED = "T8000P0000000001";
@@ -94,14 +89,6 @@ describe("recovering a camera whose live start failed", () => {
     expect(() => first.attach()).toThrow(/disposed/);
   });
 
-  it("recycles a standalone device's session when its start failed", async () => {
-    const { router, closed } = routerFor(STANDALONE);
-    const source = await router.sharedLiveSourceFor(STANDALONE);
-
-    failTheStart(source);
-    await vi.waitFor(() => expect(closed).toEqual([STANDALONE]));
-  });
-
   it("evicts the dead source when it reports a failed start, so nothing hands it out again", async () => {
     const { router } = routerFor(STANDALONE);
     const first = await router.sharedLiveSourceFor(STANDALONE);
@@ -111,34 +98,26 @@ describe("recovering a camera whose live start failed", () => {
     await vi.waitFor(async () => expect(await router.sharedLiveSourceFor(STANDALONE)).not.toBe(first));
   });
 
-  it("replaces a session once inside the warm-up window, recycles it once at the deadline, then re-serves", async () => {
-    vi.useFakeTimers();
-    try {
-      const { router, closed } = routerFor(STANDALONE);
-      const source = await router.sharedLiveSourceFor(STANDALONE);
-      const consumer = source.attach();
-      consumer.on("error", () => {});
+  /** The app's player fails on its timeout and leaves the P2P connection to `P2PClient`; nothing closes it. */
+  it("fails at the deadline and closes no session, standalone or attached, then re-serves", async () => {
+    for (const sn of [STANDALONE, ATTACHED]) {
+      vi.useFakeTimers();
+      try {
+        const { router, closed, resetWhenUnused } = routerFor(sn);
+        const source = await router.sharedLiveSourceFor(sn);
+        source.attach().on("error", () => {});
 
-      await vi.advanceTimersByTimeAsync(20000); // the source's own warm-up deadline
+        await vi.advanceTimersByTimeAsync(25000);
 
-      expect(source.state).toBe("stopped");
-      expect(closed).toEqual([STANDALONE, STANDALONE]);
-      await vi.runAllTimersAsync();
-      expect(await router.sharedLiveSourceFor(STANDALONE)).not.toBe(source);
-    } finally {
-      vi.useRealTimers();
+        expect(source.state).toBe("stopped");
+        expect(closed).toEqual([]);
+        expect(resetWhenUnused).toEqual([]);
+        await vi.runAllTimersAsync();
+        expect(await router.sharedLiveSourceFor(sn)).not.toBe(source);
+      } finally {
+        vi.useRealTimers();
+      }
     }
-  });
-
-  it("never closes a shared HomeBase session — other cameras are streaming on it", async () => {
-    const { router, closed, resetWhenUnused } = routerFor(ATTACHED);
-    const source = await router.sharedLiveSourceFor(ATTACHED);
-
-    failTheStart(source);
-    await vi.waitFor(() => expect(source.state).toBe("stopped"));
-
-    expect(closed).toEqual([]);
-    expect(resetWhenUnused).toEqual([]);
   });
 
   it("still rebuilds an attached camera's stream, which is all that is safe there", async () => {

@@ -244,14 +244,6 @@ interface ResolvedSession {
 type RecordingDownloadOpts = Parameters<NonNullable<MediaProvider["downloadRecording"]>>[0];
 
 /**
- * The mutable cell a live source reads its session out of. Assigning `session` points every later
- * `makeStream` call at a different connection, leaving the source itself in place.
- */
-interface HeldSession {
-  session: P2PSession;
-}
-
-/**
  * The facade-side dependencies the router needs. It owns the sessions map and all wire logic, but
  * defers device-list access + lifecycle/frame event fan-out to the client (which owns the typed
  * EventEmitter and the model-coupled frame decode).
@@ -1143,8 +1135,8 @@ export class P2PCommandRouter {
    * camera it belongs to, and {@link LiveStream} takes only its own.
    *
    * Whether they can be SERVED at the same time is the station's business, not this map's. Where it serves one
-   * camera at a time, a pull still lingering for a camera nobody is watching would go on re-issuing its own
-   * media start against the one being asked for, so opening a new channel releases those first — see
+   * camera at a time, a pull still lingering for a camera nobody is watching keeps the station on that camera,
+   * so opening a new channel releases those first — see
    * {@link releaseLingeringSiblings}. A pull with consumers is never touched. The release runs before the
    * reuse branch, so a reuse frees the station as a cold start does.
    *
@@ -1155,9 +1147,6 @@ export class P2PCommandRouter {
    * so a still asked for while a sibling is being watched contends as it always did, and the caller's
    * retained image answers it. A live view still outranks a tile; what changed is that two live views no
    * longer have to outrank each other.
-   *
-   * The session goes into a {@link HeldSession} cell, so it can be replaced under a source that stays in
-   * place.
    */
   async sharedLiveSourceFor(sn: string, opts: SharedLiveOpts = {}, continuous = false): Promise<SharedLiveSource> {
     const { session, parentSn, channel, accountId, homeBaseAttached } = await this.resolveSession(sn, {
@@ -1193,11 +1182,9 @@ export class P2PCommandRouter {
       this.liveSessionKeys.set(key, sessionKey);
       const built = Promise.withResolvers<void>();
       this.liveSourceBuilds.set(key, built.promise);
-      let held: HeldSession;
+      let streamSession: P2PSession;
       try {
-        held = {
-          session: sessionKey === parentSn ? session : await this.openMediaSession(parentSn, channel, opts.signal),
-        };
+        streamSession = sessionKey === parentSn ? session : await this.openMediaSession(parentSn, channel, opts.signal);
       } catch (error) {
         this.liveSessionKeys.delete(key);
         throw error;
@@ -1207,7 +1194,7 @@ export class P2PCommandRouter {
       }
       source = new SharedLiveSource({
         makeStream: () =>
-          new LiveStream(held.session, {
+          new LiveStream(streamSession, {
             frames,
             channel,
             accountId,
@@ -1231,8 +1218,7 @@ export class P2PCommandRouter {
           this.manager.release(sessionKey);
         },
         onStopped: () => this.closeMediaSession(key),
-        onStartFailed: () => this.onLiveStartFailed(sn, key),
-        onSessionUnreachable: () => this.replaceUnreachableSession(sn, key, held),
+        onStartFailed: () => this.dropLiveSource(key),
       });
       this.liveSources.set(key, source);
       this.liveSourceOpts.set(key, opts);
@@ -1245,8 +1231,7 @@ export class P2PCommandRouter {
   /**
    * Tear down any pull on this station that is lingering for ANOTHER camera, before starting this one.
    *
-   * A lingering pull has no consumers but is still held open, and while it warms it re-sends its media start
-   * every retry interval. Two channels doing that at once over ONE session,
+   * A lingering pull has no consumers but is still held open. Two channels open at once over ONE session,
    * which serves one camera at a time, leaves the new stream receiving nothing but the old camera's frames
    * for as long as the linger lasts.
    *
@@ -1393,8 +1378,7 @@ export class P2PCommandRouter {
    * Reached two ways, both idempotent: the session's own `close` event, when it died while still the
    * station's registered session, and {@link SessionManagerOpts.onAutoClose}, when the manager closed it
    * unasked. A close a CALLER made is deliberately not routed here — {@link closeAll} and
-   * {@link resolveSession} dispose their own sources first, while {@link replaceUnreachableSession} keeps
-   * its source alive on purpose to rewarm it on the replacement session.
+   * {@link resolveSession} dispose their own sources first.
    */
   private tearDownStation(stationSn: string): void {
     this.manager.remove(stationSn);
@@ -1411,71 +1395,6 @@ export class P2PCommandRouter {
       }
     }
     this.deps.onClose(stationSn);
-  }
-
-  /**
-   * A live start produced no keyframe. Drop the source, and recycle the device's P2P session when doing so
-   * is safe.
-   *
-   * Rebuilding the stream alone is not enough when it is the session, or the per-device state carried on
-   * it, that has stopped serving this camera: every later attach builds another stream over the same
-   * cached session and fails identically, which is why only a client restart recovered it.
-   *
-   * What a recycle actually replaces is the `P2PSession` INSTANCE. `close()` discards the manager's entry
-   * first and invalidates that connection's level-2 key and sequence; the next acquisition builds a new
-   * instance with a new socket, a new RSA keypair offered as `encryptkey`, and fresh sequence windows.
-   *
-   * The close is issued BEFORE the source is dropped, because discarding the manager entry is synchronous:
-   * from that moment a concurrent acquisition resolves a fresh session rather than the doomed one. It would
-   * find the not-yet-dropped source in that window, which is exactly why a stopped source is replaced
-   * regardless of what is attached to it.
-   *
-   * Only a **standalone** device's session is recycled, resolved through {@link stationKeyOf} so this and
-   * {@link resetStandaloneSession} cannot disagree about what standalone means. An attached camera shares
-   * its HomeBase session with every other camera on it, and closing that to recover one would drop the
-   * rest, so an attached camera gets the stream rebuild and nothing more. Unlike
-   * {@link resetStandaloneSession} this does not wait for the station to fall idle: the failed source's own
-   * session user is still counted, so a deferred reset would never fire.
-   */
-  private onLiveStartFailed(sn: string, key: string): void {
-    const station = this.stationKeyOf(sn);
-    if (station !== sn) {
-      this.dropLiveSource(key);
-      return;
-    }
-    void this.manager
-      .close(station)
-      .catch((error) => this.reportError(error instanceof Error ? error : new Error(String(error))))
-      .finally(() => this.dropLiveSource(key));
-  }
-
-  /**
-   * Replace the session under a warming source it is not serving, and warm again on it.
-   *
-   * Only a STANDALONE device's session is replaced, for the reason {@link onLiveStartFailed} gives: an attached
-   * camera shares its HomeBase session with every other camera on it, and closing that to recover one would
-   * drop the rest. Such a source keeps the re-issue it always had, which the answer (false) tells it.
-   *
-   * The source is left warming throughout, holding the deadline it started, so this either produces a stream
-   * within that window or fails exactly as it would have. A replacement that cannot be opened leaves the
-   * source to its deadline rather than failing it early — the window is the caller's contract.
-   */
-  private replaceUnreachableSession(sn: string, key: string, held: HeldSession): boolean {
-    const station = this.stationKeyOf(sn);
-    if (station !== sn) return false;
-    void (async () => {
-      try {
-        await this.manager.close(station);
-        const { session } = await this.resolveSession(sn);
-        if (this.liveSources.get(key) !== undefined) {
-          held.session = session;
-          this.liveSources.get(key)?.rewarm();
-        }
-      } catch (error) {
-        this.reportError(error instanceof Error ? error : new Error(String(error)));
-      }
-    })();
-    return true;
   }
 
   /**

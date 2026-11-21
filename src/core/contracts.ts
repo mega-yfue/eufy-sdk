@@ -258,8 +258,6 @@ export interface LiveStreamStartFailure {
   stage: LiveStreamStartStage;
   /** The warm-up deadline the source was bounded by, in milliseconds. */
   timeoutMs: number;
-  /** The initial media start plus every warm-up retry issued before the deadline. */
-  attempts: number;
   cause?: unknown;
 }
 
@@ -268,19 +266,16 @@ export class LiveStreamStartError extends Error {
   readonly reason: LiveStreamStartFailureReason;
   readonly stage: LiveStreamStartStage;
   readonly timeoutMs: number;
-  readonly attempts: number;
 
   constructor(failure: LiveStreamStartFailure) {
     super(
-      `live stream failed to start (${failure.reason} at ${failure.stage} after ${failure.attempts} attempts; ` +
-        `${failure.timeoutMs}ms deadline)`,
+      `live stream failed to start (${failure.reason} at ${failure.stage}; ${failure.timeoutMs}ms deadline)`,
       failure.cause === undefined ? undefined : { cause: failure.cause },
     );
     this.name = "LiveStreamStartError";
     this.reason = failure.reason;
     this.stage = failure.stage;
     this.timeoutMs = failure.timeoutMs;
-    this.attempts = failure.attempts;
   }
 }
 
@@ -799,8 +794,6 @@ export interface LiveFrames {
 export interface LiveStreamHandle {
   start(): this;
   stop(): void;
-  /** Re-issue the media-start command (the shared source's warm-up retry). Optional. */
-  nudge?(): void;
   on(event: "video", listener: (frame: LiveVideoFrame) => void): this;
   on(event: "audio", listener: (frame: LiveAudioFrame) => void): this;
   on(event: "start" | "stop", listener: () => void): this;
