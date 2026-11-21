@@ -89,7 +89,9 @@ const GET_PARAMS_BODY = Buffer.from("ff00000087030000", "hex");
 /**
  * The app's esiotkit pinger (`P2PPingManagerImpl`, `PingTask`): one 1139 every `PING_INTERVAL_MS` per parent serial
  * that is not a station, for `PING_WINDOW_MS` after each command and device-list change, without end while live view
- * plays and for `PING_WINDOW_MS` after it stops; a windowed task ends `PING_TASK_MAX_MS` after it began.
+ * plays and for `PING_WINDOW_MS` after it stops; a windowed task ends `PING_TASK_MAX_MS`, or its window if longer,
+ * after it began. The parent's thing properties `p2p_ping_interval` (ms) and `p2p_ping_timeout` (s) replace the
+ * interval and the window when above 0.
  */
 const PING_INTERVAL_MS = 3_000;
 const PING_WINDOW_MS = 300_000;
@@ -268,6 +270,8 @@ export interface P2PRouterDeps {
   poweredFor?: (parentSn: string) => PowerTier;
   /** The frames the app starts and stops `sn`'s live view and talkback with under `parentSn`, injected by the facade. */
   liveFramesFor?: (sn: string, parentSn: string) => LiveFrames | undefined;
+  /** The default value of a thing property of `sn`'s product, as its description states it. */
+  thingDefault?: (sn: string, identifier: string) => string | undefined;
   /** Idle/keepalive window overrides for the session lifecycle (see {@link SessionManagerOpts}). */
   sessionIdle?: Pick<SessionManagerOpts, "batteryIdleMs">;
   /** LAN address overrides for direct P2P, keyed by parent-station serial (host or host:port). */
@@ -683,7 +687,7 @@ export class P2PCommandRouter {
    * arrives as the station's camera-info notify. A read that cannot go is only logged, as the app does.
    */
   async getParams(sn: string): Promise<void> {
-    this.pingFor(sn, PING_WINDOW_MS);
+    this.pingFor(sn);
     try {
       const dev = await this.deviceFor(sn);
       await this.ensureStation(stationOf(dev));
@@ -755,21 +759,27 @@ export class P2PCommandRouter {
    * when it was sent unread.
    */
   /**
-   * Open or move the ping windows of `sn`'s parent, as the app's pingers do on a request (`forMs` the window), a live
-   * start (`Infinity`) and a live stop (the window from now, ending an unbounded one). The esiotkit pinger skips a
-   * parent that is a station, and each tick while a command to the parent awaits its answer; the legacy pinger
-   * ({@link LEGACY_PING_MS}) takes its own window from every one of these calls.
+   * Open or move the ping windows of `sn`'s parent, as the app's pingers do on a request, a live start (no end) and a
+   * live stop (the window from now, ending an unbounded one). The esiotkit pinger skips a parent that is a station,
+   * and each tick while a command to the parent awaits its answer; the legacy pinger ({@link LEGACY_PING_MS}) takes
+   * its own window from every one of these calls.
    */
-  private pingFor(sn: string, forMs: number, stop = false): void {
+  private pingFor(sn: string, live?: "live" | "stop"): void {
     const dev = this.recordFor(sn);
     const parentSn = dev ? stationOf(dev) : sn;
     const legacyMs = LEGACY_PING_MS.find(([prefix]) => parentSn.startsWith(prefix))?.[1];
-    if (legacyMs) this.pingWindow(`${parentSn}#legacy`, parentSn, legacyMs, true);
-    if (!isStationSerial(parentSn)) this.pingWindow(parentSn, parentSn, forMs, stop);
+    if (legacyMs) this.pingWindow(`${parentSn}#legacy`, parentSn, legacyMs, true, PING_INTERVAL_MS);
+    if (isStationSerial(parentSn)) return;
+    const thing = (identifier: string, unit: number, fallback: number) => {
+      const value = Number(this.deps.thingDefault?.(parentSn, identifier));
+      return value > 0 ? value * unit : fallback;
+    };
+    const windowMs = live === "live" ? Infinity : thing("p2p_ping_timeout", 1000, PING_WINDOW_MS);
+    this.pingWindow(parentSn, parentSn, windowMs, live === "stop", thing("p2p_ping_interval", 1, PING_INTERVAL_MS));
   }
 
   /** One pinger's task under `key`: open it, or move its window as {@link pingFor} states. */
-  private pingWindow(key: string, parentSn: string, forMs: number, stop: boolean): void {
+  private pingWindow(key: string, parentSn: string, forMs: number, stop: boolean, intervalMs: number): void {
     const legacy = key !== parentSn;
     const now = Date.now();
     const held = this.pings.get(key);
@@ -782,7 +792,8 @@ export class P2PCommandRouter {
       since: now,
       timer: setInterval(() => {
         const at = Date.now();
-        if (at > task.until || (!legacy && task.until !== Infinity && at - task.since > PING_TASK_MAX_MS)) {
+        const ceiling = Math.max(PING_TASK_MAX_MS, task.until - task.since);
+        if (at > task.until || (!legacy && task.until !== Infinity && at - task.since > ceiling)) {
           clearInterval(task.timer);
           this.pings.delete(key);
           return;
@@ -790,14 +801,14 @@ export class P2PCommandRouter {
         const session = this.manager.get(parentSn);
         if (!session?.isConnected || (!legacy && this.answeredQueue.has(parentSn))) return;
         session.sendPing();
-      }, PING_INTERVAL_MS),
+      }, intervalMs),
     };
     task.timer.unref?.();
     this.pings.set(key, task);
   }
 
   async dispatchCommand(sn: string, cmd: Command): Promise<boolean> {
-    this.pingFor(sn, PING_WINDOW_MS);
+    this.pingFor(sn);
     switch (cmd.kind) {
       // ── Intents — the transport picks the encryption level (see resolveScalarParam / setJson). ──
       case "set-param":
@@ -1213,11 +1224,11 @@ export class P2PCommandRouter {
         logger,
         label: key,
         onActive: () => {
-          this.pingFor(sn, Infinity);
+          this.pingFor(sn, "live");
           this.manager.retain(sessionKey);
         },
         onIdle: () => {
-          this.pingFor(sn, PING_WINDOW_MS, true);
+          this.pingFor(sn, "stop");
           this.manager.release(sessionKey);
         },
         onStopped: () => this.closeMediaSession(key),
