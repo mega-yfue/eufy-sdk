@@ -94,15 +94,18 @@ describe("garage/lock ff09 command over MQTT (secure-mqtt trans envelope)", () =
       version: "1.0.0.1",
       client_id: "client-1",
       sess_id: "abcd",
-      msg_seq: 1,
+      msg_seq: expect.any(Number),
       seed: "1234",
       timestamp: 1700000000,
-      cmd_status: 2,
+      cmd_status: 1,
       cmd: 9,
       sign_code: 0,
     });
     const payload = JSON.parse(obj.payload);
     expect(payload).toMatchObject({ account_id: ADMIN, device_sn: SN, data: "", update_data: "", method: "" });
+    const next = JSON.parse(buildFf09MqttEnvelope({ trans, clientId: "client-1", accountId: ADMIN, deviceSn: SN })).head
+      .msg_seq;
+    expect(next, "one process-wide msg_seq, as the app's MqttGenerator").toBe(obj.head.msg_seq + 1);
     const decodedTrans = JSON.parse(Buffer.from(payload.trans, "base64").toString("utf-8"));
     expect(decodedTrans).toEqual(trans);
   });

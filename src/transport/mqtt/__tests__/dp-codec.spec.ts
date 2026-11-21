@@ -87,9 +87,17 @@ describe("dp-codec — eufy_life MQTT DP TLV frame", () => {
 describe("dp-codec — MQTT /req envelope", () => {
   it("wraps a frame into the confirmed {head,payload} string with mqttCmdCode as head.cmd", () => {
     const frame = buildDpFrame(0x0201, ACCOUNT_ID, [{ tag: 0xa3, value: Buffer.from([1]) }]);
-    const body = buildDpEnvelope({ accountId: ACCOUNT_ID, deviceSn: DEVICE_SN, mqttCmdCode: 17, frame });
+    const body = buildDpEnvelope({
+      clientId: "client-1",
+      accountId: ACCOUNT_ID,
+      deviceSn: DEVICE_SN,
+      mqttCmdCode: 17,
+      frame,
+    });
     const outer = JSON.parse(body) as { head: Record<string, unknown>; payload: string };
-    expect(outer.head).toMatchObject({ cmd: 17, sign_code: 0, cmd_status: 1 });
+    expect(outer.head).toMatchObject({ cmd: 17, sign_code: 0, cmd_status: 1, client_id: "client-1" });
+    expect(outer.head.sess_id).toMatch(/^[0-9a-f]{4}$/);
+    expect(outer.head.seed).toMatch(/^[0-9a-f]{32}$/);
     const inner = JSON.parse(outer.payload) as { account_id: string; device_sn: string; data: string; trans: string };
     expect(inner.account_id).toBe(ACCOUNT_ID);
     expect(inner.device_sn).toBe(DEVICE_SN);

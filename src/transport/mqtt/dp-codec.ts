@@ -67,13 +67,18 @@ export function buildDpFrame(cmdCode: number, accountId: string, fields: readonl
   return Buffer.concat([body, Buffer.from([xorChecksum(body)])]);
 }
 
+let msgSeq = 0;
+/** The next `head.msg_seq`: one process-wide counter from 1, as the app's `MqttGenerator.getMsgSeq`. */
+export const nextMsgSeq = (): number => ++msgSeq;
+
 /**
  * Wrap a DP frame in the `eufy_life` MQTT `/req` envelope the SDK publishes:
  * `{head:{…,cmd:mqttCmdCode}, payload: JSON({account_id, device_sn, data:<b64 frame>, trans:""})}`.
- * The stringified result is the MQTT message body. `client_id` follows the app's
- * `ios-eufy_mega-{userId}-{uuid}` shape; its exact value is CONFIRMED not to affect a write.
+ * The stringified result is the MQTT message body. The head is the app's `MqttRequest.getData`: the connection's
+ * client id, `sess_id` 4 hex of a random UUID, `seed` a 32-hex random UUID, `cmd_status` 1 (`needAck` default).
  */
 export function buildDpEnvelope(opts: {
+  clientId: string;
   accountId: string;
   deviceSn: string;
   mqttCmdCode: number;
@@ -87,10 +92,10 @@ export function buildDpEnvelope(opts: {
   };
   const head = {
     version: "1.0.0.1",
-    client_id: `ios-eufy_mega-${opts.accountId}-${randomUUID()}`,
-    sess_id: "0000",
-    msg_seq: 1,
-    seed: "",
+    client_id: opts.clientId,
+    sess_id: randomUUID().slice(0, 4),
+    msg_seq: nextMsgSeq(),
+    seed: randomUUID().replace(/-/g, ""),
     timestamp: Math.floor(Date.now() / 1000),
     cmd_status: 1,
     cmd: opts.mqttCmdCode,
