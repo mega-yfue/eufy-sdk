@@ -60,8 +60,9 @@ export interface BundleFrame extends SessionFrame {
   subVersion?: number;
   functionType?: number;
   needEncrypt?: boolean;
-  /** MQTT: seconds the app waits for the reply. */
+  /** MQTT: seconds the app waits for the reply, and how many times it sends again while none comes. */
   timeout?: number | string;
+  retryCount?: number;
   next?: BundleFrame[];
   after?: BundleFrame;
   /** A lock setting over its station: the `ble` the app builds the 1350 params from. */
@@ -459,6 +460,7 @@ function mqttCommand(frame: BundleFrame, value: unknown): Command | undefined {
     ...(frame.functionType !== undefined && { functionType: frame.functionType }),
     encrypt: frame.needEncrypt !== false,
     ...(typeof frame.timeout === "number" && { timeoutS: frame.timeout }),
+    ...(typeof frame.retryCount === "number" && { retryCount: frame.retryCount }),
   };
 }
 

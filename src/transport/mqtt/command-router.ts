@@ -384,6 +384,28 @@ export class MqttCommandRouter {
    */
   private static readonly FF09_ACK_TIMEOUT_MS = 5000;
 
+  /**
+   * Publish `envelope()` to `topic` and wait `timeoutMs` for the answer `match` picks, sending again up to `retries`
+   * times while none comes, as the app's `MqttDelegate.sendForRawResponse` does (`MqttConfig.maxRetryCount` 1 unless
+   * the descriptor states `retryCount`). The wait is armed before each publish.
+   */
+  private async request<T>(
+    mqtt: SecureMqtt,
+    topic: string,
+    envelope: () => string,
+    match: (m: { topic?: string; raw?: unknown }) => T | undefined,
+    timeoutMs: number,
+    retries = 1,
+  ): Promise<T | undefined> {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      const answer = this.waitForMqttMessage(mqtt, match, timeoutMs);
+      await mqtt.publish(topic, envelope(), { qos: 1 });
+      const got = await answer;
+      if (got !== undefined) return got;
+    }
+    return undefined;
+  }
+
   /** Whether `m` is `sn`'s answer to a `head.cmd` of `mqttCmdCode`: on its `/res`, `head.cmd` one below, as the app matches. */
   private static isReply(m: { topic?: string; raw?: unknown }, sn: string, mqttCmdCode: number): boolean {
     return !!m.topic?.endsWith(`/${sn}/res`) && (m.raw as { head?: { cmd?: unknown } })?.head?.cmd === mqttCmdCode - 1;
@@ -456,26 +478,14 @@ export class MqttCommandRouter {
     );
 
     const mqtt = await this.securityMqtt();
-    // Arm the ack wait BEFORE publishing (no race between "publish already answered" and
-    // "listener not attached yet"), but don't AWAIT it until after the publish call below.
-    const ackPromise = this.waitForMqttMessage(
-      mqtt,
-      // Scope to THIS device's own reply topic (`.../{sn}/res`), not any `/res`, so another device's
-      // reply on the connection can't be mistaken for this actuate's ack. It still can't pin the ack to
-      // this specific publish (the actuate `/res` shape isn't captured, so there's no keyTime to
-      // correlate) — telemetry-only, so a same-device redelivery latching early is acceptable.
-      (m) => (MqttCommandRouter.isReply(m, sn, 9) ? true : undefined),
-      MqttCommandRouter.FF09_ACK_TIMEOUT_MS,
-    );
-    const envelope = buildFf09MqttEnvelope({
-      trans,
-      clientId: mqtt.id,
-      accountId: cmd.adminUserId,
-      deviceSn: sn,
-    });
-    const topic = ff09MqttTopic(dev.model, sn);
-    await mqtt.publish(topic, envelope, { qos: 1 });
-    const acked = (await ackPromise) ?? false;
+    const acked =
+      (await this.request(
+        mqtt,
+        ff09MqttTopic(dev.model, sn),
+        () => buildFf09MqttEnvelope({ trans, clientId: mqtt.id, accountId: cmd.adminUserId, deviceSn: sn }),
+        (m) => (MqttCommandRouter.isReply(m, sn, 9) ? true : undefined),
+        MqttCommandRouter.FF09_ACK_TIMEOUT_MS,
+      )) ?? false;
     this.deps.onCommandAck({ sn, kind: "ff09-actuate", acked });
     if (!acked) {
       this.logger.debug(
@@ -535,18 +545,14 @@ export class MqttCommandRouter {
         }),
       ),
     );
-    const setAckPromise = this.waitForMqttMessage(
-      mqtt,
-      // Same device-scoped `/res` match as the actuate ack above (topic-only, no keyTime — telemetry).
-      (m) => (MqttCommandRouter.isReply(m, sn, 9) ? true : undefined),
-      MqttCommandRouter.FF09_ACK_TIMEOUT_MS,
-    );
-    await mqtt.publish(
-      topic,
-      buildFf09MqttEnvelope({ trans: setTrans, clientId: mqtt.id, accountId: cmd.adminUserId, deviceSn: sn }),
-      { qos: 1 },
-    );
-    const setAcked = (await setAckPromise) ?? false;
+    const setAcked =
+      (await this.request(
+        mqtt,
+        topic,
+        () => buildFf09MqttEnvelope({ trans: setTrans, clientId: mqtt.id, accountId: cmd.adminUserId, deviceSn: sn }),
+        (m) => (MqttCommandRouter.isReply(m, sn, 9) ? true : undefined),
+        MqttCommandRouter.FF09_ACK_TIMEOUT_MS,
+      )) ?? false;
     this.deps.onCommandAck({ sn, kind: "ff09-autolock", getAcked: true, acked: setAcked });
     if (!setAcked) {
       this.logger.debug(
@@ -574,8 +580,10 @@ export class MqttCommandRouter {
       sn,
       buildFf09QueryTrans({ adminUserId: cmd.adminUserId, deviceSn: cmd.deviceSn }),
     );
-    const getReplyPromise = this.waitForMqttMessage(
+    const getReply = await this.request(
       mqtt,
+      topic,
+      () => buildFf09MqttEnvelope({ trans: queryTrans, clientId: mqtt.id, accountId: cmd.adminUserId, deviceSn: sn }),
       (m) => {
         if (!MqttCommandRouter.isReply(m, sn, 9)) return undefined;
         const reply = parseFf09SettingsResponseTrans(m.raw);
@@ -586,12 +594,6 @@ export class MqttCommandRouter {
       },
       MqttCommandRouter.FF09_ACK_TIMEOUT_MS,
     );
-    await mqtt.publish(
-      topic,
-      buildFf09MqttEnvelope({ trans: queryTrans, clientId: mqtt.id, accountId: cmd.adminUserId, deviceSn: sn }),
-      { qos: 1 },
-    );
-    const getReply = await getReplyPromise;
     if (!getReply) {
       throw new Error(
         `fetchFf09SettingsGetReply(${sn}): no settings GET reply within ${MqttCommandRouter.FF09_ACK_TIMEOUT_MS}ms on ` +
@@ -692,20 +694,16 @@ export class MqttCommandRouter {
     });
     const trans = this.sequenced(sn, toFf09Trans(frame));
     const mqtt = await this.securityMqtt();
-    const envelope = buildFf09MqttEnvelope({
-      trans,
-      clientId: mqtt.id,
-      accountId: adminUserId,
-      deviceSn: sn,
-      cmd: cmd.mqttCmdCode,
-    });
-    const reply = this.waitForMqttMessage(
+    const reply = await this.request(
       mqtt,
+      ff09MqttTopic(dev.model, sn),
+      () =>
+        buildFf09MqttEnvelope({ trans, clientId: mqtt.id, accountId: adminUserId, deviceSn: sn, cmd: cmd.mqttCmdCode }),
       (m) => (MqttCommandRouter.isReply(m, sn, cmd.mqttCmdCode) ? true : undefined),
       (cmd.timeoutS ?? 5) * 1000,
+      cmd.retryCount,
     );
-    await mqtt.publish(ff09MqttTopic(dev.model, sn), envelope, { qos: 1 });
-    this.deps.onCommandAck({ sn, kind: "mqtt-dp", cmdCode: cmd.cmdCode, acked: (await reply) ?? false });
+    this.deps.onCommandAck({ sn, kind: "mqtt-dp", cmdCode: cmd.cmdCode, acked: reply ?? false });
   }
 
   /** Serialize and publish one semantic RGB DP action without changing configured brightness. */

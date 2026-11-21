@@ -54,7 +54,7 @@ describe("a bundle mqtt-dp write to a lock", () => {
   it("seals the bundle's TLV in an ff09 frame under head.cmd = mqttCmdCode", async () => {
     const { router, mqtt } = lockRouter();
     const p = router.dispatchCommand(SN, { ...write, subVersion: 3, functionType: 2, encrypt: true });
-    await vi.advanceTimersByTimeAsync(5000);
+    await vi.advanceTimersByTimeAsync(10_000);
     await p;
     const { topic, head, trans, frame } = published(mqtt);
     expect(topic).toBe(`cmd/eufy_security/T8531/${SN}/req`);
@@ -71,11 +71,23 @@ describe("a bundle mqtt-dp write to a lock", () => {
   it("sends the TLV in the clear where the descriptor needs no seal", async () => {
     const { router, mqtt } = lockRouter();
     const p = router.dispatchCommand(SN, { ...write, subVersion: 4, functionType: 1, encrypt: false });
-    await vi.advanceTimersByTimeAsync(5000);
+    await vi.advanceTimersByTimeAsync(10_000);
     await p;
     const { frame } = published(mqtt);
     expect(frame.subarray(4, 9)).toEqual(Buffer.from([0x04, 0x00, 0x01, 0x00, 0x23]));
     expect(frame.subarray(frame.length - 4, frame.length - 1)).toEqual(Buffer.from([0xa3, 1, 1]));
+  });
+
+  it("sends again once while no reply comes, as the app's sendForRawResponse, or as the descriptor's retryCount", async () => {
+    const { router, mqtt } = lockRouter();
+    const p = router.dispatchCommand(SN, write);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await p;
+    expect(mqtt.publish).toHaveBeenCalledTimes(2);
+    const q = router.dispatchCommand(SN, { ...write, retryCount: 0 });
+    await vi.advanceTimersByTimeAsync(10_000);
+    await q;
+    expect(mqtt.publish).toHaveBeenCalledTimes(3);
   });
 
   it("reports acked only once a reply with head.cmd = mqttCmdCode - 1 comes", async () => {
@@ -84,7 +96,7 @@ describe("a bundle mqtt-dp write to a lock", () => {
       const p = router.dispatchCommand(SN, { ...write, mqttCmdCode: 11 });
       await vi.advanceTimersByTimeAsync(0);
       mqtt.emit("message", { topic: `cmd/eufy_security/T8531/${SN}/res`, raw: { head: { cmd: replyCmd } } });
-      await vi.advanceTimersByTimeAsync(5000);
+      await vi.advanceTimersByTimeAsync(10_000);
       await p;
     };
     await send(8);
