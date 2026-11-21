@@ -14,7 +14,7 @@ const ADDRESS = { host: "127.0.0.1", port: 1 };
  * mode 0, then in the clear).
  */
 describe("P2P connection device ping", () => {
-  it.each([true, false])("answers before live media on a session with announces=%s", (announces) => {
+  it("answers before live media", () => {
     vi.useFakeTimers();
     const onFrame = vi.fn();
     const router = new P2PCommandRouter({
@@ -36,8 +36,6 @@ describe("P2P connection device ping", () => {
       { member: { admin_user_id: ACCOUNT_ID } },
       undefined,
       undefined,
-      STATION,
-      announces,
     );
     const receiver = session as unknown as {
       handleFrame(header: P2PDataFrameHeader, body: Buffer, dataType: number): void;
@@ -70,7 +68,7 @@ describe("P2P connection device ping", () => {
       Buffer.concat([Buffer.from("d1000000585a5948800488000000010000000000", "hex"), Buffer.alloc(136)]),
     );
     expect(received).toHaveBeenCalledTimes(1);
-    expect(onFrame).toHaveBeenCalledTimes(announces ? 1 : 0);
+    expect(onFrame).toHaveBeenCalledTimes(1);
 
     reply.mockClear();
     received.mockClear();
@@ -90,7 +88,7 @@ describe("P2P connection device ping", () => {
     expect(reply).toHaveBeenCalledTimes(1);
     expect((reply.mock.calls[0]![2] as Buffer).subarray(20)).toEqual(Buffer.alloc(136));
     expect(received).toHaveBeenCalledTimes(1);
-    expect(onFrame).toHaveBeenCalledTimes(announces ? 1 : 0);
+    expect(onFrame).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
   });
 });

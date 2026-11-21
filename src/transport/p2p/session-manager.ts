@@ -55,12 +55,9 @@ export const PREWARM_MS = 28_000;
  * `retained` is zero; `connecting` coalesces concurrent cold opens.
  *
  * The power tier is deliberately NOT stored: it is resolved per idle-arm, so a station whose battery
- * evidence arrives after its first session still gets the right window. `station` IS stored, because a
- * key is not always a station serial and the tier is a property of the hardware rather than of the
- * connection: every session to one station shares its power tier and its idle window length.
+ * evidence arrives after its first session still gets the right window.
  */
 interface SessionEntry {
-  station: string;
   session?: P2PSession;
   retained: number;
   holdTimers: Set<ReturnType<typeof setTimeout>>;
@@ -76,15 +73,12 @@ export interface SessionManagerOpts {
   commandKeepAliveMs?: number;
   /**
    * Power tier per station serial — injected by the facade (no model import). Default: everything
-   * `wired`. Asked about the STATION a session connects to, never the key it is filed under, so every
-   * session to one station gets that station's idle window.
+   * `wired`.
    */
   poweredFor?: (parentSn: string) => PowerTier;
   /**
-   * Called with the KEY of a session the manager closed on its OWN initiative — an elapsed idle window,
-   * or a deferred reset falling due. The key, not the station: several sessions can share a station and
-   * only the one that closed is stale, so an owner told the station would tear down connections that are
-   * still serving.
+   * Called with the station of a session the manager closed on its OWN initiative — an elapsed idle window,
+   * or a deferred reset falling due.
    *
    * Those two are the only closes with no caller to follow up: everything riding the session is stale the
    * moment it goes, and only the owner knows what that is. A close a caller asked for is that caller's to
@@ -97,13 +91,9 @@ export interface SessionManagerOpts {
 }
 
 /**
- * Manages P2P sessions by **key**, each recording the station it connects to. The router builds and
- * wires the actual `P2PSession` (it owns the socket and event fan-out); this decides open/close timing.
- *
- * A key is the station's serial for the one session that carries its control traffic and its events.
- * Where a station has to serve more than one camera at once it also holds a session per camera, filed
- * under a key of the router's choosing and recording the same station — so each has its own refcount and
- * its own idle window, and releasing one never disturbs another.
+ * Manages one P2P session per station serial, as the app's native slot table holds one connection per serial.
+ * The router builds and wires the actual `P2PSession` (it owns the socket and event fan-out); this decides
+ * open/close timing.
  */
 export class SessionManager {
   private readonly entries = new Map<string, SessionEntry>();
@@ -132,29 +122,19 @@ export class SessionManager {
     return m;
   }
 
-  /**
-   * Get or create the lifecycle entry under `key`, recording which station it connects to. An existing
-   * entry keeps the station it was opened with — the key owns one connection for its lifetime, and a
-   * later caller passing a different station would otherwise re-point a live entry's power tier.
-   */
-  private entry(key: string, station: string): SessionEntry {
+  /** Get or create the lifecycle entry under `key`. */
+  private entry(key: string): SessionEntry {
     let e = this.entries.get(key);
     if (!e) {
-      e = { station, retained: 0, holdTimers: new Set(), idle: new Timer() };
+      e = { retained: 0, holdTimers: new Set(), idle: new Timer() };
       this.entries.set(key, e);
     }
     return e;
   }
 
-  /**
-   * Register an already-built session for test seeding or an externally assembled connection.
-   *
-   * `station` defaults to the key, which is safe HERE and nowhere else in this class: the paths that open a
-   * session under a key that is not a station serial all go through {@link acquire}, which requires it. A
-   * caller seeding one under such a key must pass it.
-   */
-  register(key: string, session: P2PSession, station: string = key): void {
-    this.entry(key, station).session = session;
+  /** Register an already-built session for test seeding or an externally assembled connection. */
+  register(key: string, session: P2PSession): void {
+    this.entry(key).session = session;
   }
 
   /**
@@ -165,9 +145,8 @@ export class SessionManager {
   async acquire(
     key: string,
     factory: (register: (session: P2PSession) => void) => Promise<P2PSession>,
-    station: string,
   ): Promise<P2PSession> {
-    const e = this.entry(key, station);
+    const e = this.entry(key);
     if (e.connecting) {
       this.logger.debug(`[session ${key}] connecting — joining in-flight open`);
       return e.connecting;
@@ -237,27 +216,21 @@ export class SessionManager {
    * Hold a session warm for `commandKeepAliveMs` after a control command, then release. A burst of
    * commands each re-holds before the previous release fires, so the session never idles mid-burst.
    */
-  bumpCommand(key: string, station: string): void {
-    this.hold(key, this.opts.commandKeepAliveMs ?? COMMAND_KEEPALIVE_MS, station);
+  bumpCommand(key: string): void {
+    this.hold(key, this.opts.commandKeepAliveMs ?? COMMAND_KEEPALIVE_MS);
   }
 
   /**
    * Retain a session and release it again after `ms` — the primitive behind command-keepalive and event
    * pre-warm, and the only way to hold one open without an attachment to release it.
    *
-   * `station` is required rather than defaulted from the key, because this is the one path that can
-   * CREATE an entry: a pre-warm takes its hold before the open. An entry filed under a media key with
-   * that key as its own station would be asked for the power tier of a serial that does not exist, be
-   * answered `wired`, and never idle-detach — which on a battery station is the drain this class exists
-   * to prevent, and is invisible until the battery is flat.
-   *
    * The timer is owned by the entry, so {@link discard} cancels it. That ownership is the point: keyed
    * only by serial, an expiring hold would otherwise outlive the entry it was taken on and release a
    * retain counted by the SUCCESSOR entry — dropping a live viewer's count and arming an idle-detach
    * underneath it.
    */
-  hold(key: string, ms: number, station: string): void {
-    const entry = this.entry(key, station);
+  hold(key: string, ms: number): void {
+    const entry = this.entry(key);
     this.retain(key);
     const timer = setTimeout(() => {
       entry.holdTimers.delete(timer);
@@ -273,7 +246,7 @@ export class SessionManager {
    */
   private armIdle(key: string, e: SessionEntry): void {
     e.idle.cancel();
-    if ((this.opts.poweredFor?.(e.station) ?? "wired") !== "battery") {
+    if ((this.opts.poweredFor?.(key) ?? "wired") !== "battery") {
       this.logger.debug(`[session ${key}] idle (nothing retained) — staying persistent (wired)`);
       return;
     }

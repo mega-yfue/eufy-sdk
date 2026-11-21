@@ -1,21 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { LIVE_FRAMES } from "./live-source-fixtures.js";
 import { P2PCommandRouter, type P2PRouterDeps } from "../command-router.js";
 import { connectedSession, type FakeP2PSession } from "./session-fixtures.js";
 
 /**
- * A station serves several cameras at once, one connection each.
- *
- * ONE session serves one camera: a station answers the most recent start on a session, so two cameras sharing
- * one take it from each other in turn — measured on a base carrying three attached cameras, all three
- * receiving their media in bursts. What that measures is the tunnel, not the hardware. Given a session each,
- * the same base holds every camera at full rate: measured on two attached cameras, one at 3840x2160, both at
- * ~15 fps for the length of the run, where the same pair down one session could only take turns.
- *
- * So a camera asked for while its station is already serving another is admitted on a connection of its own,
- * and the cases below pin which camera lands where. The station's own session stays the one that carries its
- * control traffic and its events, because a station announces those to every client that connects and a
- * second announced connection would report all of them twice.
+ * Several cameras behind one station, all on the station's one session (the app holds one connection per serial).
+ * Each gets its own source; a pull lingering for a camera nobody watches is released when another starts.
  */
 const STATION_SN = "T8010P0000000000";
 const ACCOUNT_ID = "0000000000000000000000000000000000000000";
@@ -66,27 +56,19 @@ function router() {
   const built = new P2PCommandRouter(deps);
   const manager = (built as unknown as { manager: Manager }).manager;
   for (const sn of [STATION_SN, SOLO_A, SOLO_B]) manager.register(sn, session);
-  for (const channel of [0, 2]) manager.register(`${STATION_SN}#live:${channel}`, session, STATION_SN);
   return built;
 }
 
-/**
- * The fixture seeds connected sessions rather than dialling: a media session is seeded under the key the
- * router files it by, so a source routed onto one finds it already open exactly as it would in flight.
- */
 interface Manager {
-  register(key: string, session: unknown, station?: string): void;
-  get(key: string): unknown;
+  register(key: string, session: unknown): void;
 }
 
-/** The live egress is the only one allowed a connection of its own; a still deliberately is not. */
-const live = (r: P2PCommandRouter, sn: string) => r.sharedLiveSourceFor(sn, {}, true);
+const live = (r: P2PCommandRouter, sn: string) => r.sharedLiveSourceFor(sn, {});
 
 const sources = (r: P2PCommandRouter) => (r as unknown as { liveSources: Map<string, unknown> }).liveSources;
-const sessionKeys = (r: P2PCommandRouter) => (r as unknown as { liveSessionKeys: Map<string, string> }).liveSessionKeys;
 
 describe("a second camera on a station already serving one", () => {
-  it("is admitted, on a connection of its own", async () => {
+  it("is admitted beside it", async () => {
     const r = router();
     const held = await live(r, SIBLING);
     held.attach();
@@ -96,68 +78,6 @@ describe("a second camera on a station already serving one", () => {
     expect(second).toBeDefined();
     expect(sources(r).has(`${STATION_SN}:0`)).toBe(true);
     expect(sources(r).has(`${STATION_SN}:2`)).toBe(true);
-    expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(`${STATION_SN}#live:2`);
-  });
-
-  /**
-   * The station's own session is the one already serving a camera, so taking it for the second would be the
-   * arrangement that makes them take turns. Only the newcomer moves.
-   */
-  it("leaves the camera already being served on the station's own session", async () => {
-    const r = router();
-    const held = await live(r, SIBLING);
-    held.attach();
-
-    await live(r, DOORBELL);
-
-    expect(sessionKeys(r).get(`${STATION_SN}:0`)).toBe(STATION_SN);
-  });
-
-  /**
-   * Nothing else holds the station, so there is no contention to answer and no reason to pay for a second
-   * socket, a second connect and a second level-2 negotiation.
-   */
-  it("uses the station's own session when the station is serving nobody", async () => {
-    const r = router();
-    const only = await live(r, DOORBELL);
-    only.attach();
-
-    expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(STATION_SN);
-  });
-
-  /**
-   * The station's own session is free the moment the camera that held it stops, whatever else is still
-   * streaming beside it. Asking whether the station is busy rather than whether its own session is taken
-   * would leave that connection idle and open a socket next to it for every later camera.
-   */
-  it("hands the station's own session to the next camera once the first stops", async () => {
-    const r = router();
-    const first = await live(r, SIBLING);
-    const held = first.attach();
-    (await live(r, DOORBELL)).attach();
-    expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(`${STATION_SN}#live:2`);
-
-    held.detach();
-    (r as unknown as { dropLiveSource(k: string): void }).dropLiveSource(`${STATION_SN}:0`);
-    const third = await live(r, SIBLING);
-
-    expect(third).toBeDefined();
-    expect(sessionKeys(r).get(`${STATION_SN}:0`)).toBe(STATION_SN);
-  });
-
-  /**
-   * A media session belongs to the one source it was opened for. Nothing else can reach it, so leaving it
-   * open would hold a socket and a station keepalive for a camera nobody is pulling.
-   */
-  it("closes the extra connection when its camera is dropped", async () => {
-    const r = router();
-    (await live(r, SIBLING)).attach();
-    await live(r, DOORBELL);
-    expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(`${STATION_SN}#live:2`);
-
-    (r as unknown as { dropLiveSource(k: string): void }).dropLiveSource(`${STATION_SN}:2`);
-
-    expect(sessionKeys(r).has(`${STATION_SN}:2`)).toBe(false);
   });
 
   /**
@@ -179,41 +99,34 @@ describe("a second camera on a station already serving one", () => {
 
   /**
    * A pull whose viewers have all left is a linger nobody asked to keep. It is released rather than counted,
-   * because the alternative is paying for a second connection for the sake of a camera nobody is using.
+   * because it keeps the station's one session on a camera nobody is using.
    */
-  it("releases a sibling pull whose viewers have left, and takes the station's own session", async () => {
+  it("releases a sibling pull whose viewers have left", async () => {
     const r = router();
     const consumer = (await live(r, SIBLING)).attach();
     consumer.detach();
 
     expect(await live(r, DOORBELL)).toBeDefined();
     expect(sources(r).has(`${STATION_SN}:0`)).toBe(false);
-    expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(STATION_SN);
   });
 
   /**
    * A source that has never been attached to is NOT that: it is a start already handed to a caller who has
    * not attached yet, and two cameras opened together are in exactly that state when they look at each
-   * other. Releasing it would dispose a source someone is holding, so it holds the station's own session and
-   * the newcomer opens its own.
-   *
-   * The cost, paid knowingly: a pull genuinely abandoned before its first attach keeps that session, and the
-   * next camera pays for a connection instead of reclaiming it. One socket, against destroying a start.
+   * other. Releasing it would dispose a source someone is holding.
    */
-  it("does not release a sibling that has never been attached to, and gives the newcomer its own", async () => {
+  it("does not release a sibling that has never been attached to", async () => {
     const r = router();
     const neverAttached = await live(r, SIBLING);
     expect(neverAttached.consumerCount).toBe(0);
 
     expect(await live(r, DOORBELL)).toBeDefined();
     expect(sources(r).has(`${STATION_SN}:0`)).toBe(true);
-    expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(`${STATION_SN}#live:2`);
   });
 
   /**
    * A failed start fails its consumers without detaching them, so a caller holding a dead handle leaves the
-   * count non-zero. Counting that as the station being served would put every later camera on a connection of
-   * its own until the client restarted, one socket at a time, for a pull that is already dead.
+   * count non-zero; that pull is dead and must not stand in the way.
    */
   it("does not let a stopped sibling hold the station, even with consumers still attached", async () => {
     const r = router();
@@ -225,23 +138,12 @@ describe("a second camera on a station already serving one", () => {
     expect(await live(r, DOORBELL)).toBeDefined();
   });
 
-  /** Off the HomeBase 3, a fragment recording and a live view route as they always have. */
-  it("keeps a fragment recording on the station's own session while a sibling is watched", async () => {
-    const r = router();
-    (await live(r, SIBLING)).attach();
-    const recording = r.mediaProviderFor(DOORBELL).recordFragments!();
-
-    await vi.waitFor(() => expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(STATION_SN));
-    recording.stop();
-  });
-
   it("hands a live view the still's source already on the station's own session", async () => {
     const r = router();
     const still = await r.sharedLiveSourceFor(DOORBELL);
     still.attach().detach();
 
     expect(await live(r, DOORBELL)).toBe(still);
-    expect(sessionKeys(r).get(`${STATION_SN}:2`)).toBe(STATION_SN);
   });
 });
 
@@ -258,80 +160,5 @@ describe("a standalone camera", () => {
 
     expect(await live(r, SOLO_A)).toBeDefined();
     expect(sources(r).has(`${SOLO_B}:0`)).toBe(true);
-  });
-});
-
-/**
- * A HomeBase 3 can keep serving the camera it last served on a session: one went on sending a previous
- * camera's channel down its own session after that pull had moved away, and the next camera started there
- * received none of its own. So on that model every continuous pull of an attached camera gets a connection
- * of its own, and a still's source left unwatched on the station's session is not handed to a live view.
- */
-describe("an attached camera on a HomeBase 3", () => {
-  const HB3 = "T8030P0000000000";
-
-  function hb3Router() {
-    const session = connectedSession(true) as FakeP2PSession;
-    const attached = (sn: string, channel: number) => ({
-      sn,
-      stationSn: HB3,
-      channel,
-      raw: { parent_sn: HB3, device_channel: channel, member: { admin_user_id: ACCOUNT_ID } },
-    });
-    const built = new P2PCommandRouter({
-      liveFramesFor: () => LIVE_FRAMES,
-      mega: {} as P2PRouterDeps["mega"],
-      listDevices: () =>
-        [
-          { sn: HB3, stationSn: HB3, channel: 0, model: "T8030", raw: { member: { admin_user_id: ACCOUNT_ID } } },
-          attached(DOORBELL, 2),
-          attached(SIBLING, 0),
-        ] as never,
-      ensureDevices: async () => {},
-      onConnect: () => {},
-      onClose: () => {},
-      onError: () => {},
-      onLevel2Ready: () => {},
-      onFrame: () => {},
-    });
-    const manager = (built as unknown as { manager: Manager }).manager;
-    manager.register(HB3, session);
-    for (const channel of [0, 2]) manager.register(`${HB3}#live:${channel}`, session, HB3);
-    return built;
-  }
-
-  it("gets a connection of its own even when the station is serving nobody", async () => {
-    const r = hb3Router();
-    (await live(r, DOORBELL)).attach();
-
-    expect(sessionKeys(r).get(`${HB3}:2`)).toBe(`${HB3}#live:2`);
-  });
-
-  it("does not take over a still's unwatched source on the station's session", async () => {
-    const r = hb3Router();
-    const still = await r.sharedLiveSourceFor(DOORBELL);
-    still.attach().detach();
-    expect(sessionKeys(r).get(`${HB3}:2`)).toBe(HB3);
-
-    const view = await live(r, DOORBELL);
-
-    expect(view).not.toBe(still);
-    expect(still.state).toBe("stopped");
-    expect(sessionKeys(r).get(`${HB3}:2`)).toBe(`${HB3}#live:2`);
-  });
-
-  it("puts a fragment recording on a connection of its own", async () => {
-    const r = hb3Router();
-    const recording = r.mediaProviderFor(DOORBELL).recordFragments!();
-
-    await vi.waitFor(() => expect(sessionKeys(r).get(`${HB3}:2`)).toBe(`${HB3}#live:2`));
-    recording.stop();
-  });
-
-  it("still sends a still down the station's own session", async () => {
-    const r = hb3Router();
-    await r.sharedLiveSourceFor(DOORBELL);
-
-    expect(sessionKeys(r).get(`${HB3}:2`)).toBe(HB3);
   });
 });
