@@ -519,11 +519,31 @@ describe("bundled", () => {
     expect(onOff.available(ctx("T0001", { things: described }))).toBe(true);
   });
   it("is absent where every frame the bundle sends is one the SDK cannot send", async () => {
-    const json = { transport: "mqtt", type: "json", mqttCmdCode: 9, cmd: 1, payload: {} };
-    const { bundle } = await over({ led_on_off: { T0001: { write: { standalone: { "0": json, "1": json } } } } });
+    const ble = { transport: "ble" };
+    const { bundle } = await over({ led_on_off: { T0001: { write: { standalone: { "0": ble, "1": ble } } } } });
     expect(
       bundle.bundled(["led_on_off"], 1045).available(ctx("T0001", { things: things({ led_on_off: "bool" }) })),
     ).toBe(false);
+  });
+  it("sends a type json MQTT frame as the app's sendRequestWithJson: its cmd and the JSON its payload holds", async () => {
+    const json = (on: number) => ({
+      transport: "mqtt",
+      type: "json",
+      mqttCmdCode: 9,
+      cmd: 1235,
+      payload: `{"on":${on}}`,
+      needAck: false,
+    });
+    const { bundle } = await over({ led_on_off: { T0001: { write: { standalone: { "0": json(0), "1": json(1) } } } } });
+    const c = ctx("T0001", { things: things({ led_on_off: "bool" }) });
+    expect(bundle.bundled(["led_on_off"], 1045).available(c)).toBe(true);
+    expect(bundle.thingWrite("led_on_off", "1", c)).toMatchObject({
+      kind: "mqtt-json",
+      mqttCmdCode: 9,
+      cmd: 1235,
+      payload: { on: 1 },
+      needAck: false,
+    });
   });
   it("offers the app's values and writes only those with a frame; a raw reads as the app's value", async () => {
     const frame = (night_sion: number) => ({
