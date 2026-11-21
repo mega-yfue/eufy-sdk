@@ -35,7 +35,7 @@ describe("TuyaCommandRouter", () => {
       return { success: true, result: { sid: "good-sid", uid: "good-uid" } };
     };
 
-    const router = new TuyaCommandRouter({ allowUnverified: true, http });
+    const router = new TuyaCommandRouter({ http });
     router.bind("uid-1");
     router.registerDevice("sn-1", "dev-1");
 
@@ -54,6 +54,19 @@ describe("TuyaCommandRouter", () => {
     const secondErr = await router.dispatchCommand("sn-1", cmd).catch((err: Error) => err.message);
     // second dispatch must not re-throw the stale TRANSIENT_FAILURE (it either succeeds or fails differently)
     expect(secondErr ?? "").not.toMatch(/TRANSIENT_FAILURE/);
+  });
+
+  it.each([true, false])("propagates publish acceptance=%s without an experimental opt-in", async (success) => {
+    const http: TuyaHttpPost = async () => ({ success, errorCode: success ? undefined : "REJECTED" });
+    const router = new TuyaCommandRouter({ http });
+    router.registerDevice("sn-1", "dev-1");
+    // @ts-expect-error — a preset session isolates publishing from login
+    router.loginOnce = Promise.resolve();
+    // @ts-expect-error — a preset session isolates publishing from login
+    router.client = new TuyaClient({ signer: { sign: () => "0".repeat(64) }, chKey: "7cbfe6d8", sid: "s", http });
+    const result = router.dispatchCommand("sn-1", { kind: "aiot-dp", dp: 101, value: true });
+    if (success) await expect(result).resolves.toBeUndefined();
+    else await expect(result).rejects.toThrow("REJECTED");
   });
 
   describe("fetchDps", () => {
