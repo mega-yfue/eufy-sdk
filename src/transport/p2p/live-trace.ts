@@ -116,7 +116,6 @@ export type LiveTrace =
    * The station answers every PING with a PONG, so silence past several heartbeats is the path being gone.
    * Stated only where a pong arrived: a station that has never answered says nothing by not answering now.
    */
-  | { phase: "path-stale"; silentMs: number }
   /**
    * A live start failed, with the facts of the `LiveStreamStartError` it was refused with.
    *

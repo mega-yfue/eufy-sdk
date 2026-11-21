@@ -11,7 +11,7 @@ const CAMERA = "T8000P0000000001";
 function session() {
   const fake = connectedSession(true);
   return Object.assign(fake, {
-    pathAnswering: true,
+    isClosed: false,
     sendFrame: vi.fn(),
     close: vi.fn(async () => {
       fake.emit("close");
@@ -67,7 +67,7 @@ describe("a cached pull when its P2P path is replaced", () => {
     };
     internals.liveSources.set(siblingKey, sibling);
 
-    first.pathAnswering = false;
+    first.isClosed = true;
     const newSource = await router.sharedLiveSourceFor(CAMERA);
 
     expect(first.close).toHaveBeenCalledOnce();

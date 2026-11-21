@@ -1422,13 +1422,9 @@ export class P2PCommandRouter {
    *
    * Nothing waits for a key: a send seals with what the session holds once connected ({@link P2PSession}).
    *
-   * A session whose {@link P2PSession.pathAnswering} is false is closed and re-resolved before it is handed
-   * over: the station answers every heartbeat, so a path silent past several of them is gone. So is a session
-   * already {@link P2PSession.isClosed} but not yet dropped, which would be waited on for a connect it never
-   * makes. A session reporting nothing about its path is not reporting that evidence and is handed over as it is. Cached live
-   * sources on the replaced session are discarded before closing it (see {@link tearDownStation}).
-   * Replaced at most once per resolution, so a station whose replacement is silent too is returned rather
-   * than closed again.
+   * A session already {@link P2PSession.isClosed} but not yet dropped (it closes itself on the app's ALIVE timeout)
+   * is replaced before it is handed over, once per resolution; cached live sources on it are discarded first (see
+   * {@link tearDownStation}).
    */
   private async resolveSession(
     sn: string,
@@ -1447,8 +1443,8 @@ export class P2PCommandRouter {
     if (!session) {
       throw new Error(`no P2P session for ${sn} (known: ${this.manager.keys().join(", ") || "none"})`);
     }
-    if ((session.pathAnswering === false || session.isClosed) && !rebuilt) {
-      (this.deps.logger ?? noopLogger).debug(`[p2p] ${parentSn} path closed or silent — rebuilding before use`);
+    if (session.isClosed && !rebuilt) {
+      (this.deps.logger ?? noopLogger).debug(`[p2p] ${parentSn} session closed — rebuilding before use`);
       for (const key of [...this.liveSources.keys()]) {
         if (key.startsWith(`${parentSn}:`)) this.dropLiveSource(key);
       }

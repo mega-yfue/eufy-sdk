@@ -57,19 +57,11 @@ describe("a write on a session holding no key", () => {
   });
 });
 
-/**
- * A session whose path stopped answering the heartbeat is rebuilt before anything is committed to it.
- *
- * Measured on a wired camera: idle 18 s, resumed, twenty byte-identical retransmits with no acknowledgement,
- * and a rebuilt session streaming at once — seven seconds of black screen, three of them spent discovering
- * what the unanswered heartbeat had already established.
- *
- * A station that has never ponged is untouched: silence is only evidence where an answer was once given.
- */
-describe("resolving a session whose path has gone silent", () => {
-  it("rebuilds it rather than handing a caller a path that stopped answering", async () => {
+/** A session that closed itself (the app's ALIVE timeout) but is still filed is replaced before use. */
+describe("resolving a session that closed itself", () => {
+  it("rebuilds it rather than handing a caller a closed session", async () => {
     const { router, session } = setup(true);
-    (session as unknown as { pathAnswering: boolean }).pathAnswering = false;
+    (session as unknown as { isClosed: boolean }).isClosed = true;
     const manager = (router as unknown as { manager: { close: (sn: string) => Promise<void> } }).manager;
     const closed: string[] = [];
     manager.close = async (sn) => void closed.push(sn);
@@ -77,17 +69,5 @@ describe("resolving a session whose path has gone silent", () => {
     await router.sharedLiveSourceFor(DEVICE_SN).catch(() => undefined);
 
     expect(closed).toContain(STATION_SN);
-  });
-
-  it("hands over a path that has never answered, that being no evidence at all", async () => {
-    const { router, session } = setup(true);
-    (session as unknown as { pathAnswering: boolean }).pathAnswering = true;
-    const manager = (router as unknown as { manager: { close: (sn: string) => Promise<void> } }).manager;
-    const closed: string[] = [];
-    manager.close = async (sn) => void closed.push(sn);
-
-    await router.sharedLiveSourceFor(DEVICE_SN).catch(() => undefined);
-
-    expect(closed).toEqual([]);
   });
 });

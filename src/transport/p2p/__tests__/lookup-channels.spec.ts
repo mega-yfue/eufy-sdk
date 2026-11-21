@@ -139,7 +139,8 @@ describe("cloud lookup source ports", () => {
       await vi.waitFor(() => expect(connected).toHaveBeenCalledOnce());
       expect(lookupPorts.size).toBe(8);
       expect(checkPorts).toEqual(new Set([selectedPort]));
-      await vi.waitFor(() => expect(pingPort).toBe(selectedPort));
+      // The first ALIVE goes once a second passes with nothing from the station (the app's CS2 alive).
+      await vi.waitFor(() => expect(pingPort).toBe(selectedPort), { timeout: 3_000 });
       expect(receiveBufferRequests.get(selectedPort!)).toBe(4 * 1024 * 1024);
       for (const port of lookupPorts) {
         if (port !== selectedPort) await rebind(port);
