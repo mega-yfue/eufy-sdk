@@ -274,7 +274,17 @@ export interface P2PRouterDeps {
   localAddresses?: Record<string, string>;
   /** Suppress the `255.255.255.255` local-lookup broadcast; cloud lookup and a known LAN address still run. */
   noBroadcast?: boolean;
+  /**
+   * Camera wall: give each live pull of a camera behind a station a P2P connection of its own, so several stream at
+   * once. Off by default: the app holds one connection per station (`zx_set_p2p_connect_info`), and a station serves
+   * one camera at a time on it.
+   */
+  sessionPerCamera?: boolean;
 }
+
+/** The key a camera's own media connection is filed under ({@link P2PRouterDeps.sessionPerCamera}). */
+const mediaKeyOf = (parentSn: string, channel: number) => `${parentSn}#live:${channel}`;
+const isMediaKey = (key: string) => key.includes("#live:");
 
 export class P2PCommandRouter {
   /** P2P session lifecycle: on-demand open + battery-aware idle-detach + refcount, per session key. */
@@ -285,6 +295,10 @@ export class P2PCommandRouter {
   private readonly liveSources = new Map<string, SharedLiveSource>();
   /** The options each live source was built from, so a later caller's conflicting ones can be reported. */
   private readonly liveSourceOpts = new Map<string, SharedLiveOpts>();
+  /** Per live source key, the camera's own media connection it streams on ({@link P2PRouterDeps.sessionPerCamera}). */
+  private readonly liveMedia = new Map<string, string>();
+  /** The media connection a live source is waiting on, so a second request for the camera joins it. */
+  private readonly mediaBuilds = new Map<string, Promise<SharedLiveSource>>();
   /**
    * The open talkback per `${parentSn}:${channel}`, if any. The device plays one audio stream at a
    * time and the session carries one audio sequence, so this path is exclusive where a live pull is
@@ -312,7 +326,7 @@ export class P2PCommandRouter {
     this.manager = new SessionManager({
       poweredFor: deps.poweredFor,
       logger: deps.logger,
-      onAutoClose: (key) => this.tearDownStation(key),
+      onAutoClose: (key) => (isMediaKey(key) ? this.tearDownMedia(key) : this.tearDownStation(key)),
       ...deps.sessionIdle,
     });
   }
@@ -389,6 +403,7 @@ export class P2PCommandRouter {
     for (const src of this.liveSources.values()) src.dispose();
     this.liveSources.clear();
     this.liveSourceOpts.clear();
+    this.liveMedia.clear();
     await this.manager.closeAll();
   }
 
@@ -457,26 +472,46 @@ export class P2PCommandRouter {
     if (!session.isConnected) throw new StationUnreachableError(parentSn, waitedMs);
   }
 
-  /** Open (or reuse) `parentSn`'s session: one per station, as the app's slot table holds one per serial. */
-  private async openSession(parentSn: string): Promise<P2PSession> {
-    return this.manager.acquire(parentSn, async (register) => {
-      const stationDev = this.recordFor(parentSn);
-      if (!stationDev) throw new Error(`station ${parentSn} is not in the device list`);
-      const raw = (stationDev.raw ?? {}) as Record<string, any>;
-      const did = (stationDev.p2pDid ?? raw.p2p_did) as string | undefined;
-      if (!did) throw new Error(`no P2P endpoint (p2p_did) for station ${parentSn}`);
-      let dskKey: string | undefined;
-      try {
-        dskKey = (await this.deps.mega.getDskKeys([stationDev]))[parentSn]?.dskKey;
-      } catch (e) {
-        this.deps.onError(e instanceof Error ? e : new Error(String(e)));
-      }
-      const localAddress = this.deps.localAddresses?.[parentSn] ?? freshestLanIp(raw);
-      const session = this.makeSession(parentSn, did, raw, dskKey, localAddress);
-      register(session);
-      await session.connect();
+  /**
+   * Open (or reuse) `parentSn`'s session: one per station, as the app's slot table holds one per serial; `key` names a
+   * camera's own media connection to it instead ({@link P2PRouterDeps.sessionPerCamera}).
+   */
+  private async openSession(parentSn: string, key = parentSn): Promise<P2PSession> {
+    return this.manager.acquire(
+      key,
+      async (register) => {
+        const stationDev = this.recordFor(parentSn);
+        if (!stationDev) throw new Error(`station ${parentSn} is not in the device list`);
+        const raw = (stationDev.raw ?? {}) as Record<string, any>;
+        const did = (stationDev.p2pDid ?? raw.p2p_did) as string | undefined;
+        if (!did) throw new Error(`no P2P endpoint (p2p_did) for station ${parentSn}`);
+        let dskKey: string | undefined;
+        try {
+          dskKey = (await this.deps.mega.getDskKeys([stationDev]))[parentSn]?.dskKey;
+        } catch (e) {
+          this.deps.onError(e instanceof Error ? e : new Error(String(e)));
+        }
+        const localAddress = this.deps.localAddresses?.[parentSn] ?? freshestLanIp(raw);
+        const session = this.makeSession(parentSn, did, raw, dskKey, localAddress, key);
+        register(session);
+        await session.connect();
+        return session;
+      },
+      parentSn,
+    );
+  }
+
+  /** A camera's own media connection to `parentSn`, connected, or the reason it is not. */
+  private async openMediaSession(parentSn: string, channel: number, signal?: AbortSignal): Promise<P2PSession> {
+    const key = mediaKeyOf(parentSn, channel);
+    const session = await this.openSession(parentSn, key);
+    try {
+      await this.awaitConnected(session, parentSn, signal);
       return session;
-    });
+    } catch (error) {
+      if (this.manager.get(key) === session) void this.manager.close(key).catch((e) => this.reportError(e));
+      throw error;
+    }
   }
 
   /**
@@ -501,6 +536,7 @@ export class P2PCommandRouter {
     raw: Record<string, any>,
     dskKey: string | undefined,
     localAddress: string | undefined,
+    key = stationSn,
   ): P2PSession {
     const adminUserId = ((raw?.member as any)?.admin_user_id as string) || this.deps.mega.auth?.userId || "";
     const session: P2PSession = new P2PSession({
@@ -519,8 +555,15 @@ export class P2PCommandRouter {
       if (frame.commandId === CommandType.CMD_GET_DEVICE_PING && frame.dataType === P2PDataType.CONTROL) {
         session.sendBytes(Buffer.alloc(136), 0, CommandType.CMD_GET_DEVICE_PING);
       }
-      this.onStationFrame(stationSn, frame);
+      // A camera's own media connection carries its media alone; the station's session reports the station.
+      if (key === stationSn) this.onStationFrame(stationSn, frame);
     });
+    if (key !== stationSn) {
+      session.on("close", () => {
+        if (this.manager.get(key) === session) this.tearDownMedia(key);
+      });
+      return session;
+    }
     session.on("connect", () => {
       if (this.manager.get(stationSn) === session) this.deps.onConnect(stationSn);
     });
@@ -1057,42 +1100,72 @@ export class P2PCommandRouter {
       this.dropLiveSource(key);
       source = undefined;
     }
-    this.releaseLingeringSiblings(parentSn, channel);
-    if (!source) {
-      const logger = this.deps.logger ?? noopLogger;
-      source = new SharedLiveSource({
-        makeStream: () =>
-          new LiveStream(session, {
-            frames,
-            channel,
-            accountId,
-            homeBaseAttached,
-            eccPrivateKey: opts.eccPrivateKey,
-            entryType: opts.entryType,
-            logger,
-          }),
-        lingerMs: opts.lingerMs,
-        preBufferSeconds: opts.preBufferSeconds,
-        powered: opts.powered,
-        batteryBudgetMs: opts.batteryBudgetMs,
-        budgetGraceMs: opts.budgetGraceMs,
-        logger,
-        label: key,
-        onActive: () => {
-          this.pingFor(sn, "live");
-          this.manager.retain(parentSn);
-        },
-        onIdle: () => {
-          this.pingFor(sn, "stop");
-          this.manager.release(parentSn);
-        },
-        onStartFailed: () => this.dropLiveSource(key),
-      });
-      this.liveSources.set(key, source);
-      this.liveSourceOpts.set(key, opts);
+    if (source) {
+      this.warnIgnoredLiveOpts(key, opts);
       return source;
     }
-    this.warnIgnoredLiveOpts(key, opts);
+    const build = { sn, key, frames, channel, accountId, homeBaseAttached, opts };
+    if (!(this.deps.sessionPerCamera && homeBaseAttached)) {
+      this.releaseLingeringSiblings(parentSn, channel);
+      return this.buildLiveSource(build, session, parentSn);
+    }
+    let inflight = this.mediaBuilds.get(key);
+    if (!inflight) {
+      inflight = this.openMediaSession(parentSn, channel, opts.signal)
+        .then((media) => this.buildLiveSource(build, media, mediaKeyOf(parentSn, channel)))
+        .finally(() => this.mediaBuilds.delete(key));
+      this.mediaBuilds.set(key, inflight);
+    }
+    return await inflight;
+  }
+
+  /** The shared source for one camera on `session`, filed as `build.key`; `sessionKey` is held while it streams. */
+  private buildLiveSource(
+    build: {
+      sn: string;
+      key: string;
+      frames: LiveFrames;
+      channel: number;
+      accountId: string;
+      homeBaseAttached: boolean;
+      opts: SharedLiveOpts;
+    },
+    session: P2PSession,
+    sessionKey: string,
+  ): SharedLiveSource {
+    const { sn, key, frames, channel, accountId, homeBaseAttached, opts } = build;
+    const logger = this.deps.logger ?? noopLogger;
+    const source = new SharedLiveSource({
+      makeStream: () =>
+        new LiveStream(session, {
+          frames,
+          channel,
+          accountId,
+          homeBaseAttached,
+          eccPrivateKey: opts.eccPrivateKey,
+          entryType: opts.entryType,
+          logger,
+        }),
+      lingerMs: opts.lingerMs,
+      preBufferSeconds: opts.preBufferSeconds,
+      powered: opts.powered,
+      batteryBudgetMs: opts.batteryBudgetMs,
+      budgetGraceMs: opts.budgetGraceMs,
+      logger,
+      label: key,
+      onActive: () => {
+        this.pingFor(sn, "live");
+        this.manager.retain(sessionKey);
+      },
+      onIdle: () => {
+        this.pingFor(sn, "stop");
+        this.manager.release(sessionKey);
+      },
+      onStartFailed: () => this.dropLiveSource(key),
+    });
+    this.liveSources.set(key, source);
+    this.liveSourceOpts.set(key, opts);
+    if (isMediaKey(sessionKey)) this.liveMedia.set(key, sessionKey);
     return source;
   }
 
@@ -1161,6 +1234,20 @@ export class P2PCommandRouter {
     source.dispose();
     this.liveSources.delete(key);
     this.liveSourceOpts.delete(key);
+    const media = this.liveMedia.get(key);
+    if (media === undefined) return;
+    this.liveMedia.delete(key);
+    void this.manager.close(media).catch((e) => this.reportError(e instanceof Error ? e : new Error(String(e))));
+  }
+
+  /** A camera's own media connection closed: drop the source it carried (the next pull opens a new one). */
+  private tearDownMedia(mediaKey: string): void {
+    this.manager.remove(mediaKey);
+    for (const [key, media] of this.liveMedia)
+      if (media === mediaKey) {
+        this.liveMedia.delete(key);
+        this.dropLiveSource(key);
+      }
   }
 
   /**
@@ -1179,7 +1266,7 @@ export class P2PCommandRouter {
   private tearDownStation(stationSn: string): void {
     this.manager.remove(stationSn);
     for (const key of [...this.liveSources.keys()]) {
-      if (key.startsWith(`${stationSn}:`)) this.dropLiveSource(key);
+      if (key.startsWith(`${stationSn}:`) && !this.liveMedia.has(key)) this.dropLiveSource(key);
     }
     for (const [key, talk] of this.talkbacks) {
       if (key.startsWith(`${stationSn}:`)) {
@@ -1446,7 +1533,7 @@ export class P2PCommandRouter {
     if (session.isClosed && !rebuilt) {
       (this.deps.logger ?? noopLogger).debug(`[p2p] ${parentSn} session closed — rebuilding before use`);
       for (const key of [...this.liveSources.keys()]) {
-        if (key.startsWith(`${parentSn}:`)) this.dropLiveSource(key);
+        if (key.startsWith(`${parentSn}:`) && !this.liveMedia.has(key)) this.dropLiveSource(key);
       }
       await this.manager
         .close(parentSn)

@@ -51,7 +51,7 @@ const DID = "XXXXXXX-000000-XXXXX";
 
 const events: string[] = [];
 
-function router() {
+function router(sessionPerCamera = false) {
   built.length = 0;
   events.length = 0;
   const record = (sn: string, channel: number, parent?: string) => ({
@@ -71,6 +71,7 @@ function router() {
     onError: () => {},
     onLevel2Ready: (sn: string) => events.push(`level2:${sn}`),
     onFrame: (sn: string) => events.push(`frame:${sn}`),
+    sessionPerCamera,
   });
 }
 
@@ -188,5 +189,43 @@ describe("cameras behind one station", () => {
     expect(disposedA).toHaveBeenCalledOnce();
     expect(disposedB).toHaveBeenCalledOnce();
     expect(sources(r).size).toBe(0);
+  });
+});
+
+/** The camera wall option: each attached camera's live pull on a connection of its own, off by default. */
+describe("cameras behind one station with sessionPerCamera", () => {
+  it("each stream on a connection of its own beside the station's", async () => {
+    const r = router(true);
+    await r.mediaProviderFor(CAM_A).live!({});
+    await r.mediaProviderFor(CAM_B).live!({});
+
+    expect(built).toHaveLength(3);
+    const a = sources(r).get(`${STATION_SN}:0`) as { stream: { session: FakeSession } };
+    const b = sources(r).get(`${STATION_SN}:2`) as { stream: { session: FakeSession } };
+    expect(new Set([built[0], a.stream.session, b.stream.session]).size).toBe(3);
+  });
+
+  it("report nothing from a media connection, and drop only its own source when it closes", async () => {
+    const r = router(true);
+    await r.mediaProviderFor(CAM_A).live!({});
+    await r.mediaProviderFor(CAM_B).live!({});
+    events.length = 0;
+    built[2]!.emit("data", { commandId: 1300 });
+    expect(events).toEqual([]);
+
+    await built[2]!.close();
+    expect(sources(r).has(`${STATION_SN}:2`)).toBe(false);
+    expect(sources(r).has(`${STATION_SN}:0`)).toBe(true);
+    expect(events).toEqual([]);
+  });
+
+  it("share one connection for two requests of the same camera", async () => {
+    const r = router(true);
+    const [first, second] = await Promise.all([
+      (r as unknown as { sharedLiveSourceFor(s: string, o: object): Promise<unknown> }).sharedLiveSourceFor(CAM_B, {}),
+      (r as unknown as { sharedLiveSourceFor(s: string, o: object): Promise<unknown> }).sharedLiveSourceFor(CAM_B, {}),
+    ]);
+    expect(second).toBe(first);
+    expect(built).toHaveLength(2);
   });
 });

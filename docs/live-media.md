@@ -38,7 +38,8 @@ the camera it belongs to**; the SDK matches on that, so each handle receives onl
 audio.
 
 Every camera behind a station streams over the station's one session, as the app holds one connection per
-station serial. A pull lingering for a camera nobody watches is released when another camera starts, and a
+station serial. A host showing a camera wall sets `p2pSessionPerCamera: true`: each camera's live pull then opens a
+P2P connection of its own to the station, carrying that camera's media alone, closed with its pull; off by default. A pull lingering for a camera nobody watches is released when another camera starts, and a
 still asked for while a sibling is being watched yields: the retained image answers it.
 
 Worth knowing:
