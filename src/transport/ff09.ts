@@ -612,9 +612,8 @@ export function buildFf09SettingToggleFrame(input: Ff09SettingToggleFrameInput):
  * which zero-pads its OWN plaintext before letting AES add a genuine PKCS#7 block on top, a device
  * response is a plain PKCS#7-padded ciphertext with no extra zero-padding layer.
  *
- * Validates the `ff09` magic and the trailing XOR checksum (the frame's own self-check), but does NOT
- * validate `cmdEnc` beyond that — a response's `cmdEnc` carries an extra flag bit vs. a request's
- * (`0x48xx` not `0x40xx`) and this decoder is generic across whatever inner opcode it's carrying.
+ * Validates the `ff09` magic and the trailing XOR checksum (the frame's own self-check). Of `cmdEnc` it reads only the
+ * 0x4000 bit: without it the body is returned as sent.
  *
  * `keyTime` is the response envelope's `time` field parsed as the hex string it actually is (NOT
  * decimal, unlike the `seq_num`/other envelope fields) — see the module doc.
@@ -639,8 +638,10 @@ export function decryptFf09Frame(input: {
   for (const b of buf.subarray(0, buf.length - 1)) xor ^= b;
   if (xor !== buf[buf.length - 1]) throw new Error("ff09: response frame failed its XOR checksum");
 
-  // Header is 9 bytes (ff09|size2|03 00 02|cmdEnc2); ciphertext is everything up to the trailing xor byte.
+  // Header is 9 bytes (ff09|size2|03 00 02|cmdEnc2); the body is everything up to the trailing xor byte, and is
+  // ciphertext only when cmdEnc carries 0x4000, as the app's `parseEslBleV12Data` decrypts it.
   const ct = buf.subarray(9, buf.length - 1);
+  if (!(buf.readUInt16BE(7) & 0x4000)) return Buffer.from(ct);
   const key = Buffer.concat([Buffer.from(adminUserId.slice(-12), "ascii"), u32be(keyTime >>> 0)]);
   const iv = Buffer.alloc(16);
   Buffer.from(deviceSn, "ascii").copy(iv);
