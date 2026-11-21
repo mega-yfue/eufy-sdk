@@ -498,6 +498,12 @@ export class DeviceRegistry {
     }
   }
 
+  /** The default value of a property of `sn`'s product description, as the description states it. */
+  thingDefault(sn: string, identifier: string): string | undefined {
+    const model = this.devices.find((d) => d.sn === sn)?.model;
+    return this.things.get(model ?? "")?.properties[identifier]?.defaultValue;
+  }
+
   /**
    * The device's product description resolved for this device ({@link resolveThing}): against its serial
    * and firmware (`main_sw_version`), the station it is reached through and that station's firmware, the

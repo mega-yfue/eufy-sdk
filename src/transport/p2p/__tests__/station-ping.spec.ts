@@ -7,7 +7,7 @@ import { connectedSession, routerWithSession, STATION_SN, type FakeP2PSession } 
  */
 const SOLO_SN = "T8410P0000000000";
 
-function solo(sn = SOLO_SN) {
+function solo(sn = SOLO_SN, thing: Record<string, string> = {}) {
   const session = Object.assign(connectedSession(), {
     sendPing: vi.fn(),
     sendBytes: vi.fn(() => true),
@@ -15,7 +15,10 @@ function solo(sn = SOLO_SN) {
   }) as FakeP2PSession & { sendPing: ReturnType<typeof vi.fn> };
   const router = routerWithSession(session, {
     register: false,
-    deps: { listDevices: () => [{ sn, stationSn: sn, model: sn.slice(0, 5), p2pDid: "", raw: {} } as never] },
+    deps: {
+      listDevices: () => [{ sn, stationSn: sn, model: sn.slice(0, 5), p2pDid: "", raw: {} } as never],
+      thingDefault: (_sn, identifier) => thing[identifier],
+    },
   });
   (router as unknown as { manager: { register(sn: string, s: unknown): void } }).manager.register(sn, session);
   return { router, session };
@@ -46,6 +49,16 @@ describe("the app's station ping", () => {
     expect(session.sendPing).toHaveBeenCalledTimes(160);
     vi.advanceTimersByTime(60_000);
     expect(session.sendPing).toHaveBeenCalledTimes(180);
+    await router.closeAll();
+  });
+
+  /** `p2p_ping_interval` (ms) and `p2p_ping_timeout` (s) of the parent's thing description, when above 0. */
+  it("takes the interval and the window from the thing description", async () => {
+    vi.useFakeTimers();
+    const { router, session } = solo(SOLO_SN, { p2p_ping_interval: "1500", p2p_ping_timeout: "60" });
+    await router.getParams(SOLO_SN);
+    vi.advanceTimersByTime(120_000);
+    expect(session.sendPing).toHaveBeenCalledTimes(40);
     await router.closeAll();
   });
 
