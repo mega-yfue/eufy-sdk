@@ -71,6 +71,8 @@ export interface LiveStreamOptions {
   eccPrivateKey?: Buffer;
   /** The admin user id the start carries (`$userId`). */
   accountId?: string;
+  /** The start's `$entryType`, a `LiveTypeAndroid` value (default 0, the app's plain player). */
+  entryType?: number;
   /**
    * Runtime topology fact (from the device record: `parent_sn && parent_sn !== sn`): true = the camera rides a
    * HomeBase's session, which tags its media with the camera's channel, and this stream takes only its own.
@@ -138,9 +140,9 @@ export class LiveStream extends EventEmitter {
   }
 
   private sendStart(): void {
-    const { frames, accountId } = this.opts;
+    const { frames, accountId, entryType } = this.opts;
     try {
-      this.session.sendFrame(frames.start, this.channel, accountId, frames.ability);
+      this.session.sendFrame(frames.start, this.channel, accountId, frames.ability, entryType);
     } catch (e) {
       // Non-fatal: the session may be mid-reconnect; the warm-up deadline ends a start that never went.
       this.logger.debug(`[live] start deferred (session not ready): ${e instanceof Error ? e.message : e}`);

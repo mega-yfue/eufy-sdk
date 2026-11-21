@@ -35,7 +35,14 @@ const START_1700: SessionFrame = {
   cmd: 1700,
   body: "json1700",
   subCmd: 1000,
-  payload: { cmd: 1000, mChannel: "$channel", account_id: "$userId", encryptkey: "$key", transaction: "$now" },
+  payload: {
+    cmd: 1000,
+    mChannel: "$channel",
+    account_id: "$userId",
+    encryptkey: "$key",
+    entrytype: "$entryType",
+    transaction: "$now",
+  },
 };
 const START_1350: SessionFrame = {
   cmd: 1350,
@@ -87,6 +94,15 @@ describe("sendFrame", () => {
       commandType: 1000,
       data: { cmd: 1000, mChannel: 2, account_id: "user" },
     });
+  });
+
+  it("fills $entryType with the start's LiveTypeAndroid value, 0 for the plain player", () => {
+    const { session, frame } = connected();
+    const entry = () => JSON.parse(frame().plain.toString().replace(/\0+$/, "")).data.entrytype;
+    session.sendFrame(START_1700, 2, "user");
+    expect(entry()).toBe(0);
+    session.sendFrame(START_1700, 2, "user", 0, 9);
+    expect(entry()).toBe(9);
   });
 
   it("sends a 1350 params-as-body as the payload itself on its mChannel, counter bumped", () => {
