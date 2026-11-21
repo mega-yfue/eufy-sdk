@@ -84,6 +84,8 @@ export interface SecureMqttOptions {
    * `attempts` (4, 64, 10 in the app). Replaces {@link reconnectPeriod} when set.
    */
   backoff?: { minS: number; maxS: number; attempts: number };
+  /** Retry every refused device topic this often until granted, as the app's `checkSubFail` does every 5000 ms. */
+  resubscribeMs?: number;
   /** Diagnostics sink. Omit for silence. */
   logger?: Logger;
 }
@@ -103,6 +105,9 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
    */
   private connecting?: Promise<void>;
   private readonly o: SecureMqttOptions;
+  /** Device topics the broker refused, retried every {@link SecureMqttOptions.resubscribeMs}. */
+  private readonly refused = new Set<string>();
+  private resubscribe?: ReturnType<typeof setInterval>;
   private readonly logger: Logger;
 
   constructor(opts: SecureMqttOptions) {
@@ -207,6 +212,7 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
   async subscribeDevice(device: EufyDevice): Promise<void> {
     const topics = [...subscribeTopics(device)];
     const { denied } = await this.subscribeEach(topics);
+    this.retryRefused(denied);
     const scope = this.o.credentials.app_name ?? "default";
     if (denied.length === topics.length) {
       throw new Error(
@@ -276,7 +282,32 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
     await this.client.publishAsync(topic, body, { qos: opts.qos ?? 1 });
   }
 
+  /** Queue `topics` for the periodic resubscribe, starting it when the option asks for one. */
+  private retryRefused(topics: readonly string[]): void {
+    const every = this.o.resubscribeMs;
+    if (!every || !topics.length) return;
+    for (const topic of topics) this.refused.add(topic);
+    this.resubscribe ??= setInterval(() => {
+      if (!this.client) return;
+      void this.subscribeEach([...this.refused]).then(
+        ({ granted }) => {
+          for (const topic of granted) this.refused.delete(topic);
+          if (!this.refused.size) this.stopResubscribe();
+        },
+        (e: unknown) => this.logger.debug(`[smqtt] resubscribe failed: ${e instanceof Error ? e.message : e}`),
+      );
+    }, every);
+    this.resubscribe.unref?.();
+  }
+
+  private stopResubscribe(): void {
+    clearInterval(this.resubscribe);
+    this.resubscribe = undefined;
+  }
+
   async disconnect(): Promise<void> {
+    this.stopResubscribe();
+    this.refused.clear();
     this.connecting = undefined;
     await this.client?.endAsync(true);
     this.client = undefined;
