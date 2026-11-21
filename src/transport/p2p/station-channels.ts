@@ -27,6 +27,14 @@ export function resolvedStationSn(raw: Record<string, unknown>, sn: string): str
 }
 
 /**
+ * Outdoor mode (param 6271 `"1"`, set by `device_set_outdoor_mode`): the bundles' `getConnectType` answers SINGLE
+ * for the device and `DefaultLiveMediaStrategy` makes it its own hub on channel 0, so it is its own station.
+ */
+export function inOutdoorMode(dev: EufyDevice): boolean {
+  return dev.params?.[6271] === "1";
+}
+
+/**
  * The parent station a device's traffic belongs to — the session key the router opens and the station the
  * frame resolver attributes by.
  *
@@ -36,6 +44,7 @@ export function resolvedStationSn(raw: Record<string, unknown>, sn: string): str
  * OWN serial is what "stands alone" means.
  */
 export function stationOf(dev: EufyDevice): string {
+  if (inOutdoorMode(dev)) return dev.sn;
   const raw = (dev.raw ?? {}) as Record<string, unknown>;
   const parent =
     typeof raw.parent_sn === "string" && raw.parent_sn && raw.parent_sn !== dev.sn ? raw.parent_sn : undefined;
@@ -72,7 +81,7 @@ export function stationChannels(devices: readonly EufyDevice[]): Map<string, Sta
   for (const d of devices) {
     const station = stationOf(d);
     const stated = d.channel;
-    if (d.sn === station) out.set(d.sn, { channel: stated ?? 0 });
+    if (d.sn === station) out.set(d.sn, { channel: inOutdoorMode(d) ? 0 : (stated ?? 0) });
     else if (stated === undefined) out.set(d.sn, { issue: "missing" });
     else if ((claimants.get(station)?.get(stated) ?? 0) > 1) out.set(d.sn, { issue: "shared", claimed: stated });
     else out.set(d.sn, { channel: stated });
