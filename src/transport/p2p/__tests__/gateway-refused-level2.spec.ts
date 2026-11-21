@@ -124,3 +124,22 @@ describe("a gateway info that brings no key", () => {
     });
   });
 });
+
+/** `GetDeviceAbility`: ECC once a version-8 gateway info came on this connection; the 1044 of its end drops that. */
+describe("the media key", () => {
+  it("is ECC after a version-8 gateway info, RSA again on the next connection", async () => {
+    const { logger, traces } = traceCollector();
+    const session = new P2PSession({ stationSn: LOCK_SN, p2pDid: P2P_DID, logger });
+    const start = { cmd: 1700, body: "json1700", subCmd: 1000, payload: { key: "$key" } } as const;
+    const keys = () => traces.filter((t) => t.phase === "media-command").map((t) => (t as { key: string }).key);
+
+    collectSends(session);
+    negotiate(session, cipherGatewayInfo(7));
+    session.sendFrame(start, 0, ADMIN);
+    await session.close();
+    collectSends(session);
+    session.sendFrame(start, 0, ADMIN);
+
+    expect(keys()).toEqual(["ecc", "rsa"]);
+  });
+});

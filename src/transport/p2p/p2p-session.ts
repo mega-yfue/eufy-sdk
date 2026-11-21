@@ -731,8 +731,12 @@ export class P2PSession extends EventEmitter {
     this.signMode = 1;
   }
 
-  /** The session slots as a connect starts them (`zx_update_p2p_connect_info`): sign mode 0, version 1, no key. */
+  /**
+   * The session slots as a connect starts them (`zx_update_p2p_connect_info`): sign mode 0, version 1, no key. The
+   * version-8 mark goes too: the app drops it on the 1044 that `zx_clear_p2p_connect_info_by_session` sends.
+   */
   private resetSlots(): void {
+    this.notifiedVersion8 = false;
     this.signMode = 0;
     this.sessionVersion = 1;
     this.ecbKey = undefined;
