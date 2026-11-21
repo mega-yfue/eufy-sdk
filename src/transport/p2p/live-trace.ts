@@ -108,8 +108,8 @@ export type LiveTrace =
    * `DeviceChannelUnresolvedError` and nothing is sent.
    */
   | { phase: "station-channel-unresolved"; issue: "missing" | "shared" }
-  /** A shared source began warming, with the interval it re-issues on and the deadline it fails at. */
-  | { phase: "warming"; retryMs: number; deadlineMs: number }
+  /** A shared source began warming, with the deadline it fails at. */
+  | { phase: "warming"; deadlineMs: number }
   /**
    * This connection's path has stopped answering the heartbeat, with how long it has been silent.
    *
@@ -127,7 +127,6 @@ export type LiveTrace =
       phase: "start-failed";
       reason: LiveStreamStartFailureReason;
       stage: LiveStreamStartStage;
-      attempts: number;
       errorName?: string;
     };
 

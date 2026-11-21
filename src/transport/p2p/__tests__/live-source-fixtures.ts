@@ -25,7 +25,6 @@ import type {
 export class FakeStream extends EventEmitter implements LiveStreamHandle {
   started = 0;
   stopped = 0;
-  nudged = 0;
 
   start(): this {
     this.started++;
@@ -34,10 +33,6 @@ export class FakeStream extends EventEmitter implements LiveStreamHandle {
 
   stop(): void {
     this.stopped++;
-  }
-
-  nudge(): void {
-    this.nudged++;
   }
 
   /** Emit one video frame to the source. */
