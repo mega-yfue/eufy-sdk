@@ -574,10 +574,9 @@ export class P2PCommandRouter {
    * SUCCESSFUL lookup is cached — caching `undefined` after a transient failure would permanently
    * disable level-2 for the session's life.
    *
-   * The official app answers an eight-zero-byte CONTROL `CMD_GET_DEVICE_PING` with a clear
-   * int-plus-string body containing two zero integers and the account id, without opening live media.
-   * The reply is wired before connection on every session, where the station identity is available.
-   * Tested on standalone T8420. Not tested on any other device. Unknown what devices send this CONTROL.
+   * A `CMD_GET_DEVICE_PING` (1152) notify is answered as the app's `P2PReceiver` does (`ZmediaUtil.sendDevicePing`):
+   * 1152 to the station as `setCommandWithInt(0, 0)` on channel 0, the group-A body whose string is read off the
+   * int, so 136 zero bytes, sent through the session's sender like any command.
    *
    * The `close` handler drops the session from the {@link SessionManager} and disposes any shared live
    * source riding this station (consumers get `stop`; a later attach rebuilds via the factory).
@@ -611,15 +610,8 @@ export class P2PCommandRouter {
     });
     session.on("error", (e: Error) => this.reportError(e));
     session.on("data", (frame: P2PFrame) => {
-      if (
-        frame.commandId === CommandType.CMD_GET_DEVICE_PING &&
-        frame.dataType === P2PDataType.CONTROL &&
-        frame.channel === 0 &&
-        frame.raw.length === 8 &&
-        frame.raw.every((byte) => byte === 0) &&
-        adminUserId
-      ) {
-        session.sendIntStringCommand(CommandType.CMD_GET_DEVICE_PING, 0, 0, adminUserId, frame.channel);
+      if (frame.commandId === CommandType.CMD_GET_DEVICE_PING && frame.dataType === P2PDataType.CONTROL) {
+        session.sendBytes(Buffer.alloc(136), 0, CommandType.CMD_GET_DEVICE_PING);
       }
       if (announces) this.onStationFrame(stationSn, frame);
     });
