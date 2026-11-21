@@ -1,6 +1,6 @@
 /**
  * MQTT command router — the transport-side owner of the secure-MQTT command path: maps a
- * transport-neutral {@link Command} to its MQTT wire + envelope over a one-shot connection per command.
+ * transport-neutral {@link Command} to its MQTT wire + envelope.
  * The MQTT sibling of `transport/p2p/command-router.ts`'s `P2PCommandRouter`.
  *
  * The MQTT-bound kinds are `ff09-*` (`ff09-actuate` — a single fire-and-forget frame; `ff09-autolock`
@@ -14,13 +14,9 @@
  * P2P one. This keeps transport free of any `model/` import — the capability↔transport decorrelation
  * invariant.
  *
- * Two connection strategies live here, matched to what each wire was verified over:
- *  - **ff09** opens its OWN one-shot, explicitly non-reconnecting `SecureMqtt` pinned to a broker
- *    instance that grants the device's topic (see {@link ensureSecurityMqttFor}) and tears it down
- *    right after — the lock/garage path needs the SUBSCRIBE-and-wait ack machinery.
- *  - **eufy_life DP** (lights) publishes fire-and-forget over the facade's persistent account-wide
- *    `this.transport` via the injected {@link MqttRouterDeps.publishSecure} — that persistent connection
- *    is the CONFIRMED light-write path (`connectMQTT()` then publish to `.../req`), owned by the facade.
+ * Every security-device command (ff09) rides the facade's long-lived `eufy_security` stack
+ * ({@link MqttRouterDeps.securityTransport}), as the app's one session; `eufy_life` DP writes publish over the
+ * light stack via {@link MqttRouterDeps.publishSecure}.
  */
 import { randomBytes } from "node:crypto";
 import type { EufyDevice } from "../../core/types.js";
@@ -42,10 +38,8 @@ import {
   type Ff09FrameInput,
   type Ff09TransferPayload,
 } from "../ff09.js";
-import { SecureMqtt, type SecureMqttCredentials } from "./secure-mqtt.js";
+import type { SecureMqtt } from "./secure-mqtt.js";
 import { secureTopic } from "./topics.js";
-import { buildAppShapedClientId, mqttUuidFrom } from "./app-client-id.js";
-import { discoverReachableInstance } from "./broker-discovery.js";
 import { buildDpFrame, buildDpEnvelope } from "./dp-codec.js";
 import { dpPresetFields, dpLevelFields, type DpPresetSpec } from "../dp-preset.js";
 import { dpColorFields } from "./dp-color.js";
@@ -224,8 +218,7 @@ export function buildFf09MqttEnvelope(input: {
 }
 
 /**
- * The facade-side dependencies the router needs. It owns the one-shot MQTT connection lifecycle + all
- * command wire logic, but defers device-list access + lifecycle event fan-out to the client (which owns
+ * The facade-side dependencies the router needs. It owns the command wire logic, but defers device-list access + lifecycle event fan-out to the client (which owns
  * the typed EventEmitter).
  */
 export interface MqttRouterDeps {
@@ -255,10 +248,12 @@ export interface MqttRouterDeps {
    * Publish an already-built MQTT message `body` to `topic` over the facade's persistent account-wide
    * secure-MQTT transport — the CONFIRMED `eufy_life` light-write path (the facade's `connectMQTT()` +
    * `transport.publish`). Injected because that persistent connection is owned by the facade, not this
-   * router (which otherwise opens per-command one-shot connections for ff09). Required to route
+   * router. Required to route
    * `mqtt-dp`/`mqtt-dp-color`/`mqtt-dp-preset`.
    */
   publishSecure?: (dev: EufyDevice, topic: string, body: string) => Promise<void>;
+  /** The facade's long-lived `eufy_security` stack, which every ff09 command rides, as the app's one session. */
+  securityTransport?: () => Promise<SecureMqtt>;
 }
 
 export class MqttCommandRouter {
@@ -341,7 +336,7 @@ export class MqttCommandRouter {
    * The record with `model` set to the product number its topics name, as the app's `snToPn`: `device_new_pn`,
    * else the serial ({@link pnFromSerial}), never `device_model` (a C30 reports `T85D0C` and answers only on `T85D0`).
    */
-  private async pnDeviceFor(sn: string): Promise<EufyDevice> {
+  async pnDeviceFor(sn: string): Promise<EufyDevice> {
     const dev = await this.deviceFor(sn);
     const pn = (dev.raw as { device_new_pn?: unknown } | undefined)?.device_new_pn;
     return { ...dev, model: typeof pn === "string" && pn ? pn : await this.pnFromSerial(sn) };
@@ -370,106 +365,10 @@ export class MqttCommandRouter {
     return (await pn) || sn.slice(0, 5);
   }
 
-  /**
-   * Fallback broker-instance IPs, tried alongside a fresh DNS resolution — the `aiot-mqtt-{region}
-   * .anker.com` NLB answers a single DNS query with only 2 of its targets, and NOT necessarily the one
-   * holding a given device's session. These are AWS infra IPs, not secrets — kept as
-   * a small seed list so discovery doesn't depend on DNS happening to expose the right target.
-   *
-   * NOTE: this is a hardcoded FALLBACK, not a source of truth — a fresh `dig`/`resolve4` of
-   * `aiot-mqtt-{region}.anker.com` runs alongside it every discovery, and AWS can rotate these NLB
-   * targets at any time. If discovery starts failing, the seed list is the first thing to re-resolve
-   * from DNS and refresh; it's not meant to be maintained by hand long-term.
-   */
-  private static readonly KNOWN_AIOT_BROKER_IPS = [
-    "3.139.229.186",
-    "18.224.90.2",
-    "3.138.226.206",
-    "3.138.64.16",
-    "3.139.229.1",
-    "3.147.137.189",
-    "52.39.57.62",
-    "52.42.98.25",
-  ];
-
-  /**
-   * Connect a fresh **security-scoped** (`eufy_security`) MQTT client pinned to a broker instance that
-   * grants the device's `/res` SUBSCRIBE (probed SUBSCRIBE-only, never publishing — see
-   * `transport/mqtt/broker-discovery.ts`), for the caller to publish on.
-   *
-   * The `security-mqtt-{region}` cluster is probed first, and the `aiot-mqtt-{region}` endpoint with
-   * {@link KNOWN_AIOT_BROKER_IPS} when no security instance grants.
-   *
-   * Which cert is used does NOT change the outcome — the account's own `get_user_mqtt_info` cert and a
-   * cert extracted from a real phone's keystore produce the identical grant/deny pattern across every
-   * candidate IP. One exception is known: a single garage unit whose own-cert SUBSCRIBE was denied on
-   * every candidate while a phone-extracted cert granted on the same one, with a sibling of the same
-   * model on the same account granting fine. That is a per-device authorization gap on the vendor's
-   * backend, not something this SDK works around — the throw below names each candidate's outcome (its
-   * SUBACK deny code, a timeout or a connection error).
-   *
-   * One fresh, explicitly non-reconnecting (`reconnectPeriod: 0`) connection per call — it repays the
-   * full mTLS handshake every command and tears the socket down right after (see
-   * {@link SecureMqttOptions.reconnectPeriod} for why a one-shot connection MUST disable reconnect).
-   * That cost is accepted because garage/lock commands are rare. ⚠️ A reused connection off a persistent
-   * security-MQTT transport would amortize the handshake and stay mounted long enough for a slow actuator
-   * (a garage door travels ~20-30s) to push an async state update on the same socket, subscribing once
-   * with a scope-bounded wildcard (`cmd/{app}/+/+/res`) instead of per-call subscribe/unsubscribe.
-   */
-  private async ensureSecurityMqttFor(dev: EufyDevice): Promise<{ mqtt: SecureMqtt; instanceIp: string }> {
-    const account: SecureMqttCredentials = await this.deps.mega.getUserMqttInfo("eufy_security");
-    let creds: SecureMqttCredentials = {
-      ...account,
-      endpoint_addr: account.endpoint_addr.replace(/^aiot-mqtt-/, "security-mqtt-"),
-    };
-    const mqttUuid = mqttUuidFrom(this.deps.mega.openudid);
-    const clientIdFor = () => buildAppShapedClientId({ appName: "eufy_security", uid: creds.user_id ?? "", mqttUuid });
-    const probe = (on: SecureMqttCredentials, candidateIps?: string[]) =>
-      discoverReachableInstance(
-        {
-          hostname: on.endpoint_addr,
-          port: on.endpoint_port,
-          certificate_pem: on.certificate_pem,
-          private_key: on.private_key,
-          aws_root_ca1_pem: on.aws_root_ca1_pem,
-        },
-        {
-          clientIdFor,
-          topic: secureTopic(dev, "res"),
-          candidateIps,
-          stopOnFirstGrant: true,
-          perAttemptTimeoutMs: 8000,
-        },
-      );
-    let results = await probe(creds);
-    if (!results.some((r) => r.granted)) {
-      creds = account;
-      results = await probe(account, MqttCommandRouter.KNOWN_AIOT_BROKER_IPS);
-    }
-    const winner = results.find((res) => res.granted);
-    if (!winner) {
-      throw new Error(
-        `ensureSecurityMqttFor(${dev.sn}): no broker instance grants this device's topic ` +
-          `(probed ${results.length} candidate IPs: ` +
-          results
-            .map(
-              (r) =>
-                `${r.ip} ${r.grantedQos === undefined ? "" : `SUBACK 0x${r.grantedQos.toString(16)} `}${r.error ?? "denied"}`,
-            )
-            .join("; ") +
-          `).`,
-      );
-    }
-    const m = new SecureMqtt({
-      credentials: creds,
-      clientId: clientIdFor(),
-      instanceIp: winner.ip,
-      reconnectPeriod: 0, // one-shot: never leave an orphaned client retrying in the background
-      logger: this.deps.logger,
-    });
-    m.on("error", (e) => this.deps.onError(e));
-    await m.connect();
-    return { mqtt: m, instanceIp: winner.ip };
+  /** The `eufy_security` stack every ff09 command rides. */
+  private async securityMqtt(): Promise<SecureMqtt> {
+    if (!this.deps.securityTransport) throw new Error("ff09 over MQTT: securityTransport dependency not wired");
+    return await this.deps.securityTransport();
   }
 
   /**
@@ -478,6 +377,11 @@ export class MqttCommandRouter {
    * despite their very different travel times — see that method's doc for why.
    */
   private static readonly FF09_ACK_TIMEOUT_MS = 5000;
+
+  /** Whether `m` is `sn`'s answer to a `head.cmd` of `mqttCmdCode`: on its `/res`, `head.cmd` one below, as the app matches. */
+  private static isReply(m: { topic?: string; raw?: unknown }, sn: string, mqttCmdCode: number): boolean {
+    return !!m.topic?.endsWith(`/${sn}/res`) && (m.raw as { head?: { cmd?: unknown } })?.head?.cmd === mqttCmdCode - 1;
+  }
 
   /**
    * Shared "arm a listener, resolve on the first matching message, else time out" scaffold —
@@ -515,8 +419,8 @@ export class MqttCommandRouter {
   /**
    * The `ff09-actuate` intent handler over MQTT: sends one lock or unlock frame to the device.
    * Builds the same `ff09` frame the P2P lock uses (`transport/ff09.ts`), wraps it in the MQTT `trans`
-   * envelope (`buildFf09Trans`/`buildFf09MqttEnvelope`, this module), discovers which broker instance holds the device's
-   * live session (see {@link ensureSecurityMqttFor}), and publishes to `cmd/eufy_security/{pn}/{sn}/req`.
+   * envelope (`buildFf09Trans`/`buildFf09MqttEnvelope`, this module), and publishes to `cmd/eufy_security/{pn}/{sn}/req`
+   * on the security stack.
    * `cmd.engage` maps straight to the frame's direction byte (`true`=lock/close, `false`=unlock/open) — no inversion.
    *
    * **What the `/res` reply actually means — a delivery ack, NOT "motion complete".** It answers within
@@ -545,46 +449,41 @@ export class MqttCommandRouter {
       }),
     );
 
-    const { mqtt, instanceIp } = await this.ensureSecurityMqttFor(dev);
-    try {
-      await mqtt.subscribeDevice(dev);
-      // Arm the ack wait BEFORE publishing (no race between "publish already answered" and
-      // "listener not attached yet"), but don't AWAIT it until after the publish call below.
-      const ackPromise = this.waitForMqttMessage(
-        mqtt,
-        // Scope to THIS device's own reply topic (`.../{sn}/res`), not any `/res`, so another device's
-        // reply on the connection can't be mistaken for this actuate's ack. It still can't pin the ack to
-        // this specific publish (the actuate `/res` shape isn't captured, so there's no keyTime to
-        // correlate) — telemetry-only, so a same-device redelivery latching early is acceptable.
-        (m) => (m.topic?.endsWith(`/${sn}/res`) ? true : undefined),
-        MqttCommandRouter.FF09_ACK_TIMEOUT_MS,
+    const mqtt = await this.securityMqtt();
+    // Arm the ack wait BEFORE publishing (no race between "publish already answered" and
+    // "listener not attached yet"), but don't AWAIT it until after the publish call below.
+    const ackPromise = this.waitForMqttMessage(
+      mqtt,
+      // Scope to THIS device's own reply topic (`.../{sn}/res`), not any `/res`, so another device's
+      // reply on the connection can't be mistaken for this actuate's ack. It still can't pin the ack to
+      // this specific publish (the actuate `/res` shape isn't captured, so there's no keyTime to
+      // correlate) — telemetry-only, so a same-device redelivery latching early is acceptable.
+      (m) => (MqttCommandRouter.isReply(m, sn, 9) ? true : undefined),
+      MqttCommandRouter.FF09_ACK_TIMEOUT_MS,
+    );
+    const envelope = buildFf09MqttEnvelope({
+      trans,
+      clientId: mqtt.id,
+      accountId: cmd.adminUserId,
+      deviceSn: sn,
+    });
+    const topic = ff09MqttTopic(dev.model, sn);
+    await mqtt.publish(topic, envelope, { qos: 1 });
+    const acked = (await ackPromise) ?? false;
+    this.deps.onCommandAck({ sn, kind: "ff09-actuate", acked });
+    if (!acked) {
+      this.logger.debug(
+        `dispatchFf09Actuate(${sn}): no /res within ${MqttCommandRouter.FF09_ACK_TIMEOUT_MS}ms — ` +
+          `the broker accepted the publish (QoS 1 PUBACK), but that's delivery-to-broker, not ` +
+          `delivery-to-device; unclear whether the device ever saw it`,
       );
-      const envelope = buildFf09MqttEnvelope({
-        trans,
-        clientId: mqtt.id,
-        accountId: cmd.adminUserId,
-        deviceSn: sn,
-      });
-      const topic = ff09MqttTopic(dev.model, sn);
-      await mqtt.publish(topic, envelope, { qos: 1 });
-      const acked = (await ackPromise) ?? false;
-      this.deps.onCommandAck({ sn, kind: "ff09-actuate", acked, instanceIp });
-      if (!acked) {
-        this.logger.debug(
-          `dispatchFf09Actuate(${sn}): no /res within ${MqttCommandRouter.FF09_ACK_TIMEOUT_MS}ms on ${instanceIp} — ` +
-            `the broker accepted the publish (QoS 1 PUBACK), but that's delivery-to-broker, not ` +
-            `delivery-to-device; unclear whether the device ever saw it`,
-        );
-      }
-    } finally {
-      await mqtt.disconnect();
     }
   }
 
   /**
    * The `ff09-autolock` intent handler over MQTT — read-modify-write the T85D0's auto-lock setting.
    * Unlike {@link dispatchFf09Actuate} (one
-   * fire-and-forget frame), this is a GET then a SET over the SAME one-shot MQTT connection:
+   * fire-and-forget frame), this is a GET then a SET:
    *
    *  1. Publish a settings GET query ({@link buildFf09QueryTrans}), then wait for the device's `/res`
    *     reply — NOT the generic "any /res" ack {@link dispatchFf09Actuate} accepts, but specifically a
@@ -609,50 +508,45 @@ export class MqttCommandRouter {
   private async dispatchFf09Autolock(sn: string, cmd: Extract<Command, { kind: "ff09-autolock" }>): Promise<void> {
     const dev = await this.pnDeviceFor(sn);
 
-    const { mqtt, instanceIp } = await this.ensureSecurityMqttFor(dev);
-    try {
-      await mqtt.subscribeDevice(dev);
-      const topic = ff09MqttTopic(dev.model, sn);
+    const mqtt = await this.securityMqtt();
+    const topic = ff09MqttTopic(dev.model, sn);
 
-      // ── 1. GET current settings, matched back by keyTime (shared with getAutoLockState — see helper). ──
-      const getReply = await this.fetchFf09SettingsGetReply(mqtt, topic, sn, cmd, instanceIp);
+    // ── 1. GET current settings, matched back by keyTime (shared with getAutoLockState — see helper). ──
+    const getReply = await this.fetchFf09SettingsGetReply(mqtt, topic, sn, cmd);
 
-      // ── 2+3. Decrypt the reply, preserve A7/A8 + delay, build the SET frame (shared with the P2P
-      //         sibling — see buildFf09AutolockSetFrame), then wrap it in the MQTT trans envelope. ──
-      const setTrans = this.sequenced(
-        sn,
-        toFf09Trans(
-          buildFf09AutolockSetFrame({
-            lockPayload: getReply.lockPayload,
-            keyTime: getReply.keyTime,
-            adminUserId: cmd.adminUserId,
-            deviceSn: cmd.deviceSn,
-            enabled: cmd.enabled,
-            delaySeconds: cmd.delaySeconds,
-          }),
-        ),
+    // ── 2+3. Decrypt the reply, preserve A7/A8 + delay, build the SET frame (shared with the P2P
+    //         sibling — see buildFf09AutolockSetFrame), then wrap it in the MQTT trans envelope. ──
+    const setTrans = this.sequenced(
+      sn,
+      toFf09Trans(
+        buildFf09AutolockSetFrame({
+          lockPayload: getReply.lockPayload,
+          keyTime: getReply.keyTime,
+          adminUserId: cmd.adminUserId,
+          deviceSn: cmd.deviceSn,
+          enabled: cmd.enabled,
+          delaySeconds: cmd.delaySeconds,
+        }),
+      ),
+    );
+    const setAckPromise = this.waitForMqttMessage(
+      mqtt,
+      // Same device-scoped `/res` match as the actuate ack above (topic-only, no keyTime — telemetry).
+      (m) => (MqttCommandRouter.isReply(m, sn, 9) ? true : undefined),
+      MqttCommandRouter.FF09_ACK_TIMEOUT_MS,
+    );
+    await mqtt.publish(
+      topic,
+      buildFf09MqttEnvelope({ trans: setTrans, clientId: mqtt.id, accountId: cmd.adminUserId, deviceSn: sn }),
+      { qos: 1 },
+    );
+    const setAcked = (await setAckPromise) ?? false;
+    this.deps.onCommandAck({ sn, kind: "ff09-autolock", getAcked: true, acked: setAcked });
+    if (!setAcked) {
+      this.logger.debug(
+        `dispatchFf09Autolock(${sn}): settings GET succeeded but no SET /res within ` +
+          `${MqttCommandRouter.FF09_ACK_TIMEOUT_MS}ms — broker accepted the publish, device receipt unclear`,
       );
-      const setAckPromise = this.waitForMqttMessage(
-        mqtt,
-        // Same device-scoped `/res` match as the actuate ack above (topic-only, no keyTime — telemetry).
-        (m) => (m.topic?.endsWith(`/${sn}/res`) ? true : undefined),
-        MqttCommandRouter.FF09_ACK_TIMEOUT_MS,
-      );
-      await mqtt.publish(
-        topic,
-        buildFf09MqttEnvelope({ trans: setTrans, clientId: mqtt.id, accountId: cmd.adminUserId, deviceSn: sn }),
-        { qos: 1 },
-      );
-      const setAcked = (await setAckPromise) ?? false;
-      this.deps.onCommandAck({ sn, kind: "ff09-autolock", getAcked: true, acked: setAcked, instanceIp });
-      if (!setAcked) {
-        this.logger.debug(
-          `dispatchFf09Autolock(${sn}): settings GET succeeded but no SET /res within ` +
-            `${MqttCommandRouter.FF09_ACK_TIMEOUT_MS}ms on ${instanceIp} — broker accepted the publish, device receipt unclear`,
-        );
-      }
-    } finally {
-      await mqtt.disconnect();
     }
   }
 
@@ -669,7 +563,6 @@ export class MqttCommandRouter {
     topic: string,
     sn: string,
     cmd: { adminUserId: string; deviceSn: string },
-    instanceIp: string,
   ): Promise<{ lockPayload: string; keyTime: number }> {
     const queryTrans = this.sequenced(
       sn,
@@ -678,6 +571,7 @@ export class MqttCommandRouter {
     const getReplyPromise = this.waitForMqttMessage(
       mqtt,
       (m) => {
+        if (!MqttCommandRouter.isReply(m, sn, 9)) return undefined;
         const reply = parseFf09SettingsResponseTrans(m.raw);
         if (!reply || reply.cmd !== CMD_TRANSFER_PAYLOAD) return undefined;
         const keyTime = ff09ReplyKeyTime(reply.payload.time);
@@ -695,7 +589,7 @@ export class MqttCommandRouter {
     if (!getReply) {
       throw new Error(
         `fetchFf09SettingsGetReply(${sn}): no settings GET reply within ${MqttCommandRouter.FF09_ACK_TIMEOUT_MS}ms on ` +
-          `${instanceIp}.`,
+          `the eufy_security stack.`,
       );
     }
     return getReply;
@@ -703,30 +597,24 @@ export class MqttCommandRouter {
 
   /**
    * **Read the T85D0's current auto-lock settings over MQTT** — the `Ff09SettingsReader` implementation.
-   * A pure GET, no SET: opens its own one-shot MQTT connection (same
-   * lifecycle as {@link dispatchFf09Autolock}), reuses {@link fetchFf09SettingsGetReply}, then decrypts
+   * A pure GET, no SET: reuses {@link fetchFf09SettingsGetReply}, then decrypts
    * + decodes fields `a1`-`a5` per `transport/ff09.ts`'s response tag map.
    */
   async getAutoLockState(sn: string, cmd: { adminUserId: string; deviceSn: string }): Promise<AutoLockSnapshot> {
     const dev = await this.pnDeviceFor(sn);
-    const { mqtt, instanceIp } = await this.ensureSecurityMqttFor(dev);
-    try {
-      await mqtt.subscribeDevice(dev);
-      const topic = ff09MqttTopic(dev.model, sn);
-      const getReply = await this.fetchFf09SettingsGetReply(mqtt, topic, sn, cmd, instanceIp);
-      return decodeFf09AutoLockSnapshot(
-        parseFf09SettingsResponse(
-          decryptFf09Frame({
-            lockPayload: getReply.lockPayload,
-            keyTime: getReply.keyTime,
-            adminUserId: cmd.adminUserId,
-            deviceSn: cmd.deviceSn,
-          }),
-        ),
-      );
-    } finally {
-      await mqtt.disconnect();
-    }
+    const mqtt = await this.securityMqtt();
+    const topic = ff09MqttTopic(dev.model, sn);
+    const getReply = await this.fetchFf09SettingsGetReply(mqtt, topic, sn, cmd);
+    return decodeFf09AutoLockSnapshot(
+      parseFf09SettingsResponse(
+        decryptFf09Frame({
+          lockPayload: getReply.lockPayload,
+          keyTime: getReply.keyTime,
+          adminUserId: cmd.adminUserId,
+          deviceSn: cmd.deviceSn,
+        }),
+      ),
+    );
   }
 
   /**
@@ -796,20 +684,21 @@ export class MqttCommandRouter {
       functionType: cmd.functionType ?? 2,
     });
     const trans = this.sequenced(sn, toFf09Trans(frame));
-    const { mqtt } = await this.ensureSecurityMqttFor(dev);
-    try {
-      const envelope = buildFf09MqttEnvelope({
-        trans,
-        clientId: mqtt.id,
-        accountId: adminUserId,
-        deviceSn: sn,
-        cmd: cmd.mqttCmdCode,
-      });
-      await mqtt.publish(ff09MqttTopic(dev.model, sn), envelope, { qos: 1 });
-      this.deps.onCommandAck({ sn, kind: "mqtt-dp", cmdCode: cmd.cmdCode, acked: true });
-    } finally {
-      await mqtt.disconnect();
-    }
+    const mqtt = await this.securityMqtt();
+    const envelope = buildFf09MqttEnvelope({
+      trans,
+      clientId: mqtt.id,
+      accountId: adminUserId,
+      deviceSn: sn,
+      cmd: cmd.mqttCmdCode,
+    });
+    const reply = this.waitForMqttMessage(
+      mqtt,
+      (m) => (MqttCommandRouter.isReply(m, sn, cmd.mqttCmdCode) ? true : undefined),
+      (cmd.timeoutS ?? 5) * 1000,
+    );
+    await mqtt.publish(ff09MqttTopic(dev.model, sn), envelope, { qos: 1 });
+    this.deps.onCommandAck({ sn, kind: "mqtt-dp", cmdCode: cmd.cmdCode, acked: (await reply) ?? false });
   }
 
   /** Serialize and publish one semantic RGB DP action without changing configured brightness. */

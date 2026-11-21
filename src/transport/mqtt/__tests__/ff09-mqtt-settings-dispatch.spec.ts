@@ -8,7 +8,7 @@ import { LOCK_COMMAND_CODE, CMD_TRANSFER_PAYLOAD } from "../../ff09.js";
 
 /**
  * `MqttCommandRouter.dispatchCommand` on the `ff09-autolock` intent (behind `dev.lock()?.setAutoLock`)
- * — no live broker: `ensureSecurityMqttFor` is stubbed, device resolution comes from the injected
+ * — no live broker: the `securityTransport` dep hands back a fake, device resolution comes from the injected
  * `listDevices`, and the "MQTT connection" is a bare EventEmitter standing in for `SecureMqtt`, same style
  * as `ff09-mqtt-dispatch.spec.ts`. The `publish` mock inspects each outbound envelope (GET vs SET, by
  * opcode) and, for the GET, emits a synthetic-but-correctly-encrypted device reply built with the
@@ -79,17 +79,14 @@ function makeRouter(opts: { delay: number; a7: number; a8: number; currentlyEnab
     ensureDevices: async () => {},
     onCommandAck: (info) => acks.push(info),
     onError: () => {},
+    securityTransport: async () => fakeMqtt as any,
   });
 
   const fakeMqtt = new EventEmitter() as EventEmitter & {
     id: string;
-    subscribeDevice: (d: EufyDevice) => Promise<void>;
     publish: (topic: string, body: string, o?: unknown) => Promise<void>;
-    disconnect: () => Promise<void>;
   };
   fakeMqtt.id = "client-1";
-  fakeMqtt.subscribeDevice = vi.fn().mockResolvedValue(undefined);
-  fakeMqtt.disconnect = vi.fn().mockResolvedValue(undefined);
 
   const publishedBodies: string[] = [];
   fakeMqtt.publish = vi.fn().mockImplementation(async (_topic: string, body: string) => {
@@ -112,11 +109,9 @@ function makeRouter(opts: { delay: number; a7: number; a8: number; currentlyEnab
         raw: { head: { cmd: 8 }, payload: JSON.stringify({ trans: transB64 }) },
       });
     } else if (op === LOCK_COMMAND_CODE.SET_SETTINGS) {
-      fakeMqtt.emit("message", { topic: `cmd/eufy_security/T85D0/${SN}/res` });
+      fakeMqtt.emit("message", { topic: `cmd/eufy_security/T85D0/${SN}/res`, raw: { head: { cmd: 8 } } });
     }
   });
-
-  vi.spyOn(router as any, "ensureSecurityMqttFor").mockResolvedValue({ mqtt: fakeMqtt, instanceIp: "198.51.100.7" });
 
   return { router, fakeMqtt, publishedBodies, acks };
 }
@@ -205,18 +200,14 @@ describe("MqttCommandRouter.dispatchCommand (ff09-autolock)", () => {
       ensureDevices: async () => {},
       onCommandAck: () => {},
       onError: () => {},
+      securityTransport: async () => fakeMqtt as any,
     });
     const fakeMqtt = new EventEmitter() as EventEmitter & {
       id: string;
-      subscribeDevice: (d: EufyDevice) => Promise<void>;
       publish: (topic: string, body: string) => Promise<void>;
-      disconnect: () => Promise<void>;
     };
     fakeMqtt.id = "client-1";
-    fakeMqtt.subscribeDevice = vi.fn().mockResolvedValue(undefined);
     fakeMqtt.publish = vi.fn().mockResolvedValue(undefined); // never replies
-    fakeMqtt.disconnect = vi.fn().mockResolvedValue(undefined);
-    vi.spyOn(router as any, "ensureSecurityMqttFor").mockResolvedValue({ mqtt: fakeMqtt, instanceIp: "198.51.100.7" });
 
     const cmd = {
       kind: "ff09-autolock" as const,
@@ -228,7 +219,6 @@ describe("MqttCommandRouter.dispatchCommand (ff09-autolock)", () => {
     const assertion = expect(p).rejects.toThrow(/no settings GET reply/);
     await vi.advanceTimersByTimeAsync(5000);
     await assertion;
-    expect(fakeMqtt.disconnect).toHaveBeenCalledOnce();
   });
 
   it("does not throw when the SET step gets no ack (fire-and-forget), reports it via commandAck", async () => {
@@ -245,16 +235,13 @@ describe("MqttCommandRouter.dispatchCommand (ff09-autolock)", () => {
       ensureDevices: async () => {},
       onCommandAck: (info) => acks.push(info),
       onError: () => {},
+      securityTransport: async () => fakeMqtt as any,
     });
     const fakeMqtt = new EventEmitter() as EventEmitter & {
       id: string;
-      subscribeDevice: (d: EufyDevice) => Promise<void>;
       publish: (topic: string, body: string) => Promise<void>;
-      disconnect: () => Promise<void>;
     };
     fakeMqtt.id = "client-1";
-    fakeMqtt.subscribeDevice = vi.fn().mockResolvedValue(undefined);
-    fakeMqtt.disconnect = vi.fn().mockResolvedValue(undefined);
     fakeMqtt.publish = vi.fn().mockImplementation(async (_topic: string, body: string) => {
       const { op, time } = decodeEnvelope(body);
       if (op === LOCK_COMMAND_CODE.GET_SETTINGS) {
@@ -272,7 +259,6 @@ describe("MqttCommandRouter.dispatchCommand (ff09-autolock)", () => {
       }
       // SET publish: no reply at all
     });
-    vi.spyOn(router as any, "ensureSecurityMqttFor").mockResolvedValue({ mqtt: fakeMqtt, instanceIp: "198.51.100.7" });
 
     const cmd = {
       kind: "ff09-autolock" as const,
@@ -283,7 +269,6 @@ describe("MqttCommandRouter.dispatchCommand (ff09-autolock)", () => {
     const p = router.dispatchCommand(SN, cmd);
     await vi.advanceTimersByTimeAsync(5000);
     await expect(p).resolves.toBeUndefined();
-    expect(acks).toEqual([{ sn: SN, kind: "ff09-autolock", getAcked: true, acked: false, instanceIp: "198.51.100.7" }]);
-    expect(fakeMqtt.disconnect).toHaveBeenCalledOnce();
+    expect(acks).toEqual([{ sn: SN, kind: "ff09-autolock", getAcked: true, acked: false }]);
   });
 });

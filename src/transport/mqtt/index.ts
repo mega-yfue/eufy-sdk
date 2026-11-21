@@ -1,7 +1,6 @@
 export * from "./secure-mqtt.js";
 export * from "./topics.js";
 export * from "./app-client-id.js";
-export * from "./broker-discovery.js";
 export * from "./biz-stream.js";
 // Solix telemetry — enumerated (not `export *`) so the public surface is the consumer-facing set: the
 // stream class + the shapes its `reading` event carries. The lower-level ff09 decoders
