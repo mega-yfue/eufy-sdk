@@ -280,6 +280,10 @@ An egress that omits it is not opting out — it leaves the choice to whoever go
 polled on an idle camera opens a pull retaining nothing and a recording seconds later has nothing to drain,
 however much it asks for. Pass the same window on every egress a device uses, or none of them.
 
+`entryType` is the live start's `LiveTypeAndroid` value, fixed when the pull opens like the window above: 0
+(default) is the app's plain player, 1-11 its setup screens (`SharedSourceHints.entryType`). Only products whose
+bundle forwards it send it.
+
 ## Snapshots
 
 The two snapshot methods are intentionally distinct. Choose whether the call may start live media;

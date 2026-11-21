@@ -1501,15 +1501,15 @@ export class P2PSession extends EventEmitter {
   }
 
   /**
-   * Send one frame of a product's bundle as the app's sender builds it, its `$channel`, `$userId`, `$now` and `$key`
-   * tokens filled: `json1700` as `{commandType: subCmd, data: payload}`, `json1350` as the `{account_id, cmd: subCmd,
+   * Send one frame of a product's bundle as the app's sender builds it, its `$channel`, `$userId`, `$now`, `$key` and
+   * `$entryType` tokens filled: `json1700` as `{commandType: subCmd, data: payload}`, `json1350` as the `{account_id, cmd: subCmd,
    * mChannel, mValue3, payload}` envelope, `json` as the payload itself on header channel `payload.mChannel`, and a
    * `native` body as `[u32 channel]`, followed for layout `0x2db020` by the key and a NUL when the key is 256
    * characters. Header byte 14 is the frame's `counter` ({@link headerCounter}). The key is the app's `getCrypto`:
    * the session's P-256 point once a gateway info came as version 8 or for an `ability` of 128 up, else the RSA
    * modulus. Sealed by the session, sent once and resent by DRW ({@link sendAcknowledged}).
    */
-  sendFrame(frame: SessionFrame, channel: number, userId = "", ability = 0): void {
+  sendFrame(frame: SessionFrame, channel: number, userId = "", ability = 0, entryType = 0): void {
     if (!this.connectAddress) throw new Error(`P2P session ${this.cfg.stationSn} is not connected`);
     const ecc = this.notifiedVersion8 || ability >= 128;
     const now = String(Date.now());
@@ -1518,6 +1518,7 @@ export class P2PSession extends EventEmitter {
       $channel: () => channel,
       $userId: () => userId,
       $now: () => now,
+      $entryType: () => entryType,
       $key: () => ((keyed = true), ecc ? this.mediaEccPair().point : this.rsaModulus()),
     };
     const fill = (x: unknown): unknown =>

@@ -901,6 +901,13 @@ export interface SharedSourceHints {
    * the camera capture just before this" only for a pull something already opened.
    */
   preBufferSeconds?: number;
+  /**
+   * The live start's `entryType`, the app's `LiveTypeAndroid` value: 0 (default) is its plain player; 1-11 its setup
+   * screens (1 Hotspot, 2 StandingPosition, 3 CruisePreview, 4 Privacy, 5 PanTiltSpeedSetting, 6 NoPackageAreaSetting,
+   * 7 NoPackageThingSetting, 8 LandscapeMode, 9 SignalTest, 10 OutSightDetection, 11 PrivacyPerspective). Only the
+   * products whose bundle forwards it send it.
+   */
+  entryType?: number;
 }
 
 /**
