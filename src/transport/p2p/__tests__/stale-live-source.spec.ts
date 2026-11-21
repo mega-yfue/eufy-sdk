@@ -64,10 +64,8 @@ describe("a cached pull when its P2P path is replaced", () => {
     const sibling = { dispose: vi.fn(), state: "live", consumerCount: 1 };
     const internals = router as unknown as {
       liveSources: Map<string, typeof sibling>;
-      liveSessionKeys: Map<string, string>;
     };
     internals.liveSources.set(siblingKey, sibling);
-    internals.liveSessionKeys.set(siblingKey, `${STATION}#live:2`);
 
     first.pathAnswering = false;
     const newSource = await router.sharedLiveSourceFor(CAMERA);
@@ -75,8 +73,8 @@ describe("a cached pull when its P2P path is replaced", () => {
     expect(first.close).toHaveBeenCalledOnce();
     expect(newSource).not.toBe(oldSource);
     expect(() => oldSource.attach()).toThrow(/disposed/);
-    expect(sibling.dispose).not.toHaveBeenCalled();
-    expect(internals.liveSources.get(siblingKey)).toBe(sibling);
+    expect(sibling.dispose, "a sibling rides the same closed session").toHaveBeenCalledOnce();
+    expect(internals.liveSources.has(siblingKey)).toBe(false);
     const newConsumer = newSource.attach();
     expect(starts(replacement)).toBe(1);
     newConsumer.detach();

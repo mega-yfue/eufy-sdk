@@ -953,8 +953,7 @@ export interface MediaProvider {
      * Present and `true` only when these bytes are the RETAINED still rather than a fresh capture.
      *
      * A live still is refused while a sibling camera on the same station is being watched, because one
-     * session serves one camera at a time, a still does not open a connection of its own, and the live view
-     * is the picture someone is looking at. Answering
+     * session serves one camera at a time and the live view is the picture someone is looking at. Answering
      * the retained still there answers the call instead of failing it, and this says the bytes are not
      * current. Absent means freshly captured.
      */
@@ -963,11 +962,8 @@ export interface MediaProvider {
   /**
    * Open a managed live stream.
    *
-   * Several cameras behind one station stream at the same time, each over its own connection to it. One
-   * connection serves one camera — a station answers the most recent start on a session, so two cameras
-   * sharing one take it from each other in turn — so a camera asked for while its station is already
-   * serving another gets a connection of its own. Each handle receives only the frames the station
-   * tagged for ITS camera.
+   * Every camera behind a station streams over the station's one session; each handle receives only the frames
+   * the station tagged for ITS camera.
    *
    * @example
    * ```ts
