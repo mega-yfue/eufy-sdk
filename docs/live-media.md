@@ -281,8 +281,9 @@ polled on an idle camera opens a pull retaining nothing and a recording seconds 
 however much it asks for. Pass the same window on every egress a device uses, or none of them.
 
 `entryType` is the live start's `LiveTypeAndroid` value, fixed when the pull opens like the window above: 0
-(default) is the app's plain player, 1-11 its setup screens (`SharedSourceHints.entryType`). Only products whose
-bundle forwards it send it.
+(default) is the app's plain player, 1-11 its setup screens: 1 Hotspot, 2 StandingPosition, 3 CruisePreview,
+4 Privacy, 5 PanTiltSpeedSetting, 6 NoPackageAreaSetting, 7 NoPackageThingSetting, 8 LandscapeMode, 9 SignalTest,
+10 OutSightDetection, 11 PrivacyPerspective. Only products whose bundle forwards it send it.
 
 ## Snapshots
 
