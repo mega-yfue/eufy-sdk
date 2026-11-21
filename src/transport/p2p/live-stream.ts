@@ -137,17 +137,12 @@ export class LiveStream extends EventEmitter {
     return this;
   }
 
-  /** Send the start again while listening: the shared source's warm-up retry. */
-  nudge(): void {
-    if (this.listening) this.sendStart();
-  }
-
   private sendStart(): void {
     const { frames, accountId } = this.opts;
     try {
       this.session.sendFrame(frames.start, this.channel, accountId, frames.ability);
     } catch (e) {
-      // Non-fatal: the session may be mid-reconnect; the warm-up retry will re-issue the start.
+      // Non-fatal: the session may be mid-reconnect; the warm-up deadline ends a start that never went.
       this.logger.debug(`[live] start deferred (session not ready): ${e instanceof Error ? e.message : e}`);
     }
   }

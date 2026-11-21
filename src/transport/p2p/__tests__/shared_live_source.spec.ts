@@ -3,20 +3,16 @@ import { H264, H265, unit } from "./live-source-fixtures.js";
 import { SharedLiveSource, type SharedLiveSourceOptions } from "../shared-live-source.js";
 import type { LiveAudioFrame, LiveStreamHandle, LiveVideoFrame } from "../../../core/contracts.js";
 
-/** Fake LiveStream: counts start/stop/nudge, lets a test push video/audio + emit stop/error. */
+/** Fake LiveStream: counts start/stop, lets a test push video/audio + emit stop/error. */
 class FakeStream extends EventEmitter implements LiveStreamHandle {
   started = 0;
   stopped = 0;
-  nudged = 0;
   start(): this {
     this.started++;
     return this;
   }
   stop(): void {
     this.stopped++;
-  }
-  nudge(): void {
-    this.nudged++;
   }
   video(frame: LiveVideoFrame) {
     this.emit("video", frame);
@@ -257,36 +253,28 @@ describe("SharedLiveSource", () => {
     expect(got[1].keyframe).toBe(true);
   });
 
-  it("warm-retry nudges the stream until a frame arrives, then stops", () => {
-    const { source, last } = mk({ warmRetryMs: 2000, warmTimeoutMs: 20000 });
-    source.attach();
-    expect(last().started).toBe(1);
-    vi.advanceTimersByTime(2000);
-    expect(last().nudged).toBe(1);
-    vi.advanceTimersByTime(2000);
-    expect(last().nudged).toBe(2);
-    last().video(frame(true));
-    const at = last().nudged;
-    vi.advanceTimersByTime(6000);
-    expect(last().nudged).toBe(at);
+  /** The app sends `open_live_stream` once (`P2PLiveStreamPlayer.play`); only its player timeout follows. */
+  it("starts the stream once and builds no other while warming", () => {
+    const { source, last } = mk({ warmTimeoutMs: 20000 });
+    source.attach().on("error", () => undefined);
+    const first = last();
+    vi.advanceTimersByTime(19999);
+    expect(last()).toBe(first);
+    expect(first.started).toBe(1);
   });
 
-  it.each([0, -1, 0.5, Number.NaN, "fast", 3e9])("uses safe defaults for invalid warm-up timing %s", (invalid) => {
-    const { source, last } = mk({ warmRetryMs: invalid as number, warmTimeoutMs: invalid as number });
+  it.each([0, -1, 0.5, Number.NaN, "fast", 3e9])("uses the safe default deadline for invalid timing %s", (invalid) => {
+    const { source } = mk({ warmTimeoutMs: invalid as number });
     const consumer = source.attach();
     consumer.on("error", () => undefined);
-    vi.advanceTimersByTime(1999);
-    expect(last().nudged).toBe(0);
-    vi.advanceTimersByTime(1);
-    expect(last().nudged).toBe(1);
-    vi.advanceTimersByTime(17999);
+    vi.advanceTimersByTime(24999);
     expect(source.state).toBe("warming");
     vi.advanceTimersByTime(1);
     expect(source.state).toBe("stopped");
   });
 
   it("stalls: emits error to consumers and tears down when no keyframe arrives in the warm window", () => {
-    const { source, last } = mk({ warmRetryMs: 2000, warmTimeoutMs: 6000 });
+    const { source, last } = mk({ warmTimeoutMs: 6000 });
     const c = source.attach();
     let err: Error | undefined;
     c.on("error", (e) => (err = e));

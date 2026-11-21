@@ -18,12 +18,11 @@ const phases = (calls: [string, ...unknown[]][]) =>
   calls.filter(([message]) => message === LIVE_TRACE_MESSAGE).map(([, trace]) => trace);
 
 describe("warm-up phase", () => {
-  it("states the retry interval and the deadline it will fail at", () => {
+  it("states the deadline it will fail at", () => {
     const debug = vi.fn();
     const { makeStream } = streamFactory();
     const source = new SharedLiveSource({
       makeStream,
-      warmRetryMs: 2000,
       warmTimeoutMs: 20000,
       logger: { debug, info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     });
@@ -31,7 +30,7 @@ describe("warm-up phase", () => {
     const consumer = source.attach();
 
     expect(phases(debug.mock.calls as never)).toContainEqual(
-      expect.objectContaining({ phase: "warming", retryMs: 2000, deadlineMs: 20000 }),
+      expect.objectContaining({ phase: "warming", deadlineMs: 20000 }),
     );
     consumer.detach();
   });
@@ -41,7 +40,6 @@ describe("warm-up phase", () => {
     const { makeStream } = streamFactory();
     const source = new SharedLiveSource({
       makeStream,
-      warmRetryMs: 750,
       warmTimeoutMs: 9000,
       logger: { debug, info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     });
@@ -49,7 +47,7 @@ describe("warm-up phase", () => {
     const consumer = source.attach();
 
     expect(phases(debug.mock.calls as never)).toContainEqual(
-      expect.objectContaining({ phase: "warming", retryMs: 750, deadlineMs: 9000 }),
+      expect.objectContaining({ phase: "warming", deadlineMs: 9000 }),
     );
     consumer.detach();
   });
