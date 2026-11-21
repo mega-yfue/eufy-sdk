@@ -1,5 +1,5 @@
 import { LOCK, LOCK_SETTING_ID, type LockActions } from "../lock.js";
-import { isClassicWifiLock } from "../../device-family.js";
+import { isBluetoothLock, isClassicWifiLock } from "../../device-family.js";
 import { parseThingsList } from "../thing-description.js";
 import { resolveDevice } from "../../registry.js";
 import { DeviceType } from "../../device-types.js";
@@ -52,6 +52,47 @@ const classicCtx: CommandContext = {
   accountName: "someone+tag",
   hasP2p: true,
 };
+
+// A Bluetooth lock, DeviceType 50, paired to a station.
+const bluetoothCtx: CommandContext = {
+  channel: 0,
+  codec: "lock",
+  deviceType: 50,
+  model: "T8510",
+  serial: "T8510P0000000000",
+  stationSerial: "T8000P0000000000",
+  paramIds: new Set(),
+  adminUserId: "0000000000000000000000000000000000000000",
+  shortUserId: "0004",
+  accountName: "someone",
+  hasP2p: true,
+};
+
+describe("lock capability — Bluetooth lock family", () => {
+  it("classifies DeviceType 50 as the Bluetooth lock, and nothing else", () => {
+    expect(isBluetoothLock(bluetoothCtx)).toBe(true);
+    expect(isBluetoothLock({ deviceType: 52 })).toBe(false);
+    expect(isBluetoothLock({ deviceType: 51 })).toBe(false);
+    expect(isBluetoothLock({})).toBe(false);
+  });
+
+  it("lock/unlock emit the door-lock pass-through intent", async () => {
+    const { acts, sent } = lockOf(bluetoothCtx);
+    await acts.lock!();
+    await acts.unlock!();
+    expect(sent.map((c) => c.kind)).toEqual(["doorlock-pass-through-actuate", "doorlock-pass-through-actuate"]);
+    expect(sent[0]).toMatchObject({ engage: true, adminUserId: bluetoothCtx.adminUserId, shortUserId: "0004" });
+    expect(sent[1]).toMatchObject({ engage: false, deviceSn: bluetoothCtx.serial });
+  });
+
+  it("withholds the ff09 auto-lock members, which its bridge has no key to send", () => {
+    const ff09Settings = { getAutoLockState: vi.fn() } as unknown as Ff09SettingsReader;
+    const { acts } = lockOf(bluetoothCtx, ff09Settings);
+    expect("setAutoLock" in acts).toBe(false);
+    expect(acts.getAutoLockState).toBeUndefined();
+    expect(lockOf(p2pCtx, ff09Settings).acts.getAutoLockState).toBeTypeOf("function");
+  });
+});
 
 describe("lock capability — classic Wi-Fi lock family", () => {
   it("classifies the classic lock as DeviceType 51 in the driven T8520 serial range, and nothing else", () => {
