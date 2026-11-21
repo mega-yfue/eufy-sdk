@@ -78,7 +78,9 @@ describe("MqttCommandRouter custom-colour dispatch", () => {
     } as EufyDevice;
     let releasePublish!: () => void;
     const published = new Promise<void>((resolve) => (releasePublish = resolve));
-    const publishSecure = vi.fn((_dev: EufyDevice, _topic: string, _body: string): Promise<void> => published);
+    const publishSecure = vi.fn(
+      (_dev: EufyDevice, _topic: string, _body: string | ((clientId: string) => string)): Promise<void> => published,
+    );
     const acks: Record<string, unknown>[] = [];
     const router = new MqttCommandRouter({
       mega: {} as never,
@@ -95,7 +97,8 @@ describe("MqttCommandRouter custom-colour dispatch", () => {
     expect(publishSecure).toHaveBeenCalledOnce();
     expect(acks).toHaveLength(0);
 
-    const [, topic, body] = publishSecure.mock.calls[0]!;
+    const [, topic, build] = publishSecure.mock.calls[0]!;
+    const body = typeof build === "function" ? build("client-1") : build;
     expect(topic).toBe(`cmd/eufy_life/T8L02/${DEVICE_SN}/req`);
     const outer = JSON.parse(body) as { head: { cmd: number }; payload: string };
     const inner = JSON.parse(outer.payload) as { data: string };
