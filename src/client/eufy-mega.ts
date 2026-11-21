@@ -439,6 +439,7 @@ export class EufyMega extends EventEmitter {
         const device = record(sn);
         return device && liveFrames(device.model, parentSn, [record(parentSn)?.params, device.params]);
       },
+      thingDefault: (sn, identifier) => this.registry.thingDefault(sn, identifier),
       sessionIdle: { batteryIdleMs: opts.p2pIdleMs },
       localAddresses: opts.localAddresses,
       noBroadcast: opts.noBroadcast,
