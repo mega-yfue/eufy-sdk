@@ -7,7 +7,7 @@ import { EventEmitter } from "node:events";
  * `mqtt.connect` is mocked to return a bare EventEmitter standing in for mqtt.js's `MqttClient`, with
  * an `end` spy so we can assert cleanup without a live broker.
  */
-const fakeClients: Array<EventEmitter & { end: ReturnType<typeof vi.fn> }> = [];
+const fakeClients: Array<EventEmitter & { end: ReturnType<typeof vi.fn>; options: any }> = [];
 const connectOptsSeen: any[] = [];
 
 vi.mock("mqtt", () => ({
@@ -15,8 +15,9 @@ vi.mock("mqtt", () => ({
     connect: vi.fn((...args: any[]) => {
       const opts = typeof args[0] === "string" ? args[1] : args[0];
       connectOptsSeen.push(opts);
-      const client = new EventEmitter() as EventEmitter & { end: ReturnType<typeof vi.fn> };
+      const client = new EventEmitter() as EventEmitter & { end: ReturnType<typeof vi.fn>; options: any };
       client.end = vi.fn();
+      client.options = { ...opts };
       fakeClients.push(client);
       return client;
     }),
@@ -40,7 +41,7 @@ describe("SecureMqtt.connect — reconnect lifecycle", () => {
   });
 
   it("a connect that never establishes ends the client instead of leaving it to auto-reconnect forever", async () => {
-    const m = new SecureMqtt({ credentials: CREDS, instanceIp: "198.51.100.7" });
+    const m = new SecureMqtt({ credentials: CREDS });
     m.on("error", () => {}); // SecureMqtt re-emits — a real caller always listens (e.g. ensureSecurityMqttFor)
     const p = m.connect();
     const client = await nextClient(fakeClients);
@@ -70,26 +71,24 @@ describe("SecureMqtt.connect — reconnect lifecycle", () => {
     expect(connectOptsSeen[0].reconnectPeriod).toBe(5000);
   });
 
-  it("a one-shot caller (reconnectPeriod:0) gets that value passed straight through to mqtt.connect", async () => {
-    const m = new SecureMqtt({ credentials: CREDS, instanceIp: "198.51.100.7", reconnectPeriod: 0 });
+  it("reconnects as the app's MqttConnectOption: 4 s doubling to 64 s, ending after 10 attempts", async () => {
+    const m = new SecureMqtt({ credentials: CREDS, keepaliveS: 300, backoff: { minS: 4, maxS: 64, attempts: 10 } });
     const p = m.connect();
-    (await nextClient(fakeClients)).emit("connect");
+    const client = await nextClient(fakeClients);
+    client.emit("connect");
     await p;
-    expect(connectOptsSeen[0].reconnectPeriod).toBe(0);
-  });
-
-  it("verifies the server on a pinned-instance dial, checking the certificate against the hostname", async () => {
-    const m = new SecureMqtt({ credentials: CREDS, instanceIp: "198.51.100.7" });
-    const p = m.connect();
-    (await nextClient(fakeClients)).emit("connect");
-    await p;
-
-    const opts = connectOptsSeen[0];
-    expect(opts.host).toBe("198.51.100.7");
-    expect(opts.rejectUnauthorized).toBe(true);
-    expect(opts.servername).toBe(CREDS.endpoint_addr);
-    expect(typeof opts.checkServerIdentity).toBe("function");
-    expect(opts.ca).toBe(CREDS.aws_root_ca1_pem);
+    expect([connectOptsSeen[0].keepalive, connectOptsSeen[0].reconnectPeriod]).toEqual([300, 4000]);
+    const waits: number[] = [];
+    for (let i = 0; i < 10; i++) {
+      client.emit("reconnect");
+      waits.push(client.options.reconnectPeriod);
+    }
+    expect(waits).toEqual([8000, 16000, 32000, 64000, 64000, 64000, 64000, 64000, 64000, 64000]);
+    expect(client.end).not.toHaveBeenCalled();
+    client.emit("reconnect");
+    expect(client.end).toHaveBeenCalledWith(true);
+    client.emit("connect");
+    expect(client.options.reconnectPeriod).toBe(4000);
   });
 
   describe("one connection per instance", () => {
@@ -112,7 +111,7 @@ describe("SecureMqtt.connect — reconnect lifecycle", () => {
     });
 
     it("retries with a fresh client after a connect that failed", async () => {
-      const m = new SecureMqtt({ credentials: CREDS, instanceIp: "198.51.100.7" });
+      const m = new SecureMqtt({ credentials: CREDS });
       m.on("error", () => {});
       const failed = m.connect();
       (await nextClient(fakeClients)).emit("error", new Error("ECONNREFUSED"));

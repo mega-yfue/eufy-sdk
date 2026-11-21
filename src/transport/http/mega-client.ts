@@ -1037,19 +1037,16 @@ export class MegaHttpClient {
   }
 
   /**
-   * Fetch the per-user secure-MQTT credentials. Pass `appName` to request a specific capability scope
-   * on the current session without re-logging in — security devices (locks/garage) need the
-   * `eufy_security` scope, which the default scope can't reach.
+   * The per-user secure-MQTT certificate, as the app asks for it per stack: `eufy_security` is
+   * `POST app/mqtt/register/iot` and `eufy_life` is `POST app/devicemanage/get_user_mqtt_info`, both on the
+   * Basic (`mega-`) host with `app-tab: <scope>`; without a scope, the clean line's headerless
+   * `get_user_mqtt_info`.
    */
-  // The credential's publish scope is set by the `app-name` header; `eufy_security` returns a distinct
-  // security-scoped credential (verified: distinct from the default `eufy_mega` one, same session).
-  getUserMqttInfo(appName?: string): Promise<SecureMqttCredentials> {
-    return this.post<SecureMqttCredentials>(
-      "devicemanage",
-      "/app/devicemanage/get_user_mqtt_info",
-      {},
-      appName ? { "app-name": appName } : {},
-    );
+  getUserMqttInfo(scope?: "eufy_security" | "eufy_life"): Promise<SecureMqttCredentials> {
+    if (!scope) return this.post<SecureMqttCredentials>("devicemanage", "/app/devicemanage/get_user_mqtt_info", {});
+    const path = scope === "eufy_security" ? "/app/mqtt/register/iot" : "/app/devicemanage/get_user_mqtt_info";
+    const basic = this.bootstrapDomain ?? `mega-${this.region}.eufy.com`;
+    return this.postSigned<SecureMqttCredentials>(basic, path, {}, true, {}, { "app-tab": scope });
   }
 
   async registerPushToken(token: string): Promise<void> {

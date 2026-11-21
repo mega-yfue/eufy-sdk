@@ -8,8 +8,7 @@ import type { PersistedSession, SessionStore } from "../../core/store.js";
  * The certificate's own name (`thing_name` = `{user_id}-{app_name}`) identifies the ACCOUNT and the
  * line, not the client, and the broker resolves a duplicate client id by evicting the incumbent — so
  * two clients under one name flap indefinitely, neither holding a channel. These specs pin what the id
- * is built from, how far it actually separates two clients, and the fallback that keeps a credential
- * whose policy refuses that id connected.
+ * is built from and how far it actually separates two clients.
  *
  * `SecureMqtt` is mocked (no sockets, no cloud); `buildAppShapedClientId` and `mqttUuidFrom` stay real
  * — they are pure, and what they produce is exactly what is under test.
@@ -47,9 +46,6 @@ const CREDS = {
   thing_name: `${UID}-eufy_mega`,
   user_id: UID,
 };
-
-/** How the broker answers a client id its policy will not accept, as `mqtt.js` words it. */
-const REFUSED = new Error("Connection refused: Not authorized");
 
 /** A store that already holds an identity, as one does on every run after the first. */
 function storeHolding(session: Partial<PersistedSession>): SessionStore {
@@ -105,6 +101,15 @@ describe("secure-MQTT client id", () => {
     expect(clientIds()[1]).toContain("-eufy_life-");
   });
 
+  it("connects the security and light stacks as the app does, under the raw openudid", async () => {
+    const openudid = "a".repeat(16);
+    await bringUp(makeClient({ openudid }, { ...CREDS, app_name: "eufy_security" }), "eufy_security");
+    await bringUp(makeClient({ openudid }), "eufy_life");
+
+    expect(constructedWith[0]).toMatchObject({ clientId: `android-eufy_security-${UID}-${openudid}`, keepaliveS: 300 });
+    expect(constructedWith[1]).toMatchObject({ clientId: `android-eufy_life-${UID}-${openudid}`, keepaliveS: 300 });
+  });
+
   it("survives a restart, because the identity it is built from is the persisted one", async () => {
     const store = storeHolding({ openudid: "b".repeat(16) } as Partial<PersistedSession>);
     await bringUp(makeClient({ store }));
@@ -127,57 +132,17 @@ describe("secure-MQTT client id", () => {
     expect(uuidOf(clientIds()[2]!)).toBe(uuidOf(clientIds()[3]!));
   });
 
-  describe("when the broker refuses that id", () => {
-    it("falls back to the certificate's own name", async () => {
-      connect.mockRejectedValueOnce(REFUSED).mockResolvedValue(undefined);
-
-      await bringUp(makeClient({ openudid: "a".repeat(16) }));
-
-      expect(constructedWith).toHaveLength(2);
-      expect(clientIds()[0]).toMatch(/^android-/);
-      expect(clientIds()[1]).toBeUndefined();
-    });
-
-    it("keeps that transport, rather than re-asking on every bring-up", async () => {
-      const eufy = makeClient({ openudid: "a".repeat(16) });
-      connect.mockRejectedValueOnce(REFUSED).mockResolvedValue(undefined);
-      await bringUp(eufy);
-      constructedWith.length = 0;
-
-      await bringUp(eufy);
-
-      expect(constructedWith).toHaveLength(0);
-    });
-
-    it("reports a fallback that fails too, rather than returning a dead transport", async () => {
-      connect.mockRejectedValue(REFUSED);
-
-      await expect(bringUp(makeClient({ openudid: "a".repeat(16) }))).rejects.toThrow(REFUSED);
-      expect(constructedWith).toHaveLength(2);
-    });
-  });
-
-  it("does not take a dropped socket for a refusal, and asks again under its own id", async () => {
-    // The failure this separation exists for: one bad handshake must not move a client onto the shared
-    // name for the rest of the process, which is the very collision being fixed.
-    const eufy = makeClient({ openudid: "a".repeat(16) });
-    connect.mockRejectedValueOnce(new Error("ECONNRESET")).mockResolvedValue(undefined);
-
-    await expect(bringUp(eufy)).rejects.toThrow("ECONNRESET");
-    expect(constructedWith).toHaveLength(1);
-
-    await bringUp(eufy);
-    expect(clientIds()[1]).toMatch(/^android-/);
-  });
-
-  it("announces a connection only once it stands", async () => {
+  it("rejects a failed connect without announcing it, and asks again under its own id", async () => {
     const eufy = makeClient({ openudid: "a".repeat(16) });
     const connected = vi.fn();
     eufy.on("connect", connected);
-    connect.mockRejectedValueOnce(REFUSED).mockResolvedValue(undefined);
+    connect.mockRejectedValueOnce(new Error("ECONNRESET")).mockResolvedValue(undefined);
+
+    await expect(bringUp(eufy)).rejects.toThrow("ECONNRESET");
+    expect(connected).not.toHaveBeenCalled();
 
     await bringUp(eufy);
-
+    expect(clientIds()[1]).toMatch(/^android-/);
     expect(connected).toHaveBeenCalledTimes(1);
   });
 });
