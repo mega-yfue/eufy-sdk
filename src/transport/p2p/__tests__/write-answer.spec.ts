@@ -46,13 +46,13 @@ describe("a level-2 setting write settles on the device's answer", () => {
     expect(error).toMatchObject({ sn: DEVICE_SN, commandId: PARAM, code: -108 });
   });
 
-  it("does not read another command's answer, or another channel's", async () => {
+  /** The app's result reader matches the command id alone. */
+  it("does not read another command's answer, and reads its own whatever channel it names", async () => {
     const { router, session } = station();
     session.sendRawLevel2Bytes.mockImplementationOnce(() => {
       queueMicrotask(() => {
         session.emit("commandResult", { code: -108, channel: CHANNEL, commandId: 1700 });
-        session.emit("commandResult", { code: -108, channel: CHANNEL + 1, commandId: PARAM });
-        session.emit("commandResult", { code: 0, channel: CHANNEL, commandId: PARAM });
+        session.emit("commandResult", { code: 0, channel: CHANNEL + 1, commandId: PARAM });
       });
       return true;
     });
