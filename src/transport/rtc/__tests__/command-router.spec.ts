@@ -166,7 +166,7 @@ describe("RtcCommandRouter", () => {
   it("refuses command kinds it cannot carry instead of misrouting them", async () => {
     const { router, sessions } = makeRouter();
     await expect(
-      router.dispatchCommand(ST, { kind: "set-param", param: 1, value: 1, form: "auto", channel: 0 } as never),
+      router.dispatchCommand(ST, { kind: "set-param", param: 1, value: 1, channel: 0 } as never),
     ).rejects.toThrow(/only set-payload/);
     expect(sessions).toHaveLength(0);
   });

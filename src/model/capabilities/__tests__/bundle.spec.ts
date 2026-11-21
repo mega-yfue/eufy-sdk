@@ -80,7 +80,6 @@ describe("frameCommand", () => {
       payload: { night_sion: 2, channel: 3, transaction: String(NOW) },
       channel: 3,
       mValue3: 0,
-      form: "auto",
     });
   });
   it("sends a json1700 frame in the 1700 wrapper, and the frame after it as next", () => {
@@ -106,7 +105,7 @@ describe("frameCommand", () => {
       param: 6014,
       data: { value: 1, transaction: String(NOW) },
       channel: 3,
-      next: { kind: "set-param", param: 1045, value: 1, form: "auto", channel: 3 },
+      next: { kind: "set-param", param: 1045, value: 1, channel: 3 },
     });
   });
   it("sends group A as an auto scalar, coercing a boolean switch as the app does", () => {
@@ -122,7 +121,6 @@ describe("frameCommand", () => {
       kind: "set-param",
       param: 1035,
       value: 1,
-      form: "auto",
       channel: 3,
     });
     expect(frameCommand({ ...frame, payload: { switch: 2 } }, 2, ctx("T8410"))).toMatchObject({ value: 0 });
@@ -156,7 +154,6 @@ describe("frameCommand", () => {
       cmd: 1235,
       value: 7,
       channel: 255,
-      form: "auto",
     });
   });
   it("fills $now as epoch milliseconds and $nowS as epoch seconds", () => {
@@ -203,10 +200,9 @@ describe("frameCommand", () => {
     expect(frameCommand(envelope, 1, ctx("T8114"))).toMatchObject({
       kind: "set-payload",
       cmd: 1001,
-      form: "int-string",
     });
     const raw: BundleFrame = { cmd: 1060, body: "json", channel: 255, payload: { a: 1 }, seal: "ecb" };
-    expect(frameCommand(raw, 1, ctx("T8114"))).toMatchObject({ kind: "set-json-raw", cmd: 1060, form: "int-string" });
+    expect(frameCommand(raw, 1, ctx("T8114"))).toMatchObject({ kind: "set-json-raw", cmd: 1060 });
   });
   it("carries a 1350 frame's list payload, unzipped keys and header counter, and a 1700 frame's param_data", () => {
     const envelope: BundleFrame = { cmd: 1350, subCmd: 1961, mValue3: 0, body: "json1350", channel: "$channel" };
@@ -362,7 +358,6 @@ describe("frameCommand on the other transports", () => {
       cmd: 1217,
       value: 0,
       channel: 255,
-      form: "auto",
       next: {
         kind: "cloud-request",
         method: "POST",
@@ -610,7 +605,6 @@ describe("an identifier no member claims", () => {
       payload: { deviceSn: "T0001P0000000000", enable: true, transaction: String(NOW) },
       channel: 3,
       mValue3: 0,
-      form: "auto",
     });
   });
   it("is refused when a member claims it, or the description does not list it", async () => {

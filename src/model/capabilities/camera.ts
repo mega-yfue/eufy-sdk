@@ -287,7 +287,7 @@ export const CAMERA_MEMBERS = {
     description:
       "Rotate the image 180° (ROTATE_IMAGE 1207): false = normal, true = flipped. " +
       "For ceiling/upside-down mounts. Write is a direct param; wire from the app parser (unverified live).",
-    write: (v, ctx) => setScalar(CAMERA_CMD.ROTATE_IMAGE, asBool(v) ? 1 : 0, ctx, "auto"),
+    write: (v, ctx) => setScalar(CAMERA_CMD.ROTATE_IMAGE, asBool(v) ? 1 : 0, ctx),
   },
   /** Three values on the products whose bundle writes three (0 off, 1 timestamp, 2 timestamp and logo). */
   watermark: {

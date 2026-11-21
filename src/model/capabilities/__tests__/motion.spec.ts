@@ -67,7 +67,6 @@ describe("motion capability module", () => {
         payload: { only_ai: 1 },
         channel: 3,
         mValue3: 0,
-        form: "auto",
       });
       expect(intent("humanOnlyAtNight", false, H(3))).toMatchObject({ payload: { only_ai: 0 } });
     });
@@ -79,7 +78,6 @@ describe("motion capability module", () => {
         payload: { radar_wd_switch: 1 },
         channel: 2,
         mValue3: 0,
-        form: "auto",
       });
       expect(intent("loiteringDetection", false, L(2))).toMatchObject({
         payload: { radar_wd_switch: 0 },
@@ -119,27 +117,24 @@ describe("motion capability module", () => {
   });
 
   describe("motionDetection buildCommand", () => {
-    it("emits the auto 1011 scalar (on=1/off=0) — the capture-verified watermark-class wire with session fallback", () => {
+    it("emits the direct-binary 1011 scalar (on=1/off=0) — the capture-verified watermark-class wire", () => {
       expect(intent("motionDetection", true, ctx([], 3))).toEqual({
         kind: "set-param",
         param: MOTION_CMD.CAMERA_PIR, // 1011
         value: 1,
-        form: "auto",
         channel: 3,
       });
       expect(intent("motionDetection", false, ctx([], 3))).toMatchObject({
-        form: "auto",
         value: 0,
       });
     });
-    it("actions.setDetection dispatches the same auto 1011 scalar", async () => {
+    it("actions.setDetection dispatches the same direct-binary 1011 scalar", async () => {
       const sent: any[] = [];
       const acts = bindMotion(ctx([], 3), sent);
       await acts.setDetection(true);
       expect(sent[0]).toMatchObject({
         kind: "set-param",
         param: MOTION_CMD.CAMERA_PIR,
-        form: "auto",
         value: 1,
       });
     });
@@ -218,11 +213,10 @@ describe("motion capability module", () => {
       });
     });
 
-    it("a camera reporting only 1011 keeps the 1011 auto switch", () => {
+    it("a camera reporting only 1011 keeps the 1011 direct-binary switch", () => {
       expect(intent("motionDetection", true, { ...ctx([1011], 3), model: "T8425" })).toMatchObject({
         kind: "set-param",
         param: MOTION_CMD.CAMERA_PIR,
-        form: "auto",
       });
     });
   });
@@ -237,7 +231,6 @@ describe("motion capability module", () => {
         payload: { ai_detect_type: 0x3000f, channel: 3 },
         channel: 0,
         mValue3: 0,
-        form: "auto",
       });
     });
 
@@ -413,7 +406,6 @@ describe("motion — sensor test mode", () => {
     expect(sent[0]).toMatchObject({
       kind: "set-param",
       param: MOTION_CMD.SENSOR_EXIT_TEST_MODE,
-      form: "direct-binary",
     });
   });
 

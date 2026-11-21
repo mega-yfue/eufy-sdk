@@ -27,8 +27,8 @@ describe("the app's seal", () => {
     const session = new P2PSession({ stationSn: SN, p2pDid: DID });
     const frames = capture(session);
     withGcmKey(session, Buffer.alloc(32, 7));
-    session.sendRawLevel1Bytes(Buffer.alloc(4), 3, 1054);
-    session.sendRawLevel1Bytes(Buffer.alloc(4), 3, 1103);
+    session.sendBytes(Buffer.alloc(4), 3, 1054);
+    session.sendBytes(Buffer.alloc(4), 3, 1103);
     expect(frames().map(({ version, channel, signCode }) => [version, channel, signCode])).toEqual([
       [1, 0xff, 1],
       [8, 3, 8],
@@ -51,7 +51,7 @@ describe("the app's seal", () => {
     const session = new P2PSession({ stationSn: SN, p2pDid: DID });
     const frames = capture(session);
     Object.assign(session, { signMode: 2, ecbKey: Buffer.concat([Buffer.from("0123456789ab"), Buffer.alloc(4)]) });
-    session.sendRawLevel1Bytes(Buffer.from([1, 2, 3, 4]), 0, 1103);
+    session.sendBytes(Buffer.from([1, 2, 3, 4]), 0, 1103);
     expect(frames()[0]).toMatchObject({ signCode: 0, body: Buffer.from([1, 2, 3, 4]) });
     expect((session as unknown as { signMode: number }).signMode).toBe(-2);
   });

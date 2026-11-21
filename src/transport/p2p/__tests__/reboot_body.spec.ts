@@ -9,7 +9,7 @@ import { P2P_ENVELOPE } from "../envelope.js";
  * Ground truth: a capture of the app's own "Restart" (2026-08-03) showed the station a
  * level-2 frame on channel 255, outer cmd 1034, whose body was `[u32 value=0][account_id ASCII,
  * zero-padded]` — and it rebooted the hub. `EufyMega.reboot` sends exactly this via the router's
- * station-scalar path (`buildDirectBinaryBody(0, accountId)` → `sendRawLevel2Bytes(..., 255, 1034,
+ * station-scalar path (`buildDirectBinaryBody(0, accountId)` → `sendBytes(..., 255, 1034,
  * 8)`), so this locks the body shape and the id.
  */
 describe("RESTART_HUB reboot frame", () => {
@@ -38,23 +38,15 @@ describe("RESTART_HUB reboot frame", () => {
   });
 });
 
-/**
- * A keyless session — a standalone camera, which never negotiates a level-2 key — gets the captured body
- * sealed level-1, since a level-2 frame cannot be built without the key.
- */
+/** A keyless session — a standalone camera — gets the same body, sealed by the session. */
 describe("RESTART_HUB on a keyless session", () => {
-  it("sends the captured body sealed level-1 on channel 255, once", async () => {
-    const session = Object.assign(connectedSession(false), {
-      sendRawLevel2Bytes: vi.fn(() => true),
-      sendRawLevel1Bytes: vi.fn(() => true),
-    });
+  it("sends the captured body on channel 255, once", async () => {
+    const session = Object.assign(connectedSession(false), { sendBytes: vi.fn(() => true) });
     await onFakeTime(() => routerWithSession(session).rebootStation(STATION_SN));
-    expect(session.sendRawLevel2Bytes).not.toHaveBeenCalled();
-    expect(session.sendRawLevel1Bytes).toHaveBeenCalledWith(
+    expect(session.sendBytes).toHaveBeenCalledExactlyOnceWith(
       buildDirectBinaryBody(0, ACCOUNT_ID),
       255,
       P2P_ENVELOPE.RESTART_HUB,
     );
-    expect(session.sendRawLevel1Bytes).toHaveBeenCalledTimes(1);
   });
 });

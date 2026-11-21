@@ -6,7 +6,7 @@ const BODY = Buffer.from("ff00000087030000", "hex");
 /** The app's params read: 1103 `[255][903]`, on channel 0 where param 6271 is "1", else on the device's channel. */
 describe("P2PCommandRouter.getParams", () => {
   const sendOn = (params?: Record<number, string>) => {
-    const session = Object.assign(connectedSession(), { sendRawLevel1Bytes: vi.fn(() => true) });
+    const session = Object.assign(connectedSession(), { sendBytes: vi.fn(() => true) });
     const router = routerWithSession(session, {
       deps: params
         ? {
@@ -14,7 +14,7 @@ describe("P2PCommandRouter.getParams", () => {
           }
         : {},
     });
-    return { router, send: session.sendRawLevel1Bytes };
+    return { router, send: session.sendBytes };
   };
 
   it("reads a station on its own channel, and on channel 0 where param 6271 is 1", async () => {

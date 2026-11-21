@@ -107,11 +107,11 @@ describe("deriveLevel2KeyFromGatewayInfo (ECIES)", () => {
 });
 
 /**
- * sendControlLevel2 envelope construction — verifies the optional `mValue3` plumbing (added for the
+ * sendSetPayload envelope construction — verifies the optional `mValue3` plumbing (added for the
  * power-source write, where the app uses mValue3:0 rather than the command id). Spies on the private
  * seal to read the exact JSON envelope before it's sealed. Synthetic key/session, no network.
  */
-describe("P2PSession.sendControlLevel2 envelope (mValue3)", () => {
+describe("P2PSession.sendSetPayload envelope (mValue3)", () => {
   function captureEnvelope(session: P2PSession, call: () => void): Record<string, unknown> {
     (session as unknown as { connectAddress: unknown }).connectAddress = { address: "127.0.0.1", port: 32100 };
     (session as unknown as { send: (...a: unknown[]) => void }).send = () => {};
@@ -129,7 +129,9 @@ describe("P2PSession.sendControlLevel2 envelope (mValue3)", () => {
   test("mValue3 is 0 unless given, as the app's envelope", () => {
     const session = newSession();
     withGcmKey(session, KEY);
-    const env = captureEnvelope(session, () => session.sendControlLevel2(1293, 6, "acct", { x: 1 }));
+    const env = captureEnvelope(session, () =>
+      session.sendSetPayload(1293, { x: 1 }, { accountId: "acct", channel: 6 }),
+    );
     expect(env).toMatchObject({ account_id: "acct", cmd: 1293, mChannel: 6, mValue3: 0, payload: { x: 1 } });
   });
 });

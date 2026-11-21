@@ -10,7 +10,7 @@ import { connectedSession, type FakeP2PSession } from "./session-fixtures.js";
  * `sendFf09Autolock` (the `ff09-autolock` intent handler behind `dev.lock()?.setAutoLock`
  * for a P2P video lock) — the P2P sibling of `transport/mqtt/__tests__/ff09-mqtt-settings-dispatch.spec.ts`,
  * mocked the same way `p2p_level2.spec.ts` mocks a session: the shared `connectedSession` fixture standing
- * in for `P2PSession`, with `sendControlLevel2` mocked to inspect
+ * in for `P2PSession`, with `sendSetPayload` mocked to inspect
  * each outbound envelope and, for the GET, synchronously emit a `data` event carrying a
  * correctly-encrypted device reply built with the SAME cipher `transport/ff09.ts` documents — so the
  * whole GET→decrypt→SET flow runs for real against a fake session, no live P2P connection.
@@ -55,10 +55,10 @@ function buildResponsePlain(delaySeconds: number, a7: number, a8: number): Buffe
 }
 
 interface FakeSession extends FakeP2PSession {
-  sendControlLevel2: (cmd: number, channel: number, accountId: string, payload: unknown, mValue3?: number) => boolean;
+  sendSetPayload: (cmd: number, payload: unknown, opts: { channel?: number }) => void;
 }
 
-/** Every call to `sendControlLevel2`, decoded for assertions. */
+/** Every call to `sendSetPayload`, decoded for assertions. */
 interface Call {
   cmd: number;
   channel: number;
@@ -76,7 +76,7 @@ function makeRouter(opts: {
 }) {
   const calls: Call[] = [];
   const session = connectedSession() as FakeSession;
-  session.sendControlLevel2 = vi.fn((cmd, channel, _accountId, payload) => {
+  session.sendSetPayload = vi.fn((cmd, payload, { channel = 0 }) => {
     const p = payload as Call["payload"];
     calls.push({ cmd, channel, payload: p });
     if (
@@ -217,7 +217,7 @@ describe("P2PCommandRouter.sendFf09Autolock (ff09-autolock command-router branch
   });
 
   it("does not throw when the SET step gets no explicit ack (fire-and-forget)", async () => {
-    // sendControlLevel2 always returns true (accepted for send) — there is no ack-wait for the SET
+    // sendSetPayload always returns true (accepted for send) — there is no ack-wait for the SET
     // step at the P2P router layer (matches sendFf09Actuate's existing fire-and-forget lock/unlock).
     const { router, calls } = makeRouter({ delay: 90, a7: 1, a8: 2, replyTimeAsHex: true });
     const p = router.dispatchCommand(SN, {

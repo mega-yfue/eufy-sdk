@@ -193,7 +193,7 @@ export const DOORBELL_MEMBERS = {
     type: "bool",
     kind: "boolean",
     description: "The HomeBase plays the doorbell's chime (1702; the app's \"HomeBase as chime\" switch).",
-    write: (v, ctx) => setScalar(DOORBELL_CMD.CHIME_SWITCH, asBool(v) ? 1 : 0, ctx, "direct-binary"),
+    write: (v, ctx) => setScalar(DOORBELL_CMD.CHIME_SWITCH, asBool(v) ? 1 : 0, ctx),
   },
   /** Direct-binary `[ch][value][acct]`, 1=on/0=off. */
   mechanicalChimeSwitch: {
@@ -202,7 +202,7 @@ export const DOORBELL_MEMBERS = {
     type: "bool",
     kind: "boolean",
     description: 'The existing wired chime box rings (1703; the app\'s "existing doorbell chime" switch).',
-    write: (v, ctx) => setScalar(DOORBELL_CMD.MECHANICAL_CHIME_SWITCH, asBool(v) ? 1 : 0, ctx, "direct-binary"),
+    write: (v, ctx) => setScalar(DOORBELL_CMD.MECHANICAL_CHIME_SWITCH, asBool(v) ? 1 : 0, ctx),
   },
   /** Same wire shape as {@link DOORBELL_MEMBERS.mechanicalChimeSwitch}. */
   wdrSwitch: {
@@ -211,7 +211,7 @@ export const DOORBELL_MEMBERS = {
     type: "bool",
     kind: "boolean",
     description: "Wide Dynamic Range (WDR) image switch (1704; see DOORBELL_CMD.WDR_SWITCH).",
-    write: (v, ctx) => setScalar(DOORBELL_CMD.WDR_SWITCH, asBool(v) ? 1 : 0, ctx, "direct-binary"),
+    write: (v, ctx) => setScalar(DOORBELL_CMD.WDR_SWITCH, asBool(v) ? 1 : 0, ctx),
   },
   /**
    * The READ half of a control whose write lives on `audio` — hence `writtenElsewhere`, which is what
@@ -245,8 +245,7 @@ export const DOORBELL_MEMBERS = {
     description:
       "Doorbell chime volume, 0-100 (1717 APP_CMD_BAT_DOORBELL_SET_DINGDONG_VOLUME; SET_PAYLOAD " +
       "envelope, distinct from the direct-binary ringtoneVolume/1708 — see DOORBELL_CMD.DINGDONG_VOLUME).",
-    write: (v, ctx) =>
-      setPayload(DOORBELL_CMD.DINGDONG_VOLUME, { dingdong_volume: Number(v) }, ctx, 0, undefined, "auto"),
+    write: (v, ctx) => setPayload(DOORBELL_CMD.DINGDONG_VOLUME, { dingdong_volume: Number(v) }, ctx, 0),
   },
   /**
    * The same `1350` SET_PAYLOAD shape as {@link DOORBELL_MEMBERS.dingdongVolume},
@@ -270,7 +269,7 @@ export const DOORBELL_MEMBERS = {
       const tone = coerceEnumValue(DoorbellRingtone, v);
       return tone === undefined
         ? undefined
-        : setPayload(DOORBELL_CMD.DINGDONG_RINGTONE, { dingdong_ringtone: tone }, ctx, 0, undefined, "auto");
+        : setPayload(DOORBELL_CMD.DINGDONG_RINGTONE, { dingdong_ringtone: tone }, ctx, 0);
     },
   },
   /**
@@ -320,7 +319,7 @@ export const DOORBELL_MEMBERS = {
           await sleep(2500); // let the doorbell come live
         }
         try {
-          await sink.dispatch(setScalar(DOORBELL_CMD.QUICK_RESPONSE, voiceId, ctx, "direct-binary"));
+          await sink.dispatch(setScalar(DOORBELL_CMD.QUICK_RESPONSE, voiceId, ctx));
           if (stream) await sleep(1500); // let playback start before teardown
         } finally {
           try {

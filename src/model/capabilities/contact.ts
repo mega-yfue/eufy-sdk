@@ -249,7 +249,7 @@ export const CONTACT_MEMBERS = {
     description: "Alarm tone (1507, device_alarm_sound_type): 0=None,1=Water,2=Classics,3=Light,4=Ding.",
     write: (v, ctx) => {
       const tone = coerceEnumValue(ALARM_TONES, v);
-      return tone === undefined ? undefined : setScalar(CONTACT_CMD.ALARM_SOUND_TYPE, tone, ctx, "auto");
+      return tone === undefined ? undefined : setScalar(CONTACT_CMD.ALARM_SOUND_TYPE, tone, ctx);
     },
   },
   /**

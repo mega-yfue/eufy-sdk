@@ -227,11 +227,6 @@ function validateTriggerDuration(seconds: number): number {
 /**
  * A siren write: `1350` SET_PAYLOAD on the device channel with `mValue3` 0, the app's frame.
  * The `transaction` stamp is part of that frame; the sink injects `account_id`.
- *
- * Level-2 only, though the `mValue3` 0 would allow `"auto"`: every device reaching this is a HomeBase or
- * an accessory whose session IS its HomeBase's, so a key is structurally there. Throwing on a keyless
- * one names a real anomaly where a silently-ignored level-1 frame would read as success. See
- * `setPayload`'s two conditions.
  */
 function sirenPayload(cmd: number, body: Record<string, number>, ctx: CommandContext): Command {
   return setPayload(cmd, { ...body, transaction: String(Date.now()) }, ctx, 0);

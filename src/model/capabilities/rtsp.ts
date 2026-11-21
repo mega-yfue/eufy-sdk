@@ -125,7 +125,7 @@ function publishCommand(on: boolean, ctx: CommandContext): Command {
  * `{cmd:1287, mChannel:<deviceCh>, mValue3:0, payload:{mode,passwd,username}}`.
  */
 function credentialsCommand(mode: number, username: string, password: string, ctx: CommandContext): Command {
-  return setPayload(RTSP_PARAM.SEND_SECURITY_PASSWD, { mode, username, passwd: password }, ctx, 0, undefined, "auto");
+  return setPayload(RTSP_PARAM.SEND_SECURITY_PASSWD, { mode, username, passwd: password }, ctx, 0);
 }
 
 /**

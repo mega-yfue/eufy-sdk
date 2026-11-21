@@ -66,46 +66,23 @@ export type LiveTrace =
    * leave a caller with no media and no phase naming a station.
    */
   | { phase: "session-unreachable"; waitedMs: number }
-  /**
-   * A command is holding for the station's level-2 key, with the milliseconds it will wait.
-   */
-  | { phase: "level2-wait"; waitMs: number }
-  /** The station's AES-256-GCM level-2 key was negotiated, under the cipher it selected. */
+  /** A gateway info's key was set (ECC, or RSA), under the cipher it named. */
   | { phase: "level2-ready"; cipherId: number }
   /**
-   * The station's cipher negotiated only the AES-128-ECB level-2 key of an RSA cipher, under the cipher it
-   * selected. That key seals a level-2 set-payload and nothing else, so this is not `level2-ready`.
-   */
-  /**
-   * The station's key is not coming, why, and the cipher where a station named one.
-   *
-   * Every ending of a level-2 wait carries one of these reasons, so a start refused for want of a key is
-   * accounted for however it ended. `grace-elapsed` is a wait that ran out and states how long was waited;
-   * the rest are answered without waiting, because a concluded negotiation stays concluded until a
-   * re-sent `CMD_GATEWAYINFO` re-opens it. `no-cipher-key` and `derivation-failed` are about this
-   * account's cipher material, `not-negotiating` and `session-closed` about the station or its connection —
-   * and only a reason reached under a negotiation has a cipher to name.
-   *
+   * A gateway info's key step ended without a key, why, and the cipher where the station named one:
+   * `no-cipher-key` and `derivation-failed` are about this account's cipher material, `gateway-refused` a
+   * station that answered with a refusal.
    */
   | {
       phase: "level2-unavailable";
-      reason:
-        | "no-cipher-key"
-        | "derivation-failed"
-        | "not-negotiating"
-        | "session-closed"
-        | "grace-elapsed"
-        | "gateway-refused";
+      reason: "no-cipher-key" | "derivation-failed" | "gateway-refused";
       cipherId?: number;
-      waitedMs?: number;
     }
   /**
    * The station answered its gateway-info prompt, so a key derivation has begun under the cipher it named.
    *
-   * What separates a station that never answered the prompt from one that answered and produced no usable key:
-   * without it, `level2-unavailable` with `not-negotiating` covers both, and they are a station or network
-   * problem and an account cipher-material problem respectively. `version` is the gateway info's header
-   * version, which picks the key branch: 8 derives on ECC, any other on RSA.
+   * What separates a station that never answered the prompt from one that answered and produced no usable key.
+   * `version` is the gateway info's header version, which picks the key branch: 8 derives on ECC, any other on RSA.
    */
   | { phase: "level2-negotiating"; cipherId: number; version: number }
   /**

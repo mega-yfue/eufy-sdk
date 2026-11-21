@@ -24,24 +24,6 @@ function spyReset(router: ReturnType<typeof routerWithSession>) {
 }
 
 describe("resetStandaloneSession", () => {
-  it("keeps a T8423's level-1 session open", async () => {
-    const router = routerWithSession(connectedSession(false), { deps: { listDevices: fleet("T8423") } });
-    const reset = spyReset(router);
-
-    await router.resetStandaloneSession(STATION_SN);
-
-    expect(reset).not.toHaveBeenCalled();
-  });
-
-  it("resets a T8423's level-2 session", async () => {
-    const router = routerWithSession(connectedSession(true), { deps: { listDevices: fleet("T8423") } });
-    const reset = spyReset(router);
-
-    await router.resetStandaloneSession(STATION_SN);
-
-    expect(reset).toHaveBeenCalledWith(STATION_SN);
-  });
-
   it("resets another model's level-1 session", async () => {
     const router = routerWithSession(connectedSession(false), { deps: { listDevices: fleet("T8410") } });
     const reset = spyReset(router);

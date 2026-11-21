@@ -34,20 +34,10 @@ describe("P2P int-plus-string command dispatch", () => {
     expect(session.sendIntStringCommand).toHaveBeenCalledWith(1202, 10, 1, ACCOUNT_ID, 1);
   });
 
-  it("sends an int-pair set-param on a keyless session as the bare level-1 [channel][value] body, with no account id", async () => {
-    const { router, session } = setup(ACCOUNT_ID, true, false);
-
-    await onFakeTime(() =>
-      router.dispatchCommand(DEVICE_SN, { kind: "set-param", param: 1013, value: 3, form: "int-pair", channel: 1 }),
-    );
-
-    expect(session.sendIntStringCommand).toHaveBeenCalledWith(1013, 3, 1, "", 1);
-  });
-
-  it("seals an int-pair at the session's level: the same bare body level-2 on a keyed session", async () => {
-    const session = Object.assign(connectedSession(true), {
+  it("sends an int-pair set-param as the bare [channel][value] body, with no account id", async () => {
+    const session = Object.assign(connectedSession(false), {
       sendIntStringCommand: vi.fn(),
-      sendRawLevel2Bytes: vi.fn(() => true),
+      sendBytes: vi.fn(() => true),
     });
     await onFakeTime(() =>
       routerWithSession(session)
@@ -64,7 +54,7 @@ describe("P2P int-plus-string command dispatch", () => {
     pair.writeUInt32LE(1, 0);
     pair.writeUInt32LE(3, 4);
     expect(session.sendIntStringCommand).not.toHaveBeenCalled();
-    expect(session.sendRawLevel2Bytes).toHaveBeenCalledWith(pair, 1, 1013);
+    expect(session.sendBytes).toHaveBeenCalledWith(pair, 1, 1013);
   });
 
   it("rejects missing account identity without sending", async () => {

@@ -105,8 +105,6 @@ function autoSpotlightCommand(on: boolean, ctx: CommandContext, opts: AutoSpotli
     },
     ctx,
     0,
-    undefined,
-    "auto",
   );
 }
 
@@ -186,20 +184,12 @@ const LIGHT_SWITCH_INT_STRING_TYPES: ReadonlySet<number> = new Set<number>([
 function switchCommand(on: boolean, wire: "json" | "int-string", ctx: CommandContext): Command {
   return wire === "json"
     ? setJson(LIGHT_CMD.FLOODLIGHT_SWITCH, { time: 0, type: 2, value: on ? 1 : 0 }, ctx)
-    : setScalar(LIGHT_CMD.FLOODLIGHT_SWITCH, on ? 1 : 0, ctx, "int-string");
+    : setScalar(LIGHT_CMD.FLOODLIGHT_SWITCH, on ? 1 : 0, ctx);
 }
 
-/**
- * A brightness/color-temp/master-enable intent. Forced to the level-2 `"direct-binary"` frame — the
- * only known form for these params.
- *
- * TODO(L2-on-standalone): direct-binary needs a level-2 GCM key — standalone indoor/solo/outdoor-PT
- * cams never negotiate one, so these silently fail there (same class as the camera-power bug). Not
- * `"auto"`-downgraded: the level-1 wire for brightness/colorTemp is unconfirmed. Tracked in README
- * "Control-command encryption level".
- */
+/** A brightness/color-temp/master-enable intent: the group-A scalar body. */
 function directBinary(param: number, value: number, ctx: CommandContext): Command {
-  return setScalar(param, value, ctx, "direct-binary");
+  return setScalar(param, value, ctx);
 }
 
 /**
@@ -244,9 +234,7 @@ export const LIGHT_MEMBERS = {
   },
   /**
    * Manual level for the spotlight, 1-100 — the floor is 1 rather than 0 because a 0 reads as "off" and
-   * that is `isOn`'s job. The write is pinned to the level-2 direct-binary frame (`directBinary`),
-   * the only known shape for it, so a standalone camera that never negotiates a level-2 key cannot
-   * set it even though the getter reads fine.
+   * that is `isOn`'s job. The write is the group-A scalar body (`directBinary`).
    */
   brightness: {
     param: LIGHT_CMD.SPOTLIGHT_BRIGHTNESS,
@@ -286,8 +274,6 @@ export const LIGHT_MEMBERS = {
    * This is the switch a user changes and expects to STAY changed. {@link isOn} is a different fact:
    * the lamp being lit right now, driven by whichever
    * client is streaming — the vendor app lights it for a live view and drops it on quitting.
-   *
-   * The T8423 write takes the session-chosen level (level-1 int+string on a standalone unit).
    */
   spotlightEnabled: {
     param: LIGHT_CMD.SPOTLIGHT_ENABLE,
@@ -296,13 +282,7 @@ export const LIGHT_MEMBERS = {
     description:
       "The spotlight master switch, distinct from the on/off above — whether the spotlight may light at " +
       "all (param 1403, direct polarity: 1 = enabled).",
-    write: (v, ctx) =>
-      setScalar(
-        LIGHT_CMD.SPOTLIGHT_ENABLE,
-        asBool(v) ? 1 : 0,
-        ctx,
-        ctx.deviceType === DeviceType.FLOODLIGHT_CAMERA_8423 ? "auto" : "direct-binary",
-      ),
+    write: (v, ctx) => setScalar(LIGHT_CMD.SPOTLIGHT_ENABLE, asBool(v) ? 1 : 0, ctx),
     writeAs: "setEnabled",
   },
 } as const satisfies Members;

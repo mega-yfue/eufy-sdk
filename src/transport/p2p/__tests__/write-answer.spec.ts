@@ -17,7 +17,7 @@ const PARAM = 1035;
  */
 function station(...codes: number[]) {
   const session = Object.assign(connectedSession(), {
-    sendRawLevel2Bytes: vi.fn((_body: Buffer, channel: number, commandId: number) => {
+    sendBytes: vi.fn((_body: Buffer, channel: number, commandId: number) => {
       const code = codes.shift();
       if (code !== undefined) queueMicrotask(() => session.emit("commandResult", { code, channel, commandId }));
       return true;
@@ -26,7 +26,7 @@ function station(...codes: number[]) {
   return { session, router: routerWithSession(session) };
 }
 
-const write = { kind: "set-param", param: PARAM, value: 1, form: "direct-binary", channel: CHANNEL } as const;
+const write = { kind: "set-param", param: PARAM, value: 1, channel: CHANNEL } as const;
 
 afterEach(() => {
   vi.useRealTimers();
@@ -36,7 +36,7 @@ describe("a level-2 setting write settles on the device's answer", () => {
   it("resolves on success, sent once", async () => {
     const { router, session } = station(0);
     await router.dispatchCommand(DEVICE_SN, write);
-    expect(session.sendRawLevel2Bytes).toHaveBeenCalledTimes(1);
+    expect(session.sendBytes).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a refusal with the device's code", async () => {
@@ -49,7 +49,7 @@ describe("a level-2 setting write settles on the device's answer", () => {
   /** The app's result reader matches the command id alone. */
   it("does not read another command's answer, and reads its own whatever channel it names", async () => {
     const { router, session } = station();
-    session.sendRawLevel2Bytes.mockImplementationOnce(() => {
+    session.sendBytes.mockImplementationOnce(() => {
       queueMicrotask(() => {
         session.emit("commandResult", { code: -108, channel: CHANNEL, commandId: 1700 });
         session.emit("commandResult", { code: 0, channel: CHANNEL + 1, commandId: PARAM });
@@ -61,7 +61,7 @@ describe("a level-2 setting write settles on the device's answer", () => {
 
   it("does not settle on a frame that carries no code", async () => {
     const { router, session } = station();
-    session.sendRawLevel2Bytes.mockImplementationOnce(() => {
+    session.sendBytes.mockImplementationOnce(() => {
       queueMicrotask(() => {
         session.emit("data", { channel: CHANNEL, commandId: PARAM, json: undefined });
         session.emit("commandResult", { code: -108, channel: CHANNEL, commandId: PARAM });
@@ -74,12 +74,12 @@ describe("a level-2 setting write settles on the device's answer", () => {
   it("resends once on a code the vendor app retries", async () => {
     const { router, session } = station(5, 0);
     await router.dispatchCommand(DEVICE_SN, write);
-    expect(session.sendRawLevel2Bytes).toHaveBeenCalledTimes(2);
+    expect(session.sendBytes).toHaveBeenCalledTimes(2);
   });
 
   it("does not settle a write on the late answer to the one before it", async () => {
     const { router, session } = station();
-    session.sendRawLevel2Bytes.mockImplementation((body: Buffer, channel: number, commandId: number) => {
+    session.sendBytes.mockImplementation((body: Buffer, channel: number, commandId: number) => {
       const code = body.readUInt32LE(4) === 1 ? 0 : -108;
       setTimeout(() => session.emit("commandResult", { code, channel, commandId }), 300);
       return true;
@@ -105,17 +105,14 @@ describe("a level-2 setting write settles on the device's answer", () => {
 
   it("sends on a fresh session when the one it resolved closed before the send", async () => {
     const closing = Object.assign(connectedSession(false), {
-      isClosed: false,
       close: vi.fn(async () => {}),
       sendStringPayloadCommand: vi.fn(() => {
         throw new Error("P2P session is not connected");
       }),
     });
-    closing.awaitLevel2Key.mockImplementation(async () => {
-      closing.isClosed = true;
-      closing.isConnected = false;
-      return false;
-    });
+    // Open when resolved, closed by the time the send runs.
+    let reads = 0;
+    Object.defineProperty(closing, "isClosed", { get: () => ++reads > 1 });
     const fresh = Object.assign(connectedSession(false), {
       sendStringPayloadCommand: vi.fn((commandId: number, _json: string, channel: number) =>
         queueMicrotask(() => fresh.emit("commandResult", { code: 0, channel, commandId })),
@@ -166,8 +163,8 @@ describe("an acknowledged send", () => {
   it("goes once, and every 2 s only the oldest unacknowledged datagram goes again under its own sequence", () => {
     vi.useFakeTimers();
     const { real, sent, acknowledge } = session();
-    real.sendAcknowledged(() => real.sendRawLevel1Bytes(Buffer.alloc(8), CHANNEL, PARAM));
-    real.sendAcknowledged(() => real.sendRawLevel1Bytes(Buffer.alloc(8), CHANNEL, PARAM + 1));
+    real.sendAcknowledged(() => real.sendBytes(Buffer.alloc(8), CHANNEL, PARAM));
+    real.sendAcknowledged(() => real.sendBytes(Buffer.alloc(8), CHANNEL, PARAM + 1));
     const [first, second] = sent();
     vi.advanceTimersByTime(1_999);
     expect(sent()).toHaveLength(2);
@@ -194,7 +191,7 @@ describe("an acknowledged send", () => {
       ["T8010P0000000000", 1],
     ] as const) {
       const { real, sent } = session(true, stationSn);
-      real.sendAcknowledged(() => real.sendRawLevel1Bytes(Buffer.alloc(8), CHANNEL, PARAM));
+      real.sendAcknowledged(() => real.sendBytes(Buffer.alloc(8), CHANNEL, PARAM));
       vi.advanceTimersByTime(1_449);
       expect(sent()).toHaveLength(0);
       vi.advanceTimersByTime(1);
@@ -216,11 +213,11 @@ describe("one command in flight per device", () => {
     const first = router.dispatchCommand(DEVICE_SN, write);
     const second = router.dispatchCommand(DEVICE_SN, { ...write, param: PARAM + 1 });
     await flush();
-    expect(session.sendRawLevel2Bytes).toHaveBeenCalledTimes(1);
+    expect(session.sendBytes).toHaveBeenCalledTimes(1);
     session.emit("commandResult", { code: 0, channel: CHANNEL, commandId: PARAM });
     await first;
     await flush();
-    expect(session.sendRawLevel2Bytes).toHaveBeenCalledTimes(2);
+    expect(session.sendBytes).toHaveBeenCalledTimes(2);
     session.emit("commandResult", { code: 0, channel: CHANNEL, commandId: PARAM + 1 });
     await expect(second).resolves.toBe(true);
   });
@@ -229,7 +226,7 @@ describe("one command in flight per device", () => {
     const { router, session } = station();
     void router.dispatchCommand(DEVICE_SN, write).catch(() => {});
     await router.dispatchCommand(STATION_SN, { kind: "p2p-station-scalar", cmd: 1235, value: 1, channel: 255 });
-    expect(session.sendRawLevel2Bytes).toHaveBeenCalledTimes(2);
+    expect(session.sendBytes).toHaveBeenCalledTimes(2);
     session.emit("commandResult", { code: 0, channel: CHANNEL, commandId: PARAM });
   });
 });

@@ -10,7 +10,7 @@ const SOLO_SN = "T8170P0000000000";
 function solo() {
   const session = Object.assign(connectedSession(), {
     sendPing: vi.fn(),
-    sendRawLevel1Bytes: vi.fn(() => true),
+    sendBytes: vi.fn(() => true),
     close: vi.fn(async () => {}),
   }) as FakeP2PSession & { sendPing: ReturnType<typeof vi.fn> };
   const router = routerWithSession(session, {
@@ -41,7 +41,7 @@ describe("the app's station ping", () => {
     vi.useFakeTimers();
     const session = Object.assign(connectedSession(), {
       sendPing: vi.fn(),
-      sendRawLevel1Bytes: vi.fn(() => true),
+      sendBytes: vi.fn(() => true),
       close: vi.fn(async () => {}),
     });
     const router = routerWithSession(session);

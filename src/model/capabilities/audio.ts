@@ -44,7 +44,7 @@ export type AudioActions = Surface<typeof AUDIO_MEMBERS>;
 
 /** Camera/doorbell audio write — the direct-binary 136-byte struct (signCode 8). */
 function audioCommand(param: number, value: number, ctx: CommandContext): Command {
-  return setScalar(param, value, ctx, "direct-binary");
+  return setScalar(param, value, ctx);
 }
 
 /** `microphone_on_off`, `speaker_on_off` and `audio_recording_on_off` as each product's settings bundle sends them. */

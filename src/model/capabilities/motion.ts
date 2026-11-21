@@ -422,9 +422,9 @@ function sensitivityCommand(step: unknown, scale: SensitivityScale, ctx: Command
   const n = Number(step);
   if (!Number.isInteger(n) || n < 1 || n > scale.ladder.length) return undefined;
   const value = scale.ladder[n - 1]!;
-  if (scale.form === "direct") return setScalar(scale.writeId, value, ctx, "direct-binary");
+  if (scale.form === "direct") return setScalar(scale.writeId, value, ctx);
   if (scale.form === "control") return setJson(scale.writeId, { index: value }, ctx);
-  return setPayload(scale.writeId, { sensitivity: value, channel: ctx.channel }, ctx, 0, undefined, "auto");
+  return setPayload(scale.writeId, { sensitivity: value, channel: ctx.channel }, ctx, 0);
 }
 
 /**
@@ -525,7 +525,7 @@ export const MOTION_MEMBERS = {
     write: (v, ctx) => {
       requireFamily("motionDetection", ctx, "camera");
       const on = asBool(v) ? 1 : 0;
-      if (!reportsIndoorSwitch(ctx)) return setScalar(MOTION_CMD.CAMERA_PIR, on, ctx, "auto");
+      if (!reportsIndoorSwitch(ctx)) return setScalar(MOTION_CMD.CAMERA_PIR, on, ctx);
       return setJson(MOTION_CMD.INDOOR_MOTION_ENABLE, { status: on }, ctx);
     },
     writeAs: "setDetection",
@@ -568,7 +568,7 @@ export const MOTION_MEMBERS = {
       requireFamily("aiDetectType", ctx, "camera");
       const n = Number(v);
       if (!Number.isInteger(n) || n < 0) return undefined;
-      return setPayload(MOTION_CMD.AI_DETECT_TYPE, { ai_detect_type: n, channel: ctx.channel }, ctx, 0, 0, "auto");
+      return setPayload(MOTION_CMD.AI_DETECT_TYPE, { ai_detect_type: n, channel: ctx.channel }, ctx, 0, 0);
     },
   },
   /**
@@ -648,7 +648,7 @@ export const MOTION_MEMBERS = {
       requireFamily("setTestMode", ctx, "sensor");
       return asBool(v)
         ? setPayload(MOTION_CMD.SENSOR_ENTER_TEST_MODE, { channel: ctx.channel }, ctx)
-        : setScalar(MOTION_CMD.SENSOR_EXIT_TEST_MODE, EXIT_TEST_MODE_VALUE, ctx, "direct-binary");
+        : setScalar(MOTION_CMD.SENSOR_EXIT_TEST_MODE, EXIT_TEST_MODE_VALUE, ctx);
     },
   },
   /**
@@ -686,7 +686,7 @@ export const MOTION_MEMBERS = {
     requires: [MOTION_CMD.HUMAN_ONLY_AT_NIGHT],
     write: (v, ctx) => {
       requireFamily("humanOnlyAtNight", ctx, "camera");
-      return setPayload(MOTION_CMD.HUMAN_ONLY_AT_NIGHT, { only_ai: asBool(v) ? 1 : 0 }, ctx, 0, undefined, "auto");
+      return setPayload(MOTION_CMD.HUMAN_ONLY_AT_NIGHT, { only_ai: asBool(v) ? 1 : 0 }, ctx, 0);
     },
   },
   /**
@@ -704,14 +704,7 @@ export const MOTION_MEMBERS = {
     requires: [MOTION_CMD.LOITERING_DETECTION],
     write: (v, ctx) => {
       requireFamily("loiteringDetection", ctx, "camera");
-      return setPayload(
-        MOTION_CMD.LOITERING_DETECTION,
-        { radar_wd_switch: asBool(v) ? 1 : 0 },
-        ctx,
-        0,
-        undefined,
-        "auto",
-      );
+      return setPayload(MOTION_CMD.LOITERING_DETECTION, { radar_wd_switch: asBool(v) ? 1 : 0 }, ctx, 0);
     },
   },
 } as const satisfies Members;
