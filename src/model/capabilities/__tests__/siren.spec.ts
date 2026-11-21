@@ -422,6 +422,8 @@ describe("siren capability module", () => {
       [DeviceType.CAMERA2, "T8114", false, true],
       [DeviceType.INDOOR_PT_CAMERA, "T8410", false, false],
       [DeviceType.INDOOR_PT_CAMERA, "T8410", true, false],
+      [DeviceType.CAMERA_FG, "T8151", true, false],
+      [DeviceType.INDOOR_CAMERA, "T8400", false, false],
       [DeviceType.BATTERY_DOORBELL, "T8210", true, false],
     ])(
       "installs no alarm action without topology and EAS evidence for %s/%s/%s/%s",
@@ -442,6 +444,31 @@ describe("siren capability module", () => {
         expect(alarm.active).toBeUndefined();
       },
     );
+
+    it.each([
+      [DeviceType.CAMERA_FG, "T8151"],
+      [DeviceType.CAMERA_4G_S330, "T86P2"],
+    ])("sounds a self-station %s/%s with the self-station 1201 wire on its own channel", async (deviceType, model) => {
+      const { acts, sent } = sirenOf({
+        channel: 0,
+        codec: "camera",
+        deviceType,
+        model,
+        homeBaseAttached: false,
+        capabilities: new Set(["siren"]),
+        paramIds: new Set(),
+      });
+      const alarm = acts as unknown as { trigger?: (s: number) => Promise<void>; stop?: () => Promise<void> };
+
+      await alarm.trigger!(5);
+      await alarm.stop!();
+      expect(sent).toEqual([
+        { kind: "p2p-int-string", cmd: 1201, value: 5, valueSub: 23, channel: 0 },
+        { kind: "p2p-int-string", cmd: 1201, value: 0, valueSub: 4, channel: 0 },
+      ]);
+      expect((acts as unknown as Record<string, unknown>).active).toBeUndefined();
+      expect((acts as unknown as Record<string, unknown>).test).toBeUndefined();
+    });
 
     it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1, "10"])(
       "rejects invalid camera trigger duration %s without dispatch",
@@ -621,6 +648,26 @@ describe("siren capability module", () => {
         ).not.toContain("siren");
       },
     );
+    it.each([
+      [DeviceType.CAMERA_FG, "T8151"],
+      [DeviceType.CAMERA_4G_S330, "T86P2"],
+    ])(
+      "detects a self-station %i/%s sounded with the wire, and not one behind a HomeBase without EAS evidence",
+      (deviceType, model) => {
+        expect(detectCapabilities({ deviceType, model, params: {} }, "camera")).toContain("siren");
+        expect(
+          detectCapabilities({ deviceType, model, parentSn: "T8000P0000000000", params: {} }, "camera"),
+        ).not.toContain("siren");
+      },
+    );
+    it.each([
+      [DeviceType.CAMERA_FG, "T8150"],
+      [DeviceType.INDOOR_CAMERA, "T8400"],
+      [DeviceType.INDOOR_PT_CAMERA, "T8410"],
+      [DeviceType.INDOOR_PT_CAMERA, "T8410C"],
+    ])("does not detect a self-station %i/%s that was not sounded with a captured wire", (deviceType, model) => {
+      expect(detectCapabilities({ deviceType, model, params: {} }, "camera")).not.toContain("siren");
+    });
     it("detects a HomeBase device type only when it reports alarm evidence", () => {
       expect(
         detectCapabilities({ deviceType: DeviceType.STATION, model: "T8999", params: { 1281: "1" } }, "station"),
