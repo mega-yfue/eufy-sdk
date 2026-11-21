@@ -5,9 +5,9 @@ import { connectedSession, routerWithSession, STATION_SN, type FakeP2PSession } 
  * The app's esiotkit pinger: a 1139 every 3 s to a parent serial that is not a station, for 300 s after a request and
  * without end during live view. The fixtures' station is a T8010, which is never pinged, so these use a standalone one.
  */
-const SOLO_SN = "T8170P0000000000";
+const SOLO_SN = "T8410P0000000000";
 
-function solo() {
+function solo(sn = SOLO_SN) {
   const session = Object.assign(connectedSession(), {
     sendPing: vi.fn(),
     sendBytes: vi.fn(() => true),
@@ -15,9 +15,9 @@ function solo() {
   }) as FakeP2PSession & { sendPing: ReturnType<typeof vi.fn> };
   const router = routerWithSession(session, {
     register: false,
-    deps: { listDevices: () => [{ sn: SOLO_SN, stationSn: SOLO_SN, model: "T8170", p2pDid: "", raw: {} } as never] },
+    deps: { listDevices: () => [{ sn, stationSn: sn, model: sn.slice(0, 5), p2pDid: "", raw: {} } as never] },
   });
-  (router as unknown as { manager: { register(sn: string, s: unknown): void } }).manager.register(SOLO_SN, session);
+  (router as unknown as { manager: { register(sn: string, s: unknown): void } }).manager.register(sn, session);
   return { router, session };
 }
 
@@ -34,6 +34,18 @@ describe("the app's station ping", () => {
     expect(session.sendPing).toHaveBeenCalledTimes(100);
     vi.advanceTimersByTime(30_000);
     expect(session.sendPing).toHaveBeenCalledTimes(100);
+    await router.closeAll();
+  });
+
+  /** `PingTimeUtil` beside it on an O4 hub whose strategy needs a ping: 240 s after the last command. */
+  it("adds the legacy ping on a T8170 for 240 s after a request", async () => {
+    vi.useFakeTimers();
+    const { router, session } = solo("T8170P0000000000");
+    await router.getParams("T8170P0000000000");
+    vi.advanceTimersByTime(240_000);
+    expect(session.sendPing).toHaveBeenCalledTimes(160);
+    vi.advanceTimersByTime(60_000);
+    expect(session.sendPing).toHaveBeenCalledTimes(180);
     await router.closeAll();
   });
 

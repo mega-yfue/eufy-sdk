@@ -96,6 +96,19 @@ const PING_WINDOW_MS = 300_000;
 const PING_TASK_MAX_MS = 30 * 60_000;
 
 /**
+ * The app's legacy pinger (`PingTimeUtil`) runs beside it for a hub that is `SnUtils.O4` and not `P4`, whose model
+ * strategy answers `isNeedPing`: one 1139 every `PING_INTERVAL_MS` within 240 s (`MAX_TIME`, 120 s for a FgCam's
+ * `pingTime`) of the last command to the hub, whatever that command (`P2PConfigManager` listener after
+ * `ActionInterceptor`). The hub prefixes and their window.
+ */
+const LEGACY_PING_MS: ReadonlyArray<readonly [string, number]> = [
+  ...["T8122", "T8123", "T8124", "T8130", "T8131", "T8134", "T8B00", "T8170", "T8171", "T8790", "T81A0"].map(
+    (prefix) => [prefix, 240_000] as const,
+  ),
+  ["T86P2", 120_000],
+];
+
+/**
  * What a caller's own deadline on a station call has to clear, in milliseconds.
  *
  * A caller that bounds one of these calls itself races these waits, and a bound below them reports the
@@ -742,16 +755,24 @@ export class P2PCommandRouter {
    * when it was sent unread.
    */
   /**
-   * Open or move the ping window of `sn`'s parent, as the app's pinger does on a request (`forMs` the window), a live
-   * start (`Infinity`) and a live stop (the window from now, ending an unbounded one). A parent that is a station is
-   * never pinged. Each tick skips while a command to the parent is waiting for its answer.
+   * Open or move the ping windows of `sn`'s parent, as the app's pingers do on a request (`forMs` the window), a live
+   * start (`Infinity`) and a live stop (the window from now, ending an unbounded one). The esiotkit pinger skips a
+   * parent that is a station, and each tick while a command to the parent awaits its answer; the legacy pinger
+   * ({@link LEGACY_PING_MS}) takes its own window from every one of these calls.
    */
   private pingFor(sn: string, forMs: number, stop = false): void {
     const dev = this.recordFor(sn);
     const parentSn = dev ? stationOf(dev) : sn;
-    if (isStationSerial(parentSn)) return;
+    const legacyMs = LEGACY_PING_MS.find(([prefix]) => parentSn.startsWith(prefix))?.[1];
+    if (legacyMs) this.pingWindow(`${parentSn}#legacy`, parentSn, legacyMs, true);
+    if (!isStationSerial(parentSn)) this.pingWindow(parentSn, parentSn, forMs, stop);
+  }
+
+  /** One pinger's task under `key`: open it, or move its window as {@link pingFor} states. */
+  private pingWindow(key: string, parentSn: string, forMs: number, stop: boolean): void {
+    const legacy = key !== parentSn;
     const now = Date.now();
-    const held = this.pings.get(parentSn);
+    const held = this.pings.get(key);
     if (held) {
       held.until = forMs === Infinity || stop ? now + forMs : held.until === Infinity ? Infinity : now + forMs;
       return;
@@ -761,18 +782,18 @@ export class P2PCommandRouter {
       since: now,
       timer: setInterval(() => {
         const at = Date.now();
-        if (at > task.until || (task.until !== Infinity && at - task.since > PING_TASK_MAX_MS)) {
+        if (at > task.until || (!legacy && task.until !== Infinity && at - task.since > PING_TASK_MAX_MS)) {
           clearInterval(task.timer);
-          this.pings.delete(parentSn);
+          this.pings.delete(key);
           return;
         }
         const session = this.manager.get(parentSn);
-        if (!session?.isConnected || this.answeredQueue.has(parentSn)) return;
+        if (!session?.isConnected || (!legacy && this.answeredQueue.has(parentSn))) return;
         session.sendPing();
       }, PING_INTERVAL_MS),
     };
     task.timer.unref?.();
-    this.pings.set(parentSn, task);
+    this.pings.set(key, task);
   }
 
   async dispatchCommand(sn: string, cmd: Command): Promise<boolean> {
