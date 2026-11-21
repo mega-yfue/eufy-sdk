@@ -97,7 +97,7 @@ describe("garage/lock ff09 command over MQTT (secure-mqtt trans envelope)", () =
       msg_seq: expect.any(Number),
       seed: "1234",
       timestamp: 1700000000,
-      cmd_status: 2,
+      cmd_status: 1,
       cmd: 9,
       sign_code: 0,
     });

@@ -210,7 +210,8 @@ export function buildFf09MqttEnvelope(input: {
     msg_seq: nextMsgSeq(),
     seed: input.seed ?? randomBytes(16).toString("hex"),
     timestamp: input.timestamp ?? Math.floor(Date.now() / 1000),
-    cmd_status: 2,
+    // `needAck ? 1 : 2`, and a lock descriptor states no `needAck`: the app's default, 1 (`MqttRequest`).
+    cmd_status: 1,
     cmd: input.cmd ?? 9,
     sign_code: 0,
   };
@@ -251,7 +252,7 @@ export interface MqttRouterDeps {
    * router. Required to route
    * `mqtt-dp`/`mqtt-dp-color`/`mqtt-dp-preset`.
    */
-  publishSecure?: (dev: EufyDevice, topic: string, body: string) => Promise<void>;
+  publishSecure?: (dev: EufyDevice, topic: string, body: string | ((clientId: string) => string)) => Promise<void>;
   /** The facade's long-lived `eufy_security` stack, which every ff09 command rides, as the app's one session. */
   securityTransport?: () => Promise<SecureMqtt>;
 }
@@ -653,8 +654,9 @@ export class MqttCommandRouter {
     if (!this.deps.publishSecure) {
       throw new Error(`eufy_life DP for ${sn}: publishSecure dependency not wired`);
     }
-    const envelope = buildDpEnvelope({ accountId, deviceSn: sn, mqttCmdCode, frame });
-    await this.deps.publishSecure(dev, secureTopic(dev, "req"), envelope);
+    await this.deps.publishSecure(dev, secureTopic(await this.withPn(dev), "req"), (clientId) =>
+      buildDpEnvelope({ clientId, accountId, deviceSn: sn, mqttCmdCode, frame }),
+    );
   }
 
   /**

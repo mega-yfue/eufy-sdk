@@ -517,7 +517,9 @@ export class EufyMega extends EventEmitter {
         if (!this.transports.has(scope)) await this.ensureMqttStarted(scope);
         const transport = this.transports.get(scope);
         if (!transport) throw new Error(`secure-MQTT transport not connected for scope "${scope}"`);
-        await transport.publish(topic, body, { qos: 1 });
+        await transport.publish(topic, typeof body === "function" ? body((transport as SecureMqtt).id) : body, {
+          qos: 1,
+        });
       },
     });
     this.tuya = new TuyaCommandRouter({ allowUnverified: this.opts.tuyaAllowUnverified });
