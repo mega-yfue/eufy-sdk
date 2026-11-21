@@ -355,7 +355,7 @@ export class DeviceRegistry {
           sn: raw.device_sn,
           name: recordName(raw, deviceClass),
           model: raw.device_model,
-          stationSn: resolvedStationSn(raw, raw.device_sn),
+          stationSn: params[6271] === "1" ? raw.device_sn : resolvedStationSn(raw, raw.device_sn),
           ...(typeof raw.device_channel === "number" ? { channel: raw.device_channel } : {}),
           p2pDid: raw.p2p_did,
           params,

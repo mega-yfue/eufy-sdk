@@ -2576,7 +2576,8 @@ export class EufyMega extends EventEmitter {
       // The same claim the command sink routes on — a capability gates its P2P-only variants (e.g.
       // setRainMode) on this. Keyed on the P2P stack's own predicate (a usable `p2p_did` endpoint).
       hasP2p: P2PCommandRouter.claimsDevice(dev),
-      homeBaseAttached: homeBaseAttached(raw, dev.sn),
+      // A station that isn't the device itself means HomeBase-attached (outdoor mode makes it its own).
+      homeBaseAttached: rec.parentSn !== undefined,
       stationDeviceType: this.stationDeviceTypeOf(sn),
       refusedCommandKinds,
       dpCatalog,

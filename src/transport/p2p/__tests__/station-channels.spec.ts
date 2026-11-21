@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { stationChannels } from "../station-channels.js";
+import { stationChannels, stationOf } from "../station-channels.js";
 
 const HUB = "T8000P0000000000";
 const A = "T8000P0000000001";
@@ -39,5 +39,16 @@ describe("stationChannels", () => {
     const map = stationChannels([hub(STANDALONE), { sn: HUB, raw: {}, channel: 2 } as never]);
     expect(map.get(STANDALONE)).toEqual({ channel: 0 });
     expect(map.get(HUB)).toEqual({ channel: 2 });
+  });
+});
+
+/** Outdoor mode (6271 "1"): the app's own-hub live target and the bundles' SINGLE, on channel 0. */
+describe("a device in outdoor mode", () => {
+  it("is its own station on channel 0, and leaves its HomeBase's channels alone", () => {
+    const outdoor = { sn: A, raw: { parent_sn: HUB }, channel: 3, params: { 6271: "1" } } as never;
+    const map = stationChannels([hub(HUB), outdoor, on(HUB, B, 3)]);
+    expect(stationOf(outdoor)).toBe(A);
+    expect(map.get(A)).toEqual({ channel: 0 });
+    expect(map.get(B)).toEqual({ channel: 3 });
   });
 });
