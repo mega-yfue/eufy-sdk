@@ -482,6 +482,8 @@ export type Command =
         encrypt?: boolean;
         /** The descriptor's `timeout`, seconds: how long the app waits for the reply (5 s when it states none). */
         timeoutS?: number;
+        /** The descriptor's `retryCount`: sends again while no reply comes (1 when it states none). */
+        retryCount?: number;
       }
     // `mqtt-dp-preset` — a DP write whose payload is too large to pass inline, named by a **cloud catalog
     // id** the router resolves through an injected lookup and serializes. Named for that wire shape, not

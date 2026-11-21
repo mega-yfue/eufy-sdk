@@ -120,7 +120,7 @@ describe("MqttCommandRouter.getAutoLockState (ff09-mqtt read-only GET)", () => {
     const { router } = makeRouter(plain, { noReply: true });
     const p = router.getAutoLockState(SN, { adminUserId: ADMIN, deviceSn: SN });
     const assertion = expect(p).rejects.toThrow(/no settings GET reply/);
-    await vi.advanceTimersByTimeAsync(5000);
+    await vi.advanceTimersByTimeAsync(10_000);
     await assertion;
   });
 });

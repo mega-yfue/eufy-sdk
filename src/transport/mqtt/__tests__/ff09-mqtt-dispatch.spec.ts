@@ -83,7 +83,7 @@ describe("MqttCommandRouter.dispatchCommand (ff09-actuate)", () => {
     ] as const) {
       const { router, fakeMqtt, cmd, getPnBySn } = makeRouter(sn, {});
       const p = router.dispatchCommand(sn, cmd);
-      await vi.advanceTimersByTimeAsync(5000);
+      await vi.advanceTimersByTimeAsync(10_000);
       await p;
       expect(vi.mocked(fakeMqtt.publish).mock.calls[0]![0]).toBe(`cmd/eufy_security/${pn}/${sn}/req`);
       expect(getPnBySn).toHaveBeenCalledTimes(calls);
@@ -94,7 +94,7 @@ describe("MqttCommandRouter.dispatchCommand (ff09-actuate)", () => {
     const getPnBySn = vi.fn().mockResolvedValue("T85D2");
     const { router, fakeMqtt, cmd } = makeRouter("T85D0K0000000000", {}, getPnBySn);
     const both = Promise.all([0, 1].map(() => router.dispatchCommand("T85D0K0000000000", cmd)));
-    await vi.advanceTimersByTimeAsync(5000);
+    await vi.advanceTimersByTimeAsync(10_000);
     await both;
     expect(vi.mocked(fakeMqtt.publish).mock.calls[1]![0]).toBe("cmd/eufy_security/T85D2/T85D0K0000000000/req");
     expect(getPnBySn).toHaveBeenCalledOnce();
@@ -105,7 +105,7 @@ describe("MqttCommandRouter.dispatchCommand (ff09-actuate)", () => {
     const { router, cmd, acks } = makeRouter();
 
     const p = router.dispatchCommand("T85D0K0000000000", cmd);
-    await vi.advanceTimersByTimeAsync(5000);
+    await vi.advanceTimersByTimeAsync(10_000);
     await expect(p).resolves.toBeUndefined(); // fire-and-forget: no ack is not an error
 
     expect(acks).toEqual([{ sn: "T85D0K0000000000", kind: "ff09-actuate", acked: false }]);
@@ -117,7 +117,7 @@ describe("MqttCommandRouter.dispatchCommand (ff09-actuate)", () => {
     const p = router.dispatchCommand("T85D0K0000000000", cmd);
     await vi.advanceTimersByTimeAsync(0);
     fakeMqtt.emit("message", { topic: "cmd/eufy_security/T85D0/T85D0K0000000000/req" }); // not /res
-    await vi.advanceTimersByTimeAsync(5000);
+    await vi.advanceTimersByTimeAsync(10_000);
     await p;
 
     expect(acks).toEqual([{ sn: "T85D0K0000000000", kind: "ff09-actuate", acked: false }]);
@@ -129,7 +129,7 @@ describe("MqttCommandRouter.dispatchCommand (ff09-actuate)", () => {
     const p = router.dispatchCommand("T85D0K0000000000", cmd);
     await vi.advanceTimersByTimeAsync(0);
     fakeMqtt.emit("message", { topic: "cmd/eufy_security/T85D0/T85D0K0000000000/res", raw: { head: { cmd: 9 } } });
-    await vi.advanceTimersByTimeAsync(5000);
+    await vi.advanceTimersByTimeAsync(10_000);
     await p;
 
     expect(acks).toEqual([{ sn: "T85D0K0000000000", kind: "ff09-actuate", acked: false }]);
