@@ -515,7 +515,7 @@ export const MOTION_MEMBERS = {
     description: "Motion/PIR detection enabled (verified: param 1011 = CAMERA_PIR).",
     write: (v, ctx) => {
       requireFamily("motionDetection", ctx, "camera");
-      return setScalar(MOTION_CMD.CAMERA_PIR, asBool(v) ? 1 : 0, ctx, "direct-binary");
+      return setScalar(MOTION_CMD.CAMERA_PIR, asBool(v) ? 1 : 0, ctx, "auto");
     },
     writeAs: "setDetection",
   },

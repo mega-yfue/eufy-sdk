@@ -117,27 +117,27 @@ describe("motion capability module", () => {
   });
 
   describe("motionDetection buildCommand", () => {
-    it("emits the direct-binary 1011 scalar (on=1/off=0) — the capture-verified watermark-class wire", () => {
+    it("emits the auto 1011 scalar (on=1/off=0) — auto-fallback to Level 1 for SoloCams", () => {
       expect(intent("motionDetection", true, ctx([], 3))).toEqual({
         kind: "set-param",
         param: MOTION_CMD.CAMERA_PIR, // 1011
         value: 1,
-        form: "direct-binary",
+        form: "auto",
         channel: 3,
       });
       expect(intent("motionDetection", false, ctx([], 3))).toMatchObject({
-        form: "direct-binary",
+        form: "auto",
         value: 0,
       });
     });
-    it("actions.setDetection dispatches the same direct-binary 1011 scalar", async () => {
+    it("actions.setDetection dispatches the same auto 1011 scalar", async () => {
       const sent: any[] = [];
       const acts = bindMotion(ctx([], 3), sent);
       await acts.setDetection(true);
       expect(sent[0]).toMatchObject({
         kind: "set-param",
         param: MOTION_CMD.CAMERA_PIR,
-        form: "direct-binary",
+        form: "auto",
         value: 1,
       });
     });
