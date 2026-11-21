@@ -1132,7 +1132,9 @@ export class P2PSession extends EventEmitter {
     } else if (hasHeader(msg, ResponseMessageType.CAM_ID)) {
       this.onConnected({ host: rinfo.address, port: rinfo.port }, socket);
     } else if (hasHeader(msg, ResponseMessageType.END)) {
-      if (fromConnectedPeer) void this.close().catch((error) => this.emit("error", error));
+      if (!fromConnectedPeer) return;
+      this.logger.debug(`[p2p] ${this.cfg.stationSn} END from the peer — closing`);
+      void this.close().catch((error) => this.emit("error", error));
     } else if (hasHeader(msg, ResponseMessageType.PONG)) {
       this.lastPongData = msg.length > 4 ? msg.subarray(4) : undefined;
     } else if (hasHeader(msg, ResponseMessageType.PING)) {
