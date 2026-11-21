@@ -336,8 +336,13 @@ export class MqttCommandRouter {
    * The record with `model` set to the product number its topics name, as the app's `snToPn`: `device_new_pn`,
    * else the serial ({@link pnFromSerial}), never `device_model` (a C30 reports `T85D0C` and answers only on `T85D0`).
    */
-  async pnDeviceFor(sn: string): Promise<EufyDevice> {
-    const dev = await this.deviceFor(sn);
+  private async pnDeviceFor(sn: string): Promise<EufyDevice> {
+    return await this.withPn(await this.deviceFor(sn));
+  }
+
+  /** `dev` with `model` set to the product number its topics name ({@link pnDeviceFor}). */
+  async withPn(dev: EufyDevice): Promise<EufyDevice> {
+    const sn = dev.sn;
     const pn = (dev.raw as { device_new_pn?: unknown } | undefined)?.device_new_pn;
     return { ...dev, model: typeof pn === "string" && pn ? pn : await this.pnFromSerial(sn) };
   }

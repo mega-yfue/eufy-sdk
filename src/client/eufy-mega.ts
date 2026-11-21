@@ -2218,10 +2218,9 @@ export class EufyMega extends EventEmitter {
       if (subscribed.has(d.sn)) continue;
       subscribed.add(d.sn);
       try {
-        // The app's security stack names a device's topic `cmd/eufy_security/<snToPn>/<sn>/res`.
-        await transport.subscribeDevice(
-          scope === "eufy_security" ? { ...(await this.mqtt.pnDeviceFor(d.sn)), category: scope } : d,
-        );
+        // The app names a topic's product by `snToPn`; the security stack's category is `eufy_security`.
+        const pnDevice = await this.mqtt.withPn(d);
+        await transport.subscribeDevice(scope === "eufy_security" ? { ...pnDevice, category: scope } : pnDevice);
         await this.sendRealtimeInit(d.sn);
       } catch (e) {
         this.reportError(e);
