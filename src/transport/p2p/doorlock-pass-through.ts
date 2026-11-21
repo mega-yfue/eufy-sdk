@@ -6,8 +6,7 @@
  * station owner's 40-character admin id and the 16-character station serial, with the station serial as the
  * IV. The plaintext is JSON `{channel, lock_cmd, lock_payload, seq_num}` with `channel` always 0: the lock's
  * channel on its station rides only the P2P envelope (`mChannel` and the frame header). For lock/unlock
- * `lock_cmd` is 8 and `lock_payload` is base64 of the on/off TLV {@link encodeLockOnOff}. Confirmed on hardware: a DeviceType 50
- * lock paired to a Wi-Fi bridge moves its bolt both ways on this blob.
+ * `lock_cmd` is 8 and `lock_payload` is base64 of the on/off TLV {@link encodeLockOnOff}.
  */
 import { createCipheriv } from "node:crypto";
 import { paddingP2PData } from "./codec.js";

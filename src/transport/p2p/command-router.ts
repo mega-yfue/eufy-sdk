@@ -357,9 +357,6 @@ export class P2PCommandRouter {
    */
   private readonly keyedSequences = new Map<string, number>();
 
-  /** Per-station door-lock pass-through sequence numbers, seeded from the clock in seconds. */
-  private readonly passThroughSeq = new Map<string, number>();
-
   /** The answered command in flight per {@link serializeAnswered} key, which the next one for that key waits on. */
   private readonly answeredQueue = new Map<string, Promise<void>>();
 
@@ -2342,10 +2339,9 @@ export class P2PCommandRouter {
    * **`doorlock-pass-through-actuate` intent** — `CMD_DOORLOCK_DATA_PASS_THROUGH` at level-2 inside the
    * `CMD_SET_PAYLOAD` envelope, `mValue3=0`, on the lock's channel of the station it is paired to, its
    * `payload` the sealed blob from {@link buildDoorlockPassThrough} keyed to that station and its owner's
-   * member record. Sent once: the blob carries its own sequence number. Confirmed on hardware on a
-   * DeviceType 50 lock paired to a Wi-Fi bridge — the bolt moves both ways and the lock reports each with a
-   * lock-state push. The key is the station owner's, so it reads the station's member record rather than the
-   * lock's `accountId` from `resolveSession`. Its `short_user_id` is hex, as on the `ff09` path, and anything
+   * member record. Sent once: the blob carries its own sequence number, the clock in seconds + 1 as the app
+   * sends it. The key is the station owner's, so it reads the station's member record rather than the lock's
+   * `accountId` from `resolveSession`. Its `short_user_id` is hex, as on the `ff09` path, and anything
    * but four hex digits throws rather than writing the wrong user.
    */
   private async sendDoorlockPassThrough(sn: string, cmd: Ff09Identity): Promise<void> {
@@ -2366,15 +2362,13 @@ export class P2PCommandRouter {
     }
     const shortUserId = Number.parseInt(shortUserIdHex, 16);
     const nickname = typeof member.nick_name === "string" ? member.nick_name : cmd.username;
-    const seqNum = (this.passThroughSeq.get(parentSn) ?? Math.trunc(Date.now() / 1000)) + 1;
-    this.passThroughSeq.set(parentSn, seqNum);
     const blob = buildDoorlockPassThrough({
       engage: cmd.engage,
       adminUserId,
       shortUserId,
       nickname,
       stationSn: parentSn,
-      seqNum,
+      seqNum: Math.trunc(Date.now() / 1000) + 1,
     });
     (this.deps.logger ?? noopLogger).debug(
       `[p2p] ${parentSn} door-lock pass-through ${cmd.engage ? "lock" : "unlock"} ${sn} ch=${channel}`,
