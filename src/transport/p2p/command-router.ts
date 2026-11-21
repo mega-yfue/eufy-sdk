@@ -2134,7 +2134,7 @@ export class P2PCommandRouter {
    * Send one command and hold the device's slot until its answer, as the vendor app runs one request at a time
    * per device sn (`KmmP2PClient.enqueueRequest`, the slot freed by `releaseAndEnqueueNext` on answer or
    * timeout): the next command for `sn` waits. The command goes once ({@link P2PSession.sendAcknowledged}).
-   * Its answer is the {@link P2PSession} `commandResult` on the command's channel under its own command id,
+   * Its answer is the {@link P2PSession} `commandResult` under its own command id (the app matches nothing else),
    * read with {@link WRITE_ANSWER}, as `SingleRequestForP2P.doSingleRequest` applies a write only once
    * `KmmP2pResponse.isSuccess`. Code `0` answers `true`; a code from 1 to 20 is resent once within the retry
    * window; any other code, or no answer by the deadline, rejects with a {@link CommandResultError}. A frame
@@ -2157,7 +2157,7 @@ export class P2PCommandRouter {
    */
   private sendAnswered(
     sn: string,
-    { commandId, channel }: { commandId: number; channel: number },
+    { commandId }: { commandId: number; channel: number },
     send: (r: ResolvedSession) => boolean | void,
     resolved?: ResolvedSession,
     unread = false,
@@ -2182,7 +2182,7 @@ export class P2PCommandRouter {
             dispatched();
           },
           (done) => ({
-            result: (r) => r.channel === channel && r.commandId === commandId && done(r.code),
+            result: (r) => r.commandId === commandId && done(r.code),
           }),
         );
         if (code === 0) return true;
