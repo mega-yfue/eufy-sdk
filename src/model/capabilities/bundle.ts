@@ -420,13 +420,13 @@ function tlvFields(tlv: string, value: unknown): { tag: number; value: Buffer }[
   return fields;
 }
 
-/** A `type: "json"` frame's write: its `cmd` and the JSON its `payload` string holds, as `sendRequestWithJson` parses it. */
-function mqttJsonCommand(frame: BundleFrame): Command | undefined {
+/** A `type: "json"` frame's write: its `cmd` and its JSON `payload` (an object, its tokens filled, or JSON text). */
+function mqttJsonCommand(frame: BundleFrame, fill: (x: unknown) => unknown): Command | undefined {
   if (typeof frame.mqttCmdCode !== "number" || typeof frame.cmd !== "number") return undefined;
-  let payload: unknown = {};
-  if (typeof frame.payload === "string") {
+  let payload: unknown = fill(frame.payload ?? {});
+  if (typeof payload === "string") {
     try {
-      payload = JSON.parse(frame.payload);
+      payload = JSON.parse(payload);
     } catch {
       return undefined;
     }
@@ -467,9 +467,9 @@ function tlvHexOf(tlv: string, value: unknown): Buffer | undefined {
  * and `A2` (the user id), which the transport adds as it does for every frame; `{value:<type>}` is the
  * written value. `undefined` for any other placeholder, or a field whose bytes miss its length.
  */
-function mqttCommand(frame: BundleFrame, value: unknown): Command | undefined {
+function mqttCommand(frame: BundleFrame, value: unknown, fill: (x: unknown) => unknown): Command | undefined {
   const tlv = frame.payload;
-  if (frame.type === "json") return mqttJsonCommand(frame);
+  if (frame.type === "json") return mqttJsonCommand(frame, fill);
   if (frame.type !== "ble" || typeof frame.mqttCmdCode !== "number" || typeof frame.cmdCode !== "number")
     return undefined;
   if (typeof tlv !== "string") return undefined;
@@ -715,7 +715,7 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
         : transport === "http"
           ? cloudCommand(frame, fill)
           : transport === "mqtt"
-            ? mqttCommand(frame, value)
+            ? mqttCommand(frame, value, fill)
             : undefined;
   const after = [...(frame.next ?? []), ...(frame.after ? [frame.after] : [])];
   const next = after.length ? frameCommand({ ...after[0]!, next: after.slice(1), after: undefined }, value, ctx) : null;

@@ -292,3 +292,31 @@ describe("smart_lock_set_setting_params on a T8500", () => {
     expect(command.lock.payload.toString("hex")).toBe("a1021964a20101a3021e00a404" + "00f15365");
   });
 });
+
+/** Rows the generator frames once a bool goes as a number and a json MQTT payload as its object (`$value` inside). */
+describe("writes framed from their real payload shape", () => {
+  it("sends T8028's arming mode as a type json MQTT write carrying the value", () => {
+    const ctx = contextOf({
+      identifier: "arming_selected_mode",
+      type: "enum",
+      model: "T8028",
+      variant: "",
+      topology: "standalone",
+    });
+    expect(thingWrite("arming_selected_mode", "2", ctx)).toMatchObject({ kind: "mqtt-json", cmd: 1350, payload: 2 });
+  });
+  it("sends T8200's HDR switch as a 1700 with the status as a number", () => {
+    const ctx = contextOf({
+      identifier: "video_quality_hdr_switch",
+      type: "bool",
+      model: "T8200",
+      variant: "",
+      topology: "standalone",
+    });
+    expect(thingWrite("video_quality_hdr_switch", "1", ctx)).toMatchObject({
+      kind: "set-json",
+      param: 1019,
+      data: { status: 1 },
+    });
+  });
+});
