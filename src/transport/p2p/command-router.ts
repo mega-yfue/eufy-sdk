@@ -34,7 +34,7 @@ import {
 } from "../../core/contracts.js";
 import { buildKeyedActuatePayload, keyedPayloadReportCode, keyedPayloadSeqMark } from "./keyed-payload.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
-import { assertNever } from "../../core/util.js";
+import { assertNever, isStationSerial } from "../../core/util.js";
 import { setTimeout as sleep } from "node:timers/promises";
 import { CONNECT_TIMEOUT_MS, P2PSession, STATION_CHANNEL, type P2PFrame } from "./p2p-session.js";
 import { buildDirectBinaryBody, buildStringBody } from "./write-commands.js";
@@ -94,22 +94,6 @@ const GET_PARAMS_BODY = Buffer.from("ff00000087030000", "hex");
 const PING_INTERVAL_MS = 3_000;
 const PING_WINDOW_MS = 300_000;
 const PING_TASK_MAX_MS = 30 * 60_000;
-
-/** The serial prefixes the app's request builder counts as a station (`SnKtx.isStation`): such a device is on 255. */
-const REQUEST_STATION_PREFIXES = [
-  "T8001",
-  "T8002",
-  "T8020",
-  "T8010",
-  "T8030",
-  "T8040",
-  "T8023",
-  "T8021",
-  "T9000",
-  "T8N00",
-  "T7000",
-  "T8025",
-];
 
 /**
  * What a caller's own deadline on a station call has to clear, in milliseconds.
@@ -682,7 +666,7 @@ export class P2PCommandRouter {
   /**
    * The app's params read of a device (`getParams`): {@link GET_PARAMS_BODY} as 1103, opening the station's session
    * where none is up, on channel 0 where the device's param 6271 is "1", else on 255 for a station
-   * ({@link REQUEST_STATION_PREFIXES}) and on its own channel for any other device. The answer
+   * ({@link isStationSerial}) and on its own channel for any other device. The answer
    * arrives as the station's camera-info notify. A read that cannot go is only logged, as the app does.
    */
   async getParams(sn: string): Promise<void> {
@@ -691,8 +675,7 @@ export class P2PCommandRouter {
       const dev = await this.deviceFor(sn);
       await this.ensureStation(stationOf(dev));
       const { session, channel } = await this.resolveSession(sn);
-      const station = REQUEST_STATION_PREFIXES.some((prefix) => sn.startsWith(prefix));
-      const chl = dev.params?.[6271] === "1" ? 0 : station ? STATION_CHANNEL : channel;
+      const chl = dev.params?.[6271] === "1" ? 0 : channel;
       session.sendBytes(GET_PARAMS_BODY, chl, P2P_ENVELOPE.GET_CAMERA_INFO);
     } catch (e) {
       (this.deps.logger ?? noopLogger).debug(`[p2p] ${sn} params read not sent`, e);
@@ -766,7 +749,7 @@ export class P2PCommandRouter {
   private pingFor(sn: string, forMs: number, stop = false): void {
     const dev = this.recordFor(sn);
     const parentSn = dev ? stationOf(dev) : sn;
-    if (REQUEST_STATION_PREFIXES.some((prefix) => parentSn.startsWith(prefix))) return;
+    if (isStationSerial(parentSn)) return;
     const now = Date.now();
     const held = this.pings.get(parentSn);
     if (held) {
@@ -1677,7 +1660,8 @@ export class P2PCommandRouter {
       throw new DeviceChannelUnresolvedError(sn, parentSn);
     }
     this.manager.bumpCommand(parentSn, parentSn);
-    const { channel } = address;
+    // The request channel `P2PRequestCreatorKt.p2pRequest` gives: 255 for a station serial.
+    const channel = isStationSerial(sn) ? STATION_CHANNEL : address.channel;
     const stationAdminId = (raw.member as any)?.admin_user_id;
     const stationModel = this.recordFor(parentSn)?.model;
     const accountId = (stationAdminId as string) ?? this.deps.mega.auth?.userId ?? "";

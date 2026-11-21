@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { connectedSession, routerWithSession, DEVICE_SN, STATION_SN } from "./session-fixtures.js";
+import { connectedSession, routerWithSession, ACCOUNT_ID, DEVICE_SN, STATION_SN } from "./session-fixtures.js";
 
 const BODY = Buffer.from("ff00000087030000", "hex");
 
@@ -31,5 +31,32 @@ describe("P2PCommandRouter.getParams", () => {
     const { router, send } = sendOn();
     await router.getParams(DEVICE_SN);
     expect(send).toHaveBeenCalledWith(BODY, 1, 1103);
+  });
+});
+
+/** `P2PRequestCreatorKt.p2pRequest`: a request to a station serial goes on 255, whatever channel its record states. */
+describe("a write to a station serial", () => {
+  it("goes on channel 255", async () => {
+    const session = Object.assign(connectedSession(), {
+      sendBytes: vi.fn((_body: Buffer, channel: number, commandId: number) => {
+        queueMicrotask(() => session.emit("commandResult", { code: 0, channel, commandId }));
+        return true;
+      }),
+    });
+    const router = routerWithSession(session, {
+      deps: {
+        listDevices: () => [
+          {
+            sn: STATION_SN,
+            stationSn: STATION_SN,
+            model: "T8010",
+            channel: 0,
+            raw: { member: { admin_user_id: ACCOUNT_ID } },
+          } as never,
+        ],
+      },
+    });
+    await router.dispatchCommand(STATION_SN, { kind: "set-param", param: 1045, value: 1, channel: 0 });
+    expect(session.sendBytes.mock.calls[0]![1]).toBe(255);
   });
 });
