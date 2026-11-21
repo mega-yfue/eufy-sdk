@@ -464,6 +464,22 @@ describe("EufyMega auto-realtime", () => {
     expect(transport.subscribeDevice.mock.calls.map(([d]) => d.sn)).toEqual(["M1", "M2"]);
   });
 
+  it("subscribes a device under the product number the app's snToPn gives, not its model", async () => {
+    const c = makeClient({ mqtt: 0 }, { pollMs: 0 });
+    const light = {
+      sn: "T8L00X0000000000",
+      category: "eufy_life",
+      model: "T8L00",
+      raw: { device_new_pn: "T8L04" },
+    } as unknown as EufyDevice;
+    const transport = { subscribeDevice: vi.fn(async (_: EufyDevice) => {}), disconnect: vi.fn(async () => {}) };
+    c.mqtt.mockResolvedValue(transport);
+    (c.eufy as any).getMqttDevices.mockReturnValue([light]);
+    await (c.eufy as any).ensureRealtime();
+
+    expect(transport.subscribeDevice.mock.calls.map(([d]) => d.model)).toEqual(["T8L04"]);
+  });
+
   it("does not open a second transport when every MQTT device is on one scope", async () => {
     const c = makeClient({ mqtt: 2, category: "eufy_life" });
     await (c.eufy as any).ensureRealtime();
