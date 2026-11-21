@@ -80,9 +80,7 @@ describe("contact capability module", () => {
     it("setAlarmSoundType emits a direct-binary scalar on the device channel", async () => {
       const { acts: a, sent } = bind<ContactActions>("contact", ctx());
       await a.setAlarmSoundType!(4);
-      expect(sent).toEqual([
-        { kind: "set-param", param: CONTACT_CMD.ALARM_SOUND_TYPE, value: 4, form: "auto", channel: 27 },
-      ]);
+      expect(sent).toEqual([{ kind: "set-param", param: CONTACT_CMD.ALARM_SOUND_TYPE, value: 4, channel: 27 }]);
     });
 
     it("setAlarmVolume emits the 1350 SET_PAYLOAD the app sends (channel+volume+transaction, mValue3 0)", async () => {

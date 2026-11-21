@@ -54,7 +54,7 @@ async function writeGuardMode(eufy: EufyMega, sn: string, expected: number): Pro
     cloudMode = String(commandObservation(args[1] as never)!.expected);
   });
   const command = observeCommand(
-    { kind: "set-param", param: GUARD_MODE_PARAM, value: expected, form: "auto", channel: 0 },
+    { kind: "set-param", param: GUARD_MODE_PARAM, value: expected, channel: 0 },
     {
       event: "armingModeChanged",
       expected,

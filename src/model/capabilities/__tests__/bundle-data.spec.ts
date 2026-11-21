@@ -115,7 +115,6 @@ function expected(f: BundleFrame, value: unknown, ctx: CommandContext): object {
           payload,
           channel,
           mValue3: f.mValue3,
-          form: f.seal ? "int-string" : "auto",
         }
       : f.body === "json1700"
         ? { kind: "set-json", param: f.subCmd, data: payload, channel }
@@ -123,7 +122,7 @@ function expected(f: BundleFrame, value: unknown, ctx: CommandContext): object {
             kind: "set-param",
             param: f.cmd,
             value: scalar((payload as Record<string, unknown>)[f.valueKey!], f.coerce),
-            form: f.body === "pair" ? "int-pair" : "auto",
+            ...(f.body === "pair" && { form: "int-pair" }),
             channel,
           };
   return f.next?.length ? { ...head, next: expected({ ...f.next[0]!, next: f.next.slice(1) }, value, ctx) } : head;

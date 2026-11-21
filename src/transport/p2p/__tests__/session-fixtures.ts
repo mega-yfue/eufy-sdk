@@ -29,7 +29,6 @@ export interface FakeP2PSession extends EventEmitter {
   /** The handle every trace about this session is emitted under, real sessions included. */
   traceId: string;
   hasLevel2Key: boolean;
-  awaitLevel2Key: ReturnType<typeof vi.fn>;
   /** Sends once: delivery is the real session's concern, so the fake device takes each send as one command. */
   sendAcknowledged: ReturnType<typeof vi.fn>;
 }
@@ -60,7 +59,6 @@ export function connectedSession(hasLevel2Key = true): FakeP2PSession {
   session.hasLevel2Key = hasLevel2Key;
   session.sendAcknowledged = vi.fn((send: () => boolean) => send());
   (session as unknown as { sendPing: () => void }).sendPing = vi.fn();
-  session.awaitLevel2Key = vi.fn(async () => session.hasLevel2Key);
   return session;
 }
 

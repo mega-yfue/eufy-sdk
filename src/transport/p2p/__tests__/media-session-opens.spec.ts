@@ -46,12 +46,8 @@ class FakeSession extends EventEmitter {
     if (this.connectsAfterMs === 0) this.isConnected = true;
     else if (Number.isFinite(this.connectsAfterMs)) setTimeout(() => (this.isConnected = true), this.connectsAfterMs);
   }
-  /** A key wait begun before the path answers is the one that runs out: the key rides the connected path. */
-  async awaitLevel2Key() {
-    return this.hasKey && this.isConnected;
-  }
   sent: unknown[][] = [];
-  sendRawLevel2Bytes(...frame: unknown[]) {
+  sendBytes(...frame: unknown[]) {
     this.sent.push(frame);
     return true;
   }

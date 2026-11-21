@@ -1,6 +1,5 @@
 import { createDecipheriv } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { StationKeyUnavailableError } from "../../../core/contracts.js";
 import { P2PCommandRouter, type P2PRouterDeps } from "../command-router.js";
 import { buildDoorlockPassThrough, encodeLockOnOff, lockKey } from "../doorlock-pass-through.js";
 import { serialIv } from "../keyed-payload.js";
@@ -56,8 +55,8 @@ describe("the door-lock pass-through blob", () => {
 
 describe("a door-lock pass-through actuation", () => {
   const makeRouter = (hasKey: boolean, shortUserId = "0004") => {
-    const session = connectedSession(hasKey) as FakeP2PSession & { sendControlLevel2: ReturnType<typeof vi.fn> };
-    session.sendControlLevel2 = vi.fn(() => true);
+    const session = connectedSession(hasKey) as FakeP2PSession & { sendSetPayload: ReturnType<typeof vi.fn> };
+    session.sendSetPayload = vi.fn(() => true);
     const lock = {
       sn: LOCK_SN,
       model: "T8510",
@@ -101,14 +100,14 @@ describe("a door-lock pass-through actuation", () => {
     deviceSn: LOCK_SN,
   } as const;
 
-  it("sends one pass-through at level-2 on the lock's channel, with channel 0 inside the sealed blob", async () => {
+  it("sends one pass-through, sealed by the session, on the lock's channel, with channel 0 inside the blob", async () => {
     const { router, session } = makeRouter(true);
 
     await router.dispatchCommand(LOCK_SN, lockCmd);
 
-    expect(session.sendControlLevel2).toHaveBeenCalledTimes(1);
-    const [cmd, channel, account, payload, mValue3] = session.sendControlLevel2.mock.calls[0]!;
-    expect([cmd, channel, account, mValue3]).toEqual([1911, 42, ADMIN, 0]);
+    expect(session.sendSetPayload).toHaveBeenCalledTimes(1);
+    const [cmd, payload, opts] = session.sendSetPayload.mock.calls[0]!;
+    expect([cmd, opts.channel, opts.accountId, opts.mValue3]).toEqual([1911, 42, ADMIN, 0]);
     const decipher = createDecipheriv("aes-128-cbc", lockKey(ADMIN, STATION_SN), serialIv(STATION_SN));
     const plain = Buffer.concat([decipher.update(Buffer.from(payload.payload, "base64")), decipher.final()]);
     const inner = JSON.parse(plain.toString("utf-8").replace(/\0+$/, ""));
@@ -132,7 +131,7 @@ describe("a door-lock pass-through actuation", () => {
 
     await router.dispatchCommand(LOCK_SN, lockCmd);
 
-    expect(userField(session.sendControlLevel2.mock.calls[0]![3])).toBe(field);
+    expect(userField(session.sendSetPayload.mock.calls[0]![1])).toBe(field);
   });
 
   it.each(["4", "00004", "00g4", ""])(
@@ -142,15 +141,7 @@ describe("a door-lock pass-through actuation", () => {
 
       await expect(router.dispatchCommand(LOCK_SN, lockCmd)).rejects.toThrow(/4-digit hex short_user_id/);
 
-      expect(session.sendControlLevel2).not.toHaveBeenCalled();
+      expect(session.sendSetPayload).not.toHaveBeenCalled();
     },
   );
-
-  it("refuses without a level-2 key", async () => {
-    const { router, session } = makeRouter(false);
-
-    await expect(router.dispatchCommand(LOCK_SN, lockCmd)).rejects.toBeInstanceOf(StationKeyUnavailableError);
-
-    expect(session.sendControlLevel2).not.toHaveBeenCalled();
-  });
 });

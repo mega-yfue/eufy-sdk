@@ -73,10 +73,6 @@ export const ARMING_CMD = {
    * mChannel 0, explicit mValue3:0, `payload:{mode_type:<int>, user_name:<string>}`. All nine
    * {@link ARMING_MODE_WIRE} values are settable; each write is answered by a MODE_SWITCH push.
    *
-   * The ENCRYPTION LEVEL is the session's to pick (`"auto"`), not this command's: a station holding a
-   * level-2 key seals it level-2, while an own-session camera that never
-   * negotiates one carries the same envelope level-1. See `armingCommand`.
-   *
    * A T8410C and a T8410 take the mode as a direct frame instead of this envelope; see
    * {@link DIRECT_ARMING_MODELS} and {@link BROADCAST_ARMING_MODELS}.
    */
@@ -143,8 +139,8 @@ const STANDALONE_ACTION_MODELS: ReadonlySet<string> = new Set(["T8170", "T8171"]
 const DIRECT_ARMING_MODELS: ReadonlySet<string> = new Set(["T8410C"]);
 
 /**
- * The models whose guard-mode write is the direct frame on the station broadcast channel 255, sealed at the
- * session's own level ({@link STATION_CHANNEL}, `form` `"auto"`): the same 132-byte body as
+ * The models whose guard-mode write is the direct frame on the station broadcast channel 255
+ * ({@link STATION_CHANNEL}): the same 132-byte body as
  * {@link DIRECT_ARMING_MODELS}. A standalone T8410's session is level-1, and it leaves the `1350` set-payload
  * envelope unapplied: the write is sent, and param 1224 keeps the old mode. This frame applies on a
  * level-1 session, and the camera's own 1103 report carries the new mode on param 1151; all nine
@@ -232,12 +228,6 @@ function armingModeOf(v: boolean | number | string): ArmingMode | undefined {
  * acting name as it stands is the more correct choice — it's almost certainly
  * just attribution (e.g. "who armed the system" in event history), not a value the device checks
  * against anything.
- *
- * `"auto"` on both counts `setPayload` names: `mValue3` is passed 0 explicitly, so both seals carry the
- * byte-identical JSON; and every device carrying `arming` is its own station
- * or a HomeBase, the former being exactly the case that may hold no key. A T8410's session is level-1 —
- * the same fact `access.ts` records beside camera power 1035 — so pinned
- * level-2 made the one control a standalone camera most needs the one it could not be sent.
  */
 function armingCommand(mode: ArmingMode, ctx: CommandContext): Command {
   if (!ctx.accountName) {
@@ -245,19 +235,12 @@ function armingCommand(mode: ArmingMode, ctx: CommandContext): Command {
   }
   const model = ctx.model ?? "";
   if (BROADCAST_ARMING_MODELS.has(model)) {
-    return setStationScalar(ARMING_CMD.SET_ARMING, ARMING_MODE_WIRE[mode], STATION_CHANNEL, "auto");
+    return setStationScalar(ARMING_CMD.SET_ARMING, ARMING_MODE_WIRE[mode], STATION_CHANNEL);
   }
   if (DIRECT_ARMING_MODELS.has(model)) {
     return setStationScalar(ARMING_CMD.SET_ARMING, ARMING_MODE_WIRE[mode], ctx.channel);
   }
-  return setPayload(
-    ARMING_CMD.SET_ARMING,
-    { mode_type: ARMING_MODE_WIRE[mode], user_name: ctx.accountName },
-    ctx,
-    0,
-    undefined,
-    "auto",
-  );
+  return setPayload(ARMING_CMD.SET_ARMING, { mode_type: ARMING_MODE_WIRE[mode], user_name: ctx.accountName }, ctx, 0);
 }
 
 /**

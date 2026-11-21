@@ -437,9 +437,8 @@ function sessionCommand(frame: BundleFrame, fill: (x: unknown) => unknown, ctx: 
   if (object?.cmd === 1003 || Number(object?.extValue) > 0) return undefined;
   const counter = frame.counter === "bump" || frame.counter === "current" ? frame.counter : undefined;
   if (frame.counter !== undefined && !counter) return undefined;
-  const form = frame.seal ? "int-string" : "auto";
   if (frame.body === "json1350" && (object || Array.isArray(filled))) {
-    const command = setPayload(sub, (object ?? filled) as readonly unknown[], c, frame.mValue3, header, form);
+    const command = setPayload(sub, (object ?? filled) as readonly unknown[], c, frame.mValue3, header);
     return {
       ...command,
       ...(frame.unzipParams && object && { unzip: true as const }),
@@ -447,15 +446,15 @@ function sessionCommand(frame: BundleFrame, fill: (x: unknown) => unknown, ctx: 
     } as Command;
   }
   if (counter || frame.unzipParams) return undefined;
-  if (object && frame.body === "json") return setJsonRaw(cmd, object, c, header, frame.seal && "int-string");
+  if (object && frame.body === "json") return setJsonRaw(cmd, object, c, header);
   if (frame.seal) return undefined;
   if (frame.body === "json1700" && (object || typeof filled === "number"))
     return setJson(sub, object ?? (filled as number), c);
   if (frame.body === "native") return nativeCommand(frame, object, isStationCodec(ctx) ? 255 : ctx.channel);
   if (scalar === undefined) return undefined;
-  if (frame.body === "groupA") return setScalar(cmd, scalar, c, "auto");
+  if (frame.body === "groupA") return setScalar(cmd, scalar, c);
   if (frame.body === "pair") return setScalar(cmd, scalar, c, "int-pair");
-  if (frame.body === "groupB") return setStationScalar(cmd, scalar, header, "auto");
+  if (frame.body === "groupB") return setStationScalar(cmd, scalar, header);
   return undefined;
 }
 

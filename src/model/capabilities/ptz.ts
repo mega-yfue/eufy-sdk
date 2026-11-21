@@ -233,8 +233,6 @@ export function zoomCommand(dstZoom: number, ctx: CommandContext, region?: ZoomR
     },
     ctx,
     0,
-    undefined,
-    "auto",
   );
 }
 

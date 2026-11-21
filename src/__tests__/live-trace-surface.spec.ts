@@ -39,7 +39,6 @@ describe("live-trace vocabulary at the package entry point", () => {
       "session-connect-wait": true,
       "session-connected": true,
       "session-unreachable": true,
-      "level2-wait": true,
       "level2-ready": true,
       "level2-unavailable": true,
       "level2-negotiating": true,

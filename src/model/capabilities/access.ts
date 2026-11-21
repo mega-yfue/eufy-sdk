@@ -1,49 +1,29 @@
 import type { Capability } from "../types.js";
 import type { ActionSpec, AvailabilityContext, CommandContext, CapabilityStateReader } from "./types.js";
-import type { Command, ScalarForm } from "../../core/contracts.js";
+import type { Command } from "../../core/contracts.js";
 
 /**
  * Capability param access — the shared surface capability modules use to WRITE a param (the
  * command-intent builders) and to READ one (the typed read extractors at the bottom of this file).
  *
- * **Write:** a capability states *what* to change (param id + already-polarity-resolved value) and,
- * when the firmware pins it, *which wire form* the data takes. It never picks an encryption level or
- * assembles a P2P frame: the transport resolver ({@link module:index} `resolveScalar`) does that,
- * session-first for `"auto"`. Adding or changing a capability = call these helpers; the transport
- * stays untouched.
+ * **Write:** a capability states *what* to change (param id + already-polarity-resolved value) and which body
+ * the command takes. It never seals or assembles a P2P frame: the session seals every frame with what it holds,
+ * as the app's sender does.
  *
  * **Read:** the `readNum`/`readBool`/`readStr` extractors narrow a live property to a typed value for
  * the fluent read getters (`dev.battery()?.level`) — the dual of the write builders.
  *
  * @module model/capabilities/access
- * ## `ScalarForm`
- * - `"auto"` — a scalar int whose encryption level the **session** decides: L2 direct-binary when a
- *   level-2 key is negotiated, else L1 int-string. Correct for params that are the same bytes either
- *   way (camera power 1035).
- * - `"int-string"` — force the L1 int+string frame. For params the firmware only accepts as level-1
- *   even on a HomeBase (status LED 1045; the Cam2C/2/3 floodlight switch 1400).
- * - `"direct-binary"` — force the L2 binary "direct" frame (spotlight brightness/color-temp/enable).
- *
- * ({@link ScalarForm} is declared in `./types` to keep the Command union self-contained.)
  */
 
-/**
- * Set a scalar (integer) param. `form` defaults to `"auto"` — let the session decide the level.
- * Pass an explicit form only when the firmware pins the wire (see {@link ScalarForm}).
- */
-export function setScalar(
-  param: number,
-  value: number,
-  ctx: CommandContext,
-  form: ScalarForm = "auto",
-): Extract<Command, { kind: "set-param" }> {
-  return { kind: "set-param", param, value, form, channel: ctx.channel };
+/** Set a scalar (integer) param: the group-A body, or the bare `[channel][value]` pair with `"int-pair"`. */
+export function setScalar(param: number, value: number, ctx: CommandContext, form?: "int-pair"): Command {
+  return { kind: "set-param", param, value, channel: ctx.channel, ...(form && { form }) };
 }
 
 /**
  * Set a param carried as a JSON control-payload (`{commandType:param, data}` under the 1700 wrapper).
- * The transport picks L1 (standalone, ECB) vs L2 (HomeBase, GCM) by session — the capability just
- * describes the payload.
+ * The session seals it — the capability just describes the payload.
  */
 export function setJson(param: number, data: Record<string, unknown> | number, ctx: CommandContext): Command {
   return { kind: "set-json", param, data, channel: ctx.channel };
@@ -51,44 +31,21 @@ export function setJson(param: number, data: Record<string, unknown> | number, c
 
 /**
  * Set a param carried as BARE JSON, no envelope at all — the wire's outer P2P command IS `cmd`
- * itself, GCM signCode 8, plaintext exactly `{account_id,...data}` (the sink injects `account_id`).
+ * itself, plaintext exactly `{account_id,...data}` (the sink injects `account_id`).
  * Distinct from {@link setJson}, which always wraps in the `1700` CONTROL_PAYLOAD `{commandType,data}`
  * shape. The shape of the app's own SET_SNOOZE_TIME (1271) frame.
  *
  * `channel` overrides the device channel — pass it for a station-scoped bare write (e.g. the
- * alarm-delay config 1255, which rides the station broadcast channel 255, not `ctx.channel`). `form`
- * `"int-string"` seals it level-1 whatever the session holds, as the app does for 1060.
+ * alarm-delay config 1255, which rides the station broadcast channel 255, not `ctx.channel`).
  */
-export function setJsonRaw(
-  cmd: number,
-  data: Record<string, unknown>,
-  ctx: CommandContext,
-  channel?: number,
-  form?: "int-string",
-): Command {
-  return { kind: "set-json-raw", cmd, data, channel: channel ?? ctx.channel, ...(form && { form }) };
+export function setJsonRaw(cmd: number, data: Record<string, unknown>, ctx: CommandContext, channel?: number): Command {
+  return { kind: "set-json-raw", cmd, data, channel: channel ?? ctx.channel };
 }
 
 /**
- * Set a param carried in the `SET_PAYLOAD` (1350) envelope — `{account_id,cmd,mChannel,mValue3:0,
- * payload}`, GCM signCode 8 — NOT the bare `{commandType,data}` 1700 wrapper `setJson` uses. The wire
- * eufy uses for a few doorbell controls (status-LED 1716 `{light_enable}`). Level-2 by default; the
- * sink resolves the session/account_id and replays the frame.
- *
- * ## When this envelope takes `form: "auto"`
- *
- * Left at the default the frame is level-2 ONLY, and on a station holding no level-2 key that does not
- * fail — it WAITS: the transport spends the full level-2 grace and only then
- * throws. Every caller with a shorter bound sees a hang rather than a refusal, so a control on a
- * device that may be its own keyless station is effectively unreachable. `"auto"` hands the choice to
- * the session (`sendBySessionLevel`), which seals level-2 wherever a key exists — unchanged for a
- * HomeBase — and level-1 where none does.
- *
- * Both forms send the app's envelope, `mValue3` 0 unless given, so `"auto"` only changes the seal. It is
- * taken where **the device can be its own station.** A camera or doorbell may be standalone; a HomeBase, and an
- *     accessory whose session IS its HomeBase's, always holds a key. Where a key is structurally
- *     guaranteed, staying pinned is the honest behaviour: a keyless station there is an anomaly, and
- *     throwing says so where a silently-ignored level-1 frame would look like success.
+ * Set a param carried in the `SET_PAYLOAD` (1350) envelope — `{account_id,cmd,mChannel,mValue3,payload}`,
+ * `mValue3` 0 unless given — NOT the bare `{commandType,data}` 1700 wrapper `setJson` uses. The sink resolves the
+ * session/account_id; the session seals it.
  */
 export function setPayload(
   cmd: number,
@@ -96,20 +53,18 @@ export function setPayload(
   ctx: CommandContext,
   mValue3?: number,
   channel?: number,
-  form?: ScalarForm,
 ): Command {
   // `channel` overrides the envelope's mChannel (default = the device channel). Some commands send
   // mChannel 0 and carry the device channel INSIDE the payload instead (e.g. night vision 1277).
-  return { kind: "set-payload", cmd, payload, channel: channel ?? ctx.channel, mValue3, form };
+  return { kind: "set-payload", cmd, payload, channel: channel ?? ctx.channel, mValue3 };
 }
 
 /**
  * Set a station-scoped scalar (132-byte body, no channel field) on an EXPLICIT channel — for the
- * HomeBase's own controls on the station broadcast channel 255 (alarm/speaker volume 1235). Level-2
- * only, unless `form` is `"auto"`, which seals it at the session's own level.
+ * HomeBase's own controls on the station broadcast channel 255 (alarm/speaker volume 1235).
  */
-export function setStationScalar(cmd: number, value: number, channel: number, form?: "auto"): Command {
-  return { kind: "p2p-station-scalar", cmd, value, channel, ...(form ? { form } : {}) };
+export function setStationScalar(cmd: number, value: number, channel: number): Command {
+  return { kind: "p2p-station-scalar", cmd, value, channel };
 }
 
 /**
