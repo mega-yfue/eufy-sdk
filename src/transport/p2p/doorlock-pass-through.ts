@@ -84,11 +84,31 @@ export interface DoorlockPassThroughInput {
 
 /** The base64 blob for `payload.payload` of a lock/unlock pass-through. */
 export function buildDoorlockPassThrough(input: DoorlockPassThroughInput): string {
+  return sealStationPayload({
+    adminUserId: input.adminUserId,
+    stationSn: input.stationSn,
+    lockCmd: LOCK_CMD_ON_OFF,
+    lockPayload: encodeLockOnOff(input.shortUserId, input.nickname, input.engage, input.nowSec),
+    seqNum: input.seqNum,
+  });
+}
+
+/**
+ * The app's `createPayloadForZhixingStationBle` (a v4 lock body): `{channel: 0, lock_cmd, lock_payload: b64(TLV),
+ * seq_num}`, zero-aligned to 16 and AES-128-CBC sealed under the station-derived key, IV from the station serial, base64.
+ */
+export function sealStationPayload(input: {
+  adminUserId: string;
+  stationSn: string;
+  lockCmd: number;
+  lockPayload: Buffer;
+  seqNum: number;
+}): string {
   const inner = Buffer.from(
     JSON.stringify({
       channel: 0,
-      lock_cmd: LOCK_CMD_ON_OFF,
-      lock_payload: encodeLockOnOff(input.shortUserId, input.nickname, input.engage, input.nowSec).toString("base64"),
+      lock_cmd: input.lockCmd,
+      lock_payload: input.lockPayload.toString("base64"),
       seq_num: input.seqNum,
     }),
     "utf-8",

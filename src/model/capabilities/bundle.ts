@@ -64,6 +64,17 @@ export interface BundleFrame extends SessionFrame {
   timeout?: number | string;
   next?: BundleFrame[];
   after?: BundleFrame;
+  /** A lock setting over its station: the `ble` the app builds the 1350 params from. */
+  lock?: {
+    version: number;
+    tlv: string;
+    cmdCode?: number;
+    apiCommand?: number;
+    bleCommand?: number;
+    subVersion?: number;
+    functionType?: number;
+    needEncrypt?: boolean;
+  };
 }
 
 /**
@@ -367,9 +378,63 @@ function tlvBytes(type: unknown, v: unknown): Buffer | undefined {
   if (type === "u8") return int(1);
   if (type === "u16le") return int(2);
   if (type === "u32le") return int(4);
+  // `HH:MM` as the two bytes [H, M] a lock schedule field takes.
+  if (type === "hm" && typeof v === "string" && /^\d{1,2}:\d{2}$/.test(v)) return Buffer.from(v.split(":").map(Number));
   if (type === "utf8" && v !== undefined && v !== null) return Buffer.from(String(v), "utf8");
   if (type === "hex" && typeof v === "string" && /^([0-9a-fA-F]{2})*$/.test(v)) return Buffer.from(v, "hex");
   return undefined;
+}
+
+/**
+ * A bundle's TLV hex (`A104{nowS:u32le}A228{userId}A301{value:u8}`) as fields after `A1` (the time) and `A2` (the
+ * user id), which the transport adds; `{value:<type>}` is the written value. `undefined` for any other placeholder or
+ * a field whose bytes miss its length.
+ */
+function tlvFields(tlv: string, value: unknown): { tag: number; value: Buffer }[] | undefined {
+  const fields: { tag: number; value: Buffer }[] = [];
+  for (let i = 0; i < tlv.length;) {
+    const tag = parseInt(tlv.slice(i, i + 2), 16);
+    const len = parseInt(tlv.slice(i + 2, i + 4), 16);
+    i += 4;
+    let bytes: Buffer | undefined;
+    if (tlv[i] === "{") {
+      const end = tlv.indexOf("}", i);
+      const [name, type] = tlv.slice(i + 1, end).split(":");
+      i = end + 1;
+      if ((tag === 0xa1 && name === "nowS") || (tag === 0xa2 && name === "userId")) continue;
+      bytes =
+        name === "value"
+          ? tlvBytes(type, value)
+          : name?.startsWith("param.")
+            ? tlvBytes(type, (value as { param?: Record<string, unknown> } | undefined)?.param?.[name.slice(6)])
+            : undefined;
+    } else {
+      bytes = Buffer.from(tlv.slice(i, i + len * 2), "hex");
+      i += len * 2;
+    }
+    if (!bytes || bytes.length !== len || Number.isNaN(tag)) return undefined;
+    fields.push({ tag, value: bytes });
+  }
+  return fields;
+}
+
+/**
+ * A v4 lock TLV as bytes: its hex with `{nowS:u32le}` the clock and `{param.<key>:<type>}` the written field, as the
+ * settings parser writes them; `undefined` for any other placeholder or a field that does not fit.
+ */
+function tlvHexOf(tlv: string, value: unknown): Buffer | undefined {
+  let ok = true;
+  const hex = tlv.replace(/\{([^}:]+):?([^}]*)\}/g, (_, name: string, type: string) => {
+    const bytes =
+      name === "nowS"
+        ? tlvBytes(type, Math.floor(Date.now() / 1000))
+        : name.startsWith("param.")
+          ? tlvBytes(type, (value as { param?: Record<string, unknown> } | undefined)?.param?.[name.slice(6)])
+          : undefined;
+    if (!bytes) ok = false;
+    return bytes?.toString("hex") ?? "";
+  });
+  return ok && /^([0-9a-fA-F]{2})*$/.test(hex) ? Buffer.from(hex, "hex") : undefined;
 }
 
 /**
@@ -383,25 +448,8 @@ function mqttCommand(frame: BundleFrame, value: unknown): Command | undefined {
   if (frame.type !== "ble" || typeof frame.mqttCmdCode !== "number" || typeof frame.cmdCode !== "number")
     return undefined;
   if (typeof tlv !== "string") return undefined;
-  const fields: { tag: number; value: Buffer }[] = [];
-  for (let i = 0; i < tlv.length;) {
-    const tag = parseInt(tlv.slice(i, i + 2), 16);
-    const len = parseInt(tlv.slice(i + 2, i + 4), 16);
-    i += 4;
-    let bytes: Buffer | undefined;
-    if (tlv[i] === "{") {
-      const end = tlv.indexOf("}", i);
-      const [name, type] = tlv.slice(i + 1, end).split(":");
-      i = end + 1;
-      if ((tag === 0xa1 && name === "nowS") || (tag === 0xa2 && name === "userId")) continue;
-      bytes = name === "value" ? tlvBytes(type, value) : undefined;
-    } else {
-      bytes = Buffer.from(tlv.slice(i, i + len * 2), "hex");
-      i += len * 2;
-    }
-    if (!bytes || bytes.length !== len || Number.isNaN(tag)) return undefined;
-    fields.push({ tag, value: bytes });
-  }
+  const fields = tlvFields(tlv, value);
+  if (!fields) return undefined;
   return {
     kind: "mqtt-dp",
     mqttCmdCode: frame.mqttCmdCode,
@@ -442,7 +490,12 @@ function nativeCommand(
  * the app does: a session other than the device's own (the default the client selects), a 1350 raw-params
  * frame (`params.cmd` 1003), or a 1700 live-start (`extValue` > 0).
  */
-function sessionCommand(frame: BundleFrame, fill: (x: unknown) => unknown, ctx: CommandContext): Command | undefined {
+function sessionCommand(
+  frame: BundleFrame,
+  fill: (x: unknown) => unknown,
+  ctx: CommandContext,
+  value?: unknown,
+): Command | undefined {
   const filled = fill(frame.payload);
   const object = objectOf(filled);
   const header = Number(fill(frame.channel));
@@ -459,6 +512,26 @@ function sessionCommand(frame: BundleFrame, fill: (x: unknown) => unknown, ctx: 
   if (frame.counter !== undefined && !counter) return undefined;
   if (frame.body === "json1350" && (object || Array.isArray(filled))) {
     const command = setPayload(sub, (object ?? filled) as readonly unknown[], c, frame.mValue3, header);
+    if (frame.lock) {
+      const l = frame.lock;
+      if (l.version === 4) {
+        const payload = tlvHexOf(l.tlv, value);
+        return payload && ({ ...command, lock: { version: 4, bleCommand: l.bleCommand ?? 0, payload } } as Command);
+      }
+      const fields = l.version === 2 ? tlvFields(l.tlv, value) : undefined;
+      if (!fields) return undefined;
+      return {
+        ...command,
+        lock: {
+          cmdCode: l.cmdCode ?? 0,
+          apiCommand: l.apiCommand ?? 0,
+          fields,
+          subVersion: l.subVersion ?? 0,
+          functionType: l.functionType ?? 0,
+          encrypt: l.needEncrypt ?? false,
+        },
+      } as Command;
+    }
     return {
       ...command,
       ...(frame.unzipParams && object && { unzip: true as const }),
@@ -610,7 +683,7 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
   const transport = frame.transport ?? "p2p";
   const head =
     transport === "p2p"
-      ? sessionCommand(frame, fill, ctx)
+      ? sessionCommand(frame, fill, ctx, value)
       : transport === "dp"
         ? dpCommand(frame, fill)
         : transport === "http"
@@ -631,10 +704,30 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
  */
 export function thingWrite(identifier: string, value: string, ctx: CommandContext): Command | undefined {
   if (javaOverridden(identifier, ctx)) return undefined;
-  const frame = frameFor(bundleEntry(identifier, ctx)?.write, value);
+  // A `{paramType, param}` lock settings write (JSON): its frame is the paramType's, its marks the param's fields.
+  const struct = structOf(value);
+  const frame = frameFor(bundleEntry(identifier, ctx)?.write, struct ? String(struct.paramType) : value);
   const typed =
-    ctx.things?.properties[identifier]?.type === "bool" ? value === "1" : /^-?\d+$/.test(value) ? Number(value) : value;
+    struct ??
+    (ctx.things?.properties[identifier]?.type === "bool"
+      ? value === "1"
+      : /^-?\d+$/.test(value)
+        ? Number(value)
+        : value);
   return frame && frameCommand(frame, typed, ctx);
+}
+
+/** `value` as a `{paramType, param}` settings write, or undefined when it is not one. */
+function structOf(value: string): { paramType: number; param: Record<string, unknown> } | undefined {
+  if (!value.startsWith("{")) return undefined;
+  try {
+    const v = JSON.parse(value) as { paramType?: unknown; param?: unknown };
+    return Number.isInteger(v.paramType) && v.param && typeof v.param === "object"
+      ? { paramType: v.paramType as number, param: v.param as Record<string, unknown> }
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The raw value `param` (by default the first the bundle reads) holds for `identifier`'s `value`. */

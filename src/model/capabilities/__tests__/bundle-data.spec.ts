@@ -202,3 +202,93 @@ describe("device_set_outdoor_mode", () => {
     expect(data.wires.device_set_outdoor_mode).toEqual({ T814X: { override: "java" } });
   });
 });
+
+/** A lock setting over its station (`lock-over-station.md` §3): the `ble` TLV as the fields the transport frames. */
+describe("smart_lock_rain_mode_switch on a T8531 behind a HomeBase", () => {
+  it("is a 1350/1940 whose params the transport builds from the v2 ble descriptor", () => {
+    const ctx = contextOf({
+      identifier: "smart_lock_rain_mode_switch",
+      type: "bool",
+      model: "T8531",
+      variant: "",
+      topology: "hb2",
+    });
+    const command = thingWrite("smart_lock_rain_mode_switch", "1", ctx) as { kind: string; cmd: number; lock?: any };
+    expect([command.kind, command.cmd]).toEqual(["set-payload", 1940]);
+    expect(command.lock).toMatchObject({
+      cmdCode: 52,
+      apiCommand: 6015,
+      subVersion: 3,
+      functionType: 2,
+      encrypt: true,
+    });
+    expect(command.lock.fields.map((f: { tag: number; value: Buffer }) => [f.tag, f.value.toString("hex")])).toEqual([
+      [0xa3, "07"],
+      [0xa4, "01"],
+    ]);
+  });
+});
+
+/** `smart_lock_set_setting_params` (`{paramType, param}`): the paramType's TLV, each field the parser writes in place. */
+describe("smart_lock_set_setting_params on a T8502 behind a HomeBase", () => {
+  it("writes paramType 0 (auto-lock and schedule) from the param fields", () => {
+    const ctx = contextOf({
+      identifier: "smart_lock_set_setting_params",
+      type: "text",
+      model: "T8502",
+      variant: "",
+      topology: "hb2",
+    });
+    const value = JSON.stringify({
+      paramType: 0,
+      param: {
+        isAutoLock: 1,
+        autoLockTime: 30,
+        isSchedule: 0,
+        scheduleStartTime: "22:00",
+        scheduleEndTime: "06:30",
+        lockLogic: 1,
+      },
+    });
+    const command = thingWrite("smart_lock_set_setting_params", value, ctx) as { cmd: number; lock?: any };
+    expect(command.cmd).toBe(1940);
+    expect(command.lock.fields.map((f: { tag: number; value: Buffer }) => [f.tag, f.value.toString("hex")])).toEqual([
+      [0xa3, "00"],
+      [0xa4, "01"],
+      [0xa5, "1e00"],
+      [0xa6, "00"],
+      [0xa7, "1600"],
+      [0xa8, "061e"],
+      [0xa9, "01"],
+    ]);
+  });
+
+  it("refuses a field it cannot encode rather than send a short frame", () => {
+    const ctx = contextOf({
+      identifier: "smart_lock_set_setting_params",
+      type: "text",
+      model: "T8502",
+      variant: "",
+      topology: "hb2",
+    });
+    const value = JSON.stringify({ paramType: 4, param: { lockVolume: 300 } });
+    expect(thingWrite("smart_lock_set_setting_params", value, ctx)).toBeUndefined();
+  });
+});
+
+/** The v4 settings parser (`setLockParamsBleV1PayloadData`, paramType 6500..): its TLV, sealed by the transport. */
+describe("smart_lock_set_setting_params on a T8500", () => {
+  it("writes paramType 6500 (auto-lock) as a v4 lock body under bleCommand 0x22", () => {
+    const ctx = contextOf({
+      identifier: "smart_lock_set_setting_params",
+      type: "text",
+      model: "T8500",
+      variant: "",
+      topology: "hb2",
+    });
+    const value = JSON.stringify({ paramType: 6500, param: { isAutoLock: 1, autoLockTime: 30 } });
+    const command = thingWrite("smart_lock_set_setting_params", value, ctx) as { lock?: any };
+    expect(command.lock).toMatchObject({ version: 4, bleCommand: 0x22 });
+    expect(command.lock.payload.toString("hex")).toBe("a1021964a20101a3021e00a404" + "00f15365");
+  });
+});
