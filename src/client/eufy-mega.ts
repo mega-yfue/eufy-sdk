@@ -13,11 +13,11 @@
  * Connectivity is SDK-managed: the host calls no `connect*`. P2P to a battery camera is opened only
  * when a command/stream/doorbell-ring needs it and closed when idle, so the camera can sleep.
  */
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { MegaHttpClient, LoginStatus, SessionExpiredError, type LoginResult } from "../transport/http/mega-client.js";
 import { SecureMqtt, type SecureMqttCredentials, type SecureMqttOptions } from "../transport/mqtt/secure-mqtt.js";
 import { mqttScopeFor, type MqttScope } from "../transport/mqtt/topics.js";
-import { buildAppShapedClientId, mqttUuidFrom } from "../transport/mqtt/app-client-id.js";
 import { parseStateInfoSignal } from "../transport/mqtt/availability.js";
 import { parseDpMessage, parseAiotDpReport } from "../transport/mqtt/dp-codec.js";
 import { parseBizMapFrame } from "../transport/mqtt/biz-stream.js";
@@ -2147,12 +2147,13 @@ export class EufyMega extends EventEmitter {
     if (!this.registry.list().length) await this.getDevices();
     const creds = await this.getUserMqttInfo(scope === "default" ? undefined : scope);
     if (scope === "default") {
-      const clientId = buildAppShapedClientId({
-        appName: creds.app_name ?? "eufy_mega",
-        uid: creds.user_id ?? auth.userId,
-        mqttUuid: mqttUuidFrom(this.mega.openudid),
-      });
-      return await this.connectMqtt(creds, { clientId });
+      // The clean line's `MqttConnectionNew`: `android-{app_name}-{user_id}-{mqttUUID}{endpoint without "-"}`, the
+      // `mqttUUID` a fresh random UUID's 32 hex per client (`CleanBridgeAppSettingImpl` → `EncryptUtil.generateUUID`),
+      // Paho's keepalive, and a lost connection retried at once, three times.
+      const clientId =
+        `android-${creds.app_name ?? "eufy_mega"}-${creds.user_id ?? auth.userId}-` +
+        `${randomUUID().replace(/-/g, "")}${creds.endpoint_addr.replace(/-/g, "")}`;
+      return await this.connectMqtt(creds, { clientId, backoff: { minS: 0.001, maxS: 0.001, attempts: 3 } });
     }
     return await this.connectMqtt(creds, {
       clientId: `android-${creds.app_name ?? scope}-${creds.user_id ?? auth.userId}-${this.mega.openudid}`,

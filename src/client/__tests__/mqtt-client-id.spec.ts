@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { EufyDevice } from "../../core/types.js";
-import type { PersistedSession, SessionStore } from "../../core/store.js";
 
 /**
  * The client id the long-lived secure-MQTT transports connect under.
@@ -47,18 +46,6 @@ const CREDS = {
   user_id: UID,
 };
 
-/** A store that already holds an identity, as one does on every run after the first. */
-function storeHolding(session: Partial<PersistedSession>): SessionStore {
-  let held = session as PersistedSession;
-  return {
-    load: () => held,
-    save: (s) => {
-      held = s;
-    },
-    clear: () => {},
-  };
-}
-
 /** A client signed in far enough to bring one MQTT scope up, with no network behind it. */
 function makeClient(options: Record<string, unknown> = {}, creds: Record<string, unknown> = CREDS) {
   const eufy = new EufyMega({ email: "t@example.com", password: "x", ...options });
@@ -77,7 +64,6 @@ function makeClient(options: Record<string, unknown> = {}, creds: Record<string,
 const bringUp = (eufy: any, scope = "default"): Promise<void> => eufy.ensureMqttStarted(scope);
 
 const clientIds = (): string[] => constructedWith.map((o) => o.clientId);
-const uuidOf = (clientId: string): string | undefined => clientId?.split("-")[3];
 
 describe("secure-MQTT client id", () => {
   beforeEach(() => {
@@ -85,12 +71,16 @@ describe("secure-MQTT client id", () => {
     connect.mockReset().mockResolvedValue(undefined);
   });
 
-  it("identifies the client, not the certificate", async () => {
+  it("identifies the clean stack's client as MqttConnectionNew: its uuid then the endpoint without dashes", async () => {
     await bringUp(makeClient({ openudid: "a".repeat(16) }));
 
     expect(constructedWith).toHaveLength(1);
-    expect(clientIds()[0]).toMatch(new RegExp(`^android-eufy_mega-${UID}-[0-9a-f]{16}-\\d+$`));
+    const endpoint = CREDS.endpoint_addr.replace(/-/g, "");
+    expect(clientIds()[0]).toMatch(
+      new RegExp(`^android-eufy_mega-${UID}-[0-9a-f]{32}${endpoint.replace(/\./g, "\\.")}$`),
+    );
     expect(clientIds()[0]).not.toContain(CREDS.thing_name);
+    expect(constructedWith[0]).toMatchObject({ backoff: { attempts: 3 } });
   });
 
   it("takes the credential's own app name, and the scope's when it reports none", async () => {
@@ -110,26 +100,10 @@ describe("secure-MQTT client id", () => {
     expect(constructedWith[1]).toMatchObject({ clientId: `android-eufy_life-${UID}-${openudid}`, keepaliveS: 300 });
   });
 
-  it("survives a restart, because the identity it is built from is the persisted one", async () => {
-    const store = storeHolding({ openudid: "b".repeat(16) } as Partial<PersistedSession>);
-    await bringUp(makeClient({ store }));
-    await bringUp(makeClient({ store }));
-
-    expect(uuidOf(clientIds()[0]!)).toBe(uuidOf(clientIds()[1]!));
-  });
-
-  it("separates two clients only as far as their openudid does", async () => {
+  it("takes a fresh random uuid for each clean-line client, as the app's EncryptUtil.generateUUID", async () => {
     await bringUp(makeClient({ openudid: "a".repeat(16) }));
-    await bringUp(makeClient({ openudid: "c".repeat(16) }));
-    expect(uuidOf(clientIds()[0]!)).not.toBe(uuidOf(clientIds()[1]!));
-
-    // And the limit of that, stated rather than implied: a caller configuring no `openudid` is given
-    // one derived from the ACCOUNT, so two such clients are one client to the broker and go on
-    // evicting each other. `MegaClientConfig.openudid` is what a host sets to be told apart — the
-    // same setting that already keeps their logins from displacing each other.
-    await bringUp(makeClient());
-    await bringUp(makeClient());
-    expect(uuidOf(clientIds()[2]!)).toBe(uuidOf(clientIds()[3]!));
+    await bringUp(makeClient({ openudid: "a".repeat(16) }));
+    expect(clientIds()[0]).not.toBe(clientIds()[1]);
   });
 
   it("rejects a failed connect without announcing it, and asks again under its own id", async () => {
