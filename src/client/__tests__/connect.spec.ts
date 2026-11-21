@@ -25,7 +25,10 @@ function makeClient(subsets: { mqtt: number; category?: string }, opts: Record<s
   vi.spyOn(eufy, "getMqttDevices").mockReturnValue(Array.from({ length: subsets.mqtt }, (_, i) => dev(`m${i}`)));
 
   // startMqtt returns a connected transport (non-optional); ensureMqttStarted installs + subscribes it.
-  const fakeTransport = { subscribeDevice: vi.fn(async () => {}), disconnect: vi.fn(async () => {}) };
+  const fakeTransport = Object.assign(new EventEmitter(), {
+    subscribeDevice: vi.fn(async () => {}),
+    disconnect: vi.fn(async () => {}),
+  });
   const mqtt = vi.spyOn(eufy as any, "startMqtt").mockResolvedValue(fakeTransport);
   const push = vi.spyOn(eufy as any, "startPush").mockResolvedValue(undefined);
   const wired = vi
@@ -365,7 +368,10 @@ describe("EufyMega auto-realtime", () => {
     c.mqtt.mockImplementation(async (...args: unknown[]) => {
       const scope = args[0];
       if (scope === "default") throw mqttError;
-      return { subscribeDevice: vi.fn(async () => {}), disconnect: vi.fn(async () => {}) };
+      return Object.assign(new EventEmitter(), {
+        subscribeDevice: vi.fn(async () => {}),
+        disconnect: vi.fn(async () => {}),
+      });
     });
     c.wired.mockRestore();
     vi.spyOn((c.eufy as any).registry, "p2pDevices").mockReturnValue([
@@ -453,7 +459,10 @@ describe("EufyMega auto-realtime", () => {
 
     const first = { sn: "M1", category: "eufy_mega" } as unknown as EufyDevice;
     const later = { sn: "M2", category: "eufy_mega" } as unknown as EufyDevice;
-    const transport = { subscribeDevice: vi.fn(async (_: EufyDevice) => {}), disconnect: vi.fn(async () => {}) };
+    const transport = Object.assign(new EventEmitter(), {
+      subscribeDevice: vi.fn(async (_: EufyDevice) => {}),
+      disconnect: vi.fn(async () => {}),
+    });
     c.mqtt.mockResolvedValue(transport);
     (c.eufy as any).getMqttDevices.mockReturnValue([first]);
     await (c.eufy as any).pollOnce();
@@ -464,6 +473,28 @@ describe("EufyMega auto-realtime", () => {
     expect(transport.subscribeDevice.mock.calls.map(([d]) => d.sn)).toEqual(["M1", "M2"]);
   });
 
+  it("fetches a fresh certificate and reconnects after three losses, as the app's MAX_CONNECT_LOST_RETRY", async () => {
+    const c = makeClient({ mqtt: 0 }, { pollMs: 0 });
+    const light = { sn: "T8L00X0000000000", category: "eufy_life", model: "T8L00" } as unknown as EufyDevice;
+    const transport = Object.assign(new EventEmitter(), {
+      subscribeDevice: vi.fn(async () => {}),
+      disconnect: vi.fn(async () => {}),
+    });
+    c.mqtt.mockResolvedValue(transport);
+    (c.eufy as any).getMqttDevices.mockReturnValue([light]);
+    await (c.eufy as any).ensureRealtime();
+    expect(c.mqtt).toHaveBeenCalledTimes(1);
+
+    transport.emit("disconnect");
+    transport.emit("connect");
+    transport.emit("disconnect");
+    transport.emit("disconnect");
+    expect(c.mqtt).toHaveBeenCalledTimes(1);
+    transport.emit("disconnect");
+    await vi.waitFor(() => expect(c.mqtt).toHaveBeenCalledTimes(2));
+    expect(transport.disconnect).toHaveBeenCalled();
+  });
+
   it("subscribes a device under the product number the app's snToPn gives, not its model", async () => {
     const c = makeClient({ mqtt: 0 }, { pollMs: 0 });
     const light = {
@@ -472,7 +503,10 @@ describe("EufyMega auto-realtime", () => {
       model: "T8L00",
       raw: { device_new_pn: "T8L04" },
     } as unknown as EufyDevice;
-    const transport = { subscribeDevice: vi.fn(async (_: EufyDevice) => {}), disconnect: vi.fn(async () => {}) };
+    const transport = Object.assign(new EventEmitter(), {
+      subscribeDevice: vi.fn(async (_: EufyDevice) => {}),
+      disconnect: vi.fn(async () => {}),
+    });
     c.mqtt.mockResolvedValue(transport);
     (c.eufy as any).getMqttDevices.mockReturnValue([light]);
     await (c.eufy as any).ensureRealtime();
@@ -492,13 +526,13 @@ describe("EufyMega auto-realtime", () => {
     // that is waiting on it — a hang, not a failure, so this is guarded explicitly.
     const c = makeClient({ mqtt: 1, category: "eufy_life" });
     const published: string[] = [];
-    const transport = {
+    const transport = Object.assign(new EventEmitter(), {
       subscribeDevice: vi.fn(async () => {
         await (c.eufy as any).mqtt.deps.publishSecure({ category: "eufy_life" }, "cmd/x/req", "{}");
       }),
       publish: vi.fn(async (t: string) => void published.push(t)),
       disconnect: vi.fn(async () => {}),
-    };
+    });
     c.mqtt.mockResolvedValue(transport);
 
     await expect(

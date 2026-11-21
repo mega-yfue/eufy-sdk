@@ -620,6 +620,7 @@ export class EufyMega extends EventEmitter {
         return;
       }
       this.transports.set(scope, mqtt);
+      if (scope !== "default") this.refreshAfterLosses(scope, mqtt);
       await this.subscribeMqttDevices(scope, mqtt);
     })().catch((e) => {
       if (this.mqttReady.get(scope) === attempt) this.mqttReady.delete(scope);
@@ -627,6 +628,24 @@ export class EufyMega extends EventEmitter {
     });
     this.mqttReady.set(scope, attempt);
     return attempt;
+  }
+
+  /**
+   * The app's `handleConnectionStatus`: three connection losses without a connect in between fetch a fresh
+   * certificate and reconnect the stack (`MAX_CONNECT_LOST_RETRY`).
+   */
+  private refreshAfterLosses(scope: MqttScope, mqtt: SecureMqtt): void {
+    let lost = 0;
+    mqtt.on("connect", () => (lost = 0));
+    mqtt.on("disconnect", () => {
+      if (++lost !== 3 || this.transports.get(scope) !== mqtt) return;
+      this.transports.delete(scope);
+      this.mqttReady.delete(scope);
+      void mqtt
+        .disconnect()
+        .then(() => this.ensureMqttStarted(scope))
+        .catch((e) => this.reportError(e));
+    });
   }
 
   /**
@@ -2137,6 +2156,7 @@ export class EufyMega extends EventEmitter {
       clientId: `android-${creds.app_name ?? scope}-${creds.user_id ?? auth.userId}-${this.mega.openudid}`,
       keepaliveS: 300,
       backoff: { minS: 4, maxS: 64, attempts: 10 },
+      resubscribeMs: 5000,
     });
   }
 
@@ -2155,7 +2175,7 @@ export class EufyMega extends EventEmitter {
    */
   private async connectMqtt(
     creds: SecureMqttCredentials,
-    opts: Pick<SecureMqttOptions, "clientId" | "keepaliveS" | "backoff">,
+    opts: Pick<SecureMqttOptions, "clientId" | "keepaliveS" | "backoff" | "resubscribeMs">,
   ): Promise<SecureMqtt> {
     const transport = new SecureMqtt({ credentials: creds, ...opts, logger: this.opts.logger });
 
