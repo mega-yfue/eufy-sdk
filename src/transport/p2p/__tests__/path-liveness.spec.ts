@@ -1,15 +1,11 @@
 import type dgram from "node:dgram";
 import { describe, expect, it, vi } from "vitest";
 import { P2PSession } from "../p2p-session.js";
-import { LIVE_TRACE_MESSAGE } from "../live-trace.js";
 import { ResponseMessageType, frameMessage } from "../codec.js";
 
 /**
- * A measured wired-camera run had an 18 s idle interval, twenty unacknowledged retransmits on resume,
- * and an immediately streaming rebuilt session.
- *
- * PONG and ACK on the selected peer path refresh outbound liveness. Three silent heartbeat periods signal a
- * stale path once a reply has arrived; a path with no post-connect reply remains unknown.
+ * The app's CS2 alive (`cs2p2p_PPPP_thread_recv_DRW`): an ALIVE after each second nothing arrived from the peer,
+ * the session closed as timed out once more than six go unanswered, anything received resetting the count.
  */
 const STATION_SN = "T8000P0000000000";
 const P2P_DID = "XXXXXXX-000000-XXXXX";
@@ -34,9 +30,6 @@ function session() {
   return { built, internals, debug };
 }
 
-const traces = (debug: ReturnType<typeof vi.fn>) =>
-  debug.mock.calls.filter(([message]) => message === LIVE_TRACE_MESSAGE).map(([, trace]) => trace);
-
 /** Deliver a framed packet without binding a UDP port. */
 function receive(built: P2PSession, type: Buffer, address: string, port = 32100, payload?: Buffer): void {
   const target = built as unknown as {
@@ -46,41 +39,31 @@ function receive(built: P2PSession, type: Buffer, address: string, port = 32100,
   target.onMessage(frameMessage(type, payload), { address, port }, target.socket);
 }
 
-describe("a session's path liveness", () => {
-  it("is unknown until the selected peer answers after connection", () => {
-    const { built } = session();
-    expect(built.pathSilentMs).toBeUndefined();
-  });
-
-  it("is measured from the last selected-peer reply once one has arrived", () => {
-    const { built, internals } = session();
-    internals.lastPeerAt = Date.now() - 12_000;
-    expect(built.pathSilentMs).toBeGreaterThanOrEqual(12_000);
-  });
-
-  it("answers that a path which has answered recently is alive", () => {
-    const { built, internals } = session();
-    internals.lastPeerAt = Date.now() - 1_000;
-    expect(built.pathAnswering).toBe(true);
-  });
-
-  it("answers that a path silent past three heartbeats is not", () => {
-    const { built, internals } = session();
-    internals.lastPeerAt = Date.now() - 16_000;
-    expect(built.pathAnswering).toBe(false);
-  });
-
-  it("keeps a path alive on a selected-peer ACK even without a PONG", () => {
+describe("a session's liveness, as the app's CS2 alive", () => {
+  it("sends an ALIVE after a second of silence and closes after more than six go unanswered", async () => {
     vi.useFakeTimers();
     try {
-      const { built } = session();
-      const handlers = built as unknown as { onAck: () => void };
-      handlers.onAck = vi.fn();
+      const { built, internals } = session();
+      const close = vi.spyOn(built, "close").mockResolvedValue(undefined);
+      internals.connected = false;
+      (built as unknown as { onConnected(a: object, s: dgram.Socket): void }).onConnected(
+        internals.connectAddress!,
+        internals.socket,
+      );
+      const alives = () =>
+        vi
+          .mocked(internals.socket.send)
+          .mock.calls.filter(
+            ([b]) => Buffer.isBuffer(b) && (b as Buffer).subarray(0, 2).equals(Buffer.from([0xf1, 0xe0])),
+          ).length;
+      const before = alives();
+      await vi.advanceTimersByTimeAsync(3_000);
       receive(built, ResponseMessageType.PONG, "203.0.113.1");
-      vi.advanceTimersByTime(16_000);
-      expect(built.pathAnswering).toBe(false);
-      receive(built, ResponseMessageType.ACK, "203.0.113.1");
-      expect(built.pathAnswering).toBe(true);
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(close).not.toHaveBeenCalled();
+      expect(alives() - before).toBe(9);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(close).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
     }
@@ -97,42 +80,5 @@ describe("a session's path liveness", () => {
     receive(built, ResponseMessageType.PONG, "203.0.113.2");
     expect(heard).toHaveLength(2);
     expect(heard[1]).toBe(internals.lastPeerAt);
-  });
-
-  it("does not count another endpoint as the selected peer", () => {
-    const { built, internals } = session();
-    internals.lastPeerAt = Date.now() - 16_000;
-    receive(built, ResponseMessageType.PONG, "203.0.113.2");
-    receive(built, ResponseMessageType.PONG, "203.0.113.1", 32101);
-    expect(built.pathAnswering).toBe(false);
-  });
-
-  it("retains PONG cookies without counting a pre-connect or other endpoint as path evidence", () => {
-    const { built, internals } = session();
-    const cookie = Buffer.from("synthetic-cookie");
-    internals.connected = false;
-    receive(built, ResponseMessageType.PONG, "203.0.113.1", 32100, cookie);
-    expect(built.pathSilentMs).toBeUndefined();
-    internals.connected = true;
-    expect(internals.lastPongData).toEqual(cookie);
-    const nextCookie = Buffer.from("another-synthetic-cookie");
-    receive(built, ResponseMessageType.PONG, "203.0.113.2", 32100, nextCookie);
-    expect(internals.lastPongData).toEqual(nextCookie);
-    expect(built.pathSilentMs).toBeUndefined();
-  });
-
-  it("answers that a path with no post-connect reply is not known to be dead", () => {
-    const { built } = session();
-    expect(built.pathAnswering).toBe(true);
-  });
-
-  it("states the silence once, rather than on every heartbeat", () => {
-    const { built, internals, debug } = session();
-    internals.lastPeerAt = Date.now() - 16_000;
-    void built.pathAnswering;
-    void built.pathAnswering;
-    const stale = traces(debug).filter((t) => (t as { phase: string }).phase === "path-stale");
-    expect(stale).toHaveLength(1);
-    expect(stale[0]).toMatchObject({ phase: "path-stale" });
   });
 });

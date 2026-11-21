@@ -45,7 +45,6 @@ describe("live-trace vocabulary at the package entry point", () => {
       "station-resolved": true,
       "station-channel-unresolved": true,
       warming: true,
-      "path-stale": true,
       "start-failed": true,
     } satisfies Record<LiveTrace["phase"], true>;
     expect(Object.keys(handled)).toContain("sequence-restart");

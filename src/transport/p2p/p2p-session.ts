@@ -72,14 +72,13 @@ import { CMD_DATABASE, CMD_DATABASE_IMAGE, DB_QUERY, DB_TABLE_TIMEOUT_MS, fullTa
 import { StationUnreachableError, type SessionFrame } from "../../core/contracts.js";
 
 const LOCAL_LOOKUP_PORT = 32108;
-const HEARTBEAT_MS = 5_000;
 /**
- * How long a path may go without answering a heartbeat before it stops being committed to.
- *
- * Three heartbeats. The station answers every PING, so one missed answer is a lost datagram and three is the
- * path being gone.
+ * The app's CS2 alive (`cs2p2p_PPPP_thread_recv_DRW`): an ALIVE after each 999 ms that nothing arrived from the peer,
+ * and the session closed as timed out once more than {@link ALIVE_MISSES} go unanswered; anything received resets it.
  */
-const PATH_SILENCE_MS = HEARTBEAT_MS * 3;
+const ALIVE_MS = 1_000;
+/** The miss limit `cs2p2p_PPPP_Initialize` sets for a plain init string. */
+const ALIVE_MISSES = 6;
 const LOOKUP_RETRY_MS = 1_000;
 /**
  * Lookup rounds a connect counts, from the lookup server's acknowledgement of its P2P request, before it
@@ -485,11 +484,12 @@ export class P2PSession extends EventEmitter {
    * When the selected peer last answered outbound P2P traffic on this connection.
    *
    * Each answer also emits `peerAnswer` with this time: a PONG or an ACK from the connected address is the
-   * station replying on this connection now, which a heartbeat draws every {@link HEARTBEAT_MS}.
+   * station replying on this connection now.
    */
   private lastPeerAt?: number;
-  /** Whether the silence has already been stated, so it is traced once per connection rather than per read. */
-  private pathStaleTraced = false;
+  /** When anything last arrived from the connected peer, and the ALIVEs sent since without an answer. */
+  private lastHeardAt = 0;
+  private aliveMisses = 0;
   private lookupTimer?: ReturnType<typeof setInterval>;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private connectTimer?: ReturnType<typeof setTimeout>;
@@ -579,35 +579,6 @@ export class P2PSession extends EventEmitter {
    * phase vocabulary. It groups one station's records within a run and resolves to nothing outside it.
    */
   readonly traceId = `station-${++traceSequence}`;
-
-  /**
-   * How long this connection's path has been silent, or nothing where it has never answered.
-   *
-   * PONG and ACK from the selected peer prove the path answers outbound traffic. `undefined` means no such reply
-   * has arrived since connection, so silence alone does not establish a stale path.
-   */
-  get pathSilentMs(): number | undefined {
-    return this.lastPeerAt === undefined ? undefined : Date.now() - this.lastPeerAt;
-  }
-
-  /**
-   * Whether this path can still be committed to, on the evidence the heartbeat gives.
-   *
-   * False where selected-peer replies arrived and then stopped for {@link PATH_SILENCE_MS}. A connection with
-   * no post-connect reply is not known to be dead, so it answers true.
-   *
-   * Traces the silence once per connection, on the read that first observes it.
-   */
-  get pathAnswering(): boolean {
-    const silentMs = this.pathSilentMs;
-    if (silentMs === undefined || silentMs < PATH_SILENCE_MS) return true;
-    if (!this.pathStaleTraced) {
-      this.pathStaleTraced = true;
-      this.logger.debug(`[p2p] ${this.cfg.stationSn} path silent for ${silentMs}ms — no heartbeat answer`);
-      this.trace({ phase: "path-stale", silentMs });
-    }
-    return false;
-  }
 
   /** Emit a live trace under this session's handle. */
   private trace(trace: LiveTrace): void {
@@ -1085,9 +1056,12 @@ export class P2PSession extends EventEmitter {
     if (!socket) return;
     const fromConnectedPeer =
       this.connected && this.connectAddress?.host === rinfo.address && this.connectAddress.port === rinfo.port;
+    if (fromConnectedPeer) {
+      this.lastHeardAt = Date.now();
+      this.aliveMisses = 0;
+    }
     if (fromConnectedPeer && (hasHeader(msg, ResponseMessageType.PONG) || hasHeader(msg, ResponseMessageType.ACK))) {
       this.lastPeerAt = Date.now();
-      this.pathStaleTraced = false;
       this.emit("peerAnswer", this.lastPeerAt);
     }
     if (!hasHeader(msg, ResponseMessageType.DATA)) {
@@ -1221,10 +1195,18 @@ export class P2PSession extends EventEmitter {
 
     this.gatewayCheck = { atMs: Date.now(), runs: 0 };
     this.sendCommand(CMD_GATEWAYINFO);
-    this.send(addr, RequestMessageType.PING, this.lastPongData);
+    this.lastHeardAt = Date.now();
+    this.aliveMisses = 0;
     this.heartbeatTimer = setInterval(() => {
-      if (this.connectAddress) this.send(this.connectAddress, RequestMessageType.PING, this.lastPongData);
-    }, HEARTBEAT_MS);
+      if (!this.connectAddress || Date.now() - this.lastHeardAt < ALIVE_MS) return;
+      this.lastHeardAt = Date.now();
+      if (++this.aliveMisses > ALIVE_MISSES) {
+        this.logger.debug(`[p2p] ${this.cfg.stationSn} ${ALIVE_MISSES} ALIVEs unanswered — closing as timed out`);
+        void this.close().catch((error) => this.emit("error", error));
+        return;
+      }
+      this.send(this.connectAddress, RequestMessageType.PING, this.lastPongData);
+    }, ALIVE_MS);
     this.emit("connect");
   }
 
