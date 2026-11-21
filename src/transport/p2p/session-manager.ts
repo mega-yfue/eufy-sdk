@@ -55,9 +55,11 @@ export const PREWARM_MS = 28_000;
  * `retained` is zero; `connecting` coalesces concurrent cold opens.
  *
  * The power tier is deliberately NOT stored: it is resolved per idle-arm, so a station whose battery
- * evidence arrives after its first session still gets the right window.
+ * evidence arrives after its first session still gets the right window. `station` is the serial the key connects to:
+ * the key itself, or the station of a camera's own media session (`p2pSessionPerCamera`).
  */
 interface SessionEntry {
+  station: string;
   session?: P2PSession;
   retained: number;
   holdTimers: Set<ReturnType<typeof setTimeout>>;
@@ -122,11 +124,11 @@ export class SessionManager {
     return m;
   }
 
-  /** Get or create the lifecycle entry under `key`. */
-  private entry(key: string): SessionEntry {
+  /** Get or create the lifecycle entry under `key`, recording the station it connects to. */
+  private entry(key: string, station = key): SessionEntry {
     let e = this.entries.get(key);
     if (!e) {
-      e = { retained: 0, holdTimers: new Set(), idle: new Timer() };
+      e = { station, retained: 0, holdTimers: new Set(), idle: new Timer() };
       this.entries.set(key, e);
     }
     return e;
@@ -145,8 +147,9 @@ export class SessionManager {
   async acquire(
     key: string,
     factory: (register: (session: P2PSession) => void) => Promise<P2PSession>,
+    station = key,
   ): Promise<P2PSession> {
-    const e = this.entry(key);
+    const e = this.entry(key, station);
     if (e.connecting) {
       this.logger.debug(`[session ${key}] connecting — joining in-flight open`);
       return e.connecting;
@@ -246,7 +249,7 @@ export class SessionManager {
    */
   private armIdle(key: string, e: SessionEntry): void {
     e.idle.cancel();
-    if ((this.opts.poweredFor?.(key) ?? "wired") !== "battery") {
+    if ((this.opts.poweredFor?.(e.station) ?? "wired") !== "battery") {
       this.logger.debug(`[session ${key}] idle (nothing retained) — staying persistent (wired)`);
       return;
     }
