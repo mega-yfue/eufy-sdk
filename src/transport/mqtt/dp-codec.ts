@@ -67,6 +67,10 @@ export function buildDpFrame(cmdCode: number, accountId: string, fields: readonl
   return Buffer.concat([body, Buffer.from([xorChecksum(body)])]);
 }
 
+let msgSeq = 0;
+/** The next `head.msg_seq`: one process-wide counter from 1, as the app's `MqttGenerator.getMsgSeq`. */
+export const nextMsgSeq = (): number => ++msgSeq;
+
 /**
  * Wrap a DP frame in the `eufy_life` MQTT `/req` envelope the SDK publishes:
  * `{head:{…,cmd:mqttCmdCode}, payload: JSON({account_id, device_sn, data:<b64 frame>, trans:""})}`.
@@ -89,7 +93,7 @@ export function buildDpEnvelope(opts: {
     version: "1.0.0.1",
     client_id: `ios-eufy_mega-${opts.accountId}-${randomUUID()}`,
     sess_id: "0000",
-    msg_seq: 1,
+    msg_seq: nextMsgSeq(),
     seed: "",
     timestamp: Math.floor(Date.now() / 1000),
     cmd_status: 1,

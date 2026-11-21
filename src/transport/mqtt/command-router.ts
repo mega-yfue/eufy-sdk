@@ -40,7 +40,7 @@ import {
 } from "../ff09.js";
 import type { SecureMqtt } from "./secure-mqtt.js";
 import { secureTopic } from "./topics.js";
-import { buildDpFrame, buildDpEnvelope } from "./dp-codec.js";
+import { buildDpFrame, buildDpEnvelope, nextMsgSeq } from "./dp-codec.js";
 import { dpPresetFields, dpLevelFields, type DpPresetSpec } from "../dp-preset.js";
 import { dpColorFields } from "./dp-color.js";
 import { buildCleanDpEnvelope } from "./clean-codec.js";
@@ -207,7 +207,7 @@ export function buildFf09MqttEnvelope(input: {
     version: "1.0.0.1",
     client_id: input.clientId,
     sess_id: input.sessId ?? randomBytes(2).toString("hex"),
-    msg_seq: 1,
+    msg_seq: nextMsgSeq(),
     seed: input.seed ?? randomBytes(16).toString("hex"),
     timestamp: input.timestamp ?? Math.floor(Date.now() / 1000),
     cmd_status: 2,
