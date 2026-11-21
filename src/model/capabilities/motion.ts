@@ -545,7 +545,7 @@ export const MOTION_MEMBERS = {
     write: (v, ctx) => {
       requireFamily("motionDetection", ctx, "camera");
       const on = asBool(v) ? 1 : 0;
-      if (!reportsIndoorSwitch(ctx)) return setScalar(MOTION_CMD.CAMERA_PIR, on, ctx, "direct-binary");
+      if (!reportsIndoorSwitch(ctx)) return setScalar(MOTION_CMD.CAMERA_PIR, on, ctx, "auto");
       return setJson(MOTION_CMD.INDOOR_MOTION_ENABLE, { status: on }, ctx);
     },
     writeAs: "setDetection",
