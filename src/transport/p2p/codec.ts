@@ -172,16 +172,14 @@ export function p2pCommandEncryptionKey(stationSn: string, p2pDid: string): stri
   return `${stationSn.slice(-7)}${p2pDid.substring(p2pDid.indexOf("-"), p2pDid.indexOf("-") + 9)}`;
 }
 
-/** AES-128-ECB decrypt of a P2P payload (no padding). */
+/**
+ * AES-128-ECB decrypt of a P2P payload as the app's `aes_decrypt` runs it over its zero-filled receive buffer: every
+ * block up to `ceil(length / 16)`, a final partial block completed with zeros, the result cut back to `length`.
+ */
 export function decryptP2PData(data: Buffer, key: Buffer): Buffer {
   const d = createDecipheriv("aes-128-ecb", key, null);
   d.setAutoPadding(false);
-  return Buffer.concat([d.update(data), d.final()]);
-}
-
-/** The `cipher_id` named in a decrypted `CMD_GATEWAYINFO` (1100) payload (uint16 LE @0). */
-export function gatewayInfoCipherId(gwPayload: Buffer): number {
-  return gwPayload.length >= 2 ? gwPayload.readUInt16LE(0) : 0;
+  return Buffer.concat([d.update(paddingP2PData(data)), d.final()]).subarray(0, data.length);
 }
 
 /** The int32 result a `CMD_GATEWAYINFO` reply opens with when the device refuses level-2. */
@@ -189,8 +187,7 @@ const GATEWAY_LEVEL2_REFUSED = -103;
 
 /**
  * Whether a `CMD_GATEWAYINFO` (1100) reply is a level-2 refusal: int32 LE `GATEWAY_LEVEL2_REFUSED` (`99 ff
- * ff ff`) in place of a cipher. {@link gatewayInfoCipherId} reads those bytes as `cipher_id` 65433. Any other
- * opening is not a refusal.
+ * ff ff`) in place of a cipher. Any other opening is not a refusal.
  */
 export function gatewayInfoRefused(gwPayload: Buffer): boolean {
   return gwPayload.length >= 4 && gwPayload.readInt32LE(0) === GATEWAY_LEVEL2_REFUSED;
@@ -466,88 +463,30 @@ export function paddingP2PData(data: Buffer, blocksize = 16): Buffer {
 }
 
 /**
- * Command body carrying a string `value` (e.g. CMD_SET_PAYLOAD JSON). Mirrors the
- * app's `buildCommandWithStringTypePayload`: `[len:2 LE][00 00][01 00][channel,encType][00 00][data]`.
- * When `key` is given the data is zero-padded to 16 and AES-128-ECB encrypted, and
- * `encType` is written in the channel word (level-1 encryption = 1).
+ * The plaintext body of an **int+string** command: `valueSub(u32 LE) ‖ value(u32 LE) ‖ strValue` in the 128-byte-chunk
+ * length form ({@link stringWithLength}), omitted when empty. The eufy app's shape for the floodlight/spotlight manual
+ * switch (`CMD_SET_FLOODLIGHT_MANUAL_SWITCH` 1400) on IndoorOutdoor / SoloCam-spotlight / Cam2C/3 families: `value` =
+ * 0/1, `valueSub` = the device channel, `strValue` = the admin `account_id`.
  */
-export function buildStringCommandPayload(value: string, channel = 0, key?: Buffer, encType = 1, streamId = 0): Buffer {
-  const encrypted = !!key && key.length === 16;
-  const raw = Buffer.from(value, "utf-8");
-  const data = encrypted ? encryptP2PData(paddingP2PData(raw), key!) : raw;
-  const header = Buffer.allocUnsafe(2);
-  header.writeUInt16LE(data.length, 0);
-  return Buffer.concat([
-    header,
-    Buffer.from([0x00, 0x00]),
-    Buffer.from([0x01, 0x00]),
-    Buffer.from([channel, encrypted ? encType : 0x00]),
-    Buffer.from([streamId & 0xff, 0x00]),
-    data,
-  ]);
+export function intStringCommandBody(value: number, valueSub: number, strValue: string): Buffer {
+  const head = Buffer.allocUnsafe(8);
+  head.writeUInt32LE(valueSub >>> 0, 0);
+  head.writeUInt32LE(value >>> 0, 4);
+  return strValue.length === 0 ? head : Buffer.concat([head, stringWithLength(strValue)]);
 }
 
 /**
- * Build an **int+string** command body: `valueSub(u32 LE) ‖ value(u32 LE) ‖ strValue(len-prefixed)`,
- * AES-128-ECB encrypted (level-1) like {@link buildStringCommandPayload}. This is the wire shape the
- * eufy app uses for the floodlight/spotlight manual switch (`CMD_SET_FLOODLIGHT_MANUAL_SWITCH` 1400)
- * on IndoorOutdoor / SoloCam-spotlight / Cam2C/3 families — where `value` = 0/1, `valueSub` = the
- * device channel, and `strValue` = the admin `account_id`. The `strValue` uses the 128-byte-chunk
- * length prefix ({@link stringWithLength}).
+ * The plaintext body of a **string-pair** command: five zero bytes, then `strValue` and `strValueSub`, each in the
+ * 128-byte-chunk length form ({@link stringWithLength}). `CMD_DOWNLOAD_VIDEO` (1024) takes this shape on a HomeBase 2:
+ * `strValue` = the recording's path on the station, `strValueSub` = the station admin `account_id`.
  */
-export function buildIntStringCommandPayload(
-  value: number,
-  valueSub: number,
-  strValue: string,
-  channel = 0,
-  key?: Buffer,
-  encType = 1,
-): Buffer {
-  const encrypted = !!key && key.length === 16;
-  const someInt = Buffer.allocUnsafe(4);
-  someInt.writeUInt32LE(valueSub >>> 0, 0);
-  const valueBuf = Buffer.allocUnsafe(4);
-  valueBuf.writeUInt32LE(value >>> 0, 0);
-  const strBuf = strValue.length === 0 ? Buffer.alloc(0) : stringWithLength(strValue);
-  const body = Buffer.concat([someInt, valueBuf, strBuf]);
-  const data = encrypted ? encryptP2PData(paddingP2PData(body), key!) : body;
-  const header = Buffer.allocUnsafe(2);
-  header.writeUInt16LE(data.length, 0);
-  return Buffer.concat([
-    header,
-    Buffer.from([0x00, 0x00]),
-    Buffer.from([0x01, 0x00]),
-    Buffer.from([channel, encrypted ? encType : 0x00]),
-    Buffer.from([0x00, 0x00]),
-    data,
-  ]);
+export function stringPairCommandBody(strValue: string, strValueSub: string): Buffer {
+  return Buffer.concat([Buffer.alloc(5), stringWithLength(strValue), stringWithLength(strValueSub)]);
 }
 
 /**
- * Build a **string-pair** command body: five zero bytes, then `strValue` and `strValueSub`, each in the
- * 128-byte-chunk length form ({@link stringWithLength}), AES-128-ECB encrypted (level-1) like
- * {@link buildStringCommandPayload} when `key` is given. `CMD_DOWNLOAD_VIDEO` (1024) takes this shape on a
- * HomeBase 2: `strValue` = the recording's path on the station, `strValueSub` = the station admin
- * `account_id`, on the camera's channel.
- */
-export function buildStringPairCommandPayload(
-  strValue: string,
-  strValueSub: string,
-  channel = 0,
-  key?: Buffer,
-  encType = 1,
-): Buffer {
-  const encrypted = !!key && key.length === 16;
-  const body = Buffer.concat([Buffer.alloc(5), stringWithLength(strValue), stringWithLength(strValueSub)]);
-  const data = encrypted ? encryptP2PData(paddingP2PData(body), key!) : body;
-  return buildRawCommandPayload(data, channel, encrypted ? encType : 0);
-}
-
-/**
- * Build a command body around an ALREADY-encrypted (or plaintext) `data` buffer with an explicit
- * `signCode` — used for level-2 (`signCode 8`, AES-256-GCM) commands like the media-start 1350 the
- * app sends. Same on-wire layout as `buildStringCommandPayload` but the caller supplies the body and
- * the signCode verbatim (no ECB step): `len(u16) ‖ 0000 ‖ 0100 ‖ [channel, signCode] ‖ 0000 ‖ data`.
+ * A command payload around an already sealed (or plaintext) `data`, with its frame fields verbatim:
+ * `len(u16) ‖ 0000 ‖ magic(2) ‖ [channel, signCode] ‖ [streamId, 00] ‖ data`.
  */
 export function buildRawCommandPayload(
   data: Buffer,

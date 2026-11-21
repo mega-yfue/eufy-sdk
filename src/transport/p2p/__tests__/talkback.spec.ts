@@ -2,6 +2,7 @@ import { createDecipheriv } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { P2PSession } from "../p2p-session.js";
 import { MAGIC_WORD } from "../codec.js";
+import { atSignMode1 } from "./session-fixtures.js";
 
 /**
  * Byte layout of the host→device talkback frames, asserted against a live capture of the app driving
@@ -25,7 +26,6 @@ const SIGN_MAGIC = Buffer.from([0x08, 0x00]);
 interface Internals {
   socket: { send: ReturnType<typeof vi.fn> };
   connectAddress: { host: string; port: number };
-  level2Key?: Buffer;
 }
 
 /** A session with its socket stubbed and an address in place, so sends are captured not transmitted. */
@@ -55,7 +55,7 @@ function dataTypeAndSeq(datagram: Buffer): { dataType: number; seq: number } {
 /**
  * Open a level-2 (`signCode 8`) payload WITHOUT the session's own cipher.
  *
- * Decrypting with `decryptLevel2` proves only that the session round-trips against itself, so any
+ * Decrypting with `openFrame` proves only that the session round-trips against itself, so any
  * wrong-but-symmetric layout survives — swap the tag and nonce in both directions, or reorder the
  * sub-header, and the assertion still passes. This spells the layout out in literal offsets so the
  * frame is checked against the documented wire rather than against the implementation:
@@ -386,8 +386,9 @@ describe("talkback start/stop — own-session topology", () => {
     expect(JSON.parse(plain.toString("utf-8")).commandType).toBe(1002);
   });
 
-  it("falls back to level-1 when the session never negotiated a level-2 key", () => {
+  it("seals at sign mode 1 under the level-1 key when the session holds no gateway key", () => {
     const { session, sent } = newSession();
+    atSignMode1(session);
     expect(session.startTalkback(0, false)).toBe(true);
     const f = frameOf(sent[0]);
     expect(f.readUInt16LE(4)).toBe(1700);

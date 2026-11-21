@@ -25,6 +25,9 @@ function session(): { session: P2PSession; sent: Buffer[] } {
   return { session: built, sent };
 }
 
+/** Run out the 1.45 s the app's sender waits at sign mode 0 before it seals. */
+const flush = (): void => void vi.advanceTimersByTime(1_450);
+
 /** Feed the session a gateway-info reply whose only read member is the leading int32: a `cipher_id`, or -103 for a refusal. */
 function negotiate(target: P2PSession, cipherId: number): void {
   const payload = Buffer.alloc(64);
@@ -60,6 +63,7 @@ describe("own-session start and stop on a cipher-0 session", () => {
     const { session: s, sent } = session();
     negotiate(s, 0);
     s.startLiveMedia(0, ACCOUNT_ID, false);
+    flush();
 
     expect(sent).toHaveLength(1);
     const start = commandOf(sent[0]);
@@ -76,6 +80,7 @@ describe("own-session start and stop on a cipher-0 session", () => {
     negotiate(s, 0);
     s.startLiveMedia(0, ACCOUNT_ID, false);
     s.stopLiveMedia(0, ACCOUNT_ID, false);
+    flush();
 
     expect(sent).toHaveLength(2);
     const stop = commandOf(sent[1]);
@@ -89,31 +94,35 @@ describe("own-session start and stop on a cipher-0 session", () => {
     s.startLiveMedia(0, ACCOUNT_ID, false);
     s.stopLiveMedia(0, ACCOUNT_ID, false);
     s.startLiveMedia(0, ACCOUNT_ID, false);
+    flush();
 
     const restart = commandOf(sent[2]);
     expect(restart.counter).toEqual([0x01, 0x03]);
     expect(JSON.parse(restart.body.toString("utf-8")).data.msg_id).toBe(3);
   });
 
-  it("keeps the level-1 start for a cipher this account has no key for", () => {
+  /** A version-8 gateway info naming a cipher puts the session at sign mode 1, GCM at version byte 8. */
+  it("sends the start at sign mode 1 for a cipher this account has no key for", () => {
     const { session: s, sent } = session();
     negotiate(s, 3);
     s.startLiveMedia(0, ACCOUNT_ID, false);
 
     const start = commandOf(sent[0]);
-    expect(start).toMatchObject({ command: 1700, counter: [0x01, 0x00], signCode: 1, frameType: 11 });
+    expect(start).toMatchObject({ command: 1700, counter: [0x08, 0x00], signCode: 1, frameType: 11 });
   });
 
   it("re-issues a start sent before the negotiation in the clear on the next tick", () => {
     const { session: s, sent } = session();
     s.startLiveMedia(0, ACCOUNT_ID, false);
-    expect(commandOf(sent[0]).signCode).toBe(1);
+    flush();
+    expect(commandOf(sent[0])).toMatchObject({ counter: [0x01, 0x00], signCode: 0, frameType: 11 });
 
     negotiate(s, 0);
     s.startLiveMedia(0, ACCOUNT_ID, false);
+    flush();
 
-    expect(sent).toHaveLength(2);
-    expect(commandOf(sent[1])).toMatchObject({ command: 1700, counter: [0x01, 0x01], signCode: 0, frameType: 0 });
+    // The first start repeats until acknowledged; the re-issued one replaces it and goes last.
+    expect(commandOf(sent.at(-1)!)).toMatchObject({ command: 1700, counter: [0x01, 0x01], signCode: 0, frameType: 0 });
   });
 });
 
@@ -131,6 +140,7 @@ describe("own-session start and stop on a session that refused level-2", () => {
     negotiate(s, -103);
     s.startLiveMedia(0, ACCOUNT_ID, false);
     s.stopLiveMedia(0, ACCOUNT_ID, false);
+    flush();
 
     const start = commandOf(sent[0]);
     expect(start).toMatchObject({ command: 1350, counter: [0x01, 0x00], channel: 0, signCode: 0, frameType: 11 });
@@ -153,6 +163,7 @@ describe("database reads on a cipher-0 session", () => {
     const { session: s, sent } = session();
     negotiate(s, 0);
     s.queryDatabase("history_record_info", { accountId: ACCOUNT_ID, innerCmd: 10013, channel: 0 });
+    flush();
 
     const read = commandOf(sent[0]);
     expect(read).toMatchObject({ command: 1350, counter: [0x01, 0x01], channel: 0, signCode: 0, frameType: 0 });
@@ -166,6 +177,7 @@ describe("database reads on a cipher-0 session", () => {
     negotiate(s, 0);
     s.queryDatabase("history_record_info", { accountId: ACCOUNT_ID, innerCmd: 10013, channel: 0 });
     s.requestImage("/mnt/userdata/video/h264_video_00000000_000000n.jpg", { accountId: ACCOUNT_ID });
+    flush();
 
     const image = commandOf(sent[1]);
     expect(image).toMatchObject({ command: 1350, counter: [0x01, 0x02], signCode: 0, frameType: 0 });
@@ -177,6 +189,7 @@ describe("database reads on a cipher-0 session", () => {
     negotiate(s, 0);
     s.startLiveMedia(0, ACCOUNT_ID, false);
     s.queryDatabase("history_record_info", { accountId: ACCOUNT_ID, innerCmd: 10013, channel: 0 });
+    flush();
 
     expect(commandOf(sent[0]).counter).toEqual([0x01, 0x01]);
     expect(commandOf(sent[1]).counter).toEqual([0x01, 0x02]);
@@ -189,7 +202,7 @@ describe("database reads on a cipher-0 session", () => {
     expect(sent).toHaveLength(0);
 
     negotiate(s, 0);
-    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_450);
     expect(commandOf(sent[0])).toMatchObject({ command: 1350, counter: [0x01, 0x01], signCode: 0, frameType: 0 });
 
     const body = Buffer.from(JSON.stringify({ data: [{ event_count: 1 }], cmd: 10013, mIntRet: 0 }), "utf-8");
@@ -201,21 +214,21 @@ describe("database reads on a cipher-0 session", () => {
     expect(await read).toEqual([{ event_count: 1 }]);
   });
 
-  it("keeps the level-1 read for a cipher this account has no key for", () => {
+  it("sends the read at sign mode 1 for a cipher this account has no key for", () => {
     const { session: s, sent } = session();
     negotiate(s, 3);
     s.queryDatabase("history_record_info", { accountId: ACCOUNT_ID, innerCmd: 10013, channel: 0 });
 
-    expect(commandOf(sent[0])).toMatchObject({ command: 1350, counter: [0x01, 0x00], signCode: 1 });
+    expect(commandOf(sent[0])).toMatchObject({ command: 1350, counter: [0x08, 0x00], signCode: 1 });
   });
 
-  it("keeps the level-1 read on a cipher-0 session that holds a level-2 key", () => {
+  it("seals the read under the gateway key a cipher-0 session holds", () => {
     const { session: s, sent } = session();
     negotiate(s, 0);
     s.setLevel2Key(Buffer.alloc(32, 1));
     s.queryDatabase("history_record_info", { accountId: ACCOUNT_ID, innerCmd: 10013, channel: 0 });
 
-    expect(commandOf(sent[0])).toMatchObject({ command: 1350, counter: [0x01, 0x00], signCode: 1 });
+    expect(commandOf(sent[0])).toMatchObject({ command: 1350, counter: [0x08, 0x00], signCode: 8 });
   });
 
   it("passes a reply sent in the clear on as its text", () => {

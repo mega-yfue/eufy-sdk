@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CommandResultError } from "../../../core/contracts.js";
 import { buildAckPayload, frameMessage, P2PDataTypeHeader, ResponseMessageType } from "../codec.js";
 import { P2PSession } from "../p2p-session.js";
-import { connectedSession, routerWithSession, DEVICE_SN, STATION_SN } from "./session-fixtures.js";
+import { atSignMode1, connectedSession, routerWithSession, DEVICE_SN, STATION_SN } from "./session-fixtures.js";
 
 const P2P_DID = "XXXXXXX-000000-XXXXX";
 
@@ -146,9 +146,10 @@ describe("a level-2 setting write settles on the device's answer", () => {
   });
 });
 
-/** A connected session whose socket captures each datagram handed to it. */
-function session() {
-  const real = new P2PSession({ stationSn: STATION_SN, p2pDid: P2P_DID });
+/** A connected session whose socket captures each datagram handed to it, at sign mode 1 unless `signMode0`. */
+function session(signMode0 = false, stationSn = STATION_SN) {
+  const real = new P2PSession({ stationSn, p2pDid: P2P_DID });
+  if (!signMode0) atSignMode1(real);
   const socket = { send: vi.fn() };
   const target = real as unknown as { connectAddress: unknown; socket: unknown; onAck(m: Buffer): void };
   target.connectAddress = { host: "127.0.0.1", port: 1 };
@@ -180,6 +181,30 @@ describe("an acknowledged send", () => {
     acknowledge(second!.readUInt16BE(6));
     vi.advanceTimersByTime(10_000);
     expect(sent()).toHaveLength(4);
+  });
+
+  /**
+   * At sign mode 0 the app's sender sleeps 1.45 s, then seals by the mode it finds: in the clear, or under the level-1
+   * key at sign mode 1 on a serial that takes it at sign mode 0. The late datagram is still held until acknowledged.
+   */
+  it("waits 1.45 s at sign mode 0, seals by the mode it then finds, and holds the late datagram", () => {
+    vi.useFakeTimers();
+    for (const [stationSn, signCode] of [
+      ["T8000P0000000000", 0],
+      ["T8010P0000000000", 1],
+    ] as const) {
+      const { real, sent } = session(true, stationSn);
+      real.sendAcknowledged(() => real.sendRawLevel1Bytes(Buffer.alloc(8), CHANNEL, PARAM));
+      vi.advanceTimersByTime(1_449);
+      expect(sent()).toHaveLength(0);
+      vi.advanceTimersByTime(1);
+      expect(sent()).toHaveLength(1);
+      const frame = sent()[0]!.subarray(sent()[0]!.indexOf("XZYH"));
+      expect(frame[13]).toBe(signCode);
+      vi.advanceTimersByTime(2_000);
+      expect(sent()).toHaveLength(2);
+      real.removeAllListeners();
+    }
   });
 });
 

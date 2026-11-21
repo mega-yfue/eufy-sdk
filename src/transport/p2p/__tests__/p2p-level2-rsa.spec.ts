@@ -5,6 +5,7 @@ import {
   deriveLevel2KeyFromRsaGatewayInfo,
   eciesWrap,
   encryptP2PData,
+  p2pCommandEncryptionKey,
   paddingP2PData,
   parseDataFrameHeader,
 } from "../codec.js";
@@ -213,7 +214,7 @@ describe("P2PSession level-2 over an RSA cipher", () => {
     expect(traces.filter((trace) => trace.phase === "level2-ready")).toHaveLength(1);
   });
 
-  /** The app holds both keys apart; an RSA key negotiated first must not stop the ECC one. */
+  /** Each gateway info takes the session over in turn: a version-8 one after the RSA key ends on the ECC key. */
   test("a version-8 gateway info after a version-1 one still negotiates the ECC key", async () => {
     const { session, ready, frame, v8 } = dualSession();
 
@@ -222,7 +223,7 @@ describe("P2PSession level-2 over an RSA cipher", () => {
     frame(8, v8);
 
     await vi.waitFor(() => expect(ready).toEqual([{ cipherId: CIPHER_ID }, { cipherId: CIPHER_ID }]));
-    expect((session as unknown as { level2Key?: Buffer }).level2Key).toEqual(Buffer.alloc(32, 7));
+    expect((session as unknown as { gcmKey?: Buffer }).gcmKey).toEqual(Buffer.alloc(32, 7));
   });
 
   /** The app handles every gateway info on its own, so a version-1 reply's lookup does not swallow the version-8 one. */
@@ -240,19 +241,32 @@ describe("P2PSession level-2 over an RSA cipher", () => {
     expect(traces.filter((trace) => trace.phase === "level2-unavailable")).toEqual([]);
   });
 
-  test("a failing version-1 gateway info during or after the version-8 negotiation leaves the ECC key", async () => {
+  /**
+   * The app's native step of a version-1 gateway info naming a cipher sets version 1 and sign mode 1 whatever the
+   * session held, so one arriving after the version-8 key takes the session back to the level-1 key, and an RSA
+   * unwrap that fails leaves it there.
+   */
+  test("a version-1 gateway info after the version-8 key takes the session back to sign mode 1", async () => {
     for (const settledFirst of [false, true]) {
       const { session, ready, traces, frame, v8 } = dualSession();
+      const sent = capture(session);
 
       frame(8, v8);
       if (settledFirst) await vi.waitFor(() => expect(ready).toHaveLength(1));
       frame(1, gatewayInfo(Buffer.alloc(128, 0x33)));
-      await vi.waitFor(() => expect(traces.filter((trace) => trace.phase === "level2-negotiating")).toHaveLength(2));
+      await vi.waitFor(() =>
+        expect(traces.filter((trace) => trace.phase === "level2-unavailable")).toEqual([
+          { phase: "level2-unavailable", reason: "derivation-failed", cipherId: CIPHER_ID, source: session.traceId },
+        ]),
+      );
 
-      expect(await session.awaitLevel2Key(1_000)).toBe(true);
-      expect(session.hasLevel2Key).toBe(true);
       expect(ready).toEqual([{ cipherId: CIPHER_ID }]);
-      expect(traces.filter((trace) => trace.phase === "level2-unavailable")).toEqual([]);
+      expect(session.hasLevel2Key).toBe(false);
+      session.sendRawLevel1Bytes(Buffer.alloc(8, 0x11), 3, 1035);
+      expect(sent.map(({ header }) => [header.version, header.signCode])).toEqual([[1, 1]]);
+      expect(decryptP2PData(sent[0].body, Buffer.from(p2pCommandEncryptionKey(STATION_SN, P2P_DID)))).toEqual(
+        paddingP2PData(Buffer.alloc(8, 0x11)),
+      );
     }
   });
 

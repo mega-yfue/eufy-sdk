@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { StationKeyUnavailableError } from "../../../core/contracts.js";
-import { gatewayInfoCipherId, gatewayInfoRefused } from "../codec.js";
+import { gatewayInfoRefused } from "../codec.js";
 import { P2PSession } from "../p2p-session.js";
 import { P2PCommandRouter, type P2PRouterDeps } from "../command-router.js";
 import { decryptFf09Frame, LOCK_API_COMMAND } from "../../ff09.js";
@@ -47,8 +47,6 @@ describe("gatewayInfoRefused", () => {
     const reply = gatewayResult();
     expect(reply.subarray(0, 4).toString("hex")).toBe("99ffffff");
     expect(gatewayInfoRefused(reply)).toBe(true);
-    // What the cipher read alone makes of it — the id nobody holds a key for.
-    expect(gatewayInfoCipherId(reply)).toBe(65433);
   });
 
   it("does not read a reply that names a cipher as a refusal", () => {
@@ -106,26 +104,33 @@ describe("a station that refuses level-2 at gateway info", () => {
     expect(resolveCipherKey).toHaveBeenCalledOnce();
   });
 
-  it("withdraws the refusal when a later reply names a cipher", () => {
+  it("withdraws the refusal when a later reply names a cipher", async () => {
     const { session } = refusedSession();
     negotiate(session, cipherGatewayInfo(7));
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(session.refusedLevel2).toBe(false);
   });
 
   it("is not a refused station once it holds the set-payload key", () => {
     const { session } = refusedSession();
-    (session as unknown as { level2EcbKey: Buffer }).level2EcbKey = Buffer.alloc(16);
+    (session as unknown as { signMode: number }).signMode = 2;
 
     expect(session.refusedLevel2).toBe(false);
   });
 
+  /** At sign mode 0 the app's sender waits 1.45 s before it seals, and then sends in the clear. */
   it("frames a control payload in the app's clear form: signCode 0, header [01 00], only {cmd, payload}", () => {
+    vi.useFakeTimers();
     const { session } = refusedSession();
     const sent = collectSends(session);
 
     expect(session.sendControlLevel2(1940, 0, ADMIN, { apiCommand: 6018 }, 0, true)).toBe(true);
     expect(session.sendControlLevel2(1940, 0, ADMIN, { apiCommand: 6018 }, 0, true)).toBe(true);
+    vi.advanceTimersByTime(1_449);
+    expect(sent).toHaveLength(0);
+    vi.advanceTimersByTime(1);
+    vi.useRealTimers();
 
     const [first, second] = sent as [Buffer, Buffer];
     expect(first.readUInt16LE(8)).toBe(1350); // CMD_SET_PAYLOAD

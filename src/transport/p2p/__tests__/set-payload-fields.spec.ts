@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { P2PSession } from "../p2p-session.js";
 import { decryptP2PData, p2pCommandEncryptionKey } from "../codec.js";
+import { atSignMode1 } from "./session-fixtures.js";
 
 /**
  * The set-payload envelope fields a settings bundle may state: the payload's keys at the top level
@@ -16,6 +17,7 @@ function session() {
     connectAddress: { host: "127.0.0.1", port: 32100 },
     send: (_a: unknown, _t: unknown, payload: Buffer) => sent.push(payload),
   });
+  atSignMode1(s);
   const frame = (i: number) => sent[i]!.subarray(4);
   const json = (i: number) =>
     JSON.parse(
@@ -26,7 +28,7 @@ function session() {
   return { s, frame, json };
 }
 
-describe("a level-1 set-payload envelope", () => {
+describe("a set-payload envelope at sign mode 1", () => {
   it("puts an unzipped payload's keys at the top level", () => {
     const { s, json } = session();
     s.sendSetPayload(1961, { version: "3", a: 1 }, { accountId: "acct", channel: 2, unzip: true });

@@ -34,10 +34,17 @@ function session(): P2PSession {
   return built;
 }
 
-/** Deliver one reply frame as the datagram reassembly would. */
+/** Deliver one reply frame as the datagram reassembly would; a GCM-sealed one (signCode 2) at version 8. */
 function deliver(target: P2PSession, signCode: number, payload: Buffer): void {
   (target as unknown as { handleFrame(h: unknown, p: Buffer, d: number): void }).handleFrame(
-    { commandId: CMD_DATABASE, channel: 255, signCode, bytesToRead: payload.length, type: 0 },
+    {
+      commandId: CMD_DATABASE,
+      channel: 255,
+      signCode,
+      version: signCode === 2 ? 8 : 1,
+      bytesToRead: payload.length,
+      type: 0,
+    },
     payload,
     1,
   );

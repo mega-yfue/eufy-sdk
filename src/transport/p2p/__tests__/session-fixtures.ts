@@ -141,3 +141,12 @@ export function routerWithSession(
   }
   return router;
 }
+
+/**
+ * Put a real session where the app's native step of a gateway info naming a cipher puts it: sign mode 1, the level-1
+ * key in the ECB slot, negotiated version `version`. Its sends then seal at once, AES-128-ECB under the level-1 key
+ * for version 1.
+ */
+export function atSignMode1(session: object, version = 1): void {
+  (session as { gatewayInfoSlots(cipherId: number, version: number): void }).gatewayInfoSlots(1, version);
+}

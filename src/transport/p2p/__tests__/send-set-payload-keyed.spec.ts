@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { decryptP2PData, p2pCommandEncryptionKey } from "../codec.js";
 import { P2PSession } from "../p2p-session.js";
+import { atSignMode1 } from "./session-fixtures.js";
 
 const STATION_SN = "T8000P0000000000";
 const P2P_DID = "XXXXXXX-000000-XXXXX";
@@ -13,7 +14,7 @@ const ENC_TYPE = HEADER + 7;
 const BODY = HEADER + 10;
 
 /**
- * A connected session whose socket send is captured, so the assertions read the exact bytes handed to the
+ * A connected session at sign mode 1 whose socket send is captured, so the assertions read the exact bytes handed to the
  * socket: the frame's channel and encryption-type bytes, and the body that follows them.
  */
 function harness() {
@@ -22,6 +23,7 @@ function harness() {
   const target = session as unknown as { connectAddress: typeof ADDRESS; send: typeof send };
   target.connectAddress = ADDRESS;
   target.send = send;
+  atSignMode1(session);
   return { session, frame: () => send.mock.calls[0]![2] as Buffer };
 }
 
@@ -49,7 +51,7 @@ describe("P2PSession.sendSetPayload — keyed envelope", () => {
     });
   });
 
-  it("keeps the level-1 encrypted body, with no key field, for an envelope without a key", () => {
+  it("seals an envelope without a key by the session, with no key field", () => {
     const { session, frame } = harness();
     session.sendSetPayload(1194, {}, { accountId: ACCOUNT_ID, channel: 3 });
     const f = frame();

@@ -16,8 +16,8 @@ function sessionWith(socket: dgram.Socket, port?: number) {
     socket,
     connected: true,
     ...(port === undefined ? {} : { connectAddress: { host: "127.0.0.1", port } }),
-    level2Key: Buffer.alloc(32, 1),
   });
+  session.setLevel2Key(Buffer.alloc(32, 1));
   return session;
 }
 afterEach(() => {

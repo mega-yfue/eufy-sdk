@@ -30,12 +30,11 @@ function attachedSession(withKey: boolean) {
   });
   const internals = built as unknown as {
     connectAddress?: { address: string; port: number };
-    level2Key?: Buffer;
     send: (...args: unknown[]) => void;
-    decryptLevel2: (payload: Buffer, signCode: number) => Buffer | undefined;
+    openFrame: (header: object, payload: Buffer) => Buffer | undefined;
   };
   internals.connectAddress = { address: "203.0.113.1", port: 32100 };
-  if (withKey) internals.level2Key = Buffer.alloc(32, 7);
+  if (withKey) built.setLevel2Key(Buffer.alloc(32, 7));
   const sent: unknown[][] = [];
   internals.send = (...args: unknown[]) => sent.push(args);
   return {
@@ -46,7 +45,7 @@ function attachedSession(withKey: boolean) {
       const data = sent[index]![2] as Buffer;
       const header = parseDataFrameHeader(data.subarray(4));
       const body = data.subarray(20, 20 + header.bytesToRead);
-      const plain = internals.decryptLevel2(body, header.signCode);
+      const plain = internals.openFrame(header, body);
       if (!plain) throw new Error("captured media command did not decrypt");
       return { header, value: JSON.parse(plain.toString("utf8")) };
     },

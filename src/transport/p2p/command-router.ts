@@ -625,6 +625,7 @@ export class P2PCommandRouter {
       dskKey,
       noBroadcast: this.deps.noBroadcast,
       resolveCipherKey: (cipherId, version) => this.cipherKeyFor(cipherId, adminUserId, stationSn, version),
+      userId: this.deps.mega.auth?.userId,
       logger: this.deps.logger ?? noopLogger,
     });
     session.on("error", (e: Error) => this.reportError(e));
@@ -637,7 +638,7 @@ export class P2PCommandRouter {
         frame.raw.every((byte) => byte === 0) &&
         adminUserId
       ) {
-        session.sendIntStringCommand(CommandType.CMD_GET_DEVICE_PING, 0, 0, adminUserId, frame.channel, 0);
+        session.sendIntStringCommand(CommandType.CMD_GET_DEVICE_PING, 0, 0, adminUserId, frame.channel);
       }
       if (announces) this.deps.onFrame(stationSn, frame);
     });
