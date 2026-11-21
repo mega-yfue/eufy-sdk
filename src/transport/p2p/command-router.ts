@@ -205,6 +205,7 @@ const SHARED_LIVE_OPT_KEYS = [
   "powered",
   "batteryBudgetMs",
   "budgetGraceMs",
+  "entryType",
 ] as const satisfies readonly (keyof SharedLiveOpts)[];
 
 /**
@@ -1066,6 +1067,7 @@ export class P2PCommandRouter {
             accountId,
             homeBaseAttached,
             eccPrivateKey: opts.eccPrivateKey,
+            entryType: opts.entryType,
             logger,
           }),
         lingerMs: opts.lingerMs,
