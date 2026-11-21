@@ -14,7 +14,7 @@ vi.mock("../../model/capabilities/bundle-wires.generated.json", async () => {
 });
 
 const SENSOR = "T8000P0000000000";
-const write: Command = { kind: "set-param", param: 1550, value: 1, form: "auto", channel: 0 };
+const write: Command = { kind: "set-param", param: 1550, value: 1, channel: 0 };
 
 /**
  * A held contact sensor whose `contact` reads param 1550, and a sink whose route answers as `routed` does:
@@ -75,7 +75,7 @@ describe("a write carrying a next command", () => {
       commandSinkFor(sn: string): { dispatch(cmd: Command): Promise<void> };
     };
     target.routeCommand = async (_sn, cmd) => (sent.push(cmd), false);
-    const next: Command = { kind: "set-param", param: 1045, value: 1, form: "auto", channel: 0 };
+    const next: Command = { kind: "set-param", param: 1045, value: 1, channel: 0 };
     const first: Command = { kind: "set-json", param: 6014, data: { value: 1 }, channel: 0, next };
     await target.commandSinkFor(SENSOR).dispatch(first);
     expect(sent).toEqual([first, next]);
@@ -125,7 +125,6 @@ describe("a member write's readback", () => {
     kind: "set-param",
     param: 6014,
     value: Number(value),
-    form: "auto",
     channel: 0,
   });
 

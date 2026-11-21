@@ -21,7 +21,7 @@ import type { Capability, Codec, CloudRecord, PropertySpec, PropertyValue, Value
 import type { Members, MemberDeps } from "./members.js";
 // The transport boundary contract lives in core/ — imported by BOTH the capability layer (which
 // produces intent) and the transport layer (which consumes it), so neither imports the other.
-// Capability modules import Command/CommandSink/MediaProvider/ScalarForm straight from core/contracts.
+// Capability modules import Command/CommandSink/MediaProvider straight from core/contracts.
 import type { Command, Ff09SettingsReader, DpInboundFrame } from "../../core/contracts.js";
 
 /**

@@ -103,7 +103,7 @@ describe("rtsp capability module", () => {
     expect(Object.getOwnPropertyDescriptor(actions, "published")?.get).toBeTypeOf("function");
   });
 
-  it("toggles authentication through the mode field of the credential payload, sent form:auto", async () => {
+  it("toggles authentication through the mode field of the credential payload", async () => {
     const { acts: actions, sent } = bind<RtspActions>("rtsp", ctx);
 
     await actions.requireAuth("eufy", "hunter2");
@@ -114,15 +114,12 @@ describe("rtsp capability module", () => {
       kind: string;
       cmd: number;
       payload: Record<string, unknown>;
-      form?: string;
     }[];
     for (const cmd of payloads) {
       expect(cmd.kind).toBe("set-payload");
       expect(cmd.cmd).toBe(RTSP_PARAM.SEND_SECURITY_PASSWD);
       expect(cmd.payload.username).toBe("eufy");
       expect(cmd.payload.passwd).toBe("hunter2");
-      // "auto" so a standalone camera (no level-2 key) can still receive it — the whole point of creds.
-      expect(cmd.form).toBe("auto");
       // mValue3 = 0, byte-exact with the app's captured frame (not the transport's `?? cmd` default).
       expect((cmd as unknown as { mValue3: number }).mValue3).toBe(0);
     }

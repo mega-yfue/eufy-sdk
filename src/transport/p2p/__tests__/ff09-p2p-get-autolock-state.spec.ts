@@ -39,13 +39,13 @@ function buildResponsePlain(opts: {
 }
 
 interface FakeSession extends FakeP2PSession {
-  sendControlLevel2: (cmd: number, channel: number, accountId: string, payload: unknown, mValue3?: number) => boolean;
+  sendSetPayload: (cmd: number, payload: unknown, opts: { channel?: number }) => void;
 }
 
 function makeRouter(plain: Buffer, opts: { noReply?: boolean } = {}) {
   const session = connectedSession() as FakeSession;
   let getCount = 0;
-  session.sendControlLevel2 = vi.fn((_cmd, _channel, _accountId, payload) => {
+  session.sendSetPayload = vi.fn((_cmd, payload) => {
     const p = payload as { apiCommand: number; time: number };
     if (!opts.noReply && p.apiCommand === LOCK_API_COMMAND.GET_SETTINGS) {
       getCount++;

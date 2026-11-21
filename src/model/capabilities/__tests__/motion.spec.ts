@@ -67,7 +67,6 @@ describe("motion capability module", () => {
         payload: { only_ai: 1 },
         channel: 3,
         mValue3: 0,
-        form: "auto",
       });
       expect(intent("humanOnlyAtNight", false, H(3))).toMatchObject({ payload: { only_ai: 0 } });
     });
@@ -79,7 +78,6 @@ describe("motion capability module", () => {
         payload: { radar_wd_switch: 1 },
         channel: 2,
         mValue3: 0,
-        form: "auto",
       });
       expect(intent("loiteringDetection", false, L(2))).toMatchObject({
         payload: { radar_wd_switch: 0 },
@@ -124,11 +122,9 @@ describe("motion capability module", () => {
         kind: "set-param",
         param: MOTION_CMD.CAMERA_PIR, // 1011
         value: 1,
-        form: "direct-binary",
         channel: 3,
       });
       expect(intent("motionDetection", false, ctx([], 3))).toMatchObject({
-        form: "direct-binary",
         value: 0,
       });
     });
@@ -139,7 +135,6 @@ describe("motion capability module", () => {
       expect(sent[0]).toMatchObject({
         kind: "set-param",
         param: MOTION_CMD.CAMERA_PIR,
-        form: "direct-binary",
         value: 1,
       });
     });
@@ -222,7 +217,6 @@ describe("motion capability module", () => {
       expect(intent("motionDetection", true, { ...ctx([1011], 3), model: "T8425" })).toMatchObject({
         kind: "set-param",
         param: MOTION_CMD.CAMERA_PIR,
-        form: "direct-binary",
       });
     });
   });
@@ -237,7 +231,6 @@ describe("motion capability module", () => {
         payload: { ai_detect_type: 0x3000f, channel: 3 },
         channel: 0,
         mValue3: 0,
-        form: "auto",
       });
     });
 
@@ -413,7 +406,6 @@ describe("motion — sensor test mode", () => {
     expect(sent[0]).toMatchObject({
       kind: "set-param",
       param: MOTION_CMD.SENSOR_EXIT_TEST_MODE,
-      form: "direct-binary",
     });
   });
 

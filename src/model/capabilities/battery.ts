@@ -367,8 +367,6 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
         { charge_mode: v === "external" ? 1 : v === "battery" ? 0 : asBool(v) ? 1 : 0 },
         ctx,
         0,
-        undefined,
-        "auto",
       ),
   },
   /**
@@ -408,9 +406,7 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
       "model (not a universal enum). Write: direct-binary cmd 1246, the raw value.",
     write: (v, ctx) => {
       const mode = typeof v === "string" && !/^\d+$/.test(v.trim()) ? resolveWorkingModeValue(ctx.model, v) : Number(v);
-      return mode == null || Number.isNaN(mode)
-        ? undefined
-        : setScalar(BATTERY_PARAM.WORKING_MODE, mode, ctx, "direct-binary");
+      return mode == null || Number.isNaN(mode) ? undefined : setScalar(BATTERY_PARAM.WORKING_MODE, mode, ctx);
     },
   },
   /**

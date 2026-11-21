@@ -430,7 +430,6 @@ describe("camera capability module", () => {
         kind: "set-param",
         param: CAMERA_CMD.ROTATE_IMAGE,
         value: 1,
-        form: "auto",
         channel: 2,
       });
       expect(buildCommand("imageFlipped", false, ctx())).toMatchObject({ value: 0 });
@@ -558,8 +557,8 @@ describe("camera capability module", () => {
       const { acts, sent } = camera(ctx(0, { model: "T8114", things: DESCRIBED }));
       await acts.on();
       await acts.off();
-      expect(sent[0]).toMatchObject({ kind: "set-param", form: "auto", value: 0 }); // ON = 0 (default family)
-      expect(sent[1]).toMatchObject({ kind: "set-param", form: "auto", value: 1 }); // OFF = 1
+      expect(sent[0]).toMatchObject({ kind: "set-param", value: 0 }); // ON = 0 (default family)
+      expect(sent[1]).toMatchObject({ kind: "set-param", value: 1 }); // OFF = 1
       expect(acts.setPrivacy).toBeUndefined();
     });
 

@@ -191,7 +191,7 @@ describe("catch-all event tag", () => {
       order.push("event");
     });
     const command = observeCommand(
-      { kind: "set-param", param: 1224, value: 63, form: "auto", channel: 0 },
+      { kind: "set-param", param: 1224, value: 63, channel: 0 },
       {
         event: "armingModeChanged",
         expected: 63,
@@ -228,7 +228,7 @@ describe("catch-all event tag", () => {
     eufy.on("error", (error) => faults.push(error));
     eufy.on("commandUnconfirmed", (info) => unconfirmed.push(info));
     const command = observeCommand(
-      { kind: "set-param", param: 1224, value: 63, form: "auto", channel: 0 },
+      { kind: "set-param", param: 1224, value: 63, channel: 0 },
       { event: "armingModeChanged", expected: 63, param: 1224, property: "armingMode", timeoutMs: 20_000 },
     );
 
@@ -268,7 +268,7 @@ describe("catch-all event tag", () => {
     eufy.on("error", (error) => faults.push(error));
     eufy.on("commandUnconfirmed", (info) => unconfirmed.push(info));
     const command = observeCommand(
-      { kind: "set-param", param: 1224, value: 63, form: "auto", channel: 0 },
+      { kind: "set-param", param: 1224, value: 63, channel: 0 },
       { event: "armingModeChanged", expected: 63, param: 1224, property: "armingMode", timeoutMs: 20_000 },
     );
 
@@ -335,7 +335,7 @@ describe("catch-all event tag", () => {
     eufy.on("error", (error) => faults.push(error));
     eufy.on("commandUnconfirmed", (info) => unconfirmed.push(info));
     const command = observeCommand(
-      { kind: "set-param", param: 1224, value: 63, form: "auto", channel: 0 },
+      { kind: "set-param", param: 1224, value: 63, channel: 0 },
       { event: "armingModeChanged", expected: 63, param: 1224, property: "armingMode", timeoutMs: 20_000 },
     );
 
@@ -367,7 +367,7 @@ describe("catch-all event tag", () => {
     eufy.on("armingModeChanged", () => seen.push(mode));
     const command = (expected: number) =>
       observeCommand(
-        { kind: "set-param", param: 1224, value: expected, form: "auto", channel: 0 },
+        { kind: "set-param", param: 1224, value: expected, channel: 0 },
         {
           event: "armingModeChanged",
           expected,
@@ -411,7 +411,7 @@ describe("catch-all event tag", () => {
     vi.spyOn((eufy as any).p2p, "resetStandaloneSession").mockReturnValue(resetGate);
     const command = (expected: number) =>
       observeCommand(
-        { kind: "set-param", param: 1224, value: expected, form: "auto", channel: 0 },
+        { kind: "set-param", param: 1224, value: expected, channel: 0 },
         {
           event: "armingModeChanged",
           expected,
@@ -445,7 +445,7 @@ describe("catch-all event tag", () => {
     const unconfirmed: unknown[] = [];
     eufy.on("commandUnconfirmed", (info) => unconfirmed.push(info));
     const command = observeCommand(
-      { kind: "set-param", param: 1224, value: 63, form: "auto", channel: 0 },
+      { kind: "set-param", param: 1224, value: 63, channel: 0 },
       { event: "armingModeChanged", expected: 63, param: 1224, property: "armingMode", timeoutMs: 20_000 },
     );
 
@@ -479,7 +479,7 @@ describe("catch-all event tag", () => {
     vi.spyOn((eufy as any).p2p, "resetStandaloneSession").mockReturnValue(new Promise<void>(() => {}));
     const command = (expected: number) =>
       observeCommand(
-        { kind: "set-param", param: 1224, value: expected, form: "auto", channel: 0 },
+        { kind: "set-param", param: 1224, value: expected, channel: 0 },
         {
           event: "armingModeChanged",
           expected,
@@ -501,7 +501,7 @@ describe("catch-all event tag", () => {
   });
 
   it("allows observation policy to be replaced on a reused command object", () => {
-    const command = { kind: "set-param", param: 1224, value: 63, form: "auto", channel: 0 } as const;
+    const command = { kind: "set-param", param: 1224, value: 63, channel: 0 } as const;
     const first = { event: "armingModeChanged", expected: 63, param: 1224, property: "armingMode", timeoutMs: 1 };
     const second = { ...first, expected: 1 };
 

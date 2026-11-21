@@ -146,11 +146,9 @@ Rules:
 A module resolves a semantic action into a **transport-neutral `Command`**; the `CommandSink`
 (implemented by the client) routes it to the wire. The consumer never learns the param id or wire
 form. A module emits **transport-neutral intents** (`setScalar` / `setJson` from `./access`) and
-never names an encryption level or frame kind — the transport resolver in `index.ts` picks L1 vs L2
-by session/topology. `Command` kinds:
+never names an encryption level — the session seals every frame with what it holds. `Command` kinds:
 
-- `set-param` — a scalar param (id + value + `ScalarForm`). `"auto"` lets the transport pick the
-  level; `"int-string"` / `"direct-binary"` pin it when the firmware requires a specific level.
+- `set-param` — a scalar param (id + value): the group-A body, or the bare pair with `"int-pair"`.
 - `set-json` — a JSON control-payload param (`{commandType, data}` under wrapper 1700).
 - `set-payload` — a `SET_PAYLOAD` (1350) envelope `{account_id, cmd, mChannel, mValue3, payload}`.
 - `aiot-dp` — Anker AIoT MQTT data-point (vacuum/mower clean line).

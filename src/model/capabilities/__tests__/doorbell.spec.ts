@@ -57,7 +57,6 @@ describe("doorbell capability module", () => {
         kind: "set-param",
         param: DOORBELL_CMD.MECHANICAL_CHIME_SWITCH,
         value: 1,
-        form: "direct-binary",
         channel: 2,
       });
     });
@@ -67,7 +66,6 @@ describe("doorbell capability module", () => {
         kind: "set-param",
         param: DOORBELL_CMD.MECHANICAL_CHIME_SWITCH,
         value: 0,
-        form: "direct-binary",
         channel: 2,
       });
     });
@@ -77,7 +75,6 @@ describe("doorbell capability module", () => {
         kind: "set-param",
         param: DOORBELL_CMD.WDR_SWITCH,
         value: 1,
-        form: "direct-binary",
         channel: 3,
       });
       expect(buildCommand("wdrSwitch", false, ctx(3))).toMatchObject({ value: 0 });
@@ -92,7 +89,6 @@ describe("doorbell capability module", () => {
         payload: { dingdong_volume: 25 },
         channel: 2,
         mValue3: 0,
-        form: "auto",
       });
     });
 
@@ -116,7 +112,6 @@ describe("doorbell capability module", () => {
         payload: { dingdong_ringtone: 4 },
         channel: 2,
         mValue3: 0,
-        form: "auto",
       });
     });
 
@@ -127,7 +122,6 @@ describe("doorbell capability module", () => {
         payload: { dingdong_ringtone: 0 },
         channel: 2,
         mValue3: 0,
-        form: "auto",
       });
     });
 
@@ -179,7 +173,6 @@ describe("doorbell capability module", () => {
         kind: "set-param",
         param: DOORBELL_CMD.CHIME_SWITCH,
         value: 1,
-        form: "direct-binary",
         channel: 2,
       });
       expect(buildCommand("chimeSwitch", false, ctx(3))).toMatchObject({ value: 0, channel: 3 });

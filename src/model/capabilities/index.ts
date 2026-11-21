@@ -985,7 +985,7 @@ function memberCommand(
 // Nothing ptz-specific leaks out of the barrel: PtzDirection, PTZ_ROTATE and the rotate
 // command builder all stay PRIVATE to ptz.ts. Callers go through buildActions / buildCommand
 // (generic), never a ptz symbol.
-// The transport boundary contract (Command/CommandSink/MediaProvider/ScalarForm) is NOT re-exported
+// The transport boundary contract (Command/CommandSink/MediaProvider) is NOT re-exported
 // here — it lives in core/contracts (imported directly by capabilities that emit intent), so it has
 // a single source at the root barrel.
 export type {

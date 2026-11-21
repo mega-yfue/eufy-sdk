@@ -68,8 +68,6 @@ import {
 import { commandName, CommandType } from "./commands.js";
 import { traceLiveStart, type LiveTrace } from "./live-trace.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
-import { abortable } from "../abortable.js";
-import { LEVEL2_SETTLE_MS } from "./level2-settle.js";
 import { CMD_DATABASE, CMD_DATABASE_IMAGE, DB_QUERY, DB_TABLE_TIMEOUT_MS, fullTableQuery } from "./database-wire.js";
 import { StationUnreachableError, type SessionFrame } from "../../core/contracts.js";
 
@@ -556,15 +554,6 @@ export class P2PSession extends EventEmitter {
    * blocking lookup on the thread that reads channel 2, so nothing else on it is read until the step ends.
    */
   private heldNotifies?: Array<[P2PDataFrameHeader, Buffer, number]>;
-  /**
-   * Whether waiting for a level-2 key can still change the answer: `false` once one has been negotiated,
-   * once a negotiation concluded without one, and from the start when nothing can negotiate one.
-   */
-  private level2Pending: boolean;
-  /** Waiters parked in {@link awaitLevel2Key}, woken the moment the negotiation settles either way. */
-  private readonly level2Waiters: Array<(outcome: "key" | "terminal" | "closed") => void> = [];
-  /** When this session connected — the instant the level-2 negotiation had its chance to start. */
-  private connectedAtMs?: number;
   /** Connection generation that owns every asynchronous result derived from its gateway envelope. */
   private connectionGeneration = 0;
   /** Whether this connection's latest `CMD_GATEWAYINFO` reply was a refusal — see {@link gatewayInfoRefused}. */
@@ -581,7 +570,6 @@ export class P2PSession extends EventEmitter {
     super();
     this.level1Key = Buffer.from(p2pCommandEncryptionKey(cfg.stationSn, cfg.p2pDid));
     this.logger = cfg.logger ?? noopLogger;
-    this.level2Pending = cfg.resolveCipherKey !== undefined;
   }
 
   /**
@@ -634,92 +622,11 @@ export class P2PSession extends EventEmitter {
     if (key.length !== 32) throw new Error(`level-2 key must be 32 bytes, got ${key.length}`);
     this.gcmKey = key;
     this.signMode = 8;
-    this.settleLevel2();
   }
 
   /** Whether a gateway info's key is held: sign mode 2 (its RSA-unwrapped ECB key) or 8 (its ECIES key). */
   get hasLevel2Key(): boolean {
     return this.signMode >= 2;
-  }
-
-  /**
-   * Resolve with whether a level-2 key is available, waiting only while waiting can still change that.
-   *
-   * A `"session"` grace is measured once, not restarted per call. Best-effort media uses it because every
-   * egress asks this same session and can proceed without the key on an own-session camera; a per-call
-   * budget there makes a station that offers no key charge its full budget on every later stream.
-   *
-   * A `"call"` grace gives the full wait to a command that cannot be framed without the key. Such a
-   * command may arrive on an old session before a delayed `CMD_GATEWAYINFO`, so session age says nothing
-   * about whether the key can still arrive during this command.
-   *
-   * The session grace runs from connect, when the station is prompted for `CMD_GATEWAYINFO`. A negotiation
-   * beginning later does not restart it: best-effort media can proceed without the key, and restarting
-   * would charge another grace to a source that may already be streaming. A session whose negotiation has
-   * settled answers without waiting at all, until the next re-sent `CMD_GATEWAYINFO` re-opens the wait.
-   *
-   * An own-session camera whose grace expires here is NOT thereby a camera that will fail to stream: some
-   * own-session cameras never negotiate a key and stream normally at level-1. An expired grace therefore
-   * separates nothing on this path, and a start failure on such a session is not evidence about it.
-   *
-   * Every `false` answer carries a `level2-unavailable` trace naming its reason, wherever the wait ended: a
-   * `terminal` outcome is the one already stated where the negotiation concluded, since that is where the
-   * cipher and the cause are known, and re-stating it here would double every settled negotiation.
-   */
-  async awaitLevel2Key(graceMs: number, graceFrom: "call" | "session" = "call"): Promise<boolean> {
-    if (this.closed) {
-      this.trace({ phase: "level2-unavailable", reason: "session-closed" });
-      return false;
-    }
-    if (this.hasLevel2Key) return true;
-    if (!this.level2Pending) {
-      this.trace({ phase: "level2-unavailable", reason: "not-negotiating" });
-      return false;
-    }
-    const since = graceFrom === "call" ? Date.now() : (this.connectedAtMs ?? Date.now());
-    const remaining = graceMs - (Date.now() - since);
-    if (remaining <= 0) {
-      this.logger.debug(`[p2p] ${this.cfg.stationSn} no level-2 key and its ${graceMs}ms grace has elapsed`);
-      this.trace({ phase: "level2-unavailable", reason: "grace-elapsed", waitedMs: graceMs });
-      return false;
-    }
-    this.logger.debug(`[p2p] ${this.cfg.stationSn} waiting up to ${remaining}ms for the level-2 key`);
-    this.trace({ phase: "level2-wait", waitMs: remaining });
-    const waiters = this.level2Waiters;
-    const outcome = await new Promise<"key" | "terminal" | "closed" | "timeout">((resolve) => {
-      let deadline: ReturnType<typeof setTimeout> | undefined;
-      let settled = false;
-      const finish = (result: "key" | "terminal" | "closed" | "timeout"): void => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(deadline);
-        const at = waiters.indexOf(wake);
-        if (at >= 0) waiters.splice(at, 1);
-        resolve(result);
-      };
-      const wake = (result: "key" | "terminal" | "closed"): void => finish(result);
-      deadline = setTimeout(() => finish("timeout"), remaining);
-      deadline.unref?.();
-      waiters.push(wake);
-    });
-    const served = outcome === "key";
-    if (outcome === "timeout") {
-      this.logger.debug(`[p2p] ${this.cfg.stationSn} level-2 key did not arrive within its grace`);
-      this.trace({ phase: "level2-unavailable", reason: "grace-elapsed", waitedMs: remaining });
-    } else if (outcome === "terminal" && !served) {
-      this.logger.debug(`[p2p] ${this.cfg.stationSn} level-2 negotiation concluded without a key`);
-    } else if (outcome === "closed") {
-      this.logger.debug(`[p2p] ${this.cfg.stationSn} session closed before the level-2 key arrived`);
-      this.trace({ phase: "level2-unavailable", reason: "session-closed" });
-    }
-    return served;
-  }
-
-  /** Record that the level-2 negotiation has finished, with or without a key, and wake every waiter. */
-  private settleLevel2(reason: "terminal" | "closed" = "terminal"): void {
-    this.level2Pending = false;
-    const outcome = this.hasLevel2Key ? "key" : reason;
-    for (const wake of this.level2Waiters.splice(0)) wake(outcome);
   }
 
   /**
@@ -731,9 +638,8 @@ export class P2PSession extends EventEmitter {
    * frames wait in {@link heldNotifies} until it ends, then go through in arrival order.
    *
    * Emits `level2Ready` for either key, and `error` when the ECC unwrap fails; an RSA unwrap failure is only traced,
-   * and leaves the session at sign mode 1 as the app's does. The wait in {@link awaitLevel2Key} settles once a key is
-   * held, or once a key step ends without one and no held gateway info follows it, which is the only failure traced.
-   * A step whose connection generation ended does nothing.
+   * and leaves the session at sign mode 1 as the app's does. A key step that ends without a key is traced unless a key
+   * is held or another gateway info is held behind it. A step whose connection generation ended does nothing.
    */
   private negotiateLevel2Key(gwPayload: Buffer, version: number): void {
     const cipherId = gwPayload.length >= 4 ? gwPayload.readInt32LE(0) : 0;
@@ -771,9 +677,7 @@ export class P2PSession extends EventEmitter {
     const conclude = (unavailable: LiveTrace): void => {
       if (this.hasLevel2Key || this.heldNotifies?.some(([h]) => h.commandId === CMD_GATEWAYINFO)) return;
       this.trace(unavailable);
-      this.settleLevel2();
     };
-    this.level2Pending = true;
     this.trace({ phase: "level2-negotiating", cipherId, version });
     try {
       const privateKey = await this.cfg.resolveCipherKey!(cipherId, version);
@@ -799,7 +703,6 @@ export class P2PSession extends EventEmitter {
       else {
         this.ecbKey = key;
         this.signMode = 2;
-        this.settleLevel2();
       }
       this.logger.debug(`[p2p] ${this.cfg.stationSn} level-2 key negotiated (cipher_id ${cipherId})`);
       this.trace({ phase: "level2-ready", cipherId });
@@ -932,7 +835,6 @@ export class P2PSession extends EventEmitter {
     this.ackedRounds = undefined;
     this.resetInboundSequencing();
     this.resetSlots();
-    this.level2Pending = this.cfg.resolveCipherKey !== undefined;
     this.heldNotifies = undefined;
     this.gatewayRefused = false;
     this.commandCount = 0;
@@ -1304,7 +1206,6 @@ export class P2PSession extends EventEmitter {
       this.requestReceiveBuffer(socket);
     }
     this.connected = true;
-    this.connectedAtMs = Date.now();
     this.connecting = false;
     this.connectAddress = addr;
     if (this.lookupTimer) clearInterval(this.lookupTimer);
@@ -1395,14 +1296,6 @@ export class P2PSession extends EventEmitter {
   }
 
   /**
-   * Whether this connection's station answered `CMD_GATEWAYINFO` with a refusal ({@link gatewayInfoRefused}) and
-   * no key that frames a set-payload is held.
-   */
-  get refusedLevel2(): boolean {
-    return this.gatewayRefused && !this.hasLevel2Key;
-  }
-
-  /**
    * Header byte 14 of a frame that carries the session's counter, as the app's native sender writes it:
    * `bump` moves it on (to 10 when `(b + 5) & 0xff < 15`, else up one, so it cycles 10..251) and writes it,
    * `current` writes it as it stands, no mode writes 0.
@@ -1412,76 +1305,8 @@ export class P2PSession extends EventEmitter {
     return mode ? headerCounterByte : 0;
   }
 
-  /**
-   * Send a **level-2 control payload**, sealed by the session ({@link seal}), to a HomeBase-attached device. The
-   * target camera is selected by `channel` (= device_channel) + the `mChannel` envelope — the same
-   * mechanism proven for camera selection in media start. Use for control commands routed through a
-   * HomeBase (where level-1 ECB is rejected). Returns `false` if the level-2 key isn't negotiated
-   * yet (caller can fall back to {@link sendStringPayloadCommand}).
-   *
-   * With `clearOnRefusal` on a session that {@link refusedLevel2}, the frame goes in the clear in the vendor
-   * app's form for such a device: header bytes `[01 00]`, signCode 0, and a body of `{cmd, payload}` alone.
-   * Without it, a refused session answers `false` and sends nothing. `unzip` puts the payload's keys at the
-   * top level of the envelope, in place of `payload`.
-   */
-  sendControlLevel2(
-    cmd: number,
-    channel: number,
-    accountId: string,
-    payload: unknown,
-    mValue3: number = 0,
-    clearOnRefusal: boolean = false,
-    unzip: boolean = false,
-    counter?: "bump" | "current",
-  ): boolean {
-    if (!this.connectAddress || !(this.hasLevel2Key || (clearOnRefusal && this.refusedLevel2))) {
-      return false;
-    }
-    const value = Buffer.from(
-      JSON.stringify({
-        account_id: accountId,
-        cmd,
-        mChannel: channel,
-        mValue3,
-        ...(unzip ? (payload as object) : { payload }),
-      }),
-      "utf-8",
-    );
-    if (this.hasLevel2Key) {
-      this.transmit(CMD_SET_PAYLOAD, channel, value, { streamId: this.headerCounter(counter), text: true });
-    } else {
-      this.transmit(CMD_SET_PAYLOAD, channel, Buffer.from(JSON.stringify({ cmd, payload }), "utf-8"), { text: true });
-    }
-    return true;
-  }
-
-  /**
-   * Send a **level-2 frame whose plaintext is exactly `json`** — no
-   * `{account_id,cmd,mChannel,…}` envelope. The target device is selected by the frame-header
-   * `channel`. This is the form the eufy app uses for control commands (as captured from the app:
-   * floodlight = `{"commandType":1400,"data":{...}}`). Returns `false` if no level-2 key.
-   */
-  sendRawLevel2(json: string, channel: number, outerCmd: number = CMD_SET_PAYLOAD): boolean {
-    if (!this.connectAddress || !this.hasLevel2Key) return false;
-    this.transmit(outerCmd, channel, Buffer.from(json, "utf-8"), { text: true });
-    return true;
-  }
-
-  /**
-   * Like {@link sendRawLevel2} but the plaintext is a raw byte buffer, not a UTF-8 string. Some
-   * "direct" commands (e.g. CAMERA_SWITCH 1035) carry a binary struct, not JSON. Sealed by {@link seal}; returns
-   * `false` while no gateway key is held.
-   */
-  sendRawLevel2Bytes(payload: Buffer, channel: number, outerCmd: number = CMD_SET_PAYLOAD): boolean {
-    if (!this.connectAddress || !this.hasLevel2Key) return false;
-    this.transmit(outerCmd, channel, payload);
-    return true;
-  }
-  /**
-   * {@link sendRawLevel2Bytes} without its key gate: `payload` sealed by the session whatever key it holds.
-   * Returns `false` when not connected.
-   */
-  sendRawLevel1Bytes(payload: Buffer, channel: number, outerCmd: number): boolean {
+  /** Send `payload` as the body of `outerCmd` on `channel`, sealed by the session ({@link seal}). `false` when not connected. */
+  sendBytes(payload: Buffer, channel: number, outerCmd: number): boolean {
     if (!this.connectAddress) return false;
     this.transmit(outerCmd, channel, payload);
     return true;
@@ -1957,9 +1782,6 @@ export class P2PSession extends EventEmitter {
    *
    * One read at a time per session: while one is accumulating, every {@link queryDatabase} on the
    * session throws, so a second reply cannot land in this buffer.
-   *
-   * The query's framing follows the cipher the gateway-info reply names, so on a session still negotiating
-   * its level-2 key the query waits for that to settle, up to {@link LEVEL2_SETTLE_MS} from connect.
    */
   async readDatabase(
     table: string,
@@ -1972,7 +1794,6 @@ export class P2PSession extends EventEmitter {
     } = {},
   ): Promise<unknown[]> {
     if (opts.signal?.aborted) throw new Error("readDatabase: aborted");
-    if (this.level2Pending) await abortable(this.awaitLevel2Key(LEVEL2_SETTLE_MS, "session"), opts.signal);
     this.queryDatabase(table, {
       accountId: opts.accountId,
       innerCmd: opts.innerCmd,
@@ -2050,6 +1871,8 @@ export class P2PSession extends EventEmitter {
       unzip?: boolean;
       /** Header byte 14: the session counter bumped, or as it stands — see {@link headerCounter}. */
       counter?: "bump" | "current";
+      /** The envelope's `mValue3`: 0 unless given, as the app sends it for every subCmd but 1025. */
+      mValue3?: number;
     } = {},
   ): void {
     if (!this.connectAddress) throw new Error("not connected");
@@ -2063,7 +1886,7 @@ export class P2PSession extends EventEmitter {
       account_id: opts.accountId ?? "",
       cmd: subCmd,
       mChannel: channel,
-      mValue3: 0,
+      mValue3: opts.mValue3 ?? 0,
       ...(opts.omitPayload ? {} : opts.unzip ? (payload as object) : { payload }),
     };
     const value = keyed ? JSON.stringify(inner).replace(/=/g, "\\u003d") : JSON.stringify(inner);
@@ -2316,7 +2139,6 @@ export class P2PSession extends EventEmitter {
     if (this.signMode >= 1 && this.ecbKey) return;
     if (++this.gatewayCheck.runs < 3) return;
     this.gatewayCheck.runs = 0;
-    this.level2Pending = this.cfg.resolveCipherKey !== undefined;
     this.sendCommand(CMD_GATEWAYINFO);
   }
 
@@ -2422,7 +2244,6 @@ export class P2PSession extends EventEmitter {
     this.stopPunchProbes();
     this.connectionGeneration += 1;
     this.resetSlots();
-    this.settleLevel2("closed");
     this.connected = false;
     this.connecting = false;
     if (this.lookupTimer) clearInterval(this.lookupTimer);

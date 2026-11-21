@@ -172,14 +172,13 @@ function dualSession(): ReturnType<typeof rsaSession> & {
 async function negotiatedSession(stationSn = STATION_SN): Promise<ReturnType<typeof rsaSession>> {
   const built = rsaSession(stationSn);
   (built.session as unknown as SessionInternals).negotiateLevel2Key(gatewayInfo(wrapped()), 1);
-  await built.session.awaitLevel2Key(1_000, "call");
+  await vi.waitFor(() => expect(built.session.hasLevel2Key).toBe(true));
   return built;
 }
 
 describe("P2PSession level-2 over an RSA cipher", () => {
   test("a cipher with no ECC key and an RSA key negotiates the level-2 key and announces it", async () => {
     const { session, ready, traces } = await negotiatedSession();
-    expect(await session.awaitLevel2Key(0, "call")).toBe(true);
     expect(session.hasLevel2Key).toBe(true);
     expect(ready).toEqual([{ cipherId: CIPHER_ID }]);
     expect(traces.filter((trace) => trace.phase === "level2-ready")).toEqual([
@@ -206,7 +205,7 @@ describe("P2PSession level-2 over an RSA cipher", () => {
       1,
     );
 
-    expect(await session.awaitLevel2Key(1_000, "call")).toBe(true);
+    await vi.waitFor(() => expect(session.hasLevel2Key).toBe(true));
     expect(errors).toEqual([]);
     expect(traces.filter((trace) => trace.phase === "level2-ready")).toHaveLength(1);
   });
@@ -216,7 +215,7 @@ describe("P2PSession level-2 over an RSA cipher", () => {
     const { session, ready, frame, v8 } = dualSession();
 
     frame(1, gatewayInfo(wrapped()));
-    expect(await session.awaitLevel2Key(1_000, "call")).toBe(true);
+    await vi.waitFor(() => expect(session.hasLevel2Key).toBe(true));
     frame(8, v8);
 
     await vi.waitFor(() => expect(ready).toEqual([{ cipherId: CIPHER_ID }, { cipherId: CIPHER_ID }]));
@@ -230,7 +229,7 @@ describe("P2PSession level-2 over an RSA cipher", () => {
     frame(1, gatewayInfo(Buffer.alloc(128, 0x33)));
     frame(8, v8);
 
-    expect(await session.awaitLevel2Key(1_000)).toBe(true);
+    await vi.waitFor(() => expect(session.hasLevel2Key).toBe(true));
     expect(ready).toEqual([{ cipherId: CIPHER_ID }]);
     expect(traces.filter((trace) => trace.phase === "level2-negotiating").map((trace) => trace.version)).toEqual([
       1, 8,
@@ -259,7 +258,7 @@ describe("P2PSession level-2 over an RSA cipher", () => {
 
       expect(ready).toEqual([{ cipherId: CIPHER_ID }]);
       expect(session.hasLevel2Key).toBe(false);
-      session.sendRawLevel1Bytes(Buffer.alloc(8, 0x11), 3, 1035);
+      session.sendBytes(Buffer.alloc(8, 0x11), 3, 1035);
       expect(sent.map(({ header }) => [header.version, header.signCode])).toEqual([[1, 1]]);
       expect(decryptP2PData(sent[0].body, Buffer.from(p2pCommandEncryptionKey(STATION_SN, P2P_DID)))).toEqual(
         paddingP2PData(Buffer.alloc(8, 0x11)),
@@ -274,7 +273,8 @@ describe("P2PSession level-2 over an RSA cipher", () => {
 
     (session as unknown as SessionInternals).negotiateLevel2Key(gatewayInfo(Buffer.alloc(128, 0x33)), 1);
 
-    expect(await session.awaitLevel2Key(1_000, "call")).toBe(false);
+    await vi.waitFor(() => expect(traces.some((trace) => trace.phase === "level2-unavailable")).toBe(true));
+    expect(session.hasLevel2Key).toBe(false);
     expect(errors).toEqual([]);
     expect(traces.find((trace) => trace.phase === "level2-negotiating")).toEqual({
       phase: "level2-negotiating",
@@ -296,9 +296,9 @@ describe("P2PSession level-2 over an RSA cipher", () => {
     const sent = capture(session);
     const scalar = Buffer.alloc(8, 0x11);
 
-    expect(session.sendRawLevel2Bytes(scalar, 3, 1035)).toBe(true);
+    expect(session.sendBytes(scalar, 3, 1035)).toBe(true);
     session.sendFrame({ cmd: 1350, body: "json1350", subCmd: 1004, payload: { channel: "$channel" } }, 3, ACCOUNT_ID);
-    expect(session.sendControlLevel2(2100, 0, ACCOUNT_ID, { isOpen: 1, userIndex: 0 }, 0)).toBe(true);
+    session.sendSetPayload(2100, { isOpen: 1, userIndex: 0 }, { accountId: ACCOUNT_ID, channel: 0 });
 
     expect(sent.map(({ header }) => [header.commandId, header.version, header.signCode])).toEqual([
       [1035, 1, 2],

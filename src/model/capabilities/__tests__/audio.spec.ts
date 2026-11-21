@@ -47,7 +47,6 @@ describe("audio capability module", () => {
       expect(buildCommand("speakerVolume", 80, ctx())).toMatchObject({
         param: AUDIO_CMD.SPEAKER_VOLUME,
         value: 80,
-        form: "direct-binary",
       });
       expect(() => buildCommand("volume", 250, ctx())).toThrow(
         /volume: 250 is not a valid value \(must be in 0\.\.100\)/,
@@ -72,7 +71,7 @@ describe("audio capability module", () => {
     expect(sent).toEqual([
       buildCommand("microphone", false, c),
       buildCommand("speaker", true, c),
-      { kind: "set-param", param: 1230, value: 40, form: "direct-binary", channel: 3 },
+      { kind: "set-param", param: 1230, value: 40, channel: 3 },
     ]);
   });
 
@@ -146,7 +145,7 @@ describe("audio capability module", () => {
       const { acts, sent } = bind<AudioActions>("audio", doorbellCtx);
       expect(acts.setRingtoneVolume).toBeDefined();
       await acts.setRingtoneVolume!(50);
-      expect(sent).toEqual([{ kind: "set-param", param: 1708, value: 50, form: "direct-binary", channel: 2 }]);
+      expect(sent).toEqual([{ kind: "set-param", param: 1708, value: 50, channel: 2 }]);
     });
 
     it("buildCommand('ringtoneVolume') is gated on the doorbell capability", () => {
@@ -154,7 +153,6 @@ describe("audio capability module", () => {
         kind: "set-param",
         param: 1708,
         value: 90,
-        form: "direct-binary",
       });
       expect(buildCommand("ringtoneVolume", 90, cameraCtx)).toBeUndefined();
     });
