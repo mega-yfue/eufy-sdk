@@ -300,15 +300,8 @@ interface RetainedDatagram {
 const CMD_SET_PAYLOAD = 1350;
 /** CMD_NOTIFY_PAYLOAD (1351) — the station's unsolicited JSON notification. */
 const CMD_NOTIFY_PAYLOAD = 1351;
-/**
- * The one reply body read for a result code besides the bare four-byte int32: a `CMD_SET_PAYLOAD` or
- * `CMD_CONTROL_PAYLOAD` answer of exactly this many bytes on a sign-code-0 frame, the int32 LE code in its
- * first four. A standalone camera answers its level-1 and level-2 writes on both wrappers this way, in the
- * clear, as captured from the vendor app. The rest is whatever the device's reply buffer held: unspecified
- * and is not examined. The sign code is what admits the read — a sign-code-0 body is plaintext as sent,
- * never ciphertext the decrypt could not open.
- */
-const PADDED_RESULT_BYTES = 132;
+/** The longest command answer whose body the app's `zx_p2p_get_exec_result` reads a code from. */
+const RESULT_BODY_MAX = 132;
 /**
  * CMD_CAMERA_INFO — params as a root-level array. On a camera's channel it is that camera's OWN report; on
  * {@link STATION_CHANNEL} a HomeBase answers with its whole table, every entry's `dev_type` naming the
@@ -2770,27 +2763,12 @@ export class P2PSession extends EventEmitter {
         this.emit("error", e instanceof Error ? e : new Error(String(e)));
       }
     }
-    // A reply whose whole body is a four-byte int32 LE is the result of the command just sent —
-    // negative is a failure (-104 file not found, -108 refused). Reading only CMD_SET_PAYLOAD
-    // discarded the answer to every other write, so a clean rejection reached a caller as silence and
-    // was indistinguishable from a command the station never replied to at all.
-    //
-    // The shape identifies it, not the command id. Both wrappers answer this way, and so does a
-    // direct outer command that is no wrapper at all — 1246 replies with four bytes exactly as 1700
-    // does, and a direct-binary switch is the write with the least other confirmation to fall back
-    // on. An allowlist of wrappers would keep those silent.
-    //
-    // A bare result is exactly four bytes, not merely long enough: on the wire a control reply is a
-    // 36-byte sign-8 frame carrying four bytes of plaintext. A frame
-    // the decrypt above could not open stays ciphertext — the level-1 path needs 16-byte alignment
-    // and the level-2 path can decline — and ciphertext is neither JSON nor four bytes, so a length
-    // test alone would read its first word and report a fabricated code for a command whose answer
-    // was never recovered. Media is excluded because its bodies are never control plaintext.
-    // A device answers a wrapper (1350, 1700) and a direct scalar (1013, 1045) alike with a clear 132-byte body,
-    // the result first and stale buffer content after it, under the written command.
-    const paddedResult = header.signCode === 0 && data.length === PADDED_RESULT_BYTES;
-    if (!isMedia && !frame.json && (data.length === 4 || paddedResult)) {
-      this.emit("commandResult", { code: data.readInt32LE(0), channel: header.channel, commandId: header.commandId });
+    // Channel 0 carries the answers to commands, read by the app's `zx_p2p_get_exec_result` by command id alone and
+    // never decrypted: an empty body is code 0, a body of 1 to 132 bytes its first int32 LE, a longer one its length.
+    if (dataType === P2PDataType.DATA) {
+      const n = payload.length;
+      const code = n === 0 ? 0 : n <= RESULT_BODY_MAX ? Buffer.concat([payload, Buffer.alloc(4)]).readInt32LE(0) : n;
+      this.emit("commandResult", { code, channel: header.channel, commandId: header.commandId });
     }
     this.emit("data", frame);
   }
