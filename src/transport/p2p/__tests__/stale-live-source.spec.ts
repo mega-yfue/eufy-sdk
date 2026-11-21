@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { LIVE_FRAMES } from "./live-source-fixtures.js";
 import { P2PCommandRouter } from "../command-router.js";
 import type { P2PSession } from "../p2p-session.js";
 import { connectedSession } from "./session-fixtures.js";
@@ -11,13 +12,16 @@ function session() {
   const fake = connectedSession(true);
   return Object.assign(fake, {
     pathAnswering: true,
-    startLiveMedia: vi.fn(),
-    stopLiveMedia: vi.fn(),
+    sendFrame: vi.fn(),
     close: vi.fn(async () => {
       fake.emit("close");
     }),
   });
 }
+
+/** How many media starts a connection received. */
+const starts = (s: ReturnType<typeof session>) =>
+  s.sendFrame.mock.calls.filter(([f]) => f === LIVE_FRAMES.start).length;
 
 /** Two connections to one station, with the second available after the first is closed. */
 function setup() {
@@ -26,6 +30,7 @@ function setup() {
   const camera = { sn: CAMERA, stationSn: STATION, channel: 1, raw: { parent_sn: STATION, device_channel: 1 } };
   const station = { sn: STATION, stationSn: STATION, raw: {} };
   const router = new P2PCommandRouter({
+    liveFramesFor: () => LIVE_FRAMES,
     mega: {} as never,
     listDevices: () => [camera, station] as never,
     ensureDevices: async () => {},
@@ -54,7 +59,7 @@ describe("a cached pull when its P2P path is replaced", () => {
     const oldSource = await router.sharedLiveSourceFor(CAMERA);
     const oldConsumer = oldSource.attach();
     oldConsumer.detach();
-    expect(first.startLiveMedia).toHaveBeenCalledOnce();
+    expect(starts(first)).toBe(1);
     const siblingKey = `${STATION}:2`;
     const sibling = { dispose: vi.fn(), state: "live", consumerCount: 1 };
     const internals = router as unknown as {
@@ -73,7 +78,7 @@ describe("a cached pull when its P2P path is replaced", () => {
     expect(sibling.dispose).not.toHaveBeenCalled();
     expect(internals.liveSources.get(siblingKey)).toBe(sibling);
     const newConsumer = newSource.attach();
-    expect(replacement.startLiveMedia).toHaveBeenCalledOnce();
+    expect(starts(replacement)).toBe(1);
     newConsumer.detach();
     newSource.dispose();
   });

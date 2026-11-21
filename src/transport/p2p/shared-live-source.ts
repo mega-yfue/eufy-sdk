@@ -68,13 +68,9 @@ export interface SharedLiveSourceOptions {
    * Factory that builds a fresh, **un-started** {@link LiveStreamHandle}. Called on every (re)warm so
    * a reconnect rebuilds the stream rather than reusing a dead one. `SharedLiveSource` calls
    * `.start()` itself.
-   *
-   * `ctx.reassertWanted` answers whether this pull still has anyone attached. A stream that re-asserts a
-   * channel to hold it open should consult it, so a pull nothing is watching stops competing for a session
-   * that serves one camera at a time.
    */
-  makeStream: (ctx: { reassertWanted: () => boolean }) => LiveStreamHandle;
-  /** No-consumer grace before teardown (default 8000ms; 0 schedules teardown next tick). Distinct from the stream's keepalive. */
+  makeStream: () => LiveStreamHandle;
+  /** No-consumer grace before teardown (default 8000ms; 0 schedules teardown next tick). */
   lingerMs?: number;
   /** Per-consumer bounded queue depth; overflow → drop-to-keyframe (default 900 ≈ 30s @ 30fps). */
   maxQueue?: number;
@@ -83,7 +79,7 @@ export interface SharedLiveSourceOptions {
   /**
    * Warm-up start retry interval (default 2000ms). After warming, if no keyframe has arrived, the source
    * re-issues the start ({@link LiveStreamHandle.nudge}) every interval — self-healing a start that
-   * raced the level-2 key negotiation, independent of any caller keepalive.
+   * went unserved.
    */
   warmRetryMs?: number;
   /**
@@ -141,8 +137,7 @@ export interface SharedLiveSourceOptions {
    */
   onStopped?: () => void;
   /**
-   * This session is not serving the warm-up: a media start was abandoned unacknowledged, or forced starts went
-   * unanswered by any media, before anything was delivered. The owner answers whether it is replacing the
+   * This session is not serving the warm-up: re-issued starts went unanswered by any media, before anything was delivered. The owner answers whether it is replacing the
    * session, and calls {@link SharedLiveSource.rewarm} once it has the replacement.
    *
    * Asked at most once per warm-up: further evidence is the same session saying the same thing.
@@ -388,10 +383,6 @@ export class SharedLiveSource {
    * have served plenty and since been dropped by the station. Only a frame arriving after the watch was
    * armed proves current delivery, and {@link delivered}
    * is reset to track exactly that.
-   *
-   * The first re-issue is therefore a keepalive: a reuse cannot yet know which case it is in, and a keepalive
-   * is right where the station is still serving and harmless where it is not. A second one due with nothing
-   * arrived is the answer — no bound of its own, the retry's own cadence.
    */
   private fruitlessReissues = 0;
   private readonly warmDeadlineTimer = new Timer();
@@ -505,13 +496,12 @@ export class SharedLiveSource {
    * the events the first attempt did.
    */
   private openStream(): void {
-    const stream = this.opts.makeStream({ reassertWanted: () => this.consumerCount > 0 });
+    const stream = this.opts.makeStream();
     this.stream = stream;
     stream.on("video", (frame) => this.onVideo(frame));
     stream.on("audio", (frame) => this.onAudio(frame));
     stream.on("stop", () => this.onUpstreamEnd());
     stream.on("error", (err) => this.onUpstreamError(err));
-    stream.on("unacknowledged", () => this.askForFreshSession("start unacknowledged"));
     stream.start();
   }
 
@@ -534,10 +524,7 @@ export class SharedLiveSource {
   /**
    * Ask the owner for a replacement session where nothing has been delivered yet, answering whether one is coming.
    *
-   * An unacknowledged start is roughly twenty byte-identical sends with no reply, against acknowledgement latencies
-   * of 4–37 ms awake and 238 ms waking, so it is the session that is not being heard rather than a slow device: the
-   * camera was never told to stream. Where media has already flowed the abandonment means something else and this
-   * does nothing. The DEADLINE is left running: the window belongs to the attempt, not to the session it started on.
+   * Where media has already flowed this does nothing. The DEADLINE is left running: the window belongs to the attempt, not to the session it started on.
    *
    * The retry ticker is stopped only once the owner has said it is replacing the session: an owner that cannot
    * (an attached camera shares its HomeBase session) leaves the source re-issuing as it always did.
@@ -589,19 +576,11 @@ export class SharedLiveSource {
   }
 
   /**
-   * Re-issue this stream's media start, asking for a REAL start while nothing has arrived.
+   * Re-issue this stream's media start while nothing has arrived since this watch was armed.
    *
-   * On an own-session camera a re-issue is a keepalive once the session believes the channel is started, and
-   * that belief outlives a station which acknowledged a start and then served nothing: every later re-issue is
-   * then a keepalive holding a stream that was never started. Nothing arriving since this watch was armed, across
-   * more than one re-issue, is this source's own evidence that the channel is not being served — see
-   * {@link fruitlessReissues} for why one is not enough and why what the stream delivered earlier is not
-   * evidence. Once media arrives the keepalive is what is wanted, and an attached camera re-sends a full start
-   * either way.
-   *
-   * A forced start that a whole interval later has still produced nothing is a session that acknowledges and
+   * Starts re-issued for two intervals that have still produced nothing are a session that acknowledges and
    * does not serve: a fresh session on the same camera delivers a keyframe within a second, so a warm-up asks
-   * for one rather than forcing starts onto this one until its deadline. Wired only: a cold battery camera is
+   * for one rather than re-issuing starts onto this one until its deadline. Wired only: a cold battery camera is
    * slow rather than deaf, seconds to first media, and replacing its session would cost a wake.
    */
   private reissueStart(): void {
@@ -614,11 +593,11 @@ export class SharedLiveSource {
       this.fruitlessReissues > 2 &&
       this._state === "warming" &&
       this.powered === "wired" &&
-      this.askForFreshSession("forced start served nothing")
+      this.askForFreshSession("re-issued start served nothing")
     )
       return;
     this.warmAttempts++;
-    current.nudge(!arrivedSinceWatch && this.fruitlessReissues > 1);
+    current.nudge();
   }
 
   /**

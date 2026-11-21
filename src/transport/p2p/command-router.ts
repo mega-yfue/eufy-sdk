@@ -23,6 +23,7 @@ import type {
   SharedSourceHints,
   AbortableCall,
   LiveAudioFrame,
+  LiveFrames,
   TalkbackCodec,
   TalkbackHandle,
 } from "../../core/contracts.js";
@@ -205,7 +206,6 @@ function speakerCodec(consumer: Consumer, talk: Talkback, timeoutMs: number): Pr
  */
 export interface SharedLiveOpts extends SharedSourceHints, AbortableCall {
   eccPrivateKey?: Buffer;
-  keepAliveMs?: number;
   lingerMs?: number;
   /** Battery/solar continuous-stream budget in ms (default 45000). */
   batteryBudgetMs?: number;
@@ -223,7 +223,6 @@ export interface SharedLiveOpts extends SharedSourceHints, AbortableCall {
  */
 const SHARED_LIVE_OPT_KEYS = [
   "eccPrivateKey",
-  "keepAliveMs",
   "lingerMs",
   "preBufferSeconds",
   "powered",
@@ -296,6 +295,8 @@ export interface P2PRouterDeps {
    * imports model. Default (absent): every station treated as `"wired"` (today's persistent behaviour).
    */
   poweredFor?: (parentSn: string) => PowerTier;
+  /** The frames the app starts and stops `sn`'s live view and talkback with under `parentSn`, injected by the facade. */
+  liveFramesFor?: (sn: string, parentSn: string) => LiveFrames | undefined;
   /** Idle/keepalive window overrides for the session lifecycle (see {@link SessionManagerOpts}). */
   sessionIdle?: Pick<SessionManagerOpts, "batteryIdleMs">;
   /** LAN address overrides for direct P2P, keyed by parent-station serial (host or host:port). */
@@ -519,14 +520,9 @@ export class P2PCommandRouter {
    * unannounced, and the station's own session stays the single source of connection state, control
    * notifications and frames.
    *
-   * The level-2 key is waited for here on the same terms the station's own session gets, because a
-   * connection is not usable for this without one: an attached camera's media start has no level-1 form,
-   * so a start issued before the key arrives is dropped as `media-command-unsent`, and the stream then
-   * shows nothing until a later keepalive tick happens to find the key. A connected session that cannot
-   * carry the start is not a connected session, so this refuses rather than returning one.
+   * No key is waited for: the start goes sealed by whatever the session holds, as on the station's own session.
    *
-   * A session refused its key within the grace, or never connected, is closed and dropped from the manager at
-   * once. Nothing else releases it: no source holds it, a wired station's session never idles out, and the
+   * A session that never connected is closed and dropped from the manager at once. Nothing else releases it: no source holds it, a wired station's session never idles out, and the
    * manager hands the same session to every later open of the camera, so the next open dials a fresh
    * connection instead. A session another open has since replaced is left to its own close.
    */
@@ -535,8 +531,6 @@ export class P2PCommandRouter {
     const session = await this.openSession(mediaKey, parentSn);
     try {
       await this.awaitConnected(session, parentSn, signal);
-      if (!(await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal)))
-        throw new StationKeyUnavailableError(parentSn);
       return session;
     } catch (error) {
       if (!signal?.aborted && this.manager.get(mediaKey) === session) {
@@ -875,8 +869,7 @@ export class P2PCommandRouter {
    * cold source warms one and waits for a clean keyframe. Each shared egress passes its complete options
    * through because any of them may create the source, whose power and retention hints are fixed for
    * everyone who joins later. The bounded {@link MediaProvider.record} clip is the exception: it opens its
-   * own pull, receives its session topology directly, and requires the level-2 key an attached camera's
-   * start has no level-1 form for.
+   * own pull and receives its session topology directly.
    */
   mediaProviderFor(sn: string): MediaProvider {
     const station = this.recordingStationFor(sn);
@@ -907,11 +900,9 @@ export class P2PCommandRouter {
       p2pQuery: (subCmd, opts) => this.p2pQuery(sn, subCmd, opts),
       p2pControlQuery: (param, data, opts) => this.p2pControlQuery(sn, param, data, opts),
       record: async (seconds, opts) => {
-        const { session, channel, accountId, homeBaseAttached } = await this.resolveSession(sn, {
-          waitLevel2: "soft",
-          requireLevel2ForAttached: true,
-        });
+        const { session, parentSn, channel, accountId, homeBaseAttached } = await this.resolveSession(sn);
         return recordClip(session, seconds, {
+          frames: this.liveFramesOf(sn, parentSn),
           channel,
           accountId,
           homeBaseAttached,
@@ -1057,7 +1048,9 @@ export class P2PCommandRouter {
     sn: string,
     opts: { encoder?: AacEncoder } & SharedSourceHints = {},
   ): Promise<TalkbackHandle> {
-    const { session, parentSn, channel, homeBaseAttached } = await this.resolveSession(sn, { waitLevel2: "soft" });
+    const { session, parentSn, channel } = await this.resolveSession(sn);
+    const { talkStart, talkStop } = this.liveFramesOf(sn, parentSn);
+    if (!talkStart || !talkStop) throw new Error(`talkback: ${sn} has no talkback in its product's bundle`);
     const logger = this.deps.logger ?? noopLogger;
     const key = `${parentSn}:${channel}`;
     if (this.talkbacks.has(key)) {
@@ -1069,7 +1062,8 @@ export class P2PCommandRouter {
     let consumer: Consumer | undefined;
     const talk = new Talkback(session, {
       channel,
-      homeBaseAttached,
+      start: talkStart,
+      stop: talkStop,
       encoder: opts.encoder,
       releaseMedia: () => consumer?.stop(),
       logger,
@@ -1110,7 +1104,7 @@ export class P2PCommandRouter {
    * Resolve a serial to its **shared live source** — one underlying pull per `${parentSn}:${channel}`,
    * fanned out to every consumer (see {@link SharedLiveSource}). Lazily warmed on the first consumer;
    * the `makeStream` factory rebuilds a fresh {@link LiveStream} on each (re)warm so a reconnect can
-   * recover. Uses `waitLevel2:"soft"` — mirrors `live()`, no hard-fail on a standalone camera. Wires
+   * recover. Waits for no key: the start goes sealed by whatever the session holds, as the app's does. Wires
    * `onActive`/`onIdle` so an attached stream counts as a user of the station's P2P session (cancels
    * the session idle-detach while streaming; its longer idle timer arms when the last consumer leaves).
    *
@@ -1149,10 +1143,9 @@ export class P2PCommandRouter {
    */
   async sharedLiveSourceFor(sn: string, opts: SharedLiveOpts = {}, continuous = false): Promise<SharedLiveSource> {
     const { session, parentSn, channel, accountId, homeBaseAttached } = await this.resolveSession(sn, {
-      waitLevel2: "soft",
-      requireLevel2ForAttached: true,
       signal: opts.signal,
     });
+    const frames = this.liveFramesOf(sn, parentSn);
     const key = `${parentSn}:${channel}`;
     const build = this.liveSourceBuilds.get(key);
     if (build) {
@@ -1195,14 +1188,13 @@ export class P2PCommandRouter {
         built.resolve();
       }
       source = new SharedLiveSource({
-        makeStream: (ctx) =>
+        makeStream: () =>
           new LiveStream(held.session, {
+            frames,
             channel,
             accountId,
             homeBaseAttached,
             eccPrivateKey: opts.eccPrivateKey,
-            keepAliveMs: opts.keepAliveMs,
-            reassertWanted: ctx.reassertWanted,
             logger,
           }),
         lingerMs: opts.lingerMs,
@@ -1229,8 +1221,8 @@ export class P2PCommandRouter {
   /**
    * Tear down any pull on this station that is lingering for ANOTHER camera, before starting this one.
    *
-   * A lingering pull has no consumers but is still held open, and on an attached camera holding it open means
-   * re-sending the full media start every keepalive tick. Two channels doing that at once over ONE session,
+   * A lingering pull has no consumers but is still held open, and while it warms it re-sends its media start
+   * every retry interval. Two channels doing that at once over ONE session,
    * which serves one camera at a time, leaves the new stream receiving nothing but the old camera's frames
    * for as long as the linger lasts.
    *
@@ -1492,10 +1484,17 @@ export class P2PCommandRouter {
    */
   recordFragments(
     sn: string,
-    opts: { fragmentSeconds?: number; eccPrivateKey?: Buffer; keepAliveMs?: number } & SharedSourceHints = {},
+    opts: { fragmentSeconds?: number; eccPrivateKey?: Buffer } & SharedSourceHints = {},
   ): FragmentRecording {
     const source = this.sharedLiveSourceFor(sn, opts, this.ownsLiveSession(this.stationKeyOf(sn)));
     return new FragmentRecording(source, opts);
+  }
+
+  /** The frames the app starts and stops `sn`'s live view and talkback with; throws for a product with none. */
+  private liveFramesOf(sn: string, parentSn: string): LiveFrames {
+    const frames = this.deps.liveFramesFor?.(sn, parentSn);
+    if (!frames) throw new Error(`live view: ${sn} has no live view in its product's bundle`);
+    return frames;
   }
 
   /** Whether `stationSn` is an {@link OWN_LIVE_SESSION_MODELS} station. */
@@ -1665,7 +1664,7 @@ export class P2PCommandRouter {
     const timer = setTimeout(() => controller.abort(), RTSP_URL_READ_TIMEOUT_MS);
     const { signal } = controller;
     try {
-      const { session, channel, accountId } = await this.resolveSession(sn, { waitLevel2: "soft", signal });
+      const { session, channel, accountId } = await this.resolveSession(sn, { signal });
       if (!accountId) return undefined;
       // Arm the wait BEFORE provoking, so a push that arrives between the two writes is not lost.
       const url = this.awaitRtspUrl(session, channel, signal);
@@ -1746,15 +1745,9 @@ export class P2PCommandRouter {
    *  - `true` — cannot frame without it. Waits the full grace and throws if refused.
    *  - `"settle"` — picks its seal once from {@link P2PSession.hasLevel2Key}. Waits {@link LEVEL2_SETTLE_MS}
    *    session-scoped for the negotiation to conclude either way, then proceeds. Never throws.
-   *  - `"soft"` — frames per send and is re-issued, so it does not wait at all.
    *  - `false` / absent — no wait; enough to read topology.
    *
-   * `requireLevel2ForAttached` promotes a `"soft"` caller to `true` on a HomeBase-attached camera, whose media
-   * start has no level-1 form at all.
-   *
-   * A `"soft"` caller frames per send: an own-session start issued with no key rides level 1, and its own
-   * re-issue rides level 2 once the key lands. Nothing bounds an unanswered `CMD_GATEWAYINFO`, so a waiting
-   * caller's grace is the bound, charged from connect.
+   * Nothing bounds an unanswered `CMD_GATEWAYINFO`, so a waiting caller's grace is the bound, charged from connect.
    *
    * A session whose {@link P2PSession.pathAnswering} is false is closed and re-resolved before it is handed
    * over: the station answers every heartbeat, so a path silent past several of them is gone. So is a session
@@ -1770,8 +1763,7 @@ export class P2PCommandRouter {
   private async resolveSession(
     sn: string,
     opts: {
-      waitLevel2?: boolean | "soft" | "settle";
-      requireLevel2ForAttached?: boolean;
+      waitLevel2?: boolean | "settle";
       clearFallback?: boolean;
       signal?: AbortSignal;
     } = {},
@@ -1830,8 +1822,6 @@ export class P2PCommandRouter {
         await abortable(session.awaitLevel2Key(LEVEL2_SETTLE_MS, "session"), opts.signal);
         return { session, parentSn, channel, accountId, homeBaseAttached };
       }
-      const required = opts.waitLevel2 !== "soft" || (opts.requireLevel2ForAttached === true && homeBaseAttached);
-      if (!required) return { session, parentSn, channel, accountId, homeBaseAttached };
       const ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), opts.signal);
       const sendsClear =
         opts.clearFallback === true &&

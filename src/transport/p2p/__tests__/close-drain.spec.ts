@@ -49,7 +49,11 @@ describe("P2P session close", () => {
     try {
       const senderPort = (sender.address() as { port: number }).port;
       const session = sessionWith(sender, port);
-      session.stopLiveMedia(2, "0".repeat(40), true);
+      session.sendFrame(
+        { cmd: 1350, body: "json1350", subCmd: 1004, payload: { channel: "$channel" } },
+        2,
+        "0".repeat(40),
+      );
       await session.close();
       await delivered;
       expect(seen).toHaveLength(2);

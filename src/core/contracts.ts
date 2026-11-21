@@ -110,8 +110,7 @@ export class CameraDisabledError extends Error {
  * Work on a station was refused: the station did not provide the session key that work requires.
  *
  * A station reached over its HomeBase encrypts what it is sent under a key negotiated once per connection, and
- * a media start for an attached camera has no unencrypted form at all — so without that key there is nothing
- * to send, however reachable the station is. Naming this apart from a source that failed is what separates an
+ * work that needs that key has nothing to send without it, however reachable the station is. Naming this apart from a source that failed is what separates an
  * account whose cipher material could not be resolved from a camera that is off, a station that is busy, or a
  * stream that produced nothing: they share no next step.
  *
@@ -801,6 +800,37 @@ export interface StreamBudgetNotice {
 }
 
 /**
+ * One P2P session frame as a product's settings bundle sends it: the outer `cmd`, its body kind (`json1700`
+ * `{commandType: subCmd, data: payload}`, `json1350` the `{account_id, cmd: subCmd, mChannel, mValue3, payload}`
+ * envelope, `json` the payload as is, `native` the sender's fixed `layout`), and the header byte-14 `counter`
+ * (`bump` or `current`). The payload carries `$channel`, `$userId`, `$now` and `$key` tokens.
+ */
+export interface SessionFrame {
+  cmd?: number;
+  subCmd?: number;
+  body?: unknown;
+  payload?: unknown;
+  /** A `native` body's sender layout (`u32-ch`, `0x2db020`, 0x2d9cb4, 0x2da458). */
+  layout?: number | string;
+  mValue3?: number;
+  counter?: string;
+}
+
+/**
+ * The frames the app starts and stops a device's live view and talkback with, picked by its product and its
+ * parent's connect type, and the device ability (cloud param 1103 of its parent, else its own; 0 unstated) the
+ * app reads the media key form from: ECC from 128 up, or once the station's gateway info came as version 8.
+ * No talkback frames where the product has none.
+ */
+export interface LiveFrames {
+  start: SessionFrame;
+  stop: SessionFrame;
+  talkStart?: SessionFrame;
+  talkStop?: SessionFrame;
+  ability: number;
+}
+
+/**
  * The consumer-facing surface of a live stream — a STRUCTURAL subset of the concrete
  * `transport/p2p/LiveStream` (an EventEmitter), so the media contract can live in core without
  * importing transport. The concrete `LiveStream` is assignable to this.
@@ -808,28 +838,14 @@ export interface StreamBudgetNotice {
 export interface LiveStreamHandle {
   start(): this;
   stop(): void;
-  /**
-   * Re-issue the media-start command (start-race retry / keepalive nudge). Optional.
-   *
-   * `force` states that the channel is NOT being served, so a real start is required rather than a keepalive.
-   * An own-session camera sends one or the other depending on whether its session believes the channel is
-   * already started — a belief that outlives a station which acknowledged a start and then served nothing.
-   */
-  nudge?(force?: boolean): void;
+  /** Re-issue the media-start command (the shared source's warm-up retry). Optional. */
+  nudge?(): void;
   on(event: "video", listener: (frame: LiveVideoFrame) => void): this;
   on(event: "audio", listener: (frame: LiveAudioFrame) => void): this;
   on(event: "start" | "stop", listener: () => void): this;
   on(event: "error", listener: (err: Error) => void): this;
   /** Battery-budget elapsed — extend to keep streaming or let it auto-stop (battery cameras only). */
   on(event: "budget", listener: (notice: StreamBudgetNotice) => void): this;
-  /**
-   * A media start was repeated to its acknowledgement deadline and abandoned.
-   *
-   * The start is repeated byte-identically, so an abandonment is many sends with no reply — the device was
-   * never told to stream, and a warm-up waiting on it can only time out. Distinct from `error`: the transport
-   * is intact and the session is simply not being heard.
-   */
-  on(event: "unacknowledged", listener: () => void): this;
 }
 
 /**
@@ -878,14 +894,6 @@ export interface LiveStreamConsumer extends LiveStreamHandle {
   on(event: "error", listener: (err: Error) => void): this;
   /** Battery-budget elapsed — extend to keep streaming or let it auto-stop (battery cameras only). */
   on(event: "budget", listener: (notice: StreamBudgetNotice) => void): this;
-  /**
-   * A media start was repeated to its acknowledgement deadline and abandoned.
-   *
-   * The start is repeated byte-identically, so an abandonment is many sends with no reply — the device was
-   * never told to stream, and a warm-up waiting on it can only time out. Distinct from `error`: the transport
-   * is intact and the session is simply not being heard.
-   */
-  on(event: "unacknowledged", listener: () => void): this;
 }
 
 /**

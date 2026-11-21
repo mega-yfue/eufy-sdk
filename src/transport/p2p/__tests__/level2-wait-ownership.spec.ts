@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { LIVE_FRAMES } from "./live-source-fixtures.js";
 import { StationKeyUnavailableError } from "../../../core/contracts.js";
 import { P2PCommandRouter, type P2PRouterDeps } from "../command-router.js";
 import { connectedSession, onFakeTime, type FakeP2PSession } from "./session-fixtures.js";
@@ -26,6 +27,7 @@ function setup(hasLevel2Key: boolean, attached = true) {
   session.sendStringPayloadCommand = vi.fn();
   session.sendIntStringCommand = vi.fn();
   const deps: P2PRouterDeps = {
+    liveFramesFor: () => LIVE_FRAMES,
     mega: {} as P2PRouterDeps["mega"],
     listDevices: () => [
       {
@@ -93,20 +95,11 @@ describe("resolving a session defers the level-2 wait to the session", () => {
     expect(session.awaitLevel2Key).toHaveBeenCalledWith(SETTLE_GRACE_MS, "session");
   });
 
-  /**
-   * An attached camera's start has no level-1 form, so best-effort was the wrong ask for it: the send returns
-   * without putting anything on the wire, and the warm-up then re-issues that nothing every interval until it
-   * times out. Measured on a real account as 48 starts with no key, one keyframe between them, and a
-   * `source-error` at the end.
-   */
-  it("refuses an attached camera's source where the session reports no key", async () => {
-    const { router } = setup(false);
-    await expect(router.sharedLiveSourceFor(DEVICE_SN)).rejects.toBeInstanceOf(StationKeyUnavailableError);
-  });
-
-  it("hands over an attached camera's source once the key is held", async () => {
-    const { router } = setup(true);
+  /** The app's start waits for no key: it goes sealed by whatever the session holds, as every command does. */
+  it("hands an attached camera's source over without asking for a key", async () => {
+    const { router, session } = setup(false);
     await expect(router.sharedLiveSourceFor(DEVICE_SN)).resolves.toBeDefined();
+    expect(session.awaitLevel2Key).not.toHaveBeenCalled();
   });
 
   it("asks with the full grace where the key is a requirement", async () => {

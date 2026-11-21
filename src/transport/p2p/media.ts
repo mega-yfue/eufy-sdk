@@ -33,7 +33,7 @@ function annexbFfmpegFormat(buf: Buffer): "hevc" | "h264" {
  * already `start()`ed; call `.stop()` when done. (Session/channel/level-2-key resolution is the
  * caller's job — see `EufyMega.resolveSession`.)
  */
-export async function openLiveStream(session: P2PSession, opts: LiveStreamOptions = {}): Promise<LiveStream> {
+export async function openLiveStream(session: P2PSession, opts: LiveStreamOptions): Promise<LiveStream> {
   return new LiveStream(session, opts).start();
 }
 
@@ -195,7 +195,7 @@ export async function recordClip(
     logger?: Logger;
     ffmpegLevel?: FfmpegLevel;
     ffmpegPath?: string;
-  } & LiveStreamOptions = {},
+  } & LiveStreamOptions,
 ): Promise<Buffer> {
   const timeoutMs = opts.timeoutMs ?? 20000;
   const skip = opts.skipKeyframes ?? 1;
