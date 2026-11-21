@@ -49,10 +49,8 @@ export const SIGN_ALLOWLIST: ReadonlySet<string> = new Set([
  * `[b0 b1 b2 b3]` → `[b1 b0 b3 b2]`. This is the Thingclips SDK 7.5.0 transform; it is applied to
  * the `postData` value before it is joined into the preimage.
  *
- * ✅ Confirmed: the `thing.m.user.uid.token.create` call carries a `postData`, and its
- * sign (computed over this transform) was accepted by `a1.tuyaeu.com` with no SIGN_INVALID — so a
- * postData-bearing preimage IS exercised end-to-end. (The static `smartlife.p.time.get` golden vector
- * separately carries no postData; the two together cover both paths.)
+ * The `thing.m.user.uid.token.create` call carries a `postData`, and the gateway accepts its sign
+ * computed over this transform; `smartlife.p.time.get` carries none.
  */
 export function swapMd5(postData: string): string {
   const h = createHash("md5").update(postData, "utf-8").digest("hex");

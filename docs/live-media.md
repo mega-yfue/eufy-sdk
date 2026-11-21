@@ -37,17 +37,9 @@ A camera behind a HomeBase reads the station's inbound feed, and the station **t
 the camera it belongs to**; the SDK matches on that, so each handle receives only its own camera's video and
 audio.
 
-One session serves one camera at a time — a station answers the most recent media start on it — so a live
-pull that finds the station's own session already carrying one gets **a connection of its own**, and several
-cameras on one HomeBase stream at full rate together. Measured on two attached cameras, one at 3840×2160:
-both held ~15 fps for the length of the run, where the same pair down one session could only take turns.
-
-A HomeBase 3 (T8030) can keep serving the camera it last served on a session, so there every live pull of an
-attached camera gets a connection of its own, even when the station's session is free.
-
-A **still** never opens a connection of its own: it wants one frame, and a socket plus a key negotiation per
-thumbnail is not worth it. So a still asked for while a sibling is being watched still yields, and the
-retained image answers it.
+Every camera behind a station streams over the station's one session, as the app holds one connection per
+station serial. A pull lingering for a camera nobody watches is released when another camera starts, and a
+still asked for while a sibling is being watched yields: the retained image answers it.
 
 Worth knowing:
 
@@ -287,6 +279,11 @@ const stream = await cam?.live?.({ preBufferSeconds: 10 });
 An egress that omits it is not opting out — it leaves the choice to whoever got there first, so a still
 polled on an idle camera opens a pull retaining nothing and a recording seconds later has nothing to drain,
 however much it asks for. Pass the same window on every egress a device uses, or none of them.
+
+`entryType` is the live start's `LiveTypeAndroid` value, fixed when the pull opens like the window above: 0
+(default) is the app's plain player, 1-11 its setup screens: 1 Hotspot, 2 StandingPosition, 3 CruisePreview,
+4 Privacy, 5 PanTiltSpeedSetting, 6 NoPackageAreaSetting, 7 NoPackageThingSetting, 8 LandscapeMode, 9 SignalTest,
+10 OutSightDetection, 11 PrivacyPerspective. Only products whose bundle forwards it send it.
 
 ## Snapshots
 
@@ -564,7 +561,7 @@ stream.on("budget", (notice) => {
 Defaults: 45 s budget, 10 s grace. A host tunes only the **timings** (not the power decision):
 
 ```ts
-await cam?.live?.({ batteryBudgetMs: 8000, budgetGraceMs: 5000, keepAliveMs: 3000 });
+await cam?.live?.({ batteryBudgetMs: 8000, budgetGraceMs: 5000 });
 ```
 
 A wired camera ignores all of this and streams until you `stop()`.
@@ -578,19 +575,17 @@ session idle-detaches so a battery device sleeps — see [Connectivity & battery
 - **UDP retransmissions.** Each data type is sequenced independently. Duplicate and stale datagrams are
   acknowledged and ignored without discarding a different frame being assembled, and the numbering may wrap
   without a false gap. A missing datagram still drops that incomplete frame so corrupt media is never
-  delivered. An unacknowledged own-session `START_LIVE` is repeated with identical bytes until the camera
-  acknowledges it, and abandoned after 3s — at which point that channel is no longer treated as started, so
-  the next keepalive tick issues a real start instead of nudging a stream that never began. A new connection
+  delivered. The media start is the frame the app sends for the camera's product and its parent, sent once and
+  resent byte-identically by the channel's own retransmission until the camera acknowledges it. A new connection
   starts the numbering over, so its first datagrams are never read as stale — and so does a camera that
   begins a fresh stream on a connection already up, which sequencing follows onto the restarted numbering
   rather than waiting for it to climb back.
-- **No silent hang.** `live()` re-issues the media-start (`nudge`) until the first keyframe arrives; if
-  none arrives within the warm-up window the stream emits a `LiveStreamStartError` rather than hanging
+- **No silent hang.** `live()` sends the media start once, as the app does; if no keyframe arrives within the
+  warm-up window (25 s, the app's player timeout) the stream emits a `LiveStreamStartError` rather than hanging
   forever. It carries everything needed to tell the failures apart without transport logs: `reason`
   (deadline elapsed / source error / source ended), `stage` (`awaiting-first-frame` when the source
   delivered nothing at all, `audio-only` when it was streaming audio and never sent a video frame,
-  `awaiting-keyframe` when video units arrived but none was decodable), `timeoutMs`, and `attempts` —
-  the media starts actually issued. Handle `error`.
+  `awaiting-keyframe` when video units arrived but none was decodable) and `timeoutMs`. Handle `error`.
 - **A camera that is switched off looks like a broken transport.** It keeps its session, accepts the media
   start, and then sends audio and never a video frame — measured: 234 audio frames, no video, no
   stream-status report and no lost datagrams across a 20s window, then 217 video access units with nothing

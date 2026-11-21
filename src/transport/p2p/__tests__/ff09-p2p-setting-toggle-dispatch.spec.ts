@@ -14,7 +14,7 @@ const SN = "T8531K0000000000";
 const STATION_SN = "T8030P0000000000";
 
 interface FakeSession extends FakeP2PSession {
-  sendControlLevel2: (cmd: number, channel: number, accountId: string, payload: unknown, mValue3?: number) => boolean;
+  sendSetPayload: (cmd: number, payload: unknown, opts: { channel?: number }) => void;
 }
 
 interface Call {
@@ -26,7 +26,7 @@ interface Call {
 function makeRouter() {
   const calls: Call[] = [];
   const session = connectedSession() as FakeSession;
-  session.sendControlLevel2 = vi.fn((cmd, channel, _accountId, payload) => {
+  session.sendSetPayload = vi.fn((cmd, payload, { channel = 0 }) => {
     calls.push({ cmd, channel, payload: payload as Call["payload"] });
     return true;
   });

@@ -1,8 +1,7 @@
 /**
  * `eufy_life` secure-MQTT "DP" TLV frame codec — the wire framing shared by the T8L0x smart-light
- * family (other eufy_life appliances plausibly reuse the shape, unconfirmed). CONFIRMED live
- * (2026-07): magic bytes, header, XOR checksum, and the universal `a1`=timestamp / `a2`=account-id
- * opener are byte-for-byte verified against real captures + real device writes.
+ * family (other eufy_life appliances plausibly reuse the shape, unconfirmed): magic bytes, header, XOR
+ * checksum, and the universal `a1`=timestamp / `a2`=account-id opener.
  *
  * This module owns the DP framing for both write frames on this family:
  *  - `0x0201` device-info (on/off + brightness) — generic tag/value fields the capability supplies.
@@ -19,7 +18,7 @@ import { jsonObject } from "../../core/util.js";
 
 const DP_MAGIC = [0xff, 0x09] as const;
 
-/** Bytes before the TLV run: magic (2) + u16LE size (2) + `03 00 02 02` (4) + subtype (1). */
+/** Bytes before the TLV run: magic (2) + u16LE size (2) + `03 00 02` (3) + u16BE cmdCode (2). */
 const DP_HEADER_LEN = 9;
 
 /** One TLV field in a DP frame (tag `0xa1`-`0xff`, arbitrary-length value). */
@@ -40,15 +39,14 @@ function tlv(tag: number, value: Buffer): Buffer {
 }
 
 /**
- * Build one `eufy_life` DP TLV frame: `[ff 09][total len][00 03 00 02 02][subtype][tag/len/value…]
- * [xor]`. `subtype` = `cmdCode & 0xff`. Every frame opens with `a1`=timestamp (u32LE) + `a2`=account
+ * Build one `eufy_life` DP TLV frame: `[ff 09][total len][03 00 02][u16BE cmdCode][tag/len/value…][xor]`,
+ * the opcode the app writes from the descriptor's `cmdCode`. Every frame opens with `a1`=timestamp (u32LE) + `a2`=account
  * id (ASCII), prepended here so callers supply only the command-specific fields (`0xa3` onward).
  *
  * The total-size field at offset 2 is a **u16LE**, not a single byte: `0x020D` effect frames routinely
  * exceed 255 bytes, and a truncated high byte yields a frame the light rejects outright.
  */
 export function buildDpFrame(cmdCode: number, accountId: string, fields: readonly DpField[]): Buffer {
-  const subtype = cmdCode & 0xff;
   const timestamp = Buffer.alloc(4);
   timestamp.writeUInt32LE(Math.floor(Date.now() / 1000), 0);
   const all: DpField[] = [
@@ -60,18 +58,27 @@ export function buildDpFrame(cmdCode: number, accountId: string, fields: readonl
   const totalLen = DP_HEADER_LEN + tlvBytes.length + 1;
   const size = Buffer.alloc(2);
   size.writeUInt16LE(totalLen, 0);
-  const header = Buffer.concat([Buffer.from([...DP_MAGIC]), size, Buffer.from([0x03, 0x00, 0x02, 0x02, subtype])]);
+  const header = Buffer.concat([
+    Buffer.from([...DP_MAGIC]),
+    size,
+    Buffer.from([0x03, 0x00, 0x02, (cmdCode >> 8) & 0xff, cmdCode & 0xff]),
+  ]);
   const body = Buffer.concat([header, tlvBytes]);
   return Buffer.concat([body, Buffer.from([xorChecksum(body)])]);
 }
 
+let msgSeq = 0;
+/** The next `head.msg_seq`: one process-wide counter from 1, as the app's `MqttGenerator.getMsgSeq`. */
+export const nextMsgSeq = (): number => ++msgSeq;
+
 /**
  * Wrap a DP frame in the `eufy_life` MQTT `/req` envelope the SDK publishes:
  * `{head:{…,cmd:mqttCmdCode}, payload: JSON({account_id, device_sn, data:<b64 frame>, trans:""})}`.
- * The stringified result is the MQTT message body. `client_id` follows the app's
- * `ios-eufy_mega-{userId}-{uuid}` shape; its exact value is CONFIRMED not to affect a write.
+ * The stringified result is the MQTT message body. The head is the app's `MqttRequest.getData`: the connection's
+ * client id, `sess_id` 4 hex of a random UUID, `seed` a 32-hex random UUID, `cmd_status` 1 (`needAck` default).
  */
 export function buildDpEnvelope(opts: {
+  clientId: string;
   accountId: string;
   deviceSn: string;
   mqttCmdCode: number;
@@ -85,10 +92,10 @@ export function buildDpEnvelope(opts: {
   };
   const head = {
     version: "1.0.0.1",
-    client_id: `ios-eufy_mega-${opts.accountId}-${randomUUID()}`,
-    sess_id: "0000",
-    msg_seq: 1,
-    seed: "",
+    client_id: opts.clientId,
+    sess_id: randomUUID().slice(0, 4),
+    msg_seq: nextMsgSeq(),
+    seed: randomUUID().replace(/-/g, ""),
     timestamp: Math.floor(Date.now() / 1000),
     cmd_status: 1,
     cmd: opts.mqttCmdCode,
@@ -102,7 +109,7 @@ export function buildDpEnvelope(opts: {
  *
  * The high byte of the frame command distinguishes the two inbound shapes: `0x0A__` frames answer a
  * request (`0x0A00` answers `0x0200`, `0x0A01` answers `0x0201`) and are prefixed with a status byte;
- * `0x02__` frames are unsolicited reports and start their TLVs immediately. CONFIRMED live (2026-07-28).
+ * `0x02__` frames are unsolicited reports and start their TLVs immediately.
  */
 const RESPONSE_CMD_HI = 0x0a;
 

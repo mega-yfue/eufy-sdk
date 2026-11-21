@@ -52,6 +52,8 @@ export interface PersistedSession {
   /** Unix seconds when the auth token expires (0 = unknown). */
   tokenExpiresAt: number;
   savedAt: number;
+  /** The last thing description of each product, as `get_things_list` returned it. */
+  things?: unknown[];
 }
 
 /**

@@ -16,26 +16,18 @@ export const P2P_ENVELOPE = {
   /** GET_CAMERA_INFO param-list query. */
   GET_CAMERA_INFO: 1103,
   /**
-   * Privacy / camera-off; the router sends it as a signCode-8 multi-channel burst under SET_PAYLOAD
-   * (see `sendPrivacyBurst`).
-   */
-  PRIVACY_MODE: 6250,
-  /**
-   * Rename a device (app `SET_DEVICE_NAME`). ✅ Wire-confirmed on T8425 (
-   * replay): outer-cmd 1217, signCode 8, on the STATION channel 255. Body is a 261-byte struct
+   * Rename a device (app `SET_DEVICE_NAME`): outer-cmd 1217, signCode 8, on the STATION channel 255. Body is a 261-byte struct
    * `[u32=0][u8 device_channel][name→pad128][account_id→pad128]`. **P2P-only** — the HomeBase
-   * propagates the name to the cloud; no HTTP `update_device_info` call is needed. See `buildDeviceNameBody`.
+   * propagates the name to the cloud. See `buildStringBody`.
    */
   SET_DEVICE_NAME: 1217,
   /**
    * Rename a station/HomeBase (app `SET_HUB_NAME`), cmd 1216 — same struct/transport as
-   * {@link SET_DEVICE_NAME}. ✅ Wire-confirmed on a T8030 HomeBase (old name → new name,
-   * propagated to the cloud in ~3s).
+   * {@link SET_DEVICE_NAME}; the HomeBase propagates the new name to the cloud.
    */
   SET_HUB_NAME: 1216,
   /**
-   * Restart a HomeBase (app `RESTART_HUB`). ✅ Wire-confirmed byte-exact against the app's
-   * own Restart (2026-08-03) and HW-tested — it rebooted the hub. A station-scalar: level-2 signCode
+   * Restart a HomeBase (app `RESTART_HUB`), as captured from the app's own Restart. A station-scalar: level-2 signCode
    * 8 on the broadcast channel 255, body `[u32 value][account_id padded]` ({@link buildDirectBinaryBody}
    * with no channel), value `0`. NOT a `1350`/`1700` envelope and NOT an empty frame.
    *

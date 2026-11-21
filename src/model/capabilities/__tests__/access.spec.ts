@@ -7,27 +7,14 @@ const ctx = (channel = 0): CommandContext => ({ channel, codec: "camera", paramI
 
 describe("command intent builders", () => {
   describe("setScalar", () => {
-    it("defaults form to 'auto' (transport decides the encryption level)", () => {
+    it("builds the group-A scalar, or the bare pair with int-pair", () => {
       expect(setScalar(CAMERA_CMD.CAMERA_ENABLE, 1, ctx(2))).toEqual({
         kind: "set-param",
         param: CAMERA_CMD.CAMERA_ENABLE,
         value: 1,
-        form: "auto",
         channel: 2,
       });
-    });
-
-    it("carries an explicit pinned form when the firmware requires a level", () => {
-      expect(setScalar(CAMERA_CMD.DEV_LED_SWITCH, 0, ctx(), "int-string")).toMatchObject({
-        kind: "set-param",
-        form: "int-string",
-        value: 0,
-      });
-      expect(setScalar(LIGHT_CMD.SPOTLIGHT_BRIGHTNESS, 50, ctx(), "direct-binary")).toMatchObject({
-        kind: "set-param",
-        form: "direct-binary",
-        value: 50,
-      });
+      expect(setScalar(LIGHT_CMD.SPOTLIGHT_BRIGHTNESS, 50, ctx(), "int-pair")).toMatchObject({ form: "int-pair" });
     });
   });
 

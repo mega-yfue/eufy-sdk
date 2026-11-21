@@ -1,7 +1,7 @@
-import { createDecipheriv } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { P2PSession } from "../p2p-session.js";
 import { MAGIC_WORD } from "../codec.js";
+import { withGcmKey } from "./session-fixtures.js";
 
 /**
  * Byte layout of the host→device talkback frames, asserted against a live capture of the app driving
@@ -20,12 +20,10 @@ import { MAGIC_WORD } from "../codec.js";
  * they would leave the wire without any UDP.
  */
 const KEY32 = Buffer.alloc(32, 7);
-const SIGN_MAGIC = Buffer.from([0x08, 0x00]);
 
 interface Internals {
   socket: { send: ReturnType<typeof vi.fn> };
   connectAddress: { host: string; port: number };
-  level2Key?: Buffer;
 }
 
 /** A session with its socket stubbed and an address in place, so sends are captured not transmitted. */
@@ -35,7 +33,7 @@ function newSession(opts: { level2?: boolean } = {}): { session: P2PSession; sen
   const internals = session as unknown as Internals;
   internals.socket = { send: vi.fn((buf: Buffer) => void sent.push(Buffer.from(buf))) };
   internals.connectAddress = { host: "<cam-lan-ip>", port: 32100 };
-  if (opts.level2) session.setLevel2Key(KEY32);
+  if (opts.level2) withGcmKey(session, KEY32);
   return { session, sent };
 }
 
@@ -50,32 +48,6 @@ function frameOf(datagram: Buffer): Buffer {
 function dataTypeAndSeq(datagram: Buffer): { dataType: number; seq: number } {
   const at = datagram.indexOf(Buffer.from(MAGIC_WORD));
   return { dataType: datagram[at - 3], seq: datagram.readUInt16BE(at - 2) };
-}
-
-/**
- * Open a level-2 (`signCode 8`) payload WITHOUT the session's own cipher.
- *
- * Decrypting with `decryptLevel2` proves only that the session round-trips against itself, so any
- * wrong-but-symmetric layout survives — swap the tag and nonce in both directions, or reorder the
- * sub-header, and the assertion still passes. This spells the layout out in literal offsets so the
- * frame is checked against the documented wire rather than against the implementation:
- *
- * ```
- * tag(16) ‖ nonce(12) ‖ [seq, 03, 02, 01](4, cleartext) ‖ ciphertext
- * ```
- *
- * AAD is the fixed `"eufy security"` string; a mismatch in any of it fails the GCM tag check here.
- */
-function openLevel2(payload: Buffer): { plain: Buffer; subHeader: Buffer } {
-  const tag = payload.subarray(0, 16);
-  const nonce = payload.subarray(16, 28);
-  const subHeader = payload.subarray(28, 32);
-  const ciphertext = payload.subarray(32);
-
-  const d = createDecipheriv("aes-256-gcm", KEY32, nonce);
-  d.setAAD(Buffer.from("eufy security"));
-  d.setAuthTag(tag);
-  return { plain: Buffer.concat([d.update(ciphertext), d.final()]), subHeader };
 }
 
 /** One whole ADTS AAC frame: AAC-LC, 16 kHz, mono, `payloadLen` bytes of payload. */
@@ -137,7 +109,7 @@ describe("outbound audio frame (CMD_AUDIO_FRAME 1301)", () => {
   it("counts audio frames on a sequence of their own, not the control channel's", () => {
     const { session, sent } = newSession({ level2: true });
     session.sendAudioFrame(0, adtsFrame(64));
-    session.startTalkback(0, true); // a control send in between must not disturb the audio counter
+    session.sendFrame({ cmd: 1005, body: "native", payload: {}, layout: "u32-ch" }, 0); // a control send in between must not disturb the audio counter
     session.sendAudioFrame(0, adtsFrame(64));
     const audio = sent.filter((d) => dataTypeAndSeq(d).dataType === 0x01);
     expect(audio.map((d) => dataTypeAndSeq(d).seq)).toEqual([0, 1]);
@@ -323,74 +295,5 @@ describe("audio channel acknowledgement + retransmission", () => {
     } finally {
       vi.useRealTimers();
     }
-  });
-});
-
-describe("talkback start/stop — HomeBase-attached topology", () => {
-  it("sends 1005 at level-2 whose whole plaintext is the channel as a uint32", () => {
-    const { session, sent } = newSession({ level2: true });
-    expect(session.startTalkback(3, true)).toBe(true);
-
-    const f = frameOf(sent[0]);
-    expect(f.readUInt16LE(4)).toBe(1005);
-    expect(f[12]).toBe(3);
-    expect(f[13]).toBe(8); // signCode 8 — level-2 GCM
-    expect(f.subarray(10, 12)).toEqual(SIGN_MAGIC);
-    expect(dataTypeAndSeq(sent[0]).dataType).toBe(0x00); // control, not video
-
-    const sealed = f.subarray(16);
-    expect(sealed.length).toBe(36); // 16 tag + 12 nonce + 4 sub-header + 4 plaintext
-
-    const { plain, subHeader } = openLevel2(sealed);
-    expect(plain).toEqual(Buffer.from([0x03, 0x00, 0x00, 0x00]));
-    expect(subHeader.subarray(1)).toEqual(Buffer.from([0x03, 0x02, 0x01]));
-    expect(subHeader[0]).toBe(dataTypeAndSeq(sent[0]).seq & 0xff);
-  });
-
-  it("sends 1006 with the same shape to stop", () => {
-    const { session, sent } = newSession({ level2: true });
-    expect(session.stopTalkback(2, true)).toBe(true);
-    const f = frameOf(sent[0]);
-    expect(f.readUInt16LE(4)).toBe(1006);
-    const { plain, subHeader } = openLevel2(f.subarray(16));
-    expect(plain).toEqual(Buffer.from([0x02, 0x00, 0x00, 0x00]));
-    expect(subHeader.subarray(1)).toEqual(Buffer.from([0x03, 0x02, 0x01]));
-  });
-
-  it("refuses rather than falling back when the level-2 key has not been negotiated", () => {
-    const { session, sent } = newSession();
-    expect(session.startTalkback(3, true)).toBe(false);
-    expect(sent).toEqual([]);
-  });
-});
-
-describe("talkback start/stop — own-session topology", () => {
-  it("wraps inner commandType 1001 in the 1700 control payload", () => {
-    const { session, sent } = newSession({ level2: true });
-    expect(session.startTalkback(0, false)).toBe(true);
-
-    const f = frameOf(sent[0]);
-    expect(f.readUInt16LE(4)).toBe(1700);
-    expect(f[13]).toBe(8);
-    const { plain, subHeader } = openLevel2(f.subarray(16));
-    const json = JSON.parse(plain.toString("utf-8"));
-    expect(json.commandType).toBe(1001);
-    expect(json.data.transaction).toMatch(/^\d+$/);
-    expect(subHeader.subarray(1)).toEqual(Buffer.from([0x03, 0x02, 0x01]));
-  });
-
-  it("uses inner commandType 1002 to stop", () => {
-    const { session, sent } = newSession({ level2: true });
-    session.stopTalkback(0, false);
-    const { plain } = openLevel2(frameOf(sent[0]).subarray(16));
-    expect(JSON.parse(plain.toString("utf-8")).commandType).toBe(1002);
-  });
-
-  it("falls back to level-1 when the session never negotiated a level-2 key", () => {
-    const { session, sent } = newSession();
-    expect(session.startTalkback(0, false)).toBe(true);
-    const f = frameOf(sent[0]);
-    expect(f.readUInt16LE(4)).toBe(1700);
-    expect(f[13]).toBe(1); // encType 1 — level-1 ECB
   });
 });

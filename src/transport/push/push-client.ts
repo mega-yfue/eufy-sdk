@@ -3,7 +3,7 @@
  * (mtalk.google.com:5228), logs in with the check-in androidId/securityToken,
  * heartbeats, and decodes DataMessageStanza pushes into eufy PushEvents.
  *
- * Implements Google's FCM/MCS push protocol; live-verified against real account pushes.
+ * Implements Google's FCM/MCS push protocol.
  */
 import { EventEmitter } from "node:events";
 import tls from "node:tls";

@@ -49,7 +49,7 @@ export interface DeviceRecord {
   /**
    * State the device reported over its realtime wire, as ids in its own param namespace.
    *
-   * Kept apart from {@link params} rather than merged into it because the two differ in provenance and
+   * Kept apart from {@link params} rather than merged into it because the two differ in source and
    * staleness: cloud params are a slow server-side heartbeat snapshot, these are the device's own live
    * report. Capability detection reads only `params`, so a realtime id can never steer which
    * capabilities a device is judged to have.
@@ -200,22 +200,22 @@ export interface DeviceRegistryDeps {
   onError: (e: unknown) => void;
   /** Diagnostics sink for facts that are NOT errors — see the owner-gated overlay note on {@link DeviceRegistry.record}. */
   logger?: Logger;
+  /** Sees the devices each successful {@link DeviceRegistry.getDevices} fetched, before any kept from an earlier list. */
+  onListFetched?: (devices: EufyDevice[]) => void;
 }
 
 /**
  * How long a fetched device list is reused for a per-device read that needs a fresher one.
  *
  * The list is account-wide (`get_house_list` plus one `get_devs_list` per house), so a caller resolving a
- * fleet must not trigger one fetch per device — measured on a 14-device account that turned 6 list requests
- * into 90 and a 2 s resolve into 25 s. Short enough that a read-through refresh still observes a change
+ * fleet must not trigger one fetch per device. Short enough that a read-through refresh still observes a change
  * (the default staleness window is longer than this), long enough that resolving a whole fleet costs one list.
  */
 const LIST_REUSE_MS = 5_000;
 
 /**
- * The robot models whose `getDeviceRelationList` `dps` are checked to be keyed by the DP numbers their
- * realtime reports use: a T2351's answer carried points 150–180, DP 180 in the same `SceneResponse` its
- * MQTT reports send.
+ * The robot models whose `getDeviceRelationList` `dps` are keyed by the DP numbers their realtime reports
+ * use: the T2351 answers points 150–180, DP 180 in the same `SceneResponse` its MQTT reports send.
  */
 const CLOUD_DPS_MODELS: ReadonlySet<string> = new Set(["T2351"]);
 
@@ -223,6 +223,7 @@ export class DeviceRegistry {
   private readonly mega: MegaHttpClient;
   private readonly onError: (e: unknown) => void;
   private readonly logger: Logger;
+  private readonly onListFetched?: (devices: EufyDevice[]) => void;
   private devices: EufyDevice[] = [];
   /** Per-(station, channel) capability cache for {@link capabilitiesForFrame}; `null` = negative hit. */
   private readonly frameCapsCache = new Map<string, ReadonlySet<Capability> | null>();
@@ -282,6 +283,7 @@ export class DeviceRegistry {
     this.mega = deps.mega;
     this.onError = deps.onError;
     this.logger = deps.logger ?? noopLogger;
+    this.onListFetched = deps.onListFetched;
   }
 
   /** The current device cache (last {@link getDevices} result). */
@@ -353,7 +355,7 @@ export class DeviceRegistry {
           sn: raw.device_sn,
           name: recordName(raw, deviceClass),
           model: raw.device_model,
-          stationSn: resolvedStationSn(raw, raw.device_sn),
+          stationSn: params[6271] === "1" ? raw.device_sn : resolvedStationSn(raw, raw.device_sn),
           ...(typeof raw.device_channel === "number" ? { channel: raw.device_channel } : {}),
           p2pDid: raw.p2p_did,
           params,
@@ -368,6 +370,7 @@ export class DeviceRegistry {
     await this.loadCloudDps(seen);
     await this.loadThings(seen);
     this.lastRefreshPartial = partial;
+    this.onListFetched?.([...seen.values()]);
     if (partial) for (const prev of this.devices) if (!seen.has(prev.sn)) seen.set(prev.sn, prev);
     this.devices = [...seen.values()];
     // Device list changed → drop stale (station,channel)→caps and serial→caps entries. Params feed
@@ -493,6 +496,12 @@ export class DeviceRegistry {
       const dps = parseAiotDpReport({ payload: entry?.device?.dps });
       if (sn && wanted.has(sn) && dps) this.cloudDps.set(sn, dps);
     }
+  }
+
+  /** The default value of a property of `sn`'s product description, as the description states it. */
+  thingDefault(sn: string, identifier: string): string | undefined {
+    const model = this.devices.find((d) => d.sn === sn)?.model;
+    return this.things.get(model ?? "")?.properties[identifier]?.defaultValue;
   }
 
   /**

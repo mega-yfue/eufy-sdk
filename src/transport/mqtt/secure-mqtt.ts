@@ -16,7 +16,6 @@ import type { MqttClient } from "mqtt";
 import { loadMqtt } from "./engine.js";
 import type { EufyDevice, RealtimeMessage, RealtimeTransport } from "../../core/types.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
-import { bareIpTlsOptions } from "./bare-ip-tls.js";
 import { parseSecureTopic, subscribeTopics } from "./topics.js";
 
 /**
@@ -35,19 +34,6 @@ const SUBACK_FAILURE = 0x80;
 function isRefusal(err: unknown): boolean {
   const granted = (err as { packet?: { granted?: unknown } } | null)?.packet?.granted;
   return Array.isArray(granted) && granted.some((g) => typeof g === "number" && (g & SUBACK_FAILURE) !== 0);
-}
-
-/**
- * Whether a connect failed because the broker REFUSED the client — a CONNACK return code the client
- * cannot retry its way out of, as `mqtt.js` words it (`Connection refused: not authorized`). A socket
- * that dies without an answer is not this: it is the same request, unanswered, and retrying it is the
- * only way to learn which of the two happened.
- *
- * A refusal that arrives as a dropped connection instead of a CONNACK reads here as the transport
- * failure it is indistinguishable from.
- */
-export function isNotAuthorized(err: unknown): boolean {
-  return err instanceof Error && /connection refused/i.test(err.message) && /not authori[sz]ed/i.test(err.message);
 }
 
 /**
@@ -81,10 +67,6 @@ export interface SecureMqttCredentials {
 export interface SecureMqttOptions {
   credentials: SecureMqttCredentials;
   clientId?: string;
-  /** Dial this IP directly instead of resolving `credentials.endpoint_addr` via DNS — one of the
-   * hostname's instances, found via {@link discoverReachableInstance} to grant the device's topic;
-   * the certificate is still checked against `credentials.endpoint_addr`. */
-  instanceIp?: string;
   /**
    * mqtt.js's own `reconnectPeriod` (ms) — auto-reconnect on an unexpected drop. Default `5000`,
    * right for the one long-lived connection (the facade's auto-started `this.transport`). A **one-shot**
@@ -95,6 +77,15 @@ export interface SecureMqttOptions {
    * a one-shot caller has no reason to ever call `end()` again after its one command is done.
    */
   reconnectPeriod?: number;
+  /** Keepalive in seconds; default 60. The app's security and light stacks use 300. */
+  keepaliveS?: number;
+  /**
+   * The app's `MqttConnectOption` reconnect: wait `minS` doubling up to `maxS` between attempts, give up after
+   * `attempts` (4, 64, 10 in the app). Replaces {@link reconnectPeriod} when set.
+   */
+  backoff?: { minS: number; maxS: number; attempts: number };
+  /** Retry every refused device topic this often until granted, as the app's `checkSubFail` does every 5000 ms. */
+  resubscribeMs?: number;
   /** Diagnostics sink. Omit for silence. */
   logger?: Logger;
 }
@@ -114,6 +105,9 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
    */
   private connecting?: Promise<void>;
   private readonly o: SecureMqttOptions;
+  /** Device topics the broker refused, retried every {@link SecureMqttOptions.resubscribeMs}. */
+  private readonly refused = new Set<string>();
+  private resubscribe?: ReturnType<typeof setInterval>;
   private readonly logger: Logger;
 
   constructor(opts: SecureMqttOptions) {
@@ -135,10 +129,7 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
     return await this.connecting;
   }
 
-  /**
-   * Open the broker connection, resolving once it is established. Pinned to a broker instance's IP, or
-   * to the plain hostname; only the former needs its own TLS shape, see `./bare-ip-tls.ts`.
-   */
+  /** Open the broker connection, resolving once it is established. */
   private async open(): Promise<void> {
     // The engine, not at import: see ./engine.ts. This method already returned a promise, so awaiting
     // a module load in front of a TLS connect changes nothing a caller can observe.
@@ -146,37 +137,30 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
     const c = this.o.credentials;
     const scope = c.app_name ?? "default";
     const port = c.endpoint_port ?? 8883;
-    const pinned = this.o.instanceIp;
-    const reconnectPeriod = this.o.reconnectPeriod ?? 5000;
+    const backoff = this.o.backoff;
     return await new Promise((resolve, reject) => {
-      const client = pinned
-        ? mqtt.connect({
-            host: pinned,
-            port,
-            protocol: "mqtts",
-            clientId: this.id,
-            ...bareIpTlsOptions({
-              hostname: c.endpoint_addr,
-              cert: c.certificate_pem,
-              key: c.private_key,
-              ca: c.aws_root_ca1_pem,
-            }),
-            protocolVersion: 4,
-            keepalive: 60,
-            clean: true,
-            reconnectPeriod,
-          })
-        : mqtt.connect(`mqtts://${c.endpoint_addr}:${port}`, {
-            clientId: this.id,
-            cert: c.certificate_pem,
-            key: c.private_key,
-            ca: c.aws_root_ca1_pem,
-            protocolVersion: 4,
-            keepalive: 60,
-            clean: true,
-            reconnectPeriod,
-            rejectUnauthorized: true,
-          });
+      const client = mqtt.connect(`mqtts://${c.endpoint_addr}:${port}`, {
+        clientId: this.id,
+        cert: c.certificate_pem,
+        key: c.private_key,
+        ca: c.aws_root_ca1_pem,
+        protocolVersion: 4,
+        keepalive: this.o.keepaliveS ?? 60,
+        clean: true,
+        reconnectPeriod: backoff ? backoff.minS * 1000 : (this.o.reconnectPeriod ?? 5000),
+        rejectUnauthorized: true,
+      });
+      if (backoff) {
+        let attempt = 0;
+        client.on("connect", () => {
+          attempt = 0;
+          client.options.reconnectPeriod = backoff.minS * 1000;
+        });
+        client.on("reconnect", () => {
+          if (++attempt > backoff.attempts) client.end(true);
+          client.options.reconnectPeriod = Math.min(backoff.minS * 2 ** attempt, backoff.maxS) * 1000;
+        });
+      }
       this.client = client;
       let settled = false;
       client.on("connect", () => {
@@ -228,6 +212,7 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
   async subscribeDevice(device: EufyDevice): Promise<void> {
     const topics = [...subscribeTopics(device)];
     const { denied } = await this.subscribeEach(topics);
+    this.retryRefused(denied);
     const scope = this.o.credentials.app_name ?? "default";
     if (denied.length === topics.length) {
       throw new Error(
@@ -286,8 +271,8 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
    * is a pre-built envelope the caller supplies (the command router builds it). QoS 1 by default (the
    * broker acks). This is the outbound leg — commands, alongside the receive-only `/res` subscriptions.
    *
-   * NOTE: which cert scope is used does NOT gate publishing to a security device's topic — confirmed
-   * live, an `eufy_mega`-scoped cert and an `eufy_security`-scoped cert get the identical grant/deny
+   * NOTE: which cert scope is used does NOT gate publishing to a security device's topic — an
+   * `eufy_mega`-scoped cert and an `eufy_security`-scoped cert get the identical grant/deny
    * pattern. What actually matters is landing on the broker cluster the device's session lives on
    * (`ensureSecurityMqttFor` — a lock's is the `security-mqtt-*` cluster, which shares no routing with
    * the `aiot-mqtt-*` one).
@@ -297,7 +282,32 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
     await this.client.publishAsync(topic, body, { qos: opts.qos ?? 1 });
   }
 
+  /** Queue `topics` for the periodic resubscribe, starting it when the option asks for one. */
+  private retryRefused(topics: readonly string[]): void {
+    const every = this.o.resubscribeMs;
+    if (!every || !topics.length) return;
+    for (const topic of topics) this.refused.add(topic);
+    this.resubscribe ??= setInterval(() => {
+      if (!this.client) return;
+      void this.subscribeEach([...this.refused]).then(
+        ({ granted }) => {
+          for (const topic of granted) this.refused.delete(topic);
+          if (!this.refused.size) this.stopResubscribe();
+        },
+        (e: unknown) => this.logger.debug(`[smqtt] resubscribe failed: ${e instanceof Error ? e.message : e}`),
+      );
+    }, every);
+    this.resubscribe.unref?.();
+  }
+
+  private stopResubscribe(): void {
+    clearInterval(this.resubscribe);
+    this.resubscribe = undefined;
+  }
+
   async disconnect(): Promise<void> {
+    this.stopResubscribe();
+    this.refused.clear();
     this.connecting = undefined;
     await this.client?.endAsync(true);
     this.client = undefined;

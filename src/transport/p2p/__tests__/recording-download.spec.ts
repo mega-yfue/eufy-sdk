@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { randomBytes } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildStringPairCommandPayload, decryptP2PData } from "../codec.js";
+import { stringPairCommandBody } from "../codec.js";
 import {
   MAX_TRANSFER_BYTES,
   RECORDING_DATA_TYPE,
@@ -69,18 +69,13 @@ describe("recording download", () => {
     expect(homeBase3RecordingPath(100, "20260101120000")).toBeUndefined();
   });
 
-  it("frames the request as five zero bytes and two 128-byte strings, level-1 encrypted", () => {
-    const key = Buffer.alloc(16, 3);
-    const body = buildStringPairCommandPayload("/media/x.dat", "0".repeat(40), 1, key);
-    const data = body.subarray(10);
+  it("frames the request as five zero bytes and two 128-byte strings", () => {
+    const plain = stringPairCommandBody("/media/x.dat", "0".repeat(40));
 
-    expect(body.readUInt16LE(0)).toBe(data.length);
-    expect([...body.subarray(6, 8)]).toEqual([1, 1]);
-    const plain = decryptP2PData(data, key);
     expect(plain.subarray(0, 5)).toEqual(Buffer.alloc(5));
     expect(plain.subarray(5, 17).toString()).toBe("/media/x.dat");
     expect(plain.subarray(133, 173).toString()).toBe("0".repeat(40));
-    expect(data.length).toBe(272);
+    expect(plain.length).toBe(261);
   });
 
   it("decodes keyframes, plaintext frames and the audio sealed under the keyframe's media key", () => {

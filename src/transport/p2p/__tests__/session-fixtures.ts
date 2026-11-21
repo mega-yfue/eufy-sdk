@@ -1,3 +1,4 @@
+import { createDecipheriv } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { vi } from "vitest";
 import { noopLogger, type Logger } from "../../../core/logger.js";
@@ -28,10 +29,6 @@ export interface FakeP2PSession extends EventEmitter {
   /** The handle every trace about this session is emitted under, real sessions included. */
   traceId: string;
   hasLevel2Key: boolean;
-  awaitLevel2Key: ReturnType<typeof vi.fn>;
-  repromptLevel2Key: ReturnType<typeof vi.fn>;
-  /** What a second ask would achieve: `true` = the key arrives on the retry. Default: nothing to be had. */
-  keyArrivesOnReprompt: boolean;
   /** Sends once: delivery is the real session's concern, so the fake device takes each send as one command. */
   sendAcknowledged: ReturnType<typeof vi.fn>;
 }
@@ -39,8 +36,8 @@ export interface FakeP2PSession extends EventEmitter {
 /**
  * Run `call` on fake timers, every timed wait in it expired at once, then hand back its outcome.
  *
- * The router replays an unacknowledged command five times 200 ms apart; on real timers each such spec
- * sleeps through it. A rejection that lands while the timers run is the caller's to assert.
+ * The router holds a device's slot until a command's answer or its deadline; on real timers each such spec
+ * waits through it. A rejection that lands while the timers run is the caller's to assert.
  */
 export async function onFakeTime<T>(call: () => Promise<T>): Promise<T> {
   vi.useFakeTimers();
@@ -54,26 +51,14 @@ export async function onFakeTime<T>(call: () => Promise<T>): Promise<T> {
   }
 }
 
-/**
- * A connected session that either has a level-2 key or has settled that it will not get one.
- *
- * The re-prompt belongs to the same set of answers: a session that settled without a key may still be worth
- * asking once more, and a fake that refused the wait while claiming a productive re-prompt — or the reverse —
- * describes a session that cannot exist. `keyArrivesOnReprompt` moves BOTH, so the two cannot drift.
- */
+/** A connected session that either has a level-2 key or has settled that it will not get one. */
 export function connectedSession(hasLevel2Key = true): FakeP2PSession {
   const session = new EventEmitter() as FakeP2PSession;
   session.isConnected = true;
   session.traceId = "station-fake";
   session.hasLevel2Key = hasLevel2Key;
-  session.keyArrivesOnReprompt = false;
   session.sendAcknowledged = vi.fn((send: () => boolean) => send());
-  session.awaitLevel2Key = vi.fn(async () => session.hasLevel2Key);
-  session.repromptLevel2Key = vi.fn(() => {
-    if (session.hasLevel2Key || !session.keyArrivesOnReprompt) return false;
-    session.hasLevel2Key = true; // the station answered the second ask
-    return true;
-  });
+  (session as unknown as { sendPing: () => void }).sendPing = vi.fn();
   return session;
 }
 
@@ -155,4 +140,36 @@ export function routerWithSession(
     );
   }
   return router;
+}
+
+/**
+ * Put a real session where the app's native step of a gateway info naming a cipher puts it: sign mode 1, the level-1
+ * key in the ECB slot, negotiated version `version`. Its sends then seal at once, AES-128-ECB under the level-1 key
+ * for version 1.
+ */
+export function atSignMode1(session: object, version = 1): void {
+  (session as { gatewayInfoSlots(cipherId: number, version: number): void }).gatewayInfoSlots(1, version);
+}
+
+/**
+ * Open a frame a real session sent under its GCM slot: `tag(16) ‖ nonce(12) ‖ sub-header(4) ‖ ciphertext`, AAD
+ * "eufy security". Answers `undefined` where it does not open.
+ */
+export function openSentGcm(session: object, body: Buffer): Buffer | undefined {
+  const key = (session as { gcmKey?: Buffer }).gcmKey;
+  if (!key) return undefined;
+  try {
+    const d = createDecipheriv("aes-256-gcm", key, body.subarray(16, 28));
+    d.setAAD(Buffer.from("eufy security"));
+    d.setAuthTag(body.subarray(0, 16));
+    return Buffer.concat([d.update(body.subarray(32)), d.final()]);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Put a real session where a version-8 gateway info and its unwrapped key put it: version 8, sign mode 8, `key`. */
+export function withGcmKey(session: { setLevel2Key(key: Buffer): void }, key: Buffer): void {
+  atSignMode1(session, 8);
+  session.setLevel2Key(key);
 }

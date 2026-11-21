@@ -90,12 +90,10 @@ describe("light capability module", () => {
         kind: "set-param",
         param: LIGHT_CMD.FLOODLIGHT_SWITCH,
         value: 1,
-        form: "int-string",
         channel: 2,
       });
       expect(intent("off", false, ctx())).toMatchObject({
         kind: "set-param",
-        form: "int-string",
         value: 0,
       });
     });
@@ -105,7 +103,6 @@ describe("light capability module", () => {
         kind: "set-param",
         param: LIGHT_CMD.FLOODLIGHT_SWITCH,
         value: 1,
-        form: "int-string",
         channel: 0,
       });
     });
@@ -115,12 +112,10 @@ describe("light capability module", () => {
         kind: "set-param",
         param: LIGHT_CMD.FLOODLIGHT_SWITCH,
         value: 1,
-        form: "int-string",
         channel: 2,
       });
       expect(intent("off", false, { ...ctx(), deviceType: DeviceType.PROFESSIONAL_247 })).toMatchObject({
         kind: "set-param",
-        form: "int-string",
         value: 0,
       });
     });
@@ -148,10 +143,9 @@ describe("light capability module", () => {
           kind: "set-param",
           param: LIGHT_CMD.FLOODLIGHT_SWITCH,
           value: 1,
-          form: "int-string",
           channel: 1,
         });
-        expect(intent("off", false, e340)).toMatchObject({ form: "int-string", value: 0 });
+        expect(intent("off", false, e340)).toMatchObject({ value: 0 });
       },
     );
 
@@ -166,36 +160,31 @@ describe("light capability module", () => {
       );
     });
 
-    it("spotlightEnabled on a T8423 (deviceType 38) → session-chosen level for 1403; brightness stays direct-binary", () => {
+    it("spotlightEnabled on a T8423 (deviceType 38) → set-param 1403", () => {
       const t8423 = { ...ctx(), deviceType: 38 };
       expect(intent("spotlightEnabled", false, t8423)).toEqual({
         kind: "set-param",
         param: LIGHT_CMD.SPOTLIGHT_ENABLE,
         value: 0,
-        form: "auto",
         channel: 0,
       });
-      expect(intent("brightness", 50, t8423)).toMatchObject({ form: "direct-binary" });
     });
 
-    it("brightness/colorTemp/enabled → set-param pinned to direct-binary with the right param", () => {
+    it("brightness/colorTemp/enabled → set-param with the right param", () => {
       expect(intent("brightness", 50, ctx())).toEqual({
         kind: "set-param",
         param: LIGHT_CMD.SPOTLIGHT_BRIGHTNESS,
         value: 50,
-        form: "direct-binary",
         channel: 0,
       });
       expect(intent("colorTemp", 80, ctx())).toMatchObject({
         kind: "set-param",
         param: LIGHT_CMD.SPOTLIGHT_COLOR_TEMP,
-        form: "direct-binary",
         value: 80,
       });
       expect(intent("spotlightEnabled", true, ctx())).toMatchObject({
         kind: "set-param",
         param: LIGHT_CMD.SPOTLIGHT_ENABLE,
-        form: "direct-binary",
         value: 1,
       });
     });
@@ -256,13 +245,11 @@ describe("light capability module", () => {
       expect(sent[0]).toMatchObject({
         kind: "set-param",
         param: LIGHT_CMD.FLOODLIGHT_SWITCH,
-        form: "int-string",
         channel: 2,
       });
       expect(sent[1]).toMatchObject({
         kind: "set-param",
         param: LIGHT_CMD.SPOTLIGHT_BRIGHTNESS,
-        form: "direct-binary",
         value: 40,
       });
     });

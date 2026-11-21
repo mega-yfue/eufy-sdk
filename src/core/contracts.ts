@@ -107,36 +107,6 @@ export class CameraDisabledError extends Error {
 }
 
 /**
- * Work on a station was refused: the station did not provide the session key that work requires.
- *
- * A station reached over its HomeBase encrypts what it is sent under a key negotiated once per connection, and
- * a media start for an attached camera has no unencrypted form at all — so without that key there is nothing
- * to send, however reachable the station is. Naming this apart from a source that failed is what separates an
- * account whose cipher material could not be resolved from a camera that is off, a station that is busy, or a
- * stream that produced nothing: they share no next step.
- *
- * The `level2-unavailable` trace states WHY the key is not coming. This states only that it is not, because
- * that is what the refusal itself knows.
- *
- * `stationSn` is the station that owed the key, which is the parent for an attached camera and therefore not
- * the serial the refused call was made about: several cameras refused at once are one station's outcome, and
- * nothing else in the refusal says so.
- */
-export class StationKeyUnavailableError extends Error {
-  /** Always true: the negotiation is per connection, so a later one may still produce a key. */
-  readonly retryable = true;
-
-  constructor(
-    /** The station whose session key did not arrive. */
-    readonly stationSn: string,
-    options?: { cause?: unknown },
-  ) {
-    super(`station ${stationSn} did not provide its session key, so nothing that requires one could be sent`, options);
-    this.name = "StationKeyUnavailableError";
-  }
-}
-
-/**
  * Work on a station was refused: its session did not connect within the wait it was given.
  *
  * A station is reached over its own session, and nothing addressed to it — a media start, a property read, a
@@ -288,8 +258,6 @@ export interface LiveStreamStartFailure {
   stage: LiveStreamStartStage;
   /** The warm-up deadline the source was bounded by, in milliseconds. */
   timeoutMs: number;
-  /** The initial media start plus every warm-up retry issued before the deadline. */
-  attempts: number;
   cause?: unknown;
 }
 
@@ -298,19 +266,16 @@ export class LiveStreamStartError extends Error {
   readonly reason: LiveStreamStartFailureReason;
   readonly stage: LiveStreamStartStage;
   readonly timeoutMs: number;
-  readonly attempts: number;
 
   constructor(failure: LiveStreamStartFailure) {
     super(
-      `live stream failed to start (${failure.reason} at ${failure.stage} after ${failure.attempts} attempts; ` +
-        `${failure.timeoutMs}ms deadline)`,
+      `live stream failed to start (${failure.reason} at ${failure.stage}; ${failure.timeoutMs}ms deadline)`,
       failure.cause === undefined ? undefined : { cause: failure.cause },
     );
     this.name = "LiveStreamStartError";
     this.reason = failure.reason;
     this.stage = failure.stage;
     this.timeoutMs = failure.timeoutMs;
-    this.attempts = failure.attempts;
   }
 }
 
@@ -335,8 +300,8 @@ export interface StateConvergenceFailure {
  *
  * A command is acknowledged when the transport has carried it, which is delivery and not convergence, and
  * the observation a member declares is what decides the second question. Where that observation times out
- * the write was accepted by the wire and never applied by the device — measured on a battery camera whose
- * power write is acknowledged and simply ignored — so this is a distinct outcome from a transport fault and
+ * the write was accepted by the wire and never applied by the device — a battery camera can
+ * acknowledge a power write and ignore it — so this is a distinct outcome from a transport fault and
  * carries the attribution that names which member on which device is unconfirmed.
  */
 export class StateConvergenceError extends Error {
@@ -361,16 +326,6 @@ export class StateConvergenceError extends Error {
     this.timeoutMs = failure.timeoutMs;
   }
 }
-
-/**
- * Wire form for a scalar {@link Command} `"set-param"` intent — how the write is sealed. The BODY is
- * `[u32 channel][u32 value][account_id → 128B]` in every form but `"int-pair"`.
- *
- * - `"int-string"` pins level-1 (AES-128-ECB), `"direct-binary"` pins level-2 (AES-256-GCM).
- * - `"int-pair"` pins level-1 with the bare `[u32 channel][u32 value]` body and no account id.
- * - `"auto"` lets the transport pick the level, which it resolves from the session it will send on.
- */
-export type ScalarForm = "auto" | "int-string" | "int-pair" | "direct-binary";
 
 /**
  * The identity fields an actuation frame is built from — for `ff09`, the AES key/IV inputs
@@ -419,76 +374,139 @@ const COMMAND_OBSERVATION = Symbol("command-observation");
  * own variant. The `ff09-*` kinds share ONE frame that rides BOTH P2P and secure-MQTT, so the sink
  * routes them by the device's runtime topology and the chosen router re-resolves its own routing tail
  * from the device record — nothing transport- or route-specific lives in the intent.
+ *
+ * `next` is a command sent after this one, as the app's `multipleRequest` follows a frame with another.
  */
 export type Command =
-  | { kind: "set-param"; param: number; value: number; form: ScalarForm; channel: number }
-  | { kind: "set-json"; param: number; data: Record<string, unknown>; channel: number }
-  // `set-json-raw` differs from `set-json` in ONE way: the wire's outer P2P command IS `cmd` itself
-  // (no `1700` CONTROL_PAYLOAD wrapper, no `{commandType,data}` nesting) — the plaintext is exactly
-  // `data` (plus an injected `account_id`), matching the app's own SET_SNOOZE_TIME (1271) frame.
-  | { kind: "set-json-raw"; cmd: number; data: Record<string, unknown>; channel: number }
-  | {
-      kind: "set-payload";
-      cmd: number;
-      payload: Record<string, unknown>;
-      channel: number;
-      mValue3?: number;
-      form?: ScalarForm;
-      /**
-       * `"set-payload"`: a level-2 key that seals only this envelope (an RSA cipher's AES-128-ECB key)
-       * may seal it. Absent, the send waits for the key every level-2 sender uses.
-       */
-      level2Sender?: "set-payload";
-    }
-  | { kind: "p2p-privacy-burst"; enabled: boolean; channel: number }
-  | {
-      kind: "p2p-station-scalar";
-      cmd: number;
-      value: number;
-      channel: number;
-      /** `"auto"`: the seal follows the session, level-2 with a key and level-1 without. Absent, level-2 only. */
-      form?: Extract<ScalarForm, "auto">;
-    }
-  /** P2P int-plus-string frame; the transport injects the authenticated account id string. */
-  | { kind: "p2p-int-string"; cmd: number; value: number; valueSub: number; channel: number }
-  | ({ kind: "ff09-actuate" } & Ff09Identity)
   /**
-   * `keyed-payload-actuate` — a `SET_PAYLOAD` envelope whose inner JSON is sealed with a fresh AES key
-   * that the envelope itself carries, wrapped for the device's own public key. P2P-only; the router
-   * resolves the device key and the member display name from the device record.
+   * The app's group-A scalar body `[u32 channel][u32 value][account_id → 128]`, or with `"int-pair"` the bare
+   * `[u32 channel][u32 value]`; the transport injects the account id and the session seals it.
    */
-  | ({ kind: "keyed-payload-actuate" } & Ff09Identity)
-  /**
-   * `doorlock-pass-through-actuate` — a lock/unlock the device's station relays to the lock it is paired to,
-   * sealed under a key derived from the station owner and the station serial. P2P-only; the router resolves
-   * the station, its owner identity and the lock's channel from the device records.
-   */
-  | ({ kind: "doorlock-pass-through-actuate" } & Ff09Identity)
-  | { kind: "ff09-autolock"; adminUserId: string; deviceSn: string; enabled: boolean; delaySeconds?: number }
-  | { kind: "ff09-setting-toggle"; adminUserId: string; deviceSn: string; settingId: number; value: boolean }
-  // `mqtt-dp` — an `eufy_life` secure-MQTT "DP" TLV write (smart lights + kin). The capability supplies
-  // its own opaque `mqttCmdCode` (the outer envelope's dispatch id) + `cmdCode` (the feature id whose
-  // low byte is the frame subtype) + already-tagged scalar `fields`; the router does ONLY the generic
-  // ff09-TLV framing + envelope (it names none of these ids). See `transport/mqtt/dp-codec.ts`.
-  | { kind: "mqtt-dp"; mqttCmdCode: number; cmdCode: number; fields: ReadonlyArray<{ tag: number; value: Buffer }> }
-  // `mqtt-dp-preset` — a DP write whose payload is too large to pass inline, named by a **cloud catalog
-  // id** the router resolves through an injected lookup and serializes. Named for that wire shape, not
-  // for the feature that uses it (as `ff09-actuate` is named for the action, not for locks): any
-  // `eufy_life` device with a catalog-defined payload rides this kind. The capability supplies the
-  // feature ids it owns — `cmdCode` for the preset frame and `companionCmdCode` for the follow-up frame
-  // a resolved preset may need — and the router forwards both opaquely, naming neither.
-  | { kind: "mqtt-dp-preset"; mqttCmdCode: number; cmdCode: number; companionCmdCode: number; presetId: number }
-  /** A DP custom-colour write; the transport owns RGB-to-wire conversion and field serialization. */
-  | {
-      kind: "mqtt-dp-color";
-      mqttCmdCode: number;
-      cmdCode: number;
-      red: number;
-      green: number;
-      blue: number;
-      segmentCount: number;
-    }
-  | { kind: "aiot-dp"; dp: number; value: boolean | number | string };
+  (
+    | { kind: "set-param"; param: number; value: number; form?: "int-pair"; channel: number }
+    /** `data` is a number where the bundle sends `param_data`. */
+    | { kind: "set-json"; param: number; data: Record<string, unknown> | number; channel: number }
+    // `set-json-raw` differs from `set-json` in ONE way: the wire's outer P2P command IS `cmd` itself
+    // (no `1700` CONTROL_PAYLOAD wrapper, no `{commandType,data}` nesting) — the plaintext is exactly
+    // `data` (plus an injected `account_id`), matching the app's own SET_SNOOZE_TIME (1271) frame.
+    | {
+        kind: "set-json-raw";
+        cmd: number;
+        data: Record<string, unknown>;
+        channel: number;
+      }
+    | {
+        kind: "set-payload";
+        cmd: number;
+        /** A list where the bundle sends `param_list` (and for 1308). */
+        payload: Record<string, unknown> | readonly unknown[];
+        channel: number;
+        mValue3?: number;
+        /** The payload's keys at the top level of the envelope, in place of `payload` (`unzipParams`). */
+        unzip?: true;
+        /** Header byte 14: the session's counter bumped, or as it stands, as the app writes it for 1025. */
+        counter?: "bump" | "current";
+        /**
+         * A lock setting over its station (v2): the transport builds the params as the app's `handleV2Payload`,
+         * `{lock_payload, seq_num, apiCommand, time}`, the `ff09` frame of these fields for the lock.
+         */
+        lock?: {
+          cmdCode: number;
+          apiCommand: number;
+          fields: ReadonlyArray<{ tag: number; value: Buffer }>;
+          subVersion: number;
+          functionType: number;
+          encrypt: boolean;
+        };
+      }
+    | {
+        kind: "p2p-station-scalar";
+        cmd: number;
+        value: number;
+        channel: number;
+      }
+    /**
+     * The app's native string body (`[u32 0][u8 channel][value][account_id]`) on the station channel 255,
+     * `channel` the device's own: a rename (1216, 1217) or a time zone (1215). The transport injects the
+     * account id and the session seals it.
+     */
+    | { kind: "p2p-string"; cmd: number; value: string; channel: number }
+    /** P2P int-plus-string frame; the transport injects the authenticated account id string. */
+    | {
+        kind: "p2p-int-string";
+        cmd: number;
+        value: number;
+        valueSub: number;
+        channel: number;
+        /** `"int-pair"`: the bare `[u32 valueSub][u32 value]`, no account id string (1201). */
+        form?: "int-pair";
+      }
+    | ({ kind: "ff09-actuate" } & Ff09Identity)
+    /**
+     * `keyed-payload-actuate` — a `SET_PAYLOAD` envelope whose inner JSON is sealed with a fresh AES key
+     * that the envelope itself carries, wrapped for the device's own public key. P2P-only; the router
+     * resolves the device key and the member display name from the device record.
+     */
+    | ({ kind: "keyed-payload-actuate" } & Ff09Identity)
+    /**
+     * `doorlock-pass-through-actuate` — a lock/unlock the device's station relays to the lock it is paired to,
+     * sealed under a key derived from the station owner and the station serial. P2P-only; the router resolves
+     * the station, its owner identity and the lock's channel from the device records.
+     */
+    | ({ kind: "doorlock-pass-through-actuate" } & Ff09Identity)
+    | { kind: "ff09-autolock"; adminUserId: string; deviceSn: string; enabled: boolean; delaySeconds?: number }
+    | { kind: "ff09-setting-toggle"; adminUserId: string; deviceSn: string; settingId: number; value: boolean }
+    // `mqtt-dp` — an `eufy_life` secure-MQTT "DP" TLV write (smart lights + kin). The capability supplies
+    // its own opaque `mqttCmdCode` (the outer envelope's dispatch id) + `cmdCode` (the feature id whose
+    // low byte is the frame subtype) + already-tagged scalar `fields`; the router does ONLY the generic
+    // ff09-TLV framing + envelope (it names none of these ids). See `transport/mqtt/dp-codec.ts`.
+    | {
+        kind: "mqtt-dp";
+        mqttCmdCode: number;
+        cmdCode: number;
+        fields: ReadonlyArray<{ tag: number; value: Buffer }>;
+        /**
+         * The `ff09` header a settings bundle states, for a lock: its version byte, function type and whether
+         * the frame is sealed. A lock's frame is sealed and wrapped as its MQTT channel does; a light's never.
+         */
+        subVersion?: number;
+        functionType?: number;
+        encrypt?: boolean;
+        /** The descriptor's `timeout`, seconds: how long the app waits for the reply (5 s when it states none). */
+        timeoutS?: number;
+      }
+    // `mqtt-dp-preset` — a DP write whose payload is too large to pass inline, named by a **cloud catalog
+    // id** the router resolves through an injected lookup and serializes. Named for that wire shape, not
+    // for the feature that uses it (as `ff09-actuate` is named for the action, not for locks): any
+    // `eufy_life` device with a catalog-defined payload rides this kind. The capability supplies the
+    // feature ids it owns — `cmdCode` for the preset frame and `companionCmdCode` for the follow-up frame
+    // a resolved preset may need — and the router forwards both opaquely, naming neither.
+    | { kind: "mqtt-dp-preset"; mqttCmdCode: number; cmdCode: number; companionCmdCode: number; presetId: number }
+    /** A DP custom-colour write; the transport owns RGB-to-wire conversion and field serialization. */
+    | {
+        kind: "mqtt-dp-color";
+        mqttCmdCode: number;
+        cmdCode: number;
+        red: number;
+        green: number;
+        blue: number;
+        segmentCount: number;
+      }
+    | { kind: "aiot-dp"; dp: number; value: boolean | number | string }
+    /**
+     * A cloud call as a settings bundle sends one (a rename): the client resolves `domain` (a category such
+     * as `eufy_security`, or a cloud module name) to its host.
+     */
+    | {
+        kind: "cloud-request";
+        method: "GET" | "POST" | "PUT" | "DELETE";
+        domain: string;
+        path: string;
+        body?: Record<string, unknown>;
+        query?: Record<string, unknown>;
+        headers?: Record<string, string>;
+      }
+  ) & { next?: Command };
 
 /** Attach non-wire observation policy to a command without changing its enumerable transport intent. @internal */
 export function observeCommand(command: Command, observation: CommandObservation): Command {
@@ -620,10 +638,9 @@ export interface LiveVideoFrame {
    * Frame geometry as the station's own frame header states it — {@link height} is the same field.
    *
    * A camera reconfigures its live source WITHIN one session, so these change between frames of one
-   * stream. Measured on eight cameras and both codecs: four of them changed, 2 to 9 times per 25-60 s,
-   * oscillating up and down a ladder rather than only climbing it; the other four held one geometry
-   * throughout. A change arriving on a keyframe carrying fresh parameter sets is what every run but one
-   * showed, and that run is not accounted for, so it is not a property to rely on.
+   * stream, up to several times a minute, oscillating up and down a ladder rather than only climbing it;
+   * others hold one geometry throughout. A change usually, but not always, arrives on a keyframe carrying
+   * fresh parameter sets, so that is not a property to rely on.
    *
    * This is what the station REPORTED. The size a decoder will actually produce is stated by the
    * parameter sets, and a consumer is told it through {@link LiveStreamConsumer} rather than having to
@@ -646,8 +663,8 @@ export interface LiveVideoFrame {
  * will produce from the parameter sets in force.
  *
  * The geometry is the CODED one, read out of the sequence parameter set and cropped by the offsets it
- * declares, not the geometry a frame header reports. Those agreed on all but 28 of some 6000 measured
- * frames, but only one of them is the size a decoder produces: 1080 is not a multiple of the 16-sample
+ * declares, not the geometry a frame header reports. The two mostly agree, but only one of them is the size
+ * a decoder produces: 1080 is not a multiple of the 16-sample
  * macroblock, so a 1080p H.264 stream codes 1088 rows and crops 8 away, and the frame header is a report
  * about that rather than the definition of it.
  *
@@ -753,6 +770,37 @@ export interface StreamBudgetNotice {
 }
 
 /**
+ * One P2P session frame as a product's settings bundle sends it: the outer `cmd`, its body kind (`json1700`
+ * `{commandType: subCmd, data: payload}`, `json1350` the `{account_id, cmd: subCmd, mChannel, mValue3, payload}`
+ * envelope, `json` the payload as is, `native` the sender's fixed `layout`), and the header byte-14 `counter`
+ * (`bump` or `current`). The payload carries `$channel`, `$userId`, `$now` and `$key` tokens.
+ */
+export interface SessionFrame {
+  cmd?: number;
+  subCmd?: number;
+  body?: unknown;
+  payload?: unknown;
+  /** A `native` body's sender layout (`u32-ch`, `0x2db020`, 0x2d9cb4, 0x2da458). */
+  layout?: number | string;
+  mValue3?: number;
+  counter?: string;
+}
+
+/**
+ * The frames the app starts and stops a device's live view and talkback with, picked by its product and its
+ * parent's connect type, and the device ability (cloud param 1103 of its parent, else its own; 0 unstated) the
+ * app reads the media key form from: ECC from 128 up, or once the station's gateway info came as version 8.
+ * No talkback frames where the product has none.
+ */
+export interface LiveFrames {
+  start: SessionFrame;
+  stop: SessionFrame;
+  talkStart?: SessionFrame;
+  talkStop?: SessionFrame;
+  ability: number;
+}
+
+/**
  * The consumer-facing surface of a live stream — a STRUCTURAL subset of the concrete
  * `transport/p2p/LiveStream` (an EventEmitter), so the media contract can live in core without
  * importing transport. The concrete `LiveStream` is assignable to this.
@@ -760,28 +808,12 @@ export interface StreamBudgetNotice {
 export interface LiveStreamHandle {
   start(): this;
   stop(): void;
-  /**
-   * Re-issue the media-start command (start-race retry / keepalive nudge). Optional.
-   *
-   * `force` states that the channel is NOT being served, so a real start is required rather than a keepalive.
-   * An own-session camera sends one or the other depending on whether its session believes the channel is
-   * already started — a belief that outlives a station which acknowledged a start and then served nothing.
-   */
-  nudge?(force?: boolean): void;
   on(event: "video", listener: (frame: LiveVideoFrame) => void): this;
   on(event: "audio", listener: (frame: LiveAudioFrame) => void): this;
   on(event: "start" | "stop", listener: () => void): this;
   on(event: "error", listener: (err: Error) => void): this;
   /** Battery-budget elapsed — extend to keep streaming or let it auto-stop (battery cameras only). */
   on(event: "budget", listener: (notice: StreamBudgetNotice) => void): this;
-  /**
-   * A media start was repeated to its acknowledgement deadline and abandoned.
-   *
-   * The start is repeated byte-identically, so an abandonment is many sends with no reply — the device was
-   * never told to stream, and a warm-up waiting on it can only time out. Distinct from `error`: the transport
-   * is intact and the session is simply not being heard.
-   */
-  on(event: "unacknowledged", listener: () => void): this;
 }
 
 /**
@@ -830,14 +862,6 @@ export interface LiveStreamConsumer extends LiveStreamHandle {
   on(event: "error", listener: (err: Error) => void): this;
   /** Battery-budget elapsed — extend to keep streaming or let it auto-stop (battery cameras only). */
   on(event: "budget", listener: (notice: StreamBudgetNotice) => void): this;
-  /**
-   * A media start was repeated to its acknowledgement deadline and abandoned.
-   *
-   * The start is repeated byte-identically, so an abandonment is many sends with no reply — the device was
-   * never told to stream, and a warm-up waiting on it can only time out. Distinct from `error`: the transport
-   * is intact and the session is simply not being heard.
-   */
-  on(event: "unacknowledged", listener: () => void): this;
 }
 
 /**
@@ -852,8 +876,8 @@ export interface LiveStreamConsumer extends LiveStreamHandle {
  * How a caller abandons ONE media call, without touching the shared pull other callers hold.
  *
  * Acquiring media can wait a long time before it can succeed or fail: a station has to connect, a level-2
- * key has to be negotiated or given up on, and a camera has to produce a keyframe. Measured at twenty
- * seconds and more on a battery camera.
+ * key has to be negotiated or given up on, and a camera has to produce a keyframe — twenty seconds
+ * and more on a battery camera.
  *
  * Aborting settles the call with an `AbortError` and gives back whatever it had taken, so a pull nothing
  * else holds is released rather than left running for a caller that has gone. It never disturbs a pull
@@ -891,6 +915,13 @@ export interface SharedSourceHints {
    * the camera capture just before this" only for a pull something already opened.
    */
   preBufferSeconds?: number;
+  /**
+   * The live start's `entryType`, the app's `LiveTypeAndroid` value: 0 (default) is its plain player; 1-11 its setup
+   * screens (1 Hotspot, 2 StandingPosition, 3 CruisePreview, 4 Privacy, 5 PanTiltSpeedSetting, 6 NoPackageAreaSetting,
+   * 7 NoPackageThingSetting, 8 LandscapeMode, 9 SignalTest, 10 OutSightDetection, 11 PrivacyPerspective). Only the
+   * products whose bundle forwards it send it.
+   */
+  entryType?: number;
 }
 
 /**
@@ -943,8 +974,7 @@ export interface MediaProvider {
      * Present and `true` only when these bytes are the RETAINED still rather than a fresh capture.
      *
      * A live still is refused while a sibling camera on the same station is being watched, because one
-     * session serves one camera at a time, a still does not open a connection of its own, and the live view
-     * is the picture someone is looking at. Answering
+     * session serves one camera at a time and the live view is the picture someone is looking at. Answering
      * the retained still there answers the call instead of failing it, and this says the bytes are not
      * current. Absent means freshly captured.
      */
@@ -953,12 +983,8 @@ export interface MediaProvider {
   /**
    * Open a managed live stream.
    *
-   * Several cameras behind one station stream at the same time, each over its own connection to it. One
-   * connection serves one camera — a station answers the most recent start on a session, so two cameras
-   * sharing one take it from each other in turn — so a camera asked for while its station is already
-   * serving another gets a connection of its own. Measured on a base carrying two attached cameras, one
-   * at 3840x2160: both held full frame rate at once. Each handle receives only the frames the station
-   * tagged for ITS camera.
+   * Every camera behind a station streams over the station's one session; each handle receives only the frames
+   * the station tagged for ITS camera.
    *
    * @example
    * ```ts

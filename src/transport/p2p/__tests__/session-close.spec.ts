@@ -5,7 +5,12 @@ describe("a closed session still registered for its station", () => {
   it("is replaced by a fresh one, not waited on for a connect it never makes", async () => {
     const closed = Object.assign(connectedSession(), { isClosed: true, close: vi.fn(async () => {}) });
     closed.isConnected = false;
-    const fresh = Object.assign(connectedSession(), { sendIntStringCommand: vi.fn() });
+    const fresh = Object.assign(connectedSession(), {
+      sendBytes: vi.fn((_body: Buffer, channel: number, commandId: number) => {
+        queueMicrotask(() => fresh.emit("commandResult", { code: 0, channel, commandId }));
+        return true;
+      }),
+    });
     const router = routerWithSession(closed);
     const target = router as unknown as {
       manager: { get(key: string): unknown; register(key: string, session: unknown): void };
@@ -19,10 +24,9 @@ describe("a closed session still registered for its station", () => {
       kind: "set-param",
       param: 1045,
       value: 1,
-      form: "int-string",
       channel: 1,
     });
     expect(target.manager.get(STATION_SN)).toBe(fresh);
-    expect(fresh.sendIntStringCommand).toHaveBeenCalled();
+    expect(fresh.sendBytes).toHaveBeenCalled();
   });
 });

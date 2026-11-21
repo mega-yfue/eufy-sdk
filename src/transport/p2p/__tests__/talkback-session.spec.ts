@@ -30,9 +30,15 @@ const ELD_UNIT_MS = 32;
 
 const eldUnit = (len: number) => Buffer.alloc(len, 0x3c);
 
+/** Synthetic talkback frames: the direct 1005 / 1006 an attached camera opens and closes its speaker with. */
+const TALK = {
+  start: { cmd: 1005, body: "native", payload: {}, layout: "u32-ch" },
+  stop: { cmd: 1006, body: "native", payload: {}, layout: "u32-ch" },
+};
+
 function fakeSink(opts: { startOk?: boolean } = {}): TalkbackSink & {
-  started: Array<[number, boolean]>;
-  stopped: Array<[number, boolean]>;
+  started: number[];
+  stopped: number[];
   frames: Array<[number, Buffer]>;
   emitGap(seq: number): void;
 } {
@@ -41,13 +47,9 @@ function fakeSink(opts: { startOk?: boolean } = {}): TalkbackSink & {
     started: [],
     stopped: [],
     frames: [],
-    startTalkback(channel, homeBaseAttached) {
-      this.started.push([channel, homeBaseAttached]);
-      return opts.startOk ?? true;
-    },
-    stopTalkback(channel, homeBaseAttached) {
-      this.stopped.push([channel, homeBaseAttached]);
-      return true;
+    sendFrame(frame, channel) {
+      if (frame === TALK.start && opts.startOk === false) throw new Error("not connected");
+      (frame === TALK.stop ? this.stopped : this.started).push(channel);
     },
     sendAudioFrame(channel, frame) {
       this.frames.push([channel, frame]);
@@ -72,24 +74,24 @@ const settle = () => new Promise<void>((r) => process.nextTick(r));
 const quietLogger = (warn: (m: string) => void): Logger => ({ debug: () => {}, info: () => {}, error: () => {}, warn });
 
 describe("Talkback lifecycle", () => {
-  it("opens the path with the channel and topology it was built for", () => {
+  it("opens the path with its start frame on the channel it was built for", () => {
     const sink = fakeSink();
-    new Talkback(sink, { channel: 3, homeBaseAttached: true }).start("aac-lc");
-    expect(sink.started).toEqual([[3, true]]);
+    new Talkback(sink, { channel: 3, ...TALK }).start("aac-lc");
+    expect(sink.started).toEqual([3]);
   });
 
   it("throws instead of accepting audio nobody would hear when the path will not open", () => {
     const sink = fakeSink({ startOk: false });
-    expect(() => new Talkback(sink, { channel: 3, homeBaseAttached: true }).start("aac-lc")).toThrow(/could not open/);
+    expect(() => new Talkback(sink, { channel: 3, ...TALK }).start("aac-lc")).toThrow(/not connected/);
   });
 
   it("sends the stop frame and forgets queued audio on stop", async () => {
     const sink = fakeSink();
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false }).start("aac-lc");
+    const talk = new Talkback(sink, { channel: 0, ...TALK }).start("aac-lc");
     talk.write(Buffer.concat([adtsFrame(64), adtsFrame(64), adtsFrame(64)]));
     expect(talk.pending).toBe(3);
     await talk.stop();
-    expect(sink.stopped).toEqual([[0, false]]);
+    expect(sink.stopped).toEqual([0]);
     expect(talk.pending).toBe(0);
     vi.advanceTimersByTime(AAC_FRAME_MS * 5);
     expect(sink.frames).toEqual([]);
@@ -97,7 +99,7 @@ describe("Talkback lifecycle", () => {
 
   it("is idempotent on stop", async () => {
     const sink = fakeSink();
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false }).start("aac-lc");
+    const talk = new Talkback(sink, { channel: 0, ...TALK }).start("aac-lc");
     await talk.stop();
     await talk.stop();
     expect(sink.stopped).toHaveLength(1);
@@ -109,10 +111,10 @@ describe("Talkback lifecycle", () => {
    */
   it("is idempotent on start", () => {
     const sink = fakeSink();
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false }).start("aac-lc");
+    const talk = new Talkback(sink, { channel: 0, ...TALK }).start("aac-lc");
     talk.start("aac-lc");
     talk.start("aac-lc");
-    expect(sink.started).toEqual([[0, false]]);
+    expect(sink.started).toEqual([0]);
 
     talk.write(adtsFrame(64));
     vi.advanceTimersByTime(AAC_FRAME_MS);
@@ -128,7 +130,7 @@ describe("Talkback lifecycle", () => {
 describe("Talkback and an unacknowledged frame", () => {
   it("reports a gap the session abandoned", () => {
     const sink = fakeSink();
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false }).start("aac-lc");
+    const talk = new Talkback(sink, { channel: 0, ...TALK }).start("aac-lc");
     const errors: Error[] = [];
     talk.on("error", (e) => errors.push(e));
 
@@ -140,7 +142,7 @@ describe("Talkback and an unacknowledged frame", () => {
 
   it("stops listening for gaps once the path is closed", async () => {
     const sink = fakeSink();
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false }).start("aac-lc");
+    const talk = new Talkback(sink, { channel: 0, ...TALK }).start("aac-lc");
     const errors: Error[] = [];
     talk.on("error", (e) => errors.push(e));
 
@@ -154,7 +156,7 @@ describe("Talkback and an unacknowledged frame", () => {
 describe("Talkback for a camera that plays aac-eld", () => {
   it("paces one access unit per write at 32 ms", () => {
     const sink = fakeSink();
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false }).start("aac-eld");
+    const talk = new Talkback(sink, { channel: 0, ...TALK }).start("aac-eld");
     expect(talk.codec).toBe("aac-eld");
     talk.write(eldUnit(120));
     talk.write(eldUnit(121));
@@ -168,7 +170,7 @@ describe("Talkback for a camera that plays aac-eld", () => {
 
   it("rejects an access unit longer than the device accepts", () => {
     const sink = fakeSink();
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false }).start("aac-eld");
+    const talk = new Talkback(sink, { channel: 0, ...TALK }).start("aac-eld");
     const errors: string[] = [];
     talk.on("error", (e) => errors.push(e.message));
     talk.write(eldUnit(641));
@@ -177,15 +179,15 @@ describe("Talkback for a camera that plays aac-eld", () => {
   });
 
   it("writable is object-mode only for aac-eld", () => {
-    const eld = new Talkback(fakeSink(), { channel: 0, homeBaseAttached: false }).start("aac-eld");
-    const lc = new Talkback(fakeSink(), { channel: 0, homeBaseAttached: false }).start("aac-lc");
+    const eld = new Talkback(fakeSink(), { channel: 0, ...TALK }).start("aac-eld");
+    const lc = new Talkback(fakeSink(), { channel: 0, ...TALK }).start("aac-lc");
     expect(eld.writable().writableObjectMode).toBe(true);
     expect(lc.writable().writableObjectMode).toBe(false);
   });
 
   it("writable withholds its callback at the high-water mark", async () => {
     const sink = fakeSink();
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false, highWaterFrames: 2 }).start("aac-eld");
+    const talk = new Talkback(sink, { channel: 0, ...TALK, highWaterFrames: 2 }).start("aac-eld");
     const w = talk.writable();
     const done = vi.fn();
     w.write(eldUnit(100));
@@ -203,7 +205,7 @@ describe("Talkback for a camera that plays aac-eld", () => {
 describe("Talkback pacing", () => {
   it("releases exactly one frame per frame-duration tick", () => {
     const sink = fakeSink();
-    const talk = new Talkback(sink, { channel: 2, homeBaseAttached: true }).start("aac-lc");
+    const talk = new Talkback(sink, { channel: 2, ...TALK }).start("aac-lc");
     talk.write(Buffer.concat([adtsFrame(64), adtsFrame(64), adtsFrame(64)]));
 
     expect(sink.frames).toHaveLength(0);
@@ -216,7 +218,7 @@ describe("Talkback pacing", () => {
 
   it("does not drain a whole clip at once — the reason pacing exists", () => {
     const sink = fakeSink();
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false }).start("aac-lc");
+    const talk = new Talkback(sink, { channel: 0, ...TALK }).start("aac-lc");
     const clip = Buffer.concat(Array.from({ length: 50 }, () => adtsFrame(64)));
     talk.write(clip);
     vi.advanceTimersByTime(AAC_FRAME_MS * 10);
@@ -232,7 +234,7 @@ describe("Talkback pacing", () => {
    */
   it("catches up after a late tick instead of losing the frames it owed", () => {
     const sink = fakeSink();
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false }).start("aac-lc");
+    const talk = new Talkback(sink, { channel: 0, ...TALK }).start("aac-lc");
     talk.write(Buffer.concat(Array.from({ length: 20 }, () => adtsFrame(64))));
 
     vi.advanceTimersByTime(AAC_FRAME_MS * 5);
@@ -246,7 +248,7 @@ describe("Talkback pacing", () => {
 
   it("does not owe frames for silence the source itself left", () => {
     const sink = fakeSink();
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false }).start("aac-lc");
+    const talk = new Talkback(sink, { channel: 0, ...TALK }).start("aac-lc");
     talk.write(adtsFrame(64));
     vi.advanceTimersByTime(AAC_FRAME_MS * 20);
     expect(sink.frames).toHaveLength(1);
@@ -258,7 +260,7 @@ describe("Talkback pacing", () => {
 
   it("reassembles frames split across writes", () => {
     const sink = fakeSink();
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false }).start("aac-lc");
+    const talk = new Talkback(sink, { channel: 0, ...TALK }).start("aac-lc");
     const frame = adtsFrame(120);
     talk.write(frame.subarray(0, 40));
     expect(talk.pending).toBe(0);
@@ -277,7 +279,7 @@ describe("Talkback pacing", () => {
 describe("Talkback completion", () => {
   it("stays quiet while the queue empties but the input is still open", () => {
     const sink = fakeSink();
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false }).start("aac-lc");
+    const talk = new Talkback(sink, { channel: 0, ...TALK }).start("aac-lc");
     const finished = vi.fn();
     talk.on("finished", finished);
 
@@ -292,7 +294,7 @@ describe("Talkback completion", () => {
 
   it("fires once the input has ended AND the queue has drained", () => {
     const sink = fakeSink();
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false }).start("aac-lc");
+    const talk = new Talkback(sink, { channel: 0, ...TALK }).start("aac-lc");
     const finished = vi.fn();
     talk.on("finished", finished);
 
@@ -311,7 +313,7 @@ describe("Talkback completion", () => {
 
   it("refuses audio written after the input was declared finished", async () => {
     const sink = fakeSink();
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false }).start("aac-lc");
+    const talk = new Talkback(sink, { channel: 0, ...TALK }).start("aac-lc");
     const errors: Error[] = [];
     talk.on("error", (e) => errors.push(e));
 
@@ -325,7 +327,7 @@ describe("Talkback completion", () => {
 
   it("fires on end() when nothing is queued", async () => {
     const sink = fakeSink();
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false }).start("aac-lc");
+    const talk = new Talkback(sink, { channel: 0, ...TALK }).start("aac-lc");
     const finished = vi.fn();
     talk.on("finished", finished);
     talk.end();
@@ -335,7 +337,7 @@ describe("Talkback completion", () => {
 
   it("ends the input when a piped source finishes, with no explicit end() call", async () => {
     const sink = fakeSink();
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false }).start("aac-lc");
+    const talk = new Talkback(sink, { channel: 0, ...TALK }).start("aac-lc");
     const finished = vi.fn();
     talk.on("finished", finished);
 
@@ -358,9 +360,7 @@ describe("Talkback completion", () => {
 describe("Talkback error reporting with no listener", () => {
   it("logs instead of throwing when a rejected frame has nobody to report to", () => {
     const warn = vi.fn();
-    const talk = new Talkback(fakeSink(), { channel: 0, homeBaseAttached: false, logger: quietLogger(warn) }).start(
-      "aac-lc",
-    );
+    const talk = new Talkback(fakeSink(), { channel: 0, ...TALK, logger: quietLogger(warn) }).start("aac-lc");
     expect(() => talk.write(adtsFrame(64, { freqIndex: 4 }))).not.toThrow();
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0][0]).toMatch(/AAC-LC 16000 Hz mono/);
@@ -372,7 +372,7 @@ describe("Talkback error reporting with no listener", () => {
       throw new Error("socket gone");
     };
     const warn = vi.fn();
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false, logger: quietLogger(warn) }).start("aac-lc");
+    const talk = new Talkback(sink, { channel: 0, ...TALK, logger: quietLogger(warn) }).start("aac-lc");
     talk.write(adtsFrame(64));
     expect(() => vi.advanceTimersByTime(AAC_FRAME_MS)).not.toThrow();
     expect(warn).toHaveBeenCalledWith("socket gone");
@@ -387,7 +387,7 @@ describe("Talkback error reporting with no listener", () => {
     };
     const talk = new Talkback(fakeSink(), {
       channel: 0,
-      homeBaseAttached: false,
+      ...TALK,
       encoder,
       logger: quietLogger(warn),
     }).start("aac-lc");
@@ -401,7 +401,7 @@ describe("Talkback error reporting with no listener", () => {
 describe("Talkback input validation", () => {
   it("rejects audio the device cannot play rather than passing it through", () => {
     const sink = fakeSink();
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false }).start("aac-lc");
+    const talk = new Talkback(sink, { channel: 0, ...TALK }).start("aac-lc");
     const errors: Error[] = [];
     talk.on("error", (e) => errors.push(e));
     talk.write(adtsFrame(64, { freqIndex: 4 }));
@@ -412,7 +412,7 @@ describe("Talkback input validation", () => {
 
   it("rejects a frame longer than the device accepts", () => {
     const sink = fakeSink();
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false }).start("aac-lc");
+    const talk = new Talkback(sink, { channel: 0, ...TALK }).start("aac-lc");
     const errors: Error[] = [];
     talk.on("error", (e) => errors.push(e));
     talk.write(adtsFrame(700));
@@ -422,7 +422,7 @@ describe("Talkback input validation", () => {
 
   it("ignores writes after stop", async () => {
     const sink = fakeSink();
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false }).start("aac-lc");
+    const talk = new Talkback(sink, { channel: 0, ...TALK }).start("aac-lc");
     await talk.stop();
     talk.write(adtsFrame(64));
     expect(talk.pending).toBe(0);
@@ -434,7 +434,7 @@ describe("Talkback PCM input", () => {
     const sink = fakeSink();
     const encoded = adtsFrame(64);
     const encoder = { encode: vi.fn(async () => [encoded]) };
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false, encoder }).start("aac-lc");
+    const talk = new Talkback(sink, { channel: 0, ...TALK, encoder }).start("aac-lc");
     talk.write(Buffer.alloc(2048));
     await settle();
     expect(talk.pending).toBe(1);
@@ -450,7 +450,7 @@ describe("Talkback PCM input", () => {
         throw new Error("encoder died");
       }),
     };
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false, encoder }).start("aac-lc");
+    const talk = new Talkback(sink, { channel: 0, ...TALK, encoder }).start("aac-lc");
     const errors: Error[] = [];
     talk.on("error", (e) => errors.push(e));
     talk.write(Buffer.alloc(2048));
@@ -462,7 +462,7 @@ describe("Talkback PCM input", () => {
   it("closes the encoder on stop", async () => {
     const sink = fakeSink();
     const encoder = { encode: async () => [], close: vi.fn() };
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false, encoder }).start("aac-lc");
+    const talk = new Talkback(sink, { channel: 0, ...TALK, encoder }).start("aac-lc");
     await talk.stop();
     expect(encoder.close).toHaveBeenCalled();
   });
@@ -487,7 +487,7 @@ describe("Talkback PCM input", () => {
         return [f];
       },
     };
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false, encoder }).start("aac-lc");
+    const talk = new Talkback(sink, { channel: 0, ...TALK, encoder }).start("aac-lc");
 
     talk.write(Buffer.alloc(4));
     talk.write(Buffer.alloc(4));
@@ -513,7 +513,7 @@ describe("Talkback PCM input", () => {
         return [f];
       },
     };
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false, encoder }).start("aac-lc");
+    const talk = new Talkback(sink, { channel: 0, ...TALK, encoder }).start("aac-lc");
 
     talk.write(Buffer.alloc(4));
     talk.end();
@@ -527,7 +527,7 @@ describe("Talkback PCM input", () => {
 describe("Talkback writable()", () => {
   it("withholds its callback while the queue is at the high-water mark", async () => {
     const sink = fakeSink();
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false, highWaterFrames: 2 }).start("aac-lc");
+    const talk = new Talkback(sink, { channel: 0, ...TALK, highWaterFrames: 2 }).start("aac-lc");
     const w = talk.writable();
 
     const done = vi.fn();
@@ -545,7 +545,7 @@ describe("Talkback writable()", () => {
 
   it("lets a write through immediately while there is room", async () => {
     const sink = fakeSink();
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false, highWaterFrames: 10 }).start("aac-lc");
+    const talk = new Talkback(sink, { channel: 0, ...TALK, highWaterFrames: 10 }).start("aac-lc");
     const done = vi.fn();
     talk.writable().write(adtsFrame(64), done);
     await settle();
@@ -554,7 +554,7 @@ describe("Talkback writable()", () => {
 
   it("releases a withheld writer on stop so a pipe cannot hang", async () => {
     const sink = fakeSink();
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false, highWaterFrames: 1 }).start("aac-lc");
+    const talk = new Talkback(sink, { channel: 0, ...TALK, highWaterFrames: 1 }).start("aac-lc");
     const done = vi.fn();
     talk.writable().write(Buffer.concat([adtsFrame(64), adtsFrame(64)]), done);
     await settle();
@@ -573,7 +573,7 @@ describe("Talkback media-session lifetime", () => {
   it("releases the media session it was holding, exactly once", async () => {
     const sink = fakeSink();
     const releaseMedia = vi.fn();
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false, releaseMedia }).start("aac-lc");
+    const talk = new Talkback(sink, { channel: 0, ...TALK, releaseMedia }).start("aac-lc");
     await talk.stop();
     await talk.stop();
     expect(releaseMedia).toHaveBeenCalledTimes(1);
@@ -582,7 +582,7 @@ describe("Talkback media-session lifetime", () => {
   it("releases the media session even when no audio was ever written", async () => {
     const sink = fakeSink();
     const releaseMedia = vi.fn();
-    await new Talkback(sink, { channel: 0, homeBaseAttached: false, releaseMedia }).start("aac-lc").stop();
+    await new Talkback(sink, { channel: 0, ...TALK, releaseMedia }).start("aac-lc").stop();
     expect(releaseMedia).toHaveBeenCalled();
   });
 
@@ -593,11 +593,11 @@ describe("Talkback media-session lifetime", () => {
    */
   it("releases the media session even when the session's stop frame throws", async () => {
     const sink = fakeSink();
-    sink.stopTalkback = () => {
+    const releaseMedia = vi.fn();
+    const talk = new Talkback(sink, { channel: 0, ...TALK, releaseMedia }).start("aac-lc");
+    sink.sendFrame = () => {
       throw new Error("session gone");
     };
-    const releaseMedia = vi.fn();
-    const talk = new Talkback(sink, { channel: 0, homeBaseAttached: false, releaseMedia }).start("aac-lc");
     await expect(talk.stop()).rejects.toThrow("session gone");
     expect(releaseMedia).toHaveBeenCalledTimes(1);
   });
@@ -610,9 +610,7 @@ describe("Talkback media-session lifetime", () => {
       },
     };
     const releaseMedia = vi.fn();
-    const talk = new Talkback(fakeSink(), { channel: 0, homeBaseAttached: false, encoder, releaseMedia }).start(
-      "aac-lc",
-    );
+    const talk = new Talkback(fakeSink(), { channel: 0, ...TALK, encoder, releaseMedia }).start("aac-lc");
     await expect(talk.stop()).rejects.toThrow("encoder wedged");
     expect(releaseMedia).toHaveBeenCalledTimes(1);
   });
@@ -626,7 +624,7 @@ describe("Talkback media-session lifetime", () => {
     const releaseMedia = vi.fn();
     new Talkback(sink, {
       channel: 0,
-      homeBaseAttached: false,
+      ...TALK,
       releaseMedia,
       idleTimeoutMs: 5000,
     }).start("aac-lc");
@@ -636,7 +634,7 @@ describe("Talkback media-session lifetime", () => {
 
     vi.advanceTimersByTime(1500);
     await settle();
-    expect(sink.stopped).toEqual([[0, false]]);
+    expect(sink.stopped).toEqual([0]);
     expect(releaseMedia).toHaveBeenCalledTimes(1);
   });
 
@@ -644,7 +642,7 @@ describe("Talkback media-session lifetime", () => {
     const sink = fakeSink();
     const talk = new Talkback(sink, {
       channel: 0,
-      homeBaseAttached: false,
+      ...TALK,
       idleTimeoutMs: 5000,
     }).start("aac-lc");
 
@@ -689,6 +687,13 @@ describe("Talkback wiring installed by the router", () => {
     const router = new P2PCommandRouter({
       mega: {} as never,
       logger: { warn: vi.fn() } as never,
+      liveFramesFor: () => ({
+        start: TALK.start,
+        stop: TALK.stop,
+        talkStart: TALK.start,
+        talkStop: TALK.stop,
+        ability: 0,
+      }),
       listDevices: () => records,
       ensureDevices: async () => {},
       onConnect: () => {},
@@ -735,7 +740,7 @@ describe("Talkback wiring installed by the router", () => {
     consumer.emit("stop");
     await settle();
 
-    expect(sink.stopped).toEqual([[0, false]]);
+    expect(sink.stopped).toEqual([0]);
     const before = sink.frames.length;
     vi.advanceTimersByTime(AAC_FRAME_MS * 10);
     expect(sink.frames).toHaveLength(before);
@@ -786,7 +791,7 @@ describe("Talkback wiring installed by the router", () => {
 
     await expect(second).rejects.toThrow(/already talking/);
     await expect(first).resolves.toBeDefined();
-    expect(sink.started).toEqual([[0, false]]);
+    expect(sink.started).toEqual([0]);
   });
 
   /** The mirror case: the claim is gone because everything was closed, so pacing would talk into a dead session. */
@@ -822,7 +827,7 @@ describe("Talkback wiring installed by the router", () => {
     const { router, sink } = routerWithFakeSource({ audio: null, model: "T8400" });
     const talk = await router.mediaProviderFor("T8000P0000000000").talkback!();
     expect(talk.codec).toBe("aac-lc");
-    expect(sink.started).toEqual([[0, false]]);
+    expect(sink.started).toEqual([0]);
   });
 
   it("opens aac-lc for a device with no loaded record", async () => {
@@ -871,7 +876,7 @@ describe("Talkback wiring installed by the router", () => {
     await vi.advanceTimersByTimeAsync(3000);
     const talk = await opening;
     expect(talk.codec).toBe("aac-lc");
-    expect(sink.started).toEqual([[0, false]]);
+    expect(sink.started).toEqual([0]);
   });
 
   it("refuses a talkback whose media session ends while the codec is read", async () => {

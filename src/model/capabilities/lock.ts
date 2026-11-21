@@ -21,19 +21,19 @@ import type { Command, CommandSink, AutoLockSnapshot, MediaProvider } from "../.
  * tests). If a future capture revises this id, BOTH copies must be updated by hand.
  */
 export const LOCK_SETTING_ID = {
-  /** One-touch lock toggle. Structurally confirmed via the app's own JS (2026-07-18) — see the module doc. */
+  /** One-touch lock toggle, from the app's own JS — see the module doc. */
   ONE_TOUCH_LOCK: 1,
-  /** Scramble-passcode toggle. Structurally confirmed via the app's own JS (2026-07-18) — see the module doc. */
+  /** Scramble-passcode toggle, from the app's own JS — see the module doc. */
   SCRAMBLE_PASSCODE: 3,
-  /** Wifi-status toggle. Structurally confirmed via the app's own JS (2026-07-18) — see the module doc. */
+  /** Wifi-status toggle, from the app's own JS — see the module doc. */
   WIFI_STATUS: 5,
-  /** Event-log-enable toggle. Structurally confirmed via the app's own JS (2026-07-18) — see the module doc. */
+  /** Event-log-enable toggle, from the app's own JS — see the module doc. */
   ENABLE_LOG: 6,
-  /** Rain Mode toggle on the T8531 video lock. Verified live 2026-07-18. */
+  /** Rain Mode toggle. */
   RAIN_MODE: 7,
-  /** Privacy-mode toggle. Structurally confirmed via the app's own JS (2026-07-18) — see the module doc. */
+  /** Privacy-mode toggle, from the app's own JS — see the module doc. */
   PRIVACY_MODE: 9,
-  /** One-touch rear-lock toggle. Structurally confirmed via the app's own JS (2026-07-18) — see the module doc. */
+  /** One-touch rear-lock toggle, from the app's own JS — see the module doc. */
   ONE_TOUCH_REAR_LOCK: 11,
 } as const;
 
@@ -51,13 +51,11 @@ export const LOCK_SETTING_ID = {
  * Which pipe it is does not reach `dev.lock()` — its surface is identical either way, the same way
  * P2P-vs-cloud is hidden for live media.
  *
- * Classic Wi-Fi lock: `lock()` and `unlock()` are both confirmed on hardware — the bolt moved each way, the
- * device answered result code 0, and the cloud status followed. That device answers every command, so on it
- * the two reject on a refusal or an unanswered command as well as on missing identity.
+ * Classic Wi-Fi lock: it answers every command with a result code (0 = done), so on it the two reject on a refusal or an unanswered command as well as on missing identity.
  */
 export type LockActions = Surface<typeof LOCK_MEMBERS>;
 
-/** Native video-lock command vocabulary verified on T8530 attached to HomeBase 3. */
+/** Native video-lock command vocabulary, on the HomeBase 3 route `actuationAvailable` opens. */
 const VIDEO_LOCK_CMD = { ACTUATE: 1961, STATUS: 1955, NOTIFY: 1351 } as const;
 
 /**
@@ -71,7 +69,6 @@ function openLid(ctx: CommandContext, sink: CommandSink): Promise<void> {
     payload: { isOpen: 1, userIndex: 0 },
     channel: ctx.channel,
     mValue3: 0,
-    level2Sender: "set-payload",
   });
 }
 
@@ -158,7 +155,7 @@ async function refreshStatus(
   return nativeState(payload.slState);
 }
 
-/** Only the two observed settled states carry a boolean. */
+/** Only the two settled states ("3", "4") carry a boolean. */
 function nativeState(raw: unknown): boolean | undefined {
   if (raw === "3") return false;
   if (raw === "4") return true;
@@ -208,13 +205,13 @@ const rainModeAvailable = (ctx: CommandContext): boolean =>
  * They carry no `param`: a setting id is not a param id, nothing reports these back, and declaring one
  * would put a wire number where the schema expects a reported value.
  *
- * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * Exported but NOT published: each entry states its wire id and its gate,
  * which the reference site does not carry.
  * @internal
  */
 export const LOCK_MEMBERS = {
   /**
-   * The lock's own state, verified on param 6000: "4" = locked, "3" = unlocked.
+   * The lock's own state, on param 6000: "4" = locked, "3" = unlocked.
    * `writtenElsewhere` points at the `lock`/`unlock` methods — a single `write` cannot express two
    * verbs that carry no value.
    */
@@ -222,10 +219,9 @@ export const LOCK_MEMBERS = {
     param: 6000,
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
     writtenElsewhere: true,
     coerce: (raw) => String(raw).trim() === "4",
-    description: "Lock state, true=locked (verified: param 6000, 4=locked, 3=unlocked).",
+    description: "Lock state, true=locked (param 6000, 4=locked, 3=unlocked).",
   },
   /**
    * Cell charge as a percentage, on param 1101 or smart-lock param 6001. Named `battery`
@@ -238,8 +234,7 @@ export const LOCK_MEMBERS = {
     type: "number",
     unit: "%",
     kind: "percent",
-    provenance: "verified",
-    description: "Lock battery level 0-100 (verified: param 1101, alias 6001).",
+    description: "Lock battery level 0-100 (param 1101, alias 6001).",
   },
 
   /**
@@ -270,7 +265,7 @@ export const LOCK_MEMBERS = {
    * Read-modify-write the auto-lock setting: the transport GETs the device's current settings, changes
    * only `enabled` (+ `delaySeconds` if given — otherwise the current delay is preserved), and writes the
    * rest back verbatim. Works on both the T8531 video lock and the T85D0 garage/lock, which share the
-   * identical settings frame; confirmed on-device in both directions on both families.
+   * identical settings frame.
    *
    * **Unlike `lock`/`unlock` this can reject on a device TIMEOUT**, not just missing identity — the GET
    * step is a genuine precondition, so this one is not fire-and-forget.
@@ -297,8 +292,7 @@ export const LOCK_MEMBERS = {
 
   /**
    * Toggle Rain Mode — a pure blind write, unlike `setAutoLock`: the compact frame carries only this one
-   * field, so there is no GET pass and it is fire-and-forget. Confirmed on-device end-to-end in both
-   * directions, with the app UI reflecting the new state afterward. P2P video lock only.
+   * field, so there is no GET pass and it is fire-and-forget. P2P video lock only.
    */
   setRainMode: method(
     ({ ctx, sink }) =>
@@ -320,7 +314,6 @@ export const LOCK_MEMBERS = {
     writeOnly: true,
     unverified: true,
     available: overP2p,
-    provenance: "apk",
     description: "One-touch locking (setting-id 1). Wire shape confirmed in the app's own JS, NOT captured.",
     write: (v, ctx) => settingToggleCommand(LOCK_SETTING_ID.ONE_TOUCH_LOCK, v, ctx),
   },
@@ -335,7 +328,6 @@ export const LOCK_MEMBERS = {
     writeOnly: true,
     unverified: true,
     available: overP2p,
-    provenance: "apk",
     description:
       "Scramble the passcode entry pad (setting-id 3). Wire shape confirmed in the app's own JS, NOT captured.",
     write: (v, ctx) => settingToggleCommand(LOCK_SETTING_ID.SCRAMBLE_PASSCODE, v, ctx),
@@ -351,7 +343,6 @@ export const LOCK_MEMBERS = {
     writeOnly: true,
     unverified: true,
     available: overP2p,
-    provenance: "apk",
     description: "Wi-Fi status reporting (setting-id 5). Wire shape confirmed in the app's own JS, NOT captured.",
     write: (v, ctx) => settingToggleCommand(LOCK_SETTING_ID.WIFI_STATUS, v, ctx),
   },
@@ -366,7 +357,6 @@ export const LOCK_MEMBERS = {
     writeOnly: true,
     unverified: true,
     available: overP2p,
-    provenance: "apk",
     description: "Event-log recording (setting-id 6). Wire shape confirmed in the app's own JS, NOT captured.",
     write: (v, ctx) => settingToggleCommand(LOCK_SETTING_ID.ENABLE_LOG, v, ctx),
   },
@@ -381,7 +371,6 @@ export const LOCK_MEMBERS = {
     writeOnly: true,
     unverified: true,
     available: overP2p,
-    provenance: "apk",
     description: "Lock privacy mode (setting-id 9). Wire shape confirmed in the app's own JS, NOT captured.",
     write: (v, ctx) => settingToggleCommand(LOCK_SETTING_ID.PRIVACY_MODE, v, ctx),
   },
@@ -396,7 +385,6 @@ export const LOCK_MEMBERS = {
     writeOnly: true,
     unverified: true,
     available: overP2p,
-    provenance: "apk",
     description: "One-touch rear locking (setting-id 11). Wire shape confirmed in the app's own JS, NOT captured.",
     write: (v, ctx) => settingToggleCommand(LOCK_SETTING_ID.ONE_TOUCH_REAR_LOCK, v, ctx),
   },
@@ -466,7 +454,7 @@ function decodeLockTransition(signal: InboundSignal): Record<string, unknown> {
 }
 
 /**
- * `lock` — smart lock. `locked` reports lock state via verified param 6000 (4=locked, 3=unlocked);
+ * `lock` — smart lock. `locked` reports lock state via param 6000 (4=locked, 3=unlocked);
  * a device that reports no stable state param carries its transitions on the `lockState` event instead,
  * whose payload names the decoded `locked`.
  */

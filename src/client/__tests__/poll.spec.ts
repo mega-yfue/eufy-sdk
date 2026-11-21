@@ -2,6 +2,17 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EufyMega } from "../eufy-mega.js";
 import { Device } from "../../model/device.js";
 import type { ParamChange } from "../device-registry.js";
+import { parseThingsList } from "../../model/capabilities/thing-description.js";
+
+// The product's settings-bundle data, synthetic: the spec is about the code, not the shipped data.
+vi.mock("../../model/capabilities/bundle-wires.generated.json", async () => {
+  const f = await import("../../model/capabilities/__tests__/bundle-fixture.js");
+  return f.bundleData("T8114", {
+    camera_on_off: f.power(),
+    led_on_off: f.toggle(1045),
+    nightvision_type_new: f.nightVision(1013),
+  });
+});
 
 /**
  * The cloud-param poll loop — the producer behind the capabilities' `source:"poll"` event mappings.
@@ -58,8 +69,16 @@ function liveCamera(eufy: EufyMega, sn = "T8000P0000000000"): Device {
     deviceType: 9,
     // A battery camera, because the fixture reports a battery level (1101) and is described as one.
     model: "T8114",
-    params: { 1101: "88", 1035: "0", 1045: "1", 1277: "1" },
+    params: { 1101: "88", 1035: "0", 1045: "1", 1013: "1" },
     paramUpdatedAt: {},
+    things: parseThingsList({
+      things_list: [
+        {
+          profile: { product_code: "T8114" },
+          properties: ["camera_on_off", "led_on_off", "nightvision_type_new"].map((identifier) => ({ identifier })),
+        },
+      ],
+    }).T8114,
   };
   const dev = Device.fromRecord(sn, record);
   vi.spyOn((eufy as any).registry, "record").mockResolvedValue(record);
@@ -260,11 +279,10 @@ describe("cloud-param poll loop", () => {
     });
     await (eufy as any).pollOnce();
 
-    expect(seen).toEqual([
+    expect(seen, "its bundle reads 1035 alone, not 2001").toEqual([
       { deviceSn: "T8000P0000000000", property: "enabled", value: false },
-      { deviceSn: "T8000P0000000000", property: "enabled", value: true },
     ]);
-    expect(dev.getProperty("enabled")?.value).toBe(true);
+    expect(dev.getProperty("enabled")?.value).toBe(false);
   });
 
   /**
@@ -277,8 +295,8 @@ describe("cloud-param poll loop", () => {
     liveCamera(eufy);
     vi.spyOn((eufy as any).registry, "pollChanges").mockResolvedValue({
       params: [
-        { deviceSn: "T8000P0000000000", paramType: 1045, from: "1", to: "0", params: { 1045: "0", 1277: "2" } },
-        { deviceSn: "T8000P0000000000", paramType: 1277, from: "1", to: "2", params: { 1045: "0", 1277: "2" } },
+        { deviceSn: "T8000P0000000000", paramType: 1045, from: "1", to: "0", params: { 1045: "0", 1013: "0" } },
+        { deviceSn: "T8000P0000000000", paramType: 1013, from: "1", to: "0", params: { 1045: "0", 1013: "0" } },
       ],
       added: [],
       removed: [],
@@ -290,8 +308,8 @@ describe("cloud-param poll loop", () => {
     await (eufy as any).pollOnce();
 
     expect(seen).toEqual([
+      { deviceSn: "T8000P0000000000", property: "nightVision", value: 100 },
       { deviceSn: "T8000P0000000000", property: "statusLed", value: false },
-      { deviceSn: "T8000P0000000000", property: "nightVision", value: 2 },
     ]);
   });
 

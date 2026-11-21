@@ -4,7 +4,7 @@
  * Given a cloud record (model/deviceType/params), this produces:
  *  - the resolved `{ codec, capabilities, name }`,
  *  - a per-param table cross-referenced against the param dictionary (known/unknown, name,
- *    provenance, inferred type, live value),
+ *    inferred type, live value),
  *  - a **paste-ready `registry.ts` row** for the device's model, and
  *  - **paste-ready param-dictionary snippets** for every param we don't yet know.
  *
@@ -14,7 +14,7 @@
  * @module model/inspect
  */
 
-import type { CloudRecord, PropertySource, PropertyValueType, RegistryEntry, ResolvedDevice } from "./types.js";
+import type { CloudRecord, PropertyValueType, RegistryEntry, ResolvedDevice } from "./types.js";
 import { codecBaseline } from "./capabilities/index.js";
 import type { ThingDescription } from "./capabilities/thing-description.js";
 import { resolveDevice, MODEL_REGISTRY } from "./registry.js";
@@ -29,8 +29,6 @@ export interface ParamInspection {
   known: boolean;
   /** Our dictionary name, or `param<pt>` when unknown. */
   name: string;
-  /** Trust of the dictionary mapping (absent ⇒ not in dictionary). */
-  provenance?: PropertySource;
   /** Type inferred from the live value (bool/number/string). */
   inferredType: PropertyValueType;
 }
@@ -43,7 +41,7 @@ export interface DeviceInspection {
   namespace: ParamNamespace;
   resolved: ResolvedDevice;
   params: ParamInspection[];
-  counts: { total: number; known: number; unknown: number; unconfirmed: number };
+  counts: { total: number; known: number; unknown: number };
   /** Suggested curated registry row (codec + extra caps + name). */
   suggestedRegistry: { model: string; entry: RegistryEntry; exists: boolean };
   /** Paste-ready `registry.ts` line. */
@@ -76,7 +74,7 @@ function buildDictSnippet(model: string, unknown: ParamInspection[]): string {
   return unknown
     .map(
       (p) =>
-        `  ${p.paramType}: { name: ${tsString(p.name)}, type: ${tsString(p.inferredType)}, provenance: "guessed" }, // reported by ${model}; sample value=${p.value}; needs naming/toggle-diff`,
+        `  ${p.paramType}: { name: ${tsString(p.name)}, type: ${tsString(p.inferredType)} }, // reported by ${model}; sample value=${p.value}; needs naming/toggle-diff`,
     )
     .join("\n");
 }
@@ -91,8 +89,7 @@ export function inspectParams(rec: CloudRecord, sn?: string): DeviceInspection {
   const params: ParamInspection[] = [];
 
   // Naming precedence mirrors Device.applyParams: a capability's (curated) PropertySpec wins over
-  // the raw param dictionary, which wins over `param<pt>`. So a confirmed capability name like
-  // `chimeSwitch` (mega) is reported instead of the raw dictionary's guessed name.
+  // the raw param dictionary, which wins over `param<pt>`.
   const specByParam = new Map(resolved.properties.map((p) => [p.paramType, p]));
 
   for (const [rawKey, rawVal] of Object.entries(rec.params ?? {})) {
@@ -106,15 +103,12 @@ export function inspectParams(rec: CloudRecord, sn?: string): DeviceInspection {
       value,
       known: !!(spec || def),
       name: spec ? spec.name : def ? def.name : `param${pt}`,
-      provenance: spec?.provenance ?? def?.provenance,
       inferredType: spec ? spec.type : def ? def.type : inferType(value),
     });
   }
   params.sort((a, b) => a.paramType - b.paramType);
 
   const unknown = params.filter((p) => !p.known);
-  // "unconfirmed" = in the dictionary but with a weak (guessed) name we'd like a human to verify.
-  const unconfirmed = params.filter((p) => p.known && p.provenance === "guessed");
 
   // Suggested registry row: the codec + the capabilities beyond the codec baseline (the "extras"
   // a curated row exists to pin), plus the resolved display name.
@@ -138,7 +132,6 @@ export function inspectParams(rec: CloudRecord, sn?: string): DeviceInspection {
       total: params.length,
       known: params.length - unknown.length,
       unknown: unknown.length,
-      unconfirmed: unconfirmed.length,
     },
     suggestedRegistry: { model, entry, exists: !!MODEL_REGISTRY[model.toUpperCase()] },
     registrySnippet: buildRegistrySnippet(model, entry),

@@ -9,7 +9,7 @@ import type { CapabilityModule } from "./types.js";
  * `batteryLow` is `unexposed`: the app maps its param to the same low-battery field the entry and motion
  * sensors feed, but its value decode is absent from the app's parser, so the polarity is not evidenced.
  *
- * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * Exported but NOT published: each entry states its wire id and its gate,
  * which the reference site does not carry.
  * @internal
  */
@@ -24,7 +24,6 @@ export const KEYPAD_MEMBERS = {
     param: 1653,
     type: "bool",
     kind: "boolean",
-    provenance: "apk",
     unexposed: true,
     description:
       "Keypad low-battery flag (APP_CMD_KEYPAD_BATTERY_CAP_STATE, 1653). UNVERIFIED polarity: the app " +
@@ -38,7 +37,6 @@ export const KEYPAD_MEMBERS = {
     param: 1655,
     type: "bool",
     kind: "boolean",
-    provenance: "apk",
     coerce: isChargingState,
     description:
       "Keypad charging — derived from APP_CMD_KEYPAD_BATTERY_CHARGER_STATE (1655) as `value ∉ {0,2}`, " +

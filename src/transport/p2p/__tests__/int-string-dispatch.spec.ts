@@ -12,8 +12,8 @@ interface FakeSession extends FakeP2PSession {
   sendIntStringCommand: ReturnType<typeof vi.fn>;
 }
 
-function setup(accountId = ACCOUNT_ID, register = true) {
-  const session = connectedSession() as FakeSession;
+function setup(accountId = ACCOUNT_ID, register = true, hasLevel2Key = true) {
+  const session = connectedSession(hasLevel2Key) as FakeSession;
   session.sendIntStringCommand = vi.fn();
   const router = routerWithSession(session, { accountId, register });
   return { router, session };
@@ -34,14 +34,27 @@ describe("P2P int-plus-string command dispatch", () => {
     expect(session.sendIntStringCommand).toHaveBeenCalledWith(1202, 10, 1, ACCOUNT_ID, 1);
   });
 
-  it("sends an int-pair set-param as the bare level-1 [channel][value] body, with no account id", async () => {
-    const { router, session } = setup();
-
+  it("sends an int-pair set-param as the bare [channel][value] body, with no account id", async () => {
+    const session = Object.assign(connectedSession(false), {
+      sendIntStringCommand: vi.fn(),
+      sendBytes: vi.fn(() => true),
+    });
     await onFakeTime(() =>
-      router.dispatchCommand(DEVICE_SN, { kind: "set-param", param: 1013, value: 3, form: "int-pair", channel: 1 }),
+      routerWithSession(session)
+        .dispatchCommand(DEVICE_SN, {
+          kind: "set-param",
+          param: 1013,
+          value: 3,
+          form: "int-pair",
+          channel: 1,
+        })
+        .catch(() => undefined),
     );
-
-    expect(session.sendIntStringCommand).toHaveBeenCalledWith(1013, 3, 1, "", 1);
+    const pair = Buffer.alloc(8);
+    pair.writeUInt32LE(1, 0);
+    pair.writeUInt32LE(3, 4);
+    expect(session.sendIntStringCommand).not.toHaveBeenCalled();
+    expect(session.sendBytes).toHaveBeenCalledWith(pair, 1, 1013);
   });
 
   it("rejects missing account identity without sending", async () => {

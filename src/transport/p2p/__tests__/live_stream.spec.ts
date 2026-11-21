@@ -1,11 +1,11 @@
-import { LiveStream, DEFAULT_KEEPALIVE_MS } from "../live-stream.js";
-import { STATION_CHANNEL, type P2PSession } from "../p2p-session.js";
-import { FakeP2PSession, START_CODE, p2pAudioFrame, p2pVideoFrame } from "./live-source-fixtures.js";
+import { LiveStream } from "../live-stream.js";
+import type { P2PSession } from "../p2p-session.js";
+import { FakeP2PSession, START_CODE, p2pAudioFrame, p2pVideoFrame, LIVE_FRAMES } from "./live-source-fixtures.js";
 
 describe("LiveStream", () => {
   function mk(opts = {}) {
     const session = new FakeP2PSession();
-    const live = new LiveStream(session as unknown as P2PSession, opts);
+    const live = new LiveStream(session as unknown as P2PSession, { frames: LIVE_FRAMES, ...opts });
     return { session, live };
   }
 
@@ -18,7 +18,7 @@ describe("LiveStream", () => {
   });
 
   it("holds dependent video after transport loss until a fresh keyframe", () => {
-    const { session, live } = mk({ keepAliveMs: 0 });
+    const { session, live } = mk({ frames: LIVE_FRAMES });
     const video = vi.fn();
     live.on("video", video);
     live.start();
@@ -39,12 +39,12 @@ describe("LiveStream", () => {
     const first = new LiveStream(session as unknown as P2PSession, {
       channel: 0,
       homeBaseAttached: true,
-      keepAliveMs: 0,
+      frames: LIVE_FRAMES,
     }).start();
     const second = new LiveStream(session as unknown as P2PSession, {
       channel: 2,
       homeBaseAttached: true,
-      keepAliveMs: 0,
+      frames: LIVE_FRAMES,
     }).start();
     const firstVideo = vi.fn();
     const secondVideo = vi.fn();
@@ -309,7 +309,7 @@ describe("LiveStream access-unit reassembly", () => {
   function mk(opts = {}) {
     const session = new FakeP2PSession();
     const frames: any[] = [];
-    const live = new LiveStream(session as unknown as P2PSession, opts).start();
+    const live = new LiveStream(session as unknown as P2PSession, { frames: LIVE_FRAMES, ...opts }).start();
     live.on("video", (f) => frames.push(f));
     return { session, live, frames };
   }
@@ -527,6 +527,7 @@ describe("LiveStream channel isolation on a HomeBase", () => {
     const live = new LiveStream(session as unknown as P2PSession, {
       channel,
       homeBaseAttached: true,
+      frames: LIVE_FRAMES,
       logger: logger as never,
     }).start();
     live.on("video", (f) => frames.push(f));
@@ -590,166 +591,5 @@ describe("LiveStream channel isolation on a HomeBase", () => {
 
     expect(frames).toHaveLength(1);
     expect(logger.warn).not.toHaveBeenCalled();
-  });
-});
-
-/**
- * The keepalive is ON by default. A battery camera stops sending ~8s after the last media start with
- * nothing holding it (measured live: video ceased at 8s and 10s on two battery cameras, with no stop
- * and no error), while a mains camera streamed unprompted for 25s. The nudge is idempotent, so a
- * camera that does not need it is unaffected.
- */
-describe("LiveStream keepalive default", () => {
-  it("re-issues the media start without the caller asking", () => {
-    vi.useFakeTimers();
-    try {
-      const session = new FakeP2PSession();
-      const stream = new LiveStream(session as unknown as P2PSession, { channel: 0 }).start();
-      expect(session.started).toBe(1);
-      vi.advanceTimersByTime(DEFAULT_KEEPALIVE_MS * 3 + 10);
-      expect(session.started).toBeGreaterThanOrEqual(4);
-      stream.stop();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  /**
-   * On an attached camera the nudge is not a ping — it re-sends the full media start, which over one session
-   * serving one camera at a time re-asserts this camera's channel against whatever else is warm on it.
-   * Measured on a real base, two attached streams sharing one session each restarted every 3 s and fought for
-   * it continuously.
-   *
-   * Once the station has delivered a frame of this camera's own channel it has proven it is serving this one,
-   * so re-asserting buys nothing and costs the contention. The SDK's own measurement agrees the nudge is
-   * unnecessary there: both attached cameras held a 40 s stream with it disabled, while the own-session camera
-   * that needs it went quiet at 13.6 s without it.
-   *
-   * It holds while that media KEEPS arriving. Silence says the station is serving something else, and the
-   * re-assert is what recovers it — see `attached-keepalive-stall.spec.ts`.
-   */
-  it("stops re-issuing the start on an attached camera while its own media keeps arriving", () => {
-    vi.useFakeTimers();
-    try {
-      const session = new FakeP2PSession();
-      const stream = new LiveStream(session as unknown as P2PSession, {
-        channel: 2,
-        homeBaseAttached: true,
-      }).start();
-      vi.advanceTimersByTime(DEFAULT_KEEPALIVE_MS * 2 + 10);
-      const beforeMedia = session.started;
-      expect(beforeMedia).toBeGreaterThan(1);
-
-      for (let tick = 0; tick < 5; tick++) {
-        session.push(p2pVideoFrame({ nal: Buffer.from([0x65, 1]), channel: 2 }));
-        vi.advanceTimersByTime(DEFAULT_KEEPALIVE_MS);
-      }
-
-      expect(session.started).toBe(beforeMedia);
-      stream.stop();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("keeps re-issuing the start on an own-session camera, which goes quiet without it", () => {
-    vi.useFakeTimers();
-    try {
-      const session = new FakeP2PSession();
-      const stream = new LiveStream(session as unknown as P2PSession, {
-        channel: 0,
-        homeBaseAttached: false,
-      }).start();
-      session.push(p2pVideoFrame({ nal: Buffer.from([0x65, 1]), channel: 0 }));
-      const afterMedia = session.started;
-      vi.advanceTimersByTime(DEFAULT_KEEPALIVE_MS * 3 + 10);
-
-      expect(session.started).toBeGreaterThan(afterMedia);
-      stream.stop();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  /** A frame for another camera proves nothing about this one, so the nudge must survive it. */
-  it("keeps re-issuing while only another camera's media arrives", () => {
-    vi.useFakeTimers();
-    try {
-      const session = new FakeP2PSession();
-      const stream = new LiveStream(session as unknown as P2PSession, {
-        channel: 2,
-        homeBaseAttached: true,
-      }).start();
-      session.push(p2pVideoFrame({ nal: Buffer.from([0x65, 1]), channel: 3 }));
-      const afterForeign = session.started;
-      vi.advanceTimersByTime(DEFAULT_KEEPALIVE_MS * 3 + 10);
-
-      expect(session.started).toBeGreaterThan(afterForeign);
-      stream.stop();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("honours an explicit 0 as off", () => {
-    vi.useFakeTimers();
-    try {
-      const session = new FakeP2PSession();
-      const stream = new LiveStream(session as unknown as P2PSession, { channel: 0, keepAliveMs: 0 }).start();
-      vi.advanceTimersByTime(DEFAULT_KEEPALIVE_MS * 5);
-      expect(session.started).toBe(1);
-      stream.stop();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-});
-
-/**
- * A stream forwards the abandonment of its OWN media start, and nothing else.
- *
- * The session records the channel it RESOLVED — {@link STATION_CHANNEL} where the caller named none — and
- * reports that channel back. A stream re-deriving the default differently never matches its own
- * abandonment, which leaves the session-replacement recovery behind it unreachable.
- */
-describe("an abandoned media start", () => {
-  const abandon = (session: FakeP2PSession, channel: number) => session.emit("liveStartUnacknowledged", channel);
-
-  it("reaches a stream that named no channel, which starts on the station channel", () => {
-    const session = new FakeP2PSession();
-    const stream = new LiveStream(session as unknown as P2PSession, { keepAliveMs: 0 }).start();
-    const seen = vi.fn();
-    stream.on("unacknowledged", seen);
-
-    expect(session.startChannel).toBeUndefined();
-    abandon(session, STATION_CHANNEL);
-
-    expect(seen).toHaveBeenCalledTimes(1);
-    stream.stop();
-  });
-
-  it("reaches a stream on its own channel", () => {
-    const session = new FakeP2PSession();
-    const stream = new LiveStream(session as unknown as P2PSession, { channel: 2, keepAliveMs: 0 }).start();
-    const seen = vi.fn();
-    stream.on("unacknowledged", seen);
-
-    abandon(session, 2);
-
-    expect(seen).toHaveBeenCalledTimes(1);
-    stream.stop();
-  });
-
-  it("never reaches a sibling's stream on the same station session", () => {
-    const session = new FakeP2PSession();
-    const stream = new LiveStream(session as unknown as P2PSession, { channel: 2, keepAliveMs: 0 }).start();
-    const seen = vi.fn();
-    stream.on("unacknowledged", seen);
-
-    abandon(session, 0);
-    abandon(session, STATION_CHANNEL);
-
-    expect(seen).not.toHaveBeenCalled();
-    stream.stop();
   });
 });

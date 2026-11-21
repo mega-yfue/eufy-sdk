@@ -233,7 +233,6 @@ export const VACUUM_DOCK_MEMBERS = {
     param: VACUUM_DOCK_INFO_DP,
     type: "string",
     kind: "text",
-    provenance: "mega",
     decode: (raw, codec) => decodeDockFirmware(raw as ParamValue | undefined, codec),
     decodedKind: "text",
     description:
@@ -251,7 +250,6 @@ export const VACUUM_DOCK_MEMBERS = {
   dockState: {
     param: VACUUM_DOCK_DP,
     type: "string",
-    provenance: "mega",
     decode: (raw, codec) => decodeDockActivity(raw as ParamValue | undefined, codec),
     decodedKind: "enum",
     decodedValues: DOCK_ACTIVITIES,
@@ -272,7 +270,6 @@ export const VACUUM_DOCK_MEMBERS = {
     unverified: true,
     write: () => aiotDp(VACUUM_DOCK_DP, encodeStationCommand(STATION_REQUEST_FIELD.GO_COLLECT_DUST)),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Empty the dust bin (DP 173 StationRequest.manual_cmd.go_collect_dust). Frame reversed from the vendor proto; unverified until captured on a device.",
   },
@@ -287,7 +284,6 @@ export const VACUUM_DOCK_MEMBERS = {
     unverified: true,
     write: () => aiotDp(VACUUM_DOCK_DP, encodeStationCommand(STATION_REQUEST_FIELD.GO_SELFCLEANING)),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Wash the mops (DP 173 StationRequest.manual_cmd.go_selfcleaning). Frame reversed from the vendor proto; unverified until captured on a device.",
   },
@@ -301,7 +297,6 @@ export const VACUUM_DOCK_MEMBERS = {
     unverified: true,
     write: () => aiotDp(VACUUM_DOCK_DP, encodeStationCommand(STATION_REQUEST_FIELD.GO_DRY)),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Dry the mops (DP 173 StationRequest.manual_cmd.go_dry). Frame reversed from the vendor proto; unverified until captured on a device.",
   },
@@ -317,7 +312,6 @@ export const VACUUM_DOCK_MEMBERS = {
     unverified: true,
     write: () => aiotDp(VACUUM_DOCK_DP, encodeStationCommand(STATION_REQUEST_FIELD.SELF_MAINTAIN)),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Run the dock's full self-maintenance cycle (DP 173 StationRequest.manual_cmd.self_maintain). Frame reversed from the vendor proto; unverified until captured on a device.",
   },
@@ -333,7 +327,6 @@ export const VACUUM_DOCK_MEMBERS = {
     unverified: true,
     write: () => aiotDp(VACUUM_DOCK_DP, encodeStationCommand(STATION_REQUEST_FIELD.GO_REMOVE_SCALE)),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Run the descaling cycle (DP 173 StationRequest.manual_cmd.go_remove_scale). Frame reversed from the vendor proto; unverified until captured on a device.",
   },
@@ -347,7 +340,6 @@ export const VACUUM_DOCK_MEMBERS = {
     unverified: true,
     write: () => aiotDp(VACUUM_DOCK_DP, encodeStationCommand(STATION_REQUEST_FIELD.GO_CUT_HAIR)),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Run the hair-cutting cycle (DP 173 StationRequest.manual_cmd.go_cut_hair). Frame reversed from the vendor proto; unverified until captured on a device.",
   },

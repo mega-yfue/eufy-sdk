@@ -180,10 +180,9 @@ export interface EufyMegaOptions extends MegaClientConfig {
    * Opt into unverified Tuya DP writes for `eufy_home_tuya` clean-line devices (G-series / X8).
    *
    * By default `TuyaCommandRouter` refuses to send `dp.publish` because the request shape
-   * has been reversed but not yet confirmed from a live on-device capture — a wrong shape comes back
-   * as a generic Tuya error indistinguishable from an actual device rejection. `true` sends it anyway,
-   * which is sound only where the full round-trip has been confirmed on a real device, or that
-   * ambiguity is accepted.
+   * has been reversed but not pinned against the app's exchange — a wrong shape comes back as a
+   * generic Tuya error indistinguishable from an actual device rejection. `true` sends it anyway and
+   * accepts that ambiguity.
    */
   tuyaAllowUnverified?: boolean;
   /**
@@ -363,18 +362,18 @@ export type EufyMegaEventMap = {
    * reports the SET step's fire-and-forget ack. `dispatch()`/`lock()`/`unlock()`/`setAutoLock()` stay
    * `Promise<void>` and never throw on a missing SET ack (fire-and-forget, same as every other write) —
    * this event is the optional channel for delivery visibility, without the dispatch
-   * contract itself changing shape. Secure-MQTT DP writes use the persistent account connection and
-   * report broker publication (`acked: true`) without an `instanceIp`; that is not device convergence.
+   * contract itself changing shape. A lock's `mqtt-dp` write reports whether the device's reply came within the
+   * descriptor's timeout; a light's DP write reports broker publication (`acked: true`), not device convergence.
    */
-  commandAck: [info: { sn: string; kind: string; acked: boolean; instanceIp?: string; getAcked?: boolean }];
+  commandAck: [info: { sn: string; kind: string; acked: boolean; getAcked?: boolean }];
   /**
    * A write was acknowledged and its declared observation then never converged, so the device never
    * reported the state the write asked for.
    *
    * This is the answer to the question `dispatch` deliberately does not wait for. A command resolves once the
    * transport has carried it, and the observation a member declares decides separately whether the device
-   * applied it; where that observation times out, the wire accepted the write and the device ignored it — seen
-   * on a battery camera whose power write is acknowledged and never acted on. It is reported here rather than
+   * applied it; where that observation times out, the wire accepted the write and the device ignored it — a
+   * battery camera can acknowledge a power write and never act on it. It is reported here rather than
    * on `error` because it is an outcome and not a fault, for the same reason `commandAck` has its own
    * channel. `observed` is what the param read when the deadline passed, absent where the
    * device reported none at all.

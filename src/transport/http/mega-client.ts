@@ -271,8 +271,8 @@ const CONTENDED_SESSION_HINT =
  * for some other reason (rate limit, captcha cooldown) — the difference between dropping a good session and
  * keeping it. The caller pairs this with the 401 status; neither alone is the signal.
  *
- * The vendor words the same rejection several ways, and only one carries a distinctive code. All of these were
- * observed on one account: {@link EufyCloudErrorCode.SESSION_KICKED} with `"token does not exist because it was
+ * The vendor words the same rejection several ways, and only one carries a distinctive code. All of these mean
+ * the same thing: {@link EufyCloudErrorCode.SESSION_KICKED} with `"token does not exist because it was
  * kicked out"` when another login displaced it, and the generic `401` with `"token error"` or `"token not
  * exist, token = …"` for the same thing. Matching the code alone leaves a displaced stored token looking like
  * an ordinary API error, which nothing recovers from.
@@ -322,6 +322,22 @@ export interface SignedRetry {
   /** The token has already been replaced by a fresh login for this call. */
   reauth?: boolean;
 }
+
+/** The app's cloud modules (`MegaModule`), lowercased: the `domain` names a bundle's cloud call may use. */
+const CLOUD_MODULES: ReadonlySet<string> = new Set(
+  (
+    "basic event things passport clean cloudstorage devicemanage devicerelation factory help house logging news " +
+    "openapi push smart valuesadd smartscreen shopping shortlink geofence ota light agreement commercial smartdrop " +
+    "powermanage health proalarm butler esagent promonitor"
+  ).split(" "),
+);
+
+/** The modules whose host prefix is not `app-<module>`. */
+const CLOUD_MODULE_HOSTS: Readonly<Record<string, string>> = {
+  basic: "mega",
+  cloudstorage: "app-cloudstor",
+  promonitor: "pro-monitoring",
+};
 
 /**
  * The cloud HTTP client. Internal transport, reachable as an escape hatch via `EufyMega.api`.
@@ -383,6 +399,8 @@ export class MegaHttpClient {
   private lastRecoveryAt = 0;
   /** A token of ours has been rejected and not yet replaced — see {@link noteTokenReplacement}. */
   private rejectedTokenPending = false;
+  /** The last thing description of each product fetched, persisted with the session — see {@link getThingsList}. */
+  private things: unknown[];
 
   constructor(cfg: MegaClientConfig) {
     this.cfg = {
@@ -402,6 +420,7 @@ export class MegaHttpClient {
     // fresh (deterministic, openudid-seeded) generate that persist() saves. Identity is reused even when
     // the stored token itself has expired.
     const saved = this.store.load();
+    this.things = saved?.things ?? [];
     this.openudid =
       cfg.openudid ?? saved?.openudid ?? createHash("md5").update(`eufy-mega:${cfg.email}`).digest("hex").slice(0, 16);
     this.phoneModel = cfg.phoneModel ?? saved?.phoneModel ?? randomPhoneModel(this.openudid);
@@ -519,8 +538,8 @@ export class MegaHttpClient {
    * is the login email's local-part (e.g. `someone+tag` for `someone+tag@example.com`) and falls back
    * to the whole email if it has no `@`.
    *
-   * The local-part is the string the app writes into the ff09 command's acting "username" field
-   * (verified against a captured T8531 unlock frame), so it is the faithful default. An override is a
+   * The local-part is the string the app writes into the ff09 command's acting "username" field,
+   * so it is the faithful default. An override is a
    * different LABEL for the same account, not a different identity: the session authenticates on the
    * token and the device record's member ids, neither of which this touches.
    */
@@ -886,15 +905,41 @@ export class MegaHttpClient {
    * description already held: a product whose description has not changed since comes back with that
    * `update_time` and no properties, one that has (or is not named) comes back in full. Returns the raw
    * `data`.
+   *
+   * Each product's last full description is kept with the session, as the app keeps its own locally, and
+   * answers in place of a failed call for the products it covers. A dead session still throws.
    */
-  getThingsList<T = unknown>(
+  async getThingsList<T = unknown>(
     productCodes: readonly string[],
     codeTimeMap: Readonly<Record<string, number>> = {},
   ): Promise<T> {
-    return this.post<T>("things", "/app/things/get_things_list", {
-      product_codes: productCodes,
-      code_time_map: codeTimeMap,
-    });
+    const code = (t: unknown) => (t as { profile?: { product_code?: unknown } })?.profile?.product_code;
+    try {
+      const data = await this.post<{ things_list?: unknown }>("things", "/app/things/get_things_list", {
+        product_codes: productCodes,
+        code_time_map: codeTimeMap,
+      });
+      const fresh = (Array.isArray(data?.things_list) ? data.things_list : []).filter(
+        (t) => (t as { properties?: unknown[] })?.properties?.length,
+      );
+      this.things = [...this.things.filter((t) => !fresh.some((f) => code(f) === code(t))), ...fresh];
+      this.persist();
+      return data as T;
+    } catch (e) {
+      const cached = this.things.filter((t) => productCodes.includes(code(t) as string));
+      if (e instanceof SessionExpiredError || !cached.length) throw e;
+      this.logger.debug(`[mega] thing descriptions unavailable, using the stored ones: ${(e as Error)?.message ?? e}`);
+      return { things_list: cached } as T;
+    }
+  }
+
+  /**
+   * The product number the mega `things` service holds for a serial (`{ pn, device_sn }`), the lookup the
+   * v6 app's `snToPn` makes for a record without `device_new_pn`. `""` when the reply carries none.
+   */
+  async getPnBySn(deviceSn: string): Promise<string> {
+    const res = await this.post<{ pn?: unknown }>("things", "/app/things/get_pn_by_sn", { device_sn: deviceSn });
+    return typeof res?.pn === "string" ? res.pn : "";
   }
 
   /**
@@ -992,19 +1037,16 @@ export class MegaHttpClient {
   }
 
   /**
-   * Fetch the per-user secure-MQTT credentials. Pass `appName` to request a specific capability scope
-   * on the current session without re-logging in — security devices (locks/garage) need the
-   * `eufy_security` scope, which the default scope can't reach.
+   * The per-user secure-MQTT certificate, as the app asks for it per stack: `eufy_security` is
+   * `POST app/mqtt/register/iot` and `eufy_life` is `POST app/devicemanage/get_user_mqtt_info`, both on the
+   * Basic (`mega-`) host with `app-tab: <scope>`; without a scope, the clean line's headerless
+   * `get_user_mqtt_info`.
    */
-  // The credential's publish scope is set by the `app-name` header; `eufy_security` returns a distinct
-  // security-scoped credential (verified: distinct from the default `eufy_mega` one, same session).
-  getUserMqttInfo(appName?: string): Promise<SecureMqttCredentials> {
-    return this.post<SecureMqttCredentials>(
-      "devicemanage",
-      "/app/devicemanage/get_user_mqtt_info",
-      {},
-      appName ? { "app-name": appName } : {},
-    );
+  getUserMqttInfo(scope?: "eufy_security" | "eufy_life"): Promise<SecureMqttCredentials> {
+    if (!scope) return this.post<SecureMqttCredentials>("devicemanage", "/app/devicemanage/get_user_mqtt_info", {});
+    const path = scope === "eufy_security" ? "/app/mqtt/register/iot" : "/app/devicemanage/get_user_mqtt_info";
+    const basic = this.bootstrapDomain ?? `mega-${this.region}.eufy.com`;
+    return this.postSigned<SecureMqttCredentials>(basic, path, {}, true, {}, { "app-tab": scope });
   }
 
   async registerPushToken(token: string): Promise<void> {
@@ -1012,17 +1054,6 @@ export class MegaHttpClient {
       is_notification_enable: true,
       token,
       voip_token: "",
-    });
-
-    await this.securityAppPost("/v1/apppush/register_push_token", {
-      is_notification_enable: true,
-      token,
-      transaction: String(Date.now()),
-    });
-
-    await this.securityAppPost("/v1/app/review/app_push_check", {
-      app_type: "eufySecurity",
-      transaction: String(Date.now()),
     });
   }
 
@@ -1071,21 +1102,33 @@ export class MegaHttpClient {
 
   /**
    * The device's long-lived P-256 public key, as the cloud publishes it for key-wrapped commands
-   * (`type=2`): 64 bytes hex with no `04` prefix. A plain authed GET on the security-app host — the
-   * one read here that is neither signed nor body-encrypted, matching how the app fetches it.
+   * (`type=2`): 64 bytes hex with no `04` prefix. The app's `SecurityNetApi.getPublicKey`: `GET v3/app/public_key/query`
+   * on the security host with `app-tab: eufy_security`, signed like every call there (no body to encrypt).
    * Cached per serial for the client's lifetime; the key does not rotate in normal operation.
    */
   async getDevicePublicKey(deviceSn: string): Promise<string> {
     const cached = this.devicePublicKeys.get(deviceSn);
     if (cached) return cached;
-    const url = `https://${this.securityAppHost()}/v1/app/public_key/query?device_sn=${encodeURIComponent(deviceSn)}&type=2`;
+    const host = this.securityAppHost();
+    const entry = await this.ensureSessionKey(host);
+    const url = `https://${host}/v3/app/public_key/query?device_sn=${encodeURIComponent(deviceSn)}&type=2`;
     const res = await fetch(url, {
       method: "GET",
-      headers: { ...this.baseHeaders(), ...this.authTokenHeaders() },
+      headers: {
+        ...this.baseHeaders(),
+        ...signedHeaders(entry, ""),
+        "x-replay-info": "replay",
+        "app-tab": "eufy_security",
+        ...this.authTokenHeaders(),
+      },
       signal: AbortSignal.timeout(20_000),
     });
-    const env = parseMaybeJson(await res.text()) as ApiEnvelope<{ public_key?: string }> | undefined;
-    const key = env?.data?.public_key;
+    const env = parseMaybeJson(await res.text()) as ApiEnvelope<{ public_key?: string } | string> | undefined;
+    const data =
+      typeof env?.data === "string"
+        ? parseMaybeJson(decryptBody(env.data, entry.shareKey).toString("utf-8"))
+        : env?.data;
+    const key = (data as { public_key?: string } | undefined)?.public_key;
     if (res.status !== 200 || env?.code !== 0 || typeof key !== "string" || !key.length) {
       throw new MegaApiError(
         `public_key/query failed (${res.status}/${env?.code}): ${env?.msg ?? "no public key"}`,
@@ -1120,6 +1163,29 @@ export class MegaHttpClient {
   }
 
   /**
+   * A cloud call a settings bundle names by `domain`, as the app resolves it: `eufy_security` is the
+   * security-app host; a cloud module name (case-insensitive) is the mega host with `mega` replaced by
+   * `app-<module>` (`Basic` the mega host itself, `CloudStorage` `app-cloudstor`, `ProMonitor`
+   * `pro-monitoring`), the path under its root. Signed and encrypted like every call here, so POST only: another method, another
+   * category's host and an unknown domain throw.
+   */
+  async cloudRequest<T = unknown>(req: {
+    method: string;
+    domain: string;
+    path: string;
+    body?: Record<string, unknown>;
+    headers?: Record<string, string>;
+  }): Promise<T> {
+    const name = req.domain.toLowerCase();
+    const prefix = CLOUD_MODULES.has(name) ? (CLOUD_MODULE_HOSTS[name] ?? `app-${name}`) : undefined;
+    const host = name === "eufy_security" ? this.securityAppHost() : prefix && `${prefix}-${this.region}.eufy.com`;
+    if (!host) throw new Error(`cloud request ${req.path}: no host for domain ${req.domain}`);
+    if (req.method !== "POST") throw new Error(`cloud request ${req.path}: ${req.method} is not signed by this client`);
+    const path = req.path.startsWith("/") ? req.path : `/${req.path}`;
+    return this.postSigned<T>(host, path, req.body ?? {}, true, {}, req.headers ?? {});
+  }
+
+  /**
    * List the account's enrolled AI faces (the recognition roster). Each entry is keyed by `ai_user_id` —
    * the id an `IDENTITY_PERSON_DETECTION` push carries as `person_id` — so this is the lookup table for
    * naming a recognised person. Endpoint: `/v3/aiassis/get_faces` on the security-app host.
@@ -1147,17 +1213,19 @@ export class MegaHttpClient {
    * is the only wrapping). The `ecc_private_key` is the root of trust for the P2P **level-2**
    * session key: `CMD_GATEWAYINFO(1100)` ships an ECIES envelope decrypted with it
    * (see `deriveLevel2KeyFromGatewayInfo` in `p2p/codec`). `userId` must be the station
-   * `member.admin_user_id`. Endpoint: `/v3/app/cipher/get_ciphers` on the eufylife host.
+   * `member.admin_user_id`. Endpoint: `/v3/app/cipher/get_ciphers` on the eufylife host. `snField` names the
+   * serial's body key: the app's version-8 gateway lookup sends `station_sn`, its RSA lookup `sn`.
    */
   async getCiphers(
     cipherIds: number[],
     userId: string,
     stationSn: string,
+    snField: "station_sn" | "sn" = "station_sn",
   ): Promise<Array<{ cipher_id: number; ecc_private_key?: string; private_key?: string }>> {
     const out = await this.securityAppPost<any>("/v3/app/cipher/get_ciphers", {
       cipher_ids: cipherIds,
       user_id: userId,
-      station_sn: stationSn,
+      [snField]: stationSn,
     });
     // server may return the array directly or under {ciphers|data}
     return (Array.isArray(out) ? out : (out?.ciphers ?? out?.data ?? [])) as Array<{
@@ -1488,6 +1556,7 @@ export class MegaHttpClient {
       keyIdent: this.sessionKey.keyIdent,
       tokenExpiresAt: this.tokenExpiresAt,
       savedAt: Date.now(),
+      things: this.things,
     });
   }
 

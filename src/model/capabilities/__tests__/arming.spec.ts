@@ -56,7 +56,6 @@ describe("arming capability module", () => {
           payload: { mode_type: modeType, user_name: "someone+tag" },
           channel: 0,
           mValue3: 0,
-          form: "auto",
         },
       ]);
     });
@@ -68,19 +67,7 @@ describe("arming capability module", () => {
         payload: { mode_type: 0, user_name: "someone+tag" },
         channel: 0,
         mValue3: 0,
-        form: "auto",
       });
-    });
-
-    /**
-     * The seal is the SESSION's, not this module's. Pinned level-2, the frame is unsendable on a station
-     * that never negotiates a key — an own-session camera such as a T8410, whose session is level-1 — and
-     * the send waits out its whole level-2 grace twice before throwing, which a caller experiences as a
-     * hang rather than a refusal. A keyed station is unaffected: it still seals this level-2.
-     */
-    it("leaves the encryption level to the session, so a keyless standalone station can be sent it", () => {
-      const cmd = buildCommand("armingMode", "disarmed", ctx) as { form?: string };
-      expect(cmd.form).toBe("auto");
     });
 
     it("buildCommand returns undefined for an unrelated action, and throws for an unknown mode name", () => {
@@ -120,7 +107,6 @@ describe("arming capability module", () => {
           payload: { mode_type: wire, user_name: "someone+tag" },
           channel: 0,
           mValue3: 0,
-          form: "auto",
         },
       ]);
       expect(buildCommand("armingMode", name, ctx)).toMatchObject({ payload: { mode_type: wire } });
@@ -160,7 +146,6 @@ describe("arming capability module", () => {
           payload: { mode_type: 1, user_name: "someone+tag" },
           channel: 0,
           mValue3: 0,
-          form: "auto",
         },
       ]);
     });
@@ -227,7 +212,7 @@ describe("arming capability module", () => {
     ])("%s on a T8410 → p2p-station-scalar cmd 1224, value %i, channel 255, auto seal", async (mode, value) => {
       const { acts, sent } = bind<ArmingActions>("arming", t8410);
       await acts.setMode(mode);
-      expect(sent).toEqual([{ kind: "p2p-station-scalar", cmd: 1224, value, channel: 255, form: "auto" }]);
+      expect(sent).toEqual([{ kind: "p2p-station-scalar", cmd: 1224, value, channel: 255 }]);
     });
   });
 

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { LIVE_FRAMES } from "./live-source-fixtures.js";
 
 /**
  * The live leg must hand `LiveStream` the resolved channel AND the topology, because together they are
@@ -46,6 +47,7 @@ const CAMERA_CHANNEL = 4;
 /** A router whose session resolution is stubbed to the topology under test. */
 function routerWith(homeBaseAttached: boolean, channel: number) {
   const router = new P2PCommandRouter({
+    liveFramesFor: () => LIVE_FRAMES,
     mega: {} as never,
     listDevices: () => [],
     ensureDevices: async () => {},

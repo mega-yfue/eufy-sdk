@@ -15,8 +15,8 @@
  */
 import { EventEmitter } from "node:events";
 import { MegaHttpClient, LoginStatus, SessionExpiredError, type LoginResult } from "../transport/http/mega-client.js";
-import { SecureMqtt, isNotAuthorized, type SecureMqttCredentials } from "../transport/mqtt/secure-mqtt.js";
-import { mqttAppName, mqttScopeFor, type MqttScope } from "../transport/mqtt/topics.js";
+import { SecureMqtt, type SecureMqttCredentials, type SecureMqttOptions } from "../transport/mqtt/secure-mqtt.js";
+import { mqttScopeFor, type MqttScope } from "../transport/mqtt/topics.js";
 import { buildAppShapedClientId, mqttUuidFrom } from "../transport/mqtt/app-client-id.js";
 import { parseStateInfoSignal } from "../transport/mqtt/availability.js";
 import { parseDpMessage, parseAiotDpReport } from "../transport/mqtt/dp-codec.js";
@@ -90,6 +90,7 @@ import {
 } from "../model/device-family.js";
 import { DeviceType } from "../model/device-types.js";
 import { cameraPowerTier } from "../model/capabilities/battery.js";
+import { liveFrames } from "../model/capabilities/bundle.js";
 import { DeviceRegistry, recordString, type DeviceRecord, type ParamChange } from "./device-registry.js";
 import { PushRepeats } from "./push-repeats.js";
 import type {
@@ -200,7 +201,7 @@ const PORTAL_COMMAND_KINDS: ReadonlySet<Command["kind"]> = new Set<Command["kind
   "set-json-raw",
   "p2p-station-scalar",
   "p2p-int-string",
-  "p2p-privacy-burst",
+  "p2p-string",
 ]);
 
 /** The portal kinds an RTC-control station refuses: every portal kind its control channel cannot frame. */
@@ -425,6 +426,7 @@ export class EufyMega extends EventEmitter {
       mega: this.mega,
       onError: (e) => this.reportError(e),
       logger: opts.logger,
+      onListFetched: (devices) => this.getParamsOnRefresh(devices),
     });
     this.p2p = new P2PCommandRouter({
       mega: this.mega,
@@ -432,6 +434,22 @@ export class EufyMega extends EventEmitter {
       ffmpegLogLevel: opts.ffmpegLogLevel,
       ffmpegPath: opts.ffmpegPath,
       poweredFor: (parentSn) => this.stationPower(parentSn),
+      liveFramesFor: (sn, parentSn) => {
+        const record = (serial: string) => this.registry.list().find((x) => x.sn === serial);
+        const device = record(sn);
+        const parent = record(parentSn);
+        const firmware = (parent?.raw as Record<string, unknown> | undefined)?.main_sw_version;
+        return (
+          device &&
+          liveFrames(
+            device.model,
+            parentSn,
+            [parent?.params, device.params],
+            typeof firmware === "string" ? firmware : undefined,
+          )
+        );
+      },
+      thingDefault: (sn, identifier) => this.registry.thingDefault(sn, identifier),
       sessionIdle: { batteryIdleMs: opts.p2pIdleMs },
       localAddresses: opts.localAddresses,
       noBroadcast: opts.noBroadcast,
@@ -479,8 +497,8 @@ export class EufyMega extends EventEmitter {
       resolvePreset: (presetId) => resolveLightEffectHttp(this.mega, presetId),
       /**
        * Publish over the persistent transport for THIS device's credential scope — one connection per
-       * product line carrying both legs, as the app does. CONFIRMED live (2026-07-28) that the
-       * `eufy_life` credential grants the command leg as well as the reports.
+       * product line carrying both legs, as the app does. The `eufy_life` credential grants the
+       * command leg as well as the reports.
        *
        * Uses an already-installed transport directly rather than awaiting the bring-up memo, because
        * the path is re-entrant: bringing a scope up subscribes its devices and sends their
@@ -488,12 +506,20 @@ export class EufyMega extends EventEmitter {
        * would have that publish wait on the bring-up waiting on it. The transport is installed before
        * subscribing begins and publishing needs no subscription, so the direct path is safe.
        */
+      securityTransport: async () => {
+        await this.ensureMqttStarted("eufy_security");
+        const transport = this.transports.get("eufy_security");
+        if (!(transport instanceof SecureMqtt)) throw new Error("the eufy_security MQTT stack is not connected");
+        return transport;
+      },
       publishSecure: async (dev, topic, body) => {
         const scope = mqttScopeFor(dev);
         if (!this.transports.has(scope)) await this.ensureMqttStarted(scope);
         const transport = this.transports.get(scope);
         if (!transport) throw new Error(`secure-MQTT transport not connected for scope "${scope}"`);
-        await transport.publish(topic, body, { qos: 1 });
+        await transport.publish(topic, typeof body === "function" ? body((transport as SecureMqtt).id) : body, {
+          qos: 1,
+        });
       },
     });
     this.tuya = new TuyaCommandRouter({ allowUnverified: this.opts.tuyaAllowUnverified });
@@ -504,7 +530,8 @@ export class EufyMega extends EventEmitter {
   /**
    * Builds the inbound listener that converts ThingClips DP maps to realtime capability state.
    * DP values arrive as booleans, numbers, or strings; they are normalised to the string form
-   * the param store uses, then applied through the standard realtime-report path.
+   * the param store uses, then applied through the standard realtime-report path, every point the device
+   * reported and not only those a capability decodes.
    */
   private makeTuyaDpInbound(): TuyaDpInbound {
     return {
@@ -516,7 +543,7 @@ export class EufyMega extends EventEmitter {
         if (!Object.keys(dpParams).length) return;
         const caps = this.capsForEvent(sn);
         const signal = { source: "mqtt" as const, deviceSn: sn, topic: "", raw: {}, dpParams };
-        this.applyRealtimeReport(sn, decodeCapabilityState(signal, caps));
+        this.applyRealtimeReport(sn, [{ params: dpParams }, ...decodeCapabilityState(signal, caps)]);
       },
     };
   }
@@ -595,6 +622,7 @@ export class EufyMega extends EventEmitter {
         return;
       }
       this.transports.set(scope, mqtt);
+      if (scope !== "default") this.refreshAfterLosses(scope, mqtt);
       await this.subscribeMqttDevices(scope, mqtt);
     })().catch((e) => {
       if (this.mqttReady.get(scope) === attempt) this.mqttReady.delete(scope);
@@ -602,6 +630,24 @@ export class EufyMega extends EventEmitter {
     });
     this.mqttReady.set(scope, attempt);
     return attempt;
+  }
+
+  /**
+   * The app's `handleConnectionStatus`: three connection losses without a connect in between fetch a fresh
+   * certificate and reconnect the stack (`MAX_CONNECT_LOST_RETRY`).
+   */
+  private refreshAfterLosses(scope: MqttScope, mqtt: SecureMqtt): void {
+    let lost = 0;
+    mqtt.on("connect", () => (lost = 0));
+    mqtt.on("disconnect", () => {
+      if (++lost !== 3 || this.transports.get(scope) !== mqtt) return;
+      this.transports.delete(scope);
+      this.mqttReady.delete(scope);
+      void mqtt
+        .disconnect()
+        .then(() => this.ensureMqttStarted(scope))
+        .catch((e) => this.reportError(e));
+    });
   }
 
   /**
@@ -754,13 +800,20 @@ export class EufyMega extends EventEmitter {
    * is read from the Tuya cloud.
    */
   private mqttScopesInUse(): MqttScope[] {
-    return [
-      ...new Set(
-        this.getMqttDevices()
-          .filter((d) => !isTuyaVacuum(d))
-          .map(mqttScopeFor),
-      ),
-    ];
+    return (["default", "eufy_life", "eufy_security"] as const).filter((scope) => this.mqttDevicesOf(scope).length);
+  }
+
+  /**
+   * The devices one stack subscribes. The security stack takes, as the app's `connectMqttIfNeed`, every device
+   * outside `eufy_life` whose description says `is_support_mqtt`; the others the MQTT devices of their category.
+   */
+  private mqttDevicesOf(scope: MqttScope): EufyDevice[] {
+    if (scope === "eufy_security") {
+      return this.registry
+        .list()
+        .filter((d) => d.category !== "eufy_life" && this.registry.thingDefault(d.sn, "is_support_mqtt") === "true");
+    }
+    return this.getMqttDevices().filter((d) => !isTuyaVacuum(d) && mqttScopeFor(d) === scope);
   }
 
   /**
@@ -1176,15 +1229,9 @@ export class EufyMega extends EventEmitter {
     return this.mega;
   }
 
-  /**
-   * Fetch the per-user secure-MQTT credentials for realtime appliance control. Pass `appName` to
-   * request a specific capability scope on the current session without re-logging in — security
-   * devices (locks/garage) need the `eufy_security` scope, which the default scope can't reach.
-   */
-  getUserMqttInfo(appName?: string): Promise<SecureMqttCredentials> {
-    // The returned credential's publish scope is set by `app-name`; `eufy_security` yields a distinct
-    // security-scoped credential that the default scope's credential can't substitute for.
-    return this.mega.getUserMqttInfo(appName);
+  /** The per-user secure-MQTT certificate for one of the app's stacks (see `MegaHttpClient.getUserMqttInfo`). */
+  getUserMqttInfo(scope?: "eufy_security" | "eufy_life"): Promise<SecureMqttCredentials> {
+    return this.mega.getUserMqttInfo(scope);
   }
 
   /**
@@ -1321,13 +1368,16 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * Route a command and, when the device answered it with success, land the value it now holds under the
-   * param its member reads ({@link commandReflection}) through the realtime path, so the getter reads it and
-   * `propertyChanged` announces it as for any report. A write sent unread, refused or unanswered changes
-   * nothing here.
+   * Route a command, then the `next` one it carries (a cloud call only once the device answered the command
+   * with success, as the app calls `update_device_info` after a rename it saw succeed), and, when it did, land
+   * the value it now holds under the param its member reads ({@link commandReflection}) through the realtime
+   * path, so the getter reads it and `propertyChanged` announces it as for any report. A write sent unread,
+   * refused or unanswered changes nothing here.
    */
   private async routeAndReflect(sn: string, cmd: Command): Promise<void> {
-    if ((await this.routeCommand(sn, cmd)) !== true) return;
+    const answered = await this.routeCommand(sn, cmd);
+    if (cmd.next && (cmd.next.kind !== "cloud-request" || answered === true)) await this.routeAndReflect(sn, cmd.next);
+    if (answered !== true) return;
     const reflected = commandReflection(cmd);
     if (reflected) this.applyRealtimeState(sn, { [reflected.param]: reflected.raw });
   }
@@ -1367,6 +1417,7 @@ export class EufyMega extends EventEmitter {
     if (cmd.kind === "mqtt-dp" || cmd.kind === "mqtt-dp-preset" || cmd.kind === "mqtt-dp-color") {
       return this.mqtt.dispatchCommand(sn, cmd);
     }
+    if (cmd.kind === "cloud-request") return this.mega.cloudRequest(cmd).then(() => true);
     if (cmd.kind === "aiot-dp") {
       const dev = this.registry.require(sn);
       if (isTuyaVacuum(dev)) return this.tuya.dispatchCommand(sn, cmd);
@@ -1437,6 +1488,21 @@ export class EufyMega extends EventEmitter {
    * session the cloud has rejected REJECTS, with {@link SessionExpiredError}. An empty list would be
    * indistinguishable from an account with no devices.
    */
+  /**
+   * The app's read on every cloud device-list refresh (`securityDeviceListModifier`, `getParamsOnRefresh` on): a
+   * params read over P2P of each root device — a station, or a device on no station — of the security, care and pet
+   * categories that has P2P connection data.
+   */
+  private getParamsOnRefresh(devices: EufyDevice[]): void {
+    for (const dev of devices) {
+      const raw = (dev.raw ?? {}) as Record<string, unknown>;
+      const root = (dev.stationSn ?? dev.sn) === dev.sn;
+      const p2p = !!(dev.p2pDid || raw.app_conn || raw.license || raw.signaling_servers);
+      if (!root || !p2p || !["eufy_security", "eufy_care", "eufy_pet"].includes(dev.category ?? "")) continue;
+      void this.p2p.getParams(dev.sn);
+    }
+  }
+
   async getDevices(): Promise<EufyDevice[]> {
     const devices = await this.registry.getDevices();
     for (const dev of devices) {
@@ -2070,54 +2136,34 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * Connect a secure-MQTT transport for one credential scope (appliances: vacuum, light, plug,
-   * display) using credentials fetched from the cloud, and return it **connected but not installed**:
-   * {@link ensureMqttStarted} owns installing it, subscribing devices, and the epoch check, so that
-   * lifecycle lives in exactly one place. Only ever called through {@link ensureMqttStarted}.
-   *
-   * Identified by a client id built from this client's `openudid`, not by the certificate's name:
-   * that name is `{user_id}-{app_name}`, which every client on the account shares per line, and a
-   * duplicate client id is a takeover the broker resolves by evicting the incumbent. The id shape is
-   * the app's own (`android-{app_name}-{uid}-{uuid}-{ts}`, see {@link buildAppShapedClientId}), which
-   * the broker grants on the `eufy_security` credential.
-   *
-   * It separates two clients exactly as far as their `openudid` does: a caller that supplies none
-   * gets the value derived from the account, which every such client shares — the same condition
-   * under which their logins already displace each other (`MegaClientConfig.openudid`).
-   *
-   * A client id the broker REFUSES falls back to the certificate's name, since a shared channel beats
-   * none, and that transport then keeps that name until {@link disconnect}. Only a refusal: a connect
-   * that fails for any other reason rejects the bring-up, which clears its memo in
-   * {@link ensureMqttStarted} so the next one asks under this client's own id again — a dropped
-   * socket must not be what moves a process onto the shared name for good.
+   * Connect a secure-MQTT transport for one of the app's stacks with that stack's certificate, and return it
+   * **connected but not installed**: {@link ensureMqttStarted} owns installing it, subscribing devices, and the
+   * epoch check. The security and light stacks connect as the app's `MqttConnectOption`: client id
+   * `android-{app_name}-{user_id}-{openudid}`, keepalive 300 s, reconnect 4 s doubling to 64 s, 10 attempts.
    */
   private async startMqtt(scope: MqttScope): Promise<SecureMqtt> {
     const auth = this.mega.auth;
     if (!auth) throw new Error("login() first");
     if (!this.registry.list().length) await this.getDevices();
-
-    const creds = await this.getUserMqttInfo(mqttAppName(scope));
-    const ownClientId = buildAppShapedClientId({
-      appName: creds.app_name ?? mqttAppName(scope) ?? "eufy_mega",
-      uid: creds.user_id ?? auth.userId,
-      mqttUuid: mqttUuidFrom(this.mega.openudid),
-    });
-    try {
-      return await this.connectMqtt(creds, ownClientId);
-    } catch (e) {
-      if (!isNotAuthorized(e)) throw e;
-      this.opts.logger?.warn(
-        "[smqtt] the broker refused this client's own id; connecting under the certificate's name, which " +
-          "another client signed in to this account takes over",
-        e,
-      );
-      return await this.connectMqtt(creds);
+    const creds = await this.getUserMqttInfo(scope === "default" ? undefined : scope);
+    if (scope === "default") {
+      const clientId = buildAppShapedClientId({
+        appName: creds.app_name ?? "eufy_mega",
+        uid: creds.user_id ?? auth.userId,
+        mqttUuid: mqttUuidFrom(this.mega.openudid),
+      });
+      return await this.connectMqtt(creds, { clientId });
     }
+    return await this.connectMqtt(creds, {
+      clientId: `android-${creds.app_name ?? scope}-${creds.user_id ?? auth.userId}-${this.mega.openudid}`,
+      keepaliveS: 300,
+      backoff: { minS: 4, maxS: 64, attempts: 10 },
+      resubscribeMs: 5000,
+    });
   }
 
   /**
-   * Connect one secure-MQTT transport under `clientId`, or under the certificate's own name when it is
-   * omitted, and wire its decode and fan-out. See {@link startMqtt} for which id is used and why.
+   * Connect one secure-MQTT transport with `opts` and wire its decode and fan-out. See {@link startMqtt}.
    *
    * The fan-out is wired once the connection stands, so an attempt that is discarded — a client id the
    * broker refuses, a socket that dies mid-handshake — never reports a connection a consumer never had;
@@ -2129,8 +2175,11 @@ export class EufyMega extends EventEmitter {
    * runs against another's traffic, and the DP frame is unwrapped here — the layer that may import the
    * transport — so a capability reads tags without owning any framing.
    */
-  private async connectMqtt(creds: SecureMqttCredentials, clientId?: string): Promise<SecureMqtt> {
-    const transport = new SecureMqtt({ credentials: creds, clientId, logger: this.opts.logger });
+  private async connectMqtt(
+    creds: SecureMqttCredentials,
+    opts: Pick<SecureMqttOptions, "clientId" | "keepaliveS" | "backoff" | "resubscribeMs">,
+  ): Promise<SecureMqtt> {
+    const transport = new SecureMqtt({ credentials: creds, ...opts, logger: this.opts.logger });
 
     const whileConnecting: unknown[] = [];
     const hold = (e: unknown): void => void whileConnecting.push(e);
@@ -2162,7 +2211,8 @@ export class EufyMega extends EventEmitter {
         dpParams: parseAiotDpReport(m.raw),
       };
       const caps = m.deviceSn ? this.capsForEvent(m.deviceSn) : undefined;
-      this.applyRealtimeReport(m.deviceSn, decodeCapabilityState(signal, caps));
+      const reported = signal.dpParams ? [{ params: signal.dpParams }] : [];
+      this.applyRealtimeReport(m.deviceSn, [...reported, ...decodeCapabilityState(signal, caps)]);
       for (const out of decodeCapabilityEvent(signal, caps))
         this.emitSemantic(out.event, out.payload, { edge: true, refresh: out.refresh });
     });
@@ -2186,11 +2236,13 @@ export class EufyMega extends EventEmitter {
   private async subscribeMqttDevices(scope: MqttScope, transport: RealtimeTransport): Promise<void> {
     let subscribed = this.mqttSubscribed.get(transport);
     if (!subscribed) this.mqttSubscribed.set(transport, (subscribed = new Set()));
-    for (const d of this.getMqttDevices().filter((dev) => !isTuyaVacuum(dev) && mqttScopeFor(dev) === scope)) {
+    for (const d of this.mqttDevicesOf(scope)) {
       if (subscribed.has(d.sn)) continue;
       subscribed.add(d.sn);
       try {
-        await transport.subscribeDevice(d);
+        // The app names a topic's product by `snToPn`; the security stack's category is `eufy_security`.
+        const pnDevice = await this.mqtt.withPn(d);
+        await transport.subscribeDevice(scope === "eufy_security" ? { ...pnDevice, category: scope } : pnDevice);
         await this.sendRealtimeInit(d.sn);
       } catch (e) {
         this.reportError(e);
@@ -2237,11 +2289,8 @@ export class EufyMega extends EventEmitter {
    * stations open on demand (command / stream, or an opted-in event pre-warm) and idle-detach — so this
    * map grows and shrinks over time.
    *
-   * A station's own session is keyed by its serial, and `p2pConnect(stationSn)` / `p2pClose(stationSn)`
-   * track those. A station serving more than one camera at once also holds a session per extra camera,
-   * keyed `<stationSn>#live:<channel>` — these carry media alone and raise no connection events, because
-   * a station announces its state to every client that connects and reporting each copy would double
-   * every event the station's own session already delivers.
+   * One session per station, keyed by its serial, as the app holds one connection per serial;
+   * `p2pConnect(stationSn)` / `p2pClose(stationSn)` track them.
    */
   getP2pSessions(): Map<string, P2PSession> {
     return this.p2p.getSessions();
@@ -2453,7 +2502,6 @@ export class EufyMega extends EventEmitter {
    * A camera attached to a HomeBase is not — the same frame would restart its HomeBase — so its serial
    * throws, as does any non-camera serial, rather than doing nothing. The device drops its connection
    * and returns after a minute or two; a HomeBase takes everything behind it offline meanwhile.
-   * Verified on real hardware against a HomeBase and a standalone indoor camera.
    */
   async reboot(sn: string): Promise<void> {
     const ctx = await this.commandContext(sn);
@@ -2538,6 +2586,7 @@ export class EufyMega extends EventEmitter {
       macAddress: recordString(raw, "wifi_mac"),
       updateAvailable: raw.needUpdate === true || raw.needUpdate === 1 || raw.needUpdate === "1",
       paramIds: new Set([...Object.keys(rec.params), ...Object.keys(rec.dpParams ?? {})].map(Number)),
+      paramValue: (param) => rec.params[param],
       things: rec.things,
       capabilities: new Set(resolved.capabilities),
       // Member identity for ff09-* command devices (see core/contracts Ff09Identity).
@@ -2547,7 +2596,8 @@ export class EufyMega extends EventEmitter {
       // The same claim the command sink routes on — a capability gates its P2P-only variants (e.g.
       // setRainMode) on this. Keyed on the P2P stack's own predicate (a usable `p2p_did` endpoint).
       hasP2p: P2PCommandRouter.claimsDevice(dev),
-      homeBaseAttached: homeBaseAttached(raw, dev.sn),
+      // A station that isn't the device itself means HomeBase-attached (outdoor mode makes it its own).
+      homeBaseAttached: rec.parentSn !== undefined,
       stationDeviceType: this.stationDeviceTypeOf(sn),
       refusedCommandKinds,
       dpCatalog,

@@ -163,6 +163,14 @@ describe("ff09 settings response decrypt/parse", () => {
     expect(parsed.fields.get(0xa6)?.[0]).toBe(1);
   });
 
+  it("returns the body as sent when the opcode carries no 0x4000, as the app decrypts only an encrypted one", () => {
+    const body = Buffer.concat([Buffer.from([0xff, 0x09, 0, 0, 0x03, 0x00, 0x02, 0x08, 0x35]), plain]);
+    const frame = Buffer.concat([body, Buffer.alloc(1)]);
+    frame.writeUInt16LE(frame.length, 2);
+    frame[frame.length - 1] = [...frame.subarray(0, -1)].reduce((x, v) => x ^ v, 0);
+    expect(decryptFf09Frame({ lockPayload: frame.toString("hex"), keyTime, adminUserId, deviceSn })).toEqual(plain);
+  });
+
   it("rejects a response frame with a bad magic / checksum / size", () => {
     const hex = buildSyntheticResponseFrame(plain, adminUserId, deviceSn, keyTime, 0x4835);
     const badMagic = "0000" + hex.slice(4);

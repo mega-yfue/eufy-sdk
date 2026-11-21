@@ -38,7 +38,7 @@ async function main(): Promise<void> {
 
   // A short budget/grace so the demo shows the cycle quickly (omit to use the 45s/10s defaults). The
   // model already sets `powered` from the capabilities; we only tune the timings here.
-  const stream = await cam.live({ batteryBudgetMs: 8000, budgetGraceMs: 5000, keepAliveMs: 3000 });
+  const stream = await cam.live({ batteryBudgetMs: 8000, budgetGraceMs: 5000 });
 
   stream.on("video", (frame) => {
     frames++;

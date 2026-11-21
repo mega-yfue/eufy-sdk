@@ -10,11 +10,6 @@
  * `setEnabled(bool)` for the master switch. The accessor is `undefined` on a device without a light,
  * so guard with `?.` (or check `dev.has("light")`).
  *
- * Note: on/off ride the level-1 wire and work on standalone cameras. Brightness / colorTemp /
- * master-enable are level-2 (direct-binary) — on a standalone camera with no HomeBase they throw
- * `level-2 key not ready` (see README "Control-command encryption level"). Skipped here unless the
- * key negotiates.
- *
  *   EUFY_EMAIL=… EUFY_PASSWORD=… node examples/05-camera-light.ts <serial> [on|off] [brightness 1-100]
  *
  * Requires `npm run build` first.
@@ -54,7 +49,6 @@ async function main(): Promise<void> {
     if (light.brightness === undefined) throw new Error(`${sn} light has no brightness control`);
     if (typeof light.setBrightness !== "function") throw new Error(`${sn} light has no setBrightness() action`);
     console.log(`setting brightness ${brightness} …`);
-    // Level-2 wire — throws `level-2 key not ready` on a standalone (HomeBase-less) camera.
     await light.setBrightness(brightness);
   }
 

@@ -8,7 +8,7 @@ const SMOKE_PARAM = 1823;
  * Every `smoke` feature, declared once. No smoke alarm has been read yet, so the getter is present only
  * where an alarm reports its param.
  *
- * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * Exported but NOT published: each entry states its wire id and its gate,
  * which the reference site does not carry.
  * @internal
  */
@@ -21,7 +21,6 @@ export const SMOKE_MEMBERS = {
     param: SMOKE_PARAM,
     type: "bool",
     kind: "boolean",
-    provenance: "apk",
     coerce: (raw) => (Number(raw) & 1) !== 0,
     description: "Smoke detected: bit 0 of 1823 (sensor_smoke_status).",
   },

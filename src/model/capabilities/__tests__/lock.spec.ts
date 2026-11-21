@@ -296,7 +296,6 @@ describe("lock capability module", () => {
       paramType: 6000,
       type: "bool",
       kind: "boolean",
-      provenance: "verified",
       writable: true,
     });
 
@@ -305,7 +304,6 @@ describe("lock capability module", () => {
       paramType: 1101,
       type: "number",
       kind: "percent",
-      provenance: "verified",
       readAliases: [{ paramType: 6001 }],
     });
   });
@@ -405,7 +403,6 @@ describe("lock capability — SmartDrop lid", () => {
         payload: { isOpen: 1, userIndex: 0 },
         channel: 0,
         mValue3: 0,
-        level2Sender: "set-payload",
       },
     ]);
     expect(lid.lock).toBeUndefined();

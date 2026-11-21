@@ -24,7 +24,6 @@ import {
  * RoboVac Tuya **DP ids** this capability reads — the "clean" namespace (ids ~150-180, from the cloud
  * `get_product_data_point` schema). Named here so each DP is referenced by meaning rather than a magic
  * number, the same way the P2P capabilities name their feature-command ids (`CAMERA_CMD`, `LIGHT_CMD`).
- * Values confirmed against a live T2351 DP dump.
  */
 /**
  * Which protobuf message each Raw DP carries, in each direction — the product catalogue's own
@@ -104,17 +103,15 @@ export const VACUUM_DP = {
  * Tuya DP ids for the `eufy_home_tuya` vacuum category (X8 Pro, X-series, and future Tuya clean-line models).
  *
  * Full schema sourced from `thing.m.device.ref.info.list` v5.4 for product `wahqax6ifjgs1c4n`
- * (schemaInfo.schema, 39 DPs). Only the DPs with confirmed read-side values from a live
- * `thing.m.device.dp.get` call are included here. Write direction for all DPs is unverified —
- * no live publishDps capture has been made yet.
+ * (schemaInfo.schema, 39 DPs). Only the DPs with a read-side value from `thing.m.device.dp.get`
+ * are included here. Write direction for all DPs is unverified.
  *
  * **The one table for this line.** Every id the Tuya clean line uses is spelled here and nowhere else,
  * including DP 103, which the `locate` capability reads and writes. One line spelled twice is how two
  * tables come to disagree while each stays individually plausible.
  *
  * **Checked against `jeppesens/eufy-clean`'s `LEGACY_DPS_MAP`** and nothing came back to port. Its nine
- * ids — 2, 3, 5, 15, 101, 102, 103, 104, 106 — are all here, all live-confirmed on a real X8 Pro, and
- * all carry their enum value sets, which that map does not. Its `SCALAR_DPS` table is a different
+ * ids — 2, 3, 5, 15, 101, 102, 103, 104, 106 — are all here, and all carry their enum value sets, which that map does not. Its `SCALAR_DPS` table is a different
  * matter and deliberately untouched: that is a separate device class reusing these numbers for
  * unrelated things (153 is a brush-detangle trigger there and the work status here), so it must be told
  * apart by value SHAPE, never by DP number.
@@ -127,16 +124,16 @@ export const TUYA_VACUUM_DP = {
   PLAY_PAUSE: 2,
   /** Manual direction jog (DP 3, Enum: "forward"|"back"|"left"|"right"). */
   DIRECTION: 3,
-  /** Cleaning mode (DP 5, Enum: "auto"|"room"|"zone"|"spot"|"fast_mapping"). Live-confirmed "auto". */
+  /** Cleaning mode (DP 5, Enum: "auto"|"room"|"zone"|"spot"|"fast_mapping"). */
   MODE: 5,
-  /** Work status (DP 15, Enum string) — the high-level activity. Live-confirmed "Sleeping". */
+  /** Work status (DP 15, Enum string) — the high-level activity. */
   WORK_STATUS: 15,
   /** Return to dock (DP 101, Bool rw). */
   GO_HOME: 101,
-  /** Suction/cleaning strength (DP 102, Enum: "Off"|"Quiet"|"Standard"|"Turbo"|"Max"). Live-confirmed "Off". */
+  /** Suction/cleaning strength (DP 102, Enum: "Off"|"Quiet"|"Standard"|"Turbo"|"Max"). */
   CLEANING_STRENGTH: 102,
   /**
-   * Find-robot beep (DP 103, `look_for_sweeper`, Bool). Live-confirmed.
+   * Find-robot beep (DP 103, `look_for_sweeper`, Bool).
    *
    * Read and written by the `locate` capability, which owns the feature across both clean lines —
    * named here so this table is the one place the Tuya line's ids are spelled.
@@ -144,19 +141,19 @@ export const TUYA_VACUUM_DP = {
   LOOK_FOR_SWEEPER: 103,
   /** Battery level 0-100 (DP 104, Value ro). */
   BATTERY_LEVEL: 104,
-  /** Mop water flow (DP 105, Enum: "Dry"|"Low"|"Mid"|"High"). Live-confirmed "Mid". */
+  /** Mop water flow (DP 105, Enum: "Dry"|"Low"|"Mid"|"High"). */
   MOP_WATER: 105,
   /** Fault code, 0 = ok (DP 106, Value ro). */
   FAULT_REPORT: 106,
-  /** Do-not-disturb / forbid mode (DP 107, Bool). Live-confirmed false. */
+  /** Do-not-disturb / forbid mode (DP 107, Bool). */
   FORBID_MODE: 107,
-  /** Session cleaning time in seconds (DP 109, Value). Live-confirmed 4200 (= 70 min). */
+  /** Session cleaning time in seconds (DP 109, Value). */
   CLEAR_TIME: 109,
-  /** Session cleaned area in m² (DP 110, Value). Live-confirmed 54. */
+  /** Session cleaned area in m² (DP 110, Value). */
   CLEAR_AREA: 110,
-  /** Speaker loudness 0-100 (DP 111, Value). Live-confirmed 38. */
+  /** Speaker loudness 0-100 (DP 111, Value). */
   LOUDNESS: 111,
-  /** Configured cleaning type (DP 113, Enum: "Sweep"|"SweepMop"|"Mop"). Live-confirmed "Sweep". */
+  /** Configured cleaning type (DP 113, Enum: "Sweep"|"SweepMop"|"Mop"). */
   CLEAN_TYPE: 113,
   /** Total lifetime cleaning time in seconds (DP 119, Value). */
   CLEAR_TOTAL_TIME: 119,
@@ -201,7 +198,7 @@ export const TUYA_WORK_MODES = ["auto", "room", "zone", "spot", "fast_mapping"] 
 export type TuyaWorkMode = (typeof TUYA_WORK_MODES)[number];
 
 /**
- * Confirmed values for DP 102 (cleaning_strength) from schemaInfo.schema. Live-confirmed "Off".
+ * Confirmed values for DP 102 (cleaning_strength) from schemaInfo.schema.
  * @internal
  */
 export const TUYA_CLEANING_STRENGTHS = ["Off", "Quiet", "Standard", "Turbo", "Max"] as const;
@@ -209,7 +206,7 @@ export const TUYA_CLEANING_STRENGTHS = ["Off", "Quiet", "Standard", "Turbo", "Ma
 export type TuyaCleaningStrength = (typeof TUYA_CLEANING_STRENGTHS)[number];
 
 /**
- * Confirmed values for DP 105 (MopWater) from schemaInfo.schema. Live-confirmed "Mid".
+ * Confirmed values for DP 105 (MopWater) from schemaInfo.schema.
  * @internal
  */
 export const TUYA_MOP_WATER_LEVELS = ["Dry", "Low", "Mid", "High"] as const;
@@ -217,14 +214,14 @@ export const TUYA_MOP_WATER_LEVELS = ["Dry", "Low", "Mid", "High"] as const;
 export type TuyaMopWaterLevel = (typeof TUYA_MOP_WATER_LEVELS)[number];
 
 /**
- * Confirmed values for DP 113 (CleanType) from schemaInfo.schema. Live-confirmed "Sweep".
+ * Confirmed values for DP 113 (CleanType) from schemaInfo.schema.
  * @internal
  */
 export const TUYA_CLEAN_TYPES = ["Sweep", "SweepMop", "Mop"] as const;
 /** @internal */
 export type TuyaCleanType = (typeof TUYA_CLEAN_TYPES)[number];
 
-/** Field numbers inside `ModeCtrlRequest` (DP 152). Both live-verified on a T2351. */
+/** Field numbers inside `ModeCtrlRequest` (DP 152). */
 const MODE_CTRL_FIELD = {
   /** `method` — which verb the robot is being asked to run. */
   METHOD: 1,
@@ -233,18 +230,17 @@ const MODE_CTRL_FIELD = {
 } as const;
 
 /**
- * `ModeCtrlRequest.method` values for DP 152. Live-verified on T2351: START_GOHOME → 6,
- * PAUSE_TASK → 13. An auto clean is `START_AUTO_CLEAN` (0) with a payload — see
+ * `ModeCtrlRequest.method` values for DP 152. An auto clean is `START_AUTO_CLEAN` (0) with a payload — see
  * {@link ModeCtrlParamMethod}.
  */
 export const ModeCtrlMethod = {
-  /** Live-verified on a T2351. */
+  /** Return to the dock. */
   START_GOHOME: 6,
-  /** Live-verified on a T2351. */
+  /** Pause the current task. */
   PAUSE_TASK: 13,
 
   // ── Parameterless verbs from the vendor's own `ModeCtrlRequest.Method`, NOT yet captured ────────
-  // Same frame as the three above — the two fields every method shares are live-proven, so the only
+  // Same frame as the three above — the two fields every method shares are confirmed, so the only
   // unconfirmed thing about each is its number. That is not a small thing: a wrong number is a
   // different command reaching real hardware, and an AIoT write is fire-and-forget. Every member built
   // on one of these carries `unverified`.
@@ -253,7 +249,7 @@ export const ModeCtrlMethod = {
   START_FAST_MAPPING: 9,
   START_GOWASH: 10,
   STOP_TASK: 12,
-  /** Live-verified on a T2351: the app's Resume sends method 14, seq continuing the shared counter. */
+  /** The app's Resume sends method 14, seq continuing the shared counter. */
   RESUME_TASK: 14,
   STOP_GOHOME: 15,
   STOP_RC_CLEAN: 16,
@@ -272,11 +268,10 @@ export const ModeCtrlMethod = {
  * its argument in the signature: {@link VACUUM_CLEAN_MEMBERS.startScene},
  * {@link VACUUM_CLEAN_MEMBERS.cleanRooms} and {@link VACUUM_CLEAN_MEMBERS.cleanZones}.
  *
- * The outer frame these ride in is byte-verified on a live T2351, and `AUTO`, `SCENE`, `SELECT_ROOMS`
- * and `SELECT_ZONES` have each since been RUN on a T2351 and did what they name — so their numbers rest
- * on observed behaviour rather than on the vendor's definition alone. `AUTO` is RUN with its payload:
- * the vendor's definition calls `AutoClean.clean_times` valid only when non-zero, and the T2351 did
- * not start on method 0 sent without it.
+ * The outer frame these ride in is confirmed byte for byte, and `AUTO`, `SCENE`, `SELECT_ROOMS` and
+ * `SELECT_ZONES` are each confirmed to do what they name — their numbers do not rest on the vendor's
+ * definition alone. `AUTO` needs its payload: the vendor's definition calls `AutoClean.clean_times`
+ * valid only when non-zero, and method 0 sent without it does not start a clean.
  *
  * That distinction is the whole point of checking, and this is the one place it is argued: an AIoT
  * data-point write is fire-and-forget, so a wrong number would be a different command arriving and
@@ -442,7 +437,7 @@ const MAP_WATCH_FIELD = {
  * Build one of the two DP 153 writes the vendor app sends when its map view opens: the time in
  * microseconds, and on the second write field 2 set to `1`.
  *
- * Captured from the vendor app on the device's `cmd/…/req` leg, three times with the same layout. The
+ * Sent by the vendor app on the device's `cmd/…/req` leg. The
  * product catalogue lists DP 153 as uplink-only (`WorkStatus`); the vendor app writes this message to it
  * all the same. {@link VACUUM_CLEAN_MEMBERS.requestMap} dispatches both.
  * @internal
@@ -466,8 +461,8 @@ export function encodeAutoClean(): string {
 /**
  * The next `ModeCtrlRequest.seq` — ONE counter for every verb on DP 152.
  *
- * Confirmed against a live T2351: the app's start, pause, resume and go-home sent seq 124, 125, 126
- * and 127 — a single sequence advancing across four different verbs, not a counter per verb. That is
+ * The app's start, pause, resume and go-home advance a single sequence across the different verbs,
+ * not a counter per verb. That is
  * what `seq` is for, since it identifies a request so its response can be matched to it; per-verb
  * counters would hand two outstanding requests the same number.
  */
@@ -479,9 +474,8 @@ function nextModeCtrlSeq(): number {
 /**
  * Encode a `ModeCtrlRequest` protobuf (DP 152) as a DP value: `varint(bodyLen) ++ {method:1, seq:2}`.
  *
- * Built on {@link RawDpWriter} rather than hand-rolled bytes. The frame is unchanged and the existing
- * byte-level test is what proves it — that test was written against a live T2351 capture, so it holds
- * the writer to the wire rather than to this function's own idea of the wire.
+ * Built on {@link RawDpWriter} rather than hand-rolled bytes. The byte-level test holds the writer to
+ * the app's own bytes rather than to this function's own idea of the wire.
  * @internal
  */
 export function encodeModeCtrl(method: number, seq: number): string {
@@ -512,24 +506,24 @@ export type VacuumActivity = (typeof VACUUM_ACTIVITIES)[number];
  * DP 15 wire string → {@link VacuumActivity} for the X8 Pro.
  *
  * Values from schemaInfo.schema (`thing.m.device.ref.info.list` v5.4, product `wahqax6ifjgs1c4n`).
- * Live-confirmed "Sleeping" at rest. The sSchema.statusSchemaList confirms six of these:
+ * The sSchema.statusSchemaList maps six of these:
  * Sleeping→sleep, Running→cleaning, Recharge→goto_charge, Charging→charging, completed→charge_done,
  * standby→standby. The remaining six (Goto / Locating / Collecting / RollAutoCleaning / CC_Recharge /
- * CC_Charging) are schema-confirmed but not yet live-observed — mapped best-effort.
+ * CC_Charging) have no sSchema entry — mapped best-effort.
  */
 const X8_STATUS_TO_ACTIVITY: Record<string, VacuumActivity> = {
-  Sleeping: "idle", // ✅ live X8 Pro; sSchema: sleep
-  standby: "idle", // ✅ sSchema: standby
-  Running: "cleaning", // ✅ sSchema: cleaning
-  Recharge: "returning", // ✅ sSchema: goto_charge
-  Charging: "docked", // ✅ sSchema: charging
-  completed: "docked", // ✅ sSchema: charge_done
-  Goto: "returning", // ⚠️ schema-only
-  Locating: "cleaning", // ⚠️ schema-only
-  Collecting: "cleaning", // ⚠️ schema-only
-  RollAutoCleaning: "cleaning", // ⚠️ schema-only
-  CC_Recharge: "returning", // ⚠️ schema-only
-  CC_Charging: "docked", // ⚠️ schema-only
+  Sleeping: "idle", // sSchema: sleep
+  standby: "idle", // sSchema: standby
+  Running: "cleaning", // sSchema: cleaning
+  Recharge: "returning", // sSchema: goto_charge
+  Charging: "docked", // sSchema: charging
+  completed: "docked", // sSchema: charge_done
+  Goto: "returning", // no sSchema entry
+  Locating: "cleaning", // no sSchema entry
+  Collecting: "cleaning", // no sSchema entry
+  RollAutoCleaning: "cleaning", // no sSchema entry
+  CC_Recharge: "returning", // no sSchema entry
+  CC_Charging: "docked", // no sSchema entry
 };
 
 /**
@@ -546,10 +540,8 @@ export function decodeTuyaWorkStatus(raw: ParamValue | undefined): VacuumActivit
 /**
  * `WorkStatus.state` (protobuf field #2) → {@link VacuumActivity}.
  *
- * Three values are **live-verified** on a T2351 — a start→return→charge run reported `5`(cleaning) →
- * `7`(returning) → `3`(docked), matching the physical actions. The rest come from the vendor's own
- * `WorkStatus.State` enumeration, which those three corroborate exactly: it declares `CHARGING = 3`,
- * `CLEANING = 5` and `GO_HOME = 7` at the same positions the device reported them.
+ * The values are the vendor's own `WorkStatus.State` enumeration (`CHARGING = 3`, `CLEANING = 5`,
+ * `GO_HOME = 7`, …); a start→return→charge run reports `5` → `7` → `3`.
  *
  * The vendor's remaining names are narrower than this union can express, so several collapse onto
  * `"cleaning"` — the closest true answer for a robot that is off the dock and driving:
@@ -563,11 +555,11 @@ const WORK_STATE_ACTIVITY: Record<number, VacuumActivity> = {
   0: "idle", // STANDBY — also every paused-* state; the sub-state carries which
   1: "idle", // SLEEP
   2: "error", // FAULT
-  3: "docked", // CHARGING ✅ live T2351
+  3: "docked", // CHARGING
   4: "cleaning", // FAST_MAPPING — driving, no narrower member
-  5: "cleaning", // CLEANING ✅ live T2351 — refined by resolveCleaningState
+  5: "cleaning", // CLEANING — refined by resolveCleaningState
   6: "cleaning", // REMOTE_CTRL — driving, no narrower member
-  7: "returning", // GO_HOME ✅ live T2351
+  7: "returning", // GO_HOME
   8: "cleaning", // CRUISIING — driving, no narrower member
 };
 
@@ -688,12 +680,11 @@ function subValue(codec: RawDpCodec, body: Buffer, field: number): number {
  * Falls through to `"cleaning"` whenever no sub-message claims it, so a frame this does not recognise
  * degrades to the state's own coarse answer rather than to a worse one.
  *
- * **The station branch is the softest read here, and the one to confirm on-device first.** It takes the
+ * **The station branch is the softest read here.** It takes the
  * PRESENCE of `washing_drying_system` as washing-or-drying and does not read its value, where `go_wash`
  * above reads the actual mode. That follows the schema's own "an absent message is IDLE" rule, and it
  * degrades into the `"cleaning"` fallback rather than into a wrong dock state — but unlike the go_wash
- * and paused branches it is not corroborated by a capture, so a live report of a robot washing at its
- * dock is what would settle whether presence alone is enough.
+ * and paused branches, whether presence alone is enough is unconfirmed.
  */
 function resolveCleaningState(fields: readonly RawDpField[], codec: RawDpCodec): VacuumActivity {
   const sub = (field: number): Buffer | undefined => {
@@ -725,8 +716,7 @@ export const VACUUM_CLEAN_TYPES = ["sweep", "mop", "sweepAndMop", "sweepThenMop"
  * What the robot is **set** to do with a surface — `dev.vacuumClean()?.cleanType`. This is the setting,
  * not what a job in progress is doing; the two disagree while a change is being applied.
  *
- * `mop` and `sweepAndMop` are verified on a real robot. `sweepThenMop` comes from the vendor's own
- * enumeration and has not been observed on a device yet. `"sweep"` also covers **"no type stated"** —
+ * `sweepThenMop` is unverified: it comes from the vendor's own enumeration alone. `"sweep"` also covers **"no type stated"** —
  * a robot that states none is indistinguishable from one set to sweep-only, and this read cannot tell
  * them apart.
  */
@@ -735,15 +725,15 @@ export type VacuumCleanType = (typeof VACUUM_CLEAN_TYPES)[number];
 /** `CleanType.value` → {@link VacuumCleanType}, per the vendor's `CleanType.Value` enum. */
 const CLEAN_TYPE: Record<number, VacuumCleanType> = {
   0: "sweep",
-  1: "mop", // ✅ live T2351
-  2: "sweepAndMop", // ✅ live T2351
-  3: "sweepThenMop", // ⚠️ unverified — vendor enum, not yet observed
+  1: "mop",
+  2: "sweepAndMop",
+  3: "sweepThenMop", // unverified — vendor enum only
 };
 
 /**
  * Field numbers inside `CleanParamResponse` and its nested `CleanParam`.
  *
- * A T2351 sends all four top-level containers on every report, present-but-empty when they carry
+ * The device sends all four top-level containers on every report, present-but-empty when they carry
  * nothing — so container presence proves nothing and only the fields INSIDE it do. `CONFIGURED` is the
  * device's setting; `RUNNING` is what the job in progress is actually doing, and the two disagree
  * mid-change. This reads the setting, which is what the app's own screen shows.
@@ -768,8 +758,8 @@ const CLEAN_PARAM_FIELD = {
   /**
    * `fan` — the suction level, and the SAME scale DP 158 reports.
    *
-   * Deliberately not surfaced as its own read. A live capture showed the two moving together: DP 158
-   * went 2 then 0 while `clean_param.fan` went `{value:2}` then absent-for-zero. `suction.level`
+   * Deliberately not surfaced as its own read. The two move together: `clean_param.fan` carries DP
+   * 158's value, absent for zero. `suction.level`
    * already publishes that value from DP 158, and a second name for it here would be one feature
    * spelled twice. Named to document what field 6 is, not so anything reads it.
    */
@@ -783,7 +773,7 @@ const CLEAN_PARAM_FIELD = {
 /**
  * `mop_mode.level` — how much water the mop lays down.
  *
- * Confirmed on a live T2351: setting the app's water level to High reported `mop_mode { level: 2 }`.
+ * The app's High water level is `mop_mode { level: 2 }`.
  */
 export const MOP_LEVELS = ["low", "middle", "high"] as const;
 export type MopLevel = (typeof MOP_LEVELS)[number];
@@ -839,11 +829,11 @@ function writeCleanSetting(p: RawDpWriter, wrapper: number, inner: number, value
  *
  * The message is `{ clean_param: CleanParam }` — field 1 of the request, carrying the same `CleanParam`
  * this module decodes out of field 1 of the reports it receives, so the shape a write sends is the
- * shape a read has already been proven against on live hardware.
+ * shape a read already decodes.
  *
  * All three settings are stated together because one message carries all three: a write naming fewer
  * would be a `CleanParam` with the rest silent, and what a robot does with a half-stated one is not
- * something this SDK has observed. `clean_times`(7) is never written — the vendor's own field comment
+ * known. `clean_times`(7) is never written — the vendor's own field comment
  * makes zero mean "not stated", so omitting it leaves the robot's configured pass count alone — and
  * neither is `fan`(6), which belongs to the suction capability's own data point.
  *
@@ -886,7 +876,7 @@ export function encodeCleanParam(cleanType: VacuumCleanType, cleanExtent: CleanE
  * setting in its own single-field message — `CleanType{value}`, `CleanCarpet{strategy}`,
  * `CleanExtent{value}` — where the wrapper's name and its field's name differ per setting but the
  * shape does not. Rather than assert a number for each inner field, this takes the FIRST varint the
- * wrapper carries. The 1→1→1 nesting is live-proven for `clean_type`; taking the first scalar is what
+ * wrapper carries. The 1→1→1 nesting is confirmed for `clean_type`; taking the first scalar is what
  * extends that to its siblings without claiming a number for any of them.
  *
  * The cost is stated rather than hidden: a wrapper that ever carries more than one scalar would read
@@ -1114,8 +1104,8 @@ export function decodeDoNotDisturb(raw: ParamValue | undefined, codec: RawDpCode
  * one reports whether the quiet window is open RIGHT NOW — two different questions the same DP answers,
  * which is why this member reads its sibling's payload instead of claiming a wire of its own.
  *
- * **`active` is `Switch`-wrapped** — confirmed on a live T2351, which inside its quiet window reports
- * `active { value: 1 }` beside `undisturbed { sw { value: 1 }, begin { hour: 9 }, end { hour: 23 } }`.
+ * **`active` is `Switch`-wrapped**: inside the quiet window the device reports `active { value: 1 }`
+ * beside `undisturbed { sw { value: 1 }, begin { hour }, end { hour } }`.
  * The bare-varint branch is kept regardless: it costs one comparison, and a reader that accepts both
  * cannot be broken by a firmware that changes its mind.
  *
@@ -1501,7 +1491,7 @@ const CONSUMABLE_FIELD = {
   /**
    * The `ConsumableRuntime` block, which the report WRAPS at field 1 rather than sending bare.
    *
-   * Confirmed against a live T2351 report. Reading the parts at the top level finds the wrapper where a
+   * Reading the parts at the top level finds the wrapper where a
    * part should be and answers `undefined` for every counter.
    */
   RUNTIME: 1,
@@ -1590,8 +1580,7 @@ export function decodeConsumableHours(
   field: number,
 ): number | undefined {
   if (typeof raw !== "string" || !codec) return undefined;
-  // The parts sit one level DOWN, inside the report's field 1 — not at the top level, which an
-  // earlier revision assumed and which made every counter answer `undefined` on a real robot.
+  // The parts sit one level DOWN, inside the report's field 1 — not at the top level.
   const runtime = codec.decode(raw)?.find((f) => f.field === CONSUMABLE_FIELD.RUNTIME);
   if (runtime?.kind !== "bytes") return undefined;
   const part = codec.nested(runtime.value)?.find((f) => f.field === field);
@@ -1644,9 +1633,9 @@ export type VacuumCleanActions = Surface<typeof VACUUM_CLEAN_MEMBERS>;
  * verbs (`startCleaning`, `returnToDock`, `pauseCleaning`, all DP 152 `ModeCtrlRequest`). DP 151 and
  * DP 152 belong to the shared AIoT product schema rather than to a device's reported param set, so
  * gating them on a reported DP would hide them on real hardware. No legacy Tuya clean-line write is
- * dispatched at all — that direction has no live `publishDps` capture behind it.
+ * dispatched at all — that direction is unconfirmed.
  *
- * Each AIoT mode-control verb carries its own `seq` counter per bind (the T2351 accepts per-closure
+ * Each AIoT mode-control verb carries its own `seq` counter per bind (the device accepts per-closure
  * counters — two separately-obtained action objects both starting at 112 do not cause the device to
  * complain, so the seq is not enforced as globally monotonic).
  *
@@ -1654,7 +1643,7 @@ export type VacuumCleanActions = Surface<typeof VACUUM_CLEAN_MEMBERS>;
  * installed only when the device has reported those DPs. The `locate` action (DP 160) is owned by the
  * `locate` capability module.
  *
- * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * Exported but NOT published: each entry states its wire id and its gate,
  * which the reference site does not carry.
  * @internal
  */
@@ -1669,7 +1658,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     param: VACUUM_DP.POWER,
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     description: "Power on/off (DP 151 power switch, cloud get_product_data_point).",
     write: (v, _ctx) => aiotDp(VACUUM_DP.POWER, asBool(v)),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
@@ -1678,7 +1666,6 @@ export const VACUUM_CLEAN_MEMBERS = {
   activity: {
     param: VACUUM_DP.WORK_STATUS,
     type: "string",
-    provenance: "mega",
     decode: (raw, codec) => decodeVacuumActivity(raw as ParamValue | undefined, codec),
     decodedKind: "enum",
     decodedValues: VACUUM_ACTIVITIES,
@@ -1688,7 +1675,7 @@ export const VACUUM_CLEAN_MEMBERS = {
   },
   /**
    * The robot's own speaker loudness — its spoken prompts and chimes, nothing to do with suction noise.
-   * Confirmed writable via `get_product_data_point` (`writable: true`); no live publishDps capture yet.
+   * Writable per `get_product_data_point` (`writable: true`); the write wire is unconfirmed.
    * Reaches the getters only via `decodeState`, since the robot's cloud record carries no DPs at all.
    */
   volume: {
@@ -1696,7 +1683,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "%",
     kind: "percent",
-    provenance: "mega",
     description: "Speaker volume 0-100 (DP 161, Value ro). AIoT clean line.",
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
   },
@@ -1711,7 +1697,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "%",
     kind: "percent",
-    provenance: "mega",
     readAliases: [{ paramType: TUYA_VACUUM_DP.BATTERY_LEVEL, available: isTuyaVacuum }],
     description: "Battery level 0-100 (DP 163 AIoT / DP 104 Tuya). NOTE: clean namespace — not param 1101.",
   },
@@ -1731,7 +1716,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     param: VACUUM_DP.LANGUAGE,
     type: "number",
     kind: "identifier",
-    provenance: "mega",
     decode: (raw, codec) => decodeLanguageField(raw as ParamValue | undefined, codec, LANGUAGE_FIELD.CURRENT_ID),
     decodedKind: "identifier",
     description: "The voice pack in use — LanguageResponse.current_id (DP 162, Raw protobuf). AIoT clean line.",
@@ -1745,7 +1729,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "voicePack",
     type: "number",
     kind: "identifier",
-    provenance: "mega",
     decode: (raw, codec) => decodeLanguageField(raw as ParamValue | undefined, codec, LANGUAGE_FIELD.DEFAULT_ID),
     decodedKind: "identifier",
     description: "The firmware's own voice pack — LanguageResponse.default_id (DP 162, Raw protobuf).",
@@ -1757,7 +1740,6 @@ export const VACUUM_CLEAN_MEMBERS = {
   voicePackState: {
     readsFrom: "voicePack",
     type: "string",
-    provenance: "mega",
     decode: (raw, codec) => {
       const v = decodeLanguageField(raw as ParamValue | undefined, codec, LANGUAGE_FIELD.STATE);
       return v === undefined ? undefined : VOICE_PACK_STATES[v];
@@ -1774,7 +1756,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "voicePack",
     type: "number",
     kind: "scalar",
-    provenance: "mega",
     decode: (raw, codec) => decodeLanguageField(raw as ParamValue | undefined, codec, LANGUAGE_FIELD.VERSION),
     decodedKind: "scalar",
     description: "Installed voice-pack version — LanguageResponse.version (DP 162, Raw protobuf).",
@@ -1790,7 +1771,6 @@ export const VACUUM_CLEAN_MEMBERS = {
   cleanType: {
     param: VACUUM_DP.CLEAN_PARAM,
     type: "string",
-    provenance: "mega",
     decode: (raw, codec) => decodeCleanType(raw as ParamValue | undefined, codec),
     decodedKind: "enum",
     decodedValues: [...VACUUM_CLEAN_TYPES, ...TUYA_CLEAN_TYPES] as readonly string[],
@@ -1806,7 +1786,6 @@ export const VACUUM_CLEAN_MEMBERS = {
   carpetStrategy: {
     readsFrom: "cleanType",
     type: "string",
-    provenance: "mega",
     decode: (raw, codec) => {
       const v = decodeCleanParamValue(raw as ParamValue | undefined, codec, CLEAN_PARAM_FIELD.CLEAN_CARPET);
       return v === undefined ? undefined : CARPET_STRATEGY[v];
@@ -1824,7 +1803,6 @@ export const VACUUM_CLEAN_MEMBERS = {
   cleanExtent: {
     readsFrom: "cleanType",
     type: "string",
-    provenance: "mega",
     decode: (raw, codec) => {
       const v = decodeCleanParamValue(raw as ParamValue | undefined, codec, CLEAN_PARAM_FIELD.CLEAN_EXTENT);
       return v === undefined ? undefined : CLEAN_EXTENT[v];
@@ -1841,7 +1819,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "cleanType",
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     decode: (raw, codec) => {
       const v = decodeCleanParamValue(raw as ParamValue | undefined, codec, CLEAN_PARAM_FIELD.SMART_MODE);
       return v === undefined ? undefined : v !== 0;
@@ -1859,7 +1836,6 @@ export const VACUUM_CLEAN_MEMBERS = {
   mopLevel: {
     readsFrom: "cleanType",
     type: "string",
-    provenance: "verified",
     decode: (raw, codec) => {
       const v = decodeCleanParamValue(
         raw as ParamValue | undefined,
@@ -1871,7 +1847,7 @@ export const VACUUM_CLEAN_MEMBERS = {
     },
     decodedKind: "enum",
     decodedValues: MOP_LEVELS as readonly string[],
-    description: "Mop water level from CleanParam.mop_mode.level (DP 154 AIoT). Captured on a live T2351.",
+    description: "Mop water level from CleanParam.mop_mode.level (DP 154 AIoT).",
   },
   /**
    * Whether the robot makes an extra pass along edges while mopping — the app calls it edge-hug
@@ -1882,7 +1858,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "cleanType",
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
     decode: (raw, codec) => {
       const v = decodeCleanParamValue(
         raw as ParamValue | undefined,
@@ -1893,7 +1868,7 @@ export const VACUUM_CLEAN_MEMBERS = {
       return v === undefined ? undefined : v !== 0;
     },
     decodedKind: "boolean",
-    description: "Edge-hug mopping from CleanParam.mop_mode.corner_clean (DP 154 AIoT). Captured on a live T2351.",
+    description: "Edge-hug mopping from CleanParam.mop_mode.corner_clean (DP 154 AIoT).",
   },
   /**
    * How many passes one job makes over the same floor. `0` is the device stating no repeat rather than
@@ -1903,7 +1878,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "cleanType",
     type: "number",
     kind: "scalar",
-    provenance: "mega",
     decode: (raw, codec) => decodeCleanParamValue(raw as ParamValue | undefined, codec, CLEAN_PARAM_FIELD.CLEAN_TIMES),
     decodedKind: "scalar",
     description: "Passes per job from CleanParam.clean_times (DP 154 AIoT, Raw protobuf).",
@@ -1927,7 +1901,6 @@ export const VACUUM_CLEAN_MEMBERS = {
   errorCode: {
     param: VACUUM_DP.FAULT_ALERT,
     type: "number",
-    provenance: "mega",
     readAliases: [{ paramType: TUYA_VACUUM_DP.FAULT_REPORT }],
     decode: (raw, codec) => decodeVacuumFault(raw as ParamValue | undefined, codec),
     decodedKind: "scalar",
@@ -1937,48 +1910,44 @@ export const VACUUM_CLEAN_MEMBERS = {
   },
   /**
    * High-level activity for the X8 Pro Tuya clean line (DP 15, Enum string). Decoded from the device's
-   * `status` string to a {@link VacuumActivity} via `decodeTuyaWorkStatus`. Live-confirmed "Sleeping"
-   * at rest. `"unknown"` covers any value absent from the schema-confirmed set.
+   * `status` string to a {@link VacuumActivity} via `decodeTuyaWorkStatus`. `"unknown"` covers any value absent from the schema-confirmed set.
    *
-   * Distinct from {@link activity} (DP 153, protobuf), which the AIoT T2351 reports instead.
+   * Distinct from {@link activity} (DP 153, protobuf), which the AIoT line reports instead.
    */
   workStatus: {
     param: TUYA_VACUUM_DP.WORK_STATUS,
     type: "string",
-    provenance: "mega",
     decode: (raw) => decodeTuyaWorkStatus(raw as ParamValue | undefined),
     decodedKind: "enum",
     decodedValues: VACUUM_ACTIVITIES,
-    description: "High-level activity from DP 15 (status, Enum). X8 Pro Tuya clean line. Live-confirmed Sleeping.",
+    description: "High-level activity from DP 15 (status, Enum). X8 Pro Tuya clean line.",
   },
   /**
-   * Cleaning mode (DP 5, Enum string). Live-confirmed "auto". Distinct from the AIoT suction/mode
-   * controls. Write direction is unverified — no live publishDps capture.
+   * Cleaning mode (DP 5, Enum string). Distinct from the AIoT suction/mode
+   * controls. Write direction is unverified.
    *
    * Known values from schemaInfo.schema: `TUYA_WORK_MODES`.
    */
   workMode: {
     param: TUYA_VACUUM_DP.MODE,
     type: "string",
-    provenance: "mega",
     decode: (raw): TuyaWorkMode | undefined => {
       const s = typeof raw === "string" ? raw : undefined;
       return s !== undefined && (TUYA_WORK_MODES as readonly string[]).includes(s) ? (s as TuyaWorkMode) : undefined;
     },
     decodedKind: "enum",
     decodedValues: TUYA_WORK_MODES,
-    description: "Cleaning mode from DP 5 (mode, Enum). X8 Pro Tuya clean line. Live-confirmed auto. Write unverified.",
+    description: "Cleaning mode from DP 5 (mode, Enum). X8 Pro Tuya clean line. Write unverified.",
   },
   /**
-   * Suction / cleaning strength (DP 102, Enum string). Live-confirmed "Off" at rest.
-   * Write direction is unverified — no live publishDps capture.
+   * Suction / cleaning strength (DP 102, Enum string).
+   * Write direction is unverified.
    *
    * Known values from schemaInfo.schema: `TUYA_CLEANING_STRENGTHS`.
    */
   cleaningStrength: {
     param: TUYA_VACUUM_DP.CLEANING_STRENGTH,
     type: "string",
-    provenance: "mega",
     decode: (raw): TuyaCleaningStrength | undefined => {
       const s = typeof raw === "string" ? raw : undefined;
       return s !== undefined && (TUYA_CLEANING_STRENGTHS as readonly string[]).includes(s)
@@ -1988,18 +1957,17 @@ export const VACUUM_CLEAN_MEMBERS = {
     decodedKind: "enum",
     decodedValues: TUYA_CLEANING_STRENGTHS,
     description:
-      "Suction/cleaning strength from DP 102 (cleaning_strength, Enum). X8 Pro Tuya clean line. Live-confirmed Off. Write unverified.",
+      "Suction/cleaning strength from DP 102 (cleaning_strength, Enum). X8 Pro Tuya clean line. Write unverified.",
   },
   /**
-   * Mop water flow level (DP 105, Enum string). Live-confirmed "Mid" at rest.
-   * Write direction is unverified — no live publishDps capture.
+   * Mop water flow level (DP 105, Enum string).
+   * Write direction is unverified.
    *
    * Known values from schemaInfo.schema: `TUYA_MOP_WATER_LEVELS`.
    */
   mopWater: {
     param: TUYA_VACUUM_DP.MOP_WATER,
     type: "string",
-    provenance: "mega",
     decode: (raw): TuyaMopWaterLevel | undefined => {
       const s = typeof raw === "string" ? raw : undefined;
       return s !== undefined && (TUYA_MOP_WATER_LEVELS as readonly string[]).includes(s)
@@ -2008,11 +1976,10 @@ export const VACUUM_CLEAN_MEMBERS = {
     },
     decodedKind: "enum",
     decodedValues: TUYA_MOP_WATER_LEVELS,
-    description:
-      "Mop water flow level from DP 105 (MopWater, Enum). X8 Pro Tuya clean line. Live-confirmed Mid. Write unverified.",
+    description: "Mop water flow level from DP 105 (MopWater, Enum). X8 Pro Tuya clean line. Write unverified.",
   },
   /**
-   * Session cleaning duration in seconds (DP 109, Value). Live-confirmed 4200 (= 70 min) at rest.
+   * Session cleaning duration in seconds (DP 109, Value).
    * Read-only — no write is expected for a session counter.
    */
   clearTime: {
@@ -2020,7 +1987,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "s",
     kind: "seconds",
-    provenance: "mega",
     readAliases: [{ paramType: TUYA_VACUUM_DP.CLEAR_TIME, available: isTuyaVacuum }],
     decode: (raw, codec) =>
       decodeCleanStat(raw as ParamValue | undefined, codec, CLEAN_STATS_FIELD.SINGLE, CLEAN_STATS_FIELD.DURATION),
@@ -2030,14 +1996,13 @@ export const VACUUM_CLEAN_MEMBERS = {
       "protobuf) or the plain DP 109 integer on the Tuya clean line.",
   },
   /**
-   * Session cleaned area in m² (DP 110, Value). Live-confirmed 54 at rest. Read-only.
+   * Session cleaned area in m² (DP 110, Value). Read-only.
    */
   clearArea: {
     param: TUYA_VACUUM_DP.CLEAR_AREA,
     readsFrom: "clearTime",
     type: "number",
     kind: "scalar",
-    provenance: "mega",
     decode: (raw, codec) =>
       decodeCleanStat(raw as ParamValue | undefined, codec, CLEAN_STATS_FIELD.SINGLE, CLEAN_STATS_FIELD.AREA),
     decodedKind: "scalar",
@@ -2046,16 +2011,15 @@ export const VACUUM_CLEAN_MEMBERS = {
       "CleanStatistics.single.clean_area (DP 167 AIoT, Raw protobuf).",
   },
   /**
-   * Speaker loudness 0-100 (DP 111, Value). Live-confirmed 38.
-   * Distinct from {@link volume} (DP 161), which the AIoT T2351 reports.
+   * Speaker loudness 0-100 (DP 111, Value).
+   * Distinct from {@link volume} (DP 161), which the AIoT line reports.
    */
   loudness: {
     param: TUYA_VACUUM_DP.LOUDNESS,
     type: "number",
     unit: "%",
     kind: "percent",
-    provenance: "mega",
-    description: "Speaker loudness 0-100 from DP 111 (Loudness). X8 Pro Tuya clean line. Live-confirmed.",
+    description: "Speaker loudness 0-100 from DP 111 (Loudness). X8 Pro Tuya clean line.",
   },
   /**
    * Lifetime total cleaning time in seconds (DP 119, Value). Counts across all sessions.
@@ -2068,7 +2032,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "s",
     kind: "seconds",
-    provenance: "mega",
     decode: (raw, codec) =>
       decodeCleanStat(raw as ParamValue | undefined, codec, CLEAN_STATS_FIELD.USER_TOTAL, CLEAN_STATS_FIELD.DURATION),
     decodedKind: "seconds",
@@ -2086,7 +2049,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "clearTime",
     type: "number",
     kind: "scalar",
-    provenance: "mega",
     decode: (raw, codec) =>
       decodeCleanStat(raw as ParamValue | undefined, codec, CLEAN_STATS_FIELD.USER_TOTAL, CLEAN_STATS_FIELD.AREA),
     decodedKind: "scalar",
@@ -2105,7 +2067,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "clearTime",
     type: "number",
     kind: "scalar",
-    provenance: "mega",
     // Refuses a bare number outright. Its owner also answers from a Tuya DP via a read alias, and that
     // DP carries a session DURATION — passing it through would report seconds as a run count. A member
     // with no wire of its own can only be answered by the protobuf, so anything else is `undefined`.
@@ -2126,7 +2087,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     param: TUYA_VACUUM_DP.WATER_TANK_STATUS,
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     description: "Water tank attached (DP 127, Bool ro). X8 Pro Tuya clean line. Schema-confirmed.",
   },
   /**
@@ -2137,7 +2097,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     param: TUYA_VACUUM_DP.MOP_STATUS,
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     description: "Mop pad attached (DP 129, Bool ro). X8 Pro Tuya clean line. Schema-confirmed.",
   },
   /**
@@ -2149,7 +2108,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     param: VACUUM_DP.SETTINGS,
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.CHILDREN_LOCK),
     decodedKind: "boolean",
     description: "Child lock from UnisettingResponse.children_lock (DP 176 commonSettings, Raw protobuf).",
@@ -2162,7 +2120,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "childLock",
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.CRUISE_CONTINUE),
     decodedKind: "boolean",
     description: "Resume a cruise after charging — UnisettingResponse.cruise_continue_sw (DP 176, Raw protobuf).",
@@ -2174,7 +2131,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "childLock",
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.MULTI_MAP),
     decodedKind: "boolean",
     description: "Multi-map storage — UnisettingResponse.multi_map_sw (DP 176, Raw protobuf).",
@@ -2186,7 +2142,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "childLock",
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.AI_SEE),
     decodedKind: "boolean",
     description: "Obstacle-recognition camera — UnisettingResponse.ai_see (DP 176, Raw protobuf).",
@@ -2199,7 +2154,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "childLock",
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.WATER_LEVEL),
     decodedKind: "boolean",
     description:
@@ -2213,7 +2167,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "childLock",
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.SUGGEST_RESTRICTED),
     decodedKind: "boolean",
     description: "Restricted-area suggestions — UnisettingResponse.suggest_restricted (DP 176, Raw protobuf).",
@@ -2225,7 +2178,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "childLock",
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.DEEP_MOP_CORNER),
     decodedKind: "boolean",
     description: "Deep corner mopping — UnisettingResponse.deep_mop_corner_sw (DP 176, Raw protobuf).",
@@ -2242,7 +2194,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "min",
     kind: "scalar",
-    provenance: "mega",
     decode: (raw, codec) =>
       decodeUnisettingNumber(raw as ParamValue | undefined, codec, UNISETTING_FIELD.DUST_FULL_REMIND),
     decodedKind: "scalar",
@@ -2257,7 +2208,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "childLock",
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.POOP_AVOIDANCE),
     decodedKind: "boolean",
     description: "Pet-mess avoidance — UnisettingResponse.poop_avoidance_sw (DP 176, Raw protobuf).",
@@ -2269,7 +2219,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "childLock",
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.PET_MODE),
     decodedKind: "boolean",
     description: "Pet mode — UnisettingResponse.pet_mode_sw (DP 176, Raw protobuf).",
@@ -2285,7 +2234,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "childLock",
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     decode: (raw, codec) => decodeUnistateFlag(raw as ParamValue | undefined, codec, UNISTATE_FIELD.MAP_VALID),
     decodedKind: "boolean",
     description: "Whether a usable map exists — UnisettingResponse.unistate.map_valid (DP 176, Raw protobuf).",
@@ -2300,7 +2248,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "childLock",
     type: "number",
     kind: "bitfield",
-    provenance: "mega",
     decode: (raw, codec) =>
       decodeUnistateNumber(raw as ParamValue | undefined, codec, UNISTATE_FIELD.LIVE_MAP, UNISTATE_FIELD.STATE_BITS),
     decodedKind: "bitfield",
@@ -2315,7 +2262,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "childLock",
     type: "number",
     kind: "scalar",
-    provenance: "mega",
     decode: (raw, codec) =>
       decodeUnistateNumber(raw as ParamValue | undefined, codec, UNISTATE_FIELD.CLEAN_STRATEGY_VERSION),
     decodedKind: "scalar",
@@ -2335,7 +2281,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "%",
     kind: "percent",
-    provenance: "mega",
     decode: (raw, codec) => decodeUnisettingTopLevel(raw as ParamValue | undefined, codec, UNISETTING_FIELD.AP_SIGNAL),
     decodedKind: "percent",
     description: "WiFi signal strength 0-100% — UnisettingResponse.ap_signal_strength (DP 176, Raw protobuf).",
@@ -2347,7 +2292,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "childLock",
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.LIVE_PHOTO),
     decodedKind: "boolean",
     description: "Capture stills while cleaning — UnisettingResponse.live_photo_sw (DP 176, Raw protobuf).",
@@ -2360,7 +2304,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "childLock",
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     decode: (raw, codec) => decodeUnisetting(raw as ParamValue | undefined, codec, UNISETTING_FIELD.SMART_FOLLOW),
     decodedKind: "boolean",
     description: "Smart-follow mode — UnisettingResponse.smart_follow_sw (DP 176, Raw protobuf).",
@@ -2378,7 +2321,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "h",
     kind: "hours",
-    provenance: "mega",
     decode: (raw, codec) => decodeConsumableHours(raw as ParamValue | undefined, codec, CONSUMABLE_FIELD.SIDE_BRUSH),
     decodedKind: "hours",
     description: "Side-brush hours used — ConsumableRuntime.side_brush (DP 168 consumables, Raw protobuf).",
@@ -2392,7 +2334,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "h",
     kind: "hours",
-    provenance: "mega",
     decode: (raw, codec) => decodeConsumableHours(raw as ParamValue | undefined, codec, CONSUMABLE_FIELD.ROLLING_BRUSH),
     decodedKind: "hours",
     description: "Rolling-brush hours used — ConsumableRuntime.rolling_brush (DP 168, Raw protobuf).",
@@ -2405,7 +2346,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "h",
     kind: "hours",
-    provenance: "mega",
     decode: (raw, codec) => decodeConsumableHours(raw as ParamValue | undefined, codec, CONSUMABLE_FIELD.FILTER_MESH),
     decodedKind: "hours",
     description: "Filter-mesh hours used — ConsumableRuntime.filter_mesh (DP 168, Raw protobuf).",
@@ -2418,7 +2358,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "h",
     kind: "hours",
-    provenance: "mega",
     decode: (raw, codec) => decodeConsumableHours(raw as ParamValue | undefined, codec, CONSUMABLE_FIELD.SCRAPE),
     decodedKind: "hours",
     description: "Scraper hours used — ConsumableRuntime.scrape (DP 168, Raw protobuf).",
@@ -2431,7 +2370,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "h",
     kind: "hours",
-    provenance: "mega",
     decode: (raw, codec) => decodeConsumableHours(raw as ParamValue | undefined, codec, CONSUMABLE_FIELD.SENSOR),
     decodedKind: "hours",
     description: "Hours since the sensors were cleaned — ConsumableRuntime.sensor (DP 168, Raw protobuf).",
@@ -2444,7 +2382,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "h",
     kind: "hours",
-    provenance: "mega",
     decode: (raw, codec) => decodeConsumableHours(raw as ParamValue | undefined, codec, CONSUMABLE_FIELD.MOP),
     decodedKind: "hours",
     description: "Mop-pad hours used — ConsumableRuntime.mop (DP 168, Raw protobuf).",
@@ -2457,7 +2394,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "h",
     kind: "hours",
-    provenance: "mega",
     decode: (raw, codec) => decodeConsumableHours(raw as ParamValue | undefined, codec, CONSUMABLE_FIELD.DUSTBAG),
     decodedKind: "hours",
     description: "Dust-bag hours used — ConsumableRuntime.dustbag (DP 168, Raw protobuf).",
@@ -2471,7 +2407,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "h",
     kind: "hours",
-    provenance: "mega",
     decode: (raw, codec) =>
       decodeConsumableHours(raw as ParamValue | undefined, codec, CONSUMABLE_FIELD.DIRTY_WATERTANK),
     decodedKind: "hours",
@@ -2485,7 +2420,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "h",
     kind: "hours",
-    provenance: "mega",
     decode: (raw, codec) =>
       decodeConsumableHours(raw as ParamValue | undefined, codec, CONSUMABLE_FIELD.DIRTY_WATERFILTER),
     decodedKind: "hours",
@@ -2501,7 +2435,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     param: VACUUM_DP.DO_NOT_DISTURB,
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     readAliases: [{ paramType: TUYA_VACUUM_DP.FORBID_MODE, available: isTuyaVacuum }],
     decode: (raw, codec) => decodeDoNotDisturb(raw as ParamValue | undefined, codec),
     decodedKind: "boolean",
@@ -2526,7 +2459,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "doNotDisturb",
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     decode: (raw, codec) => decodeDoNotDisturbActive(raw as ParamValue | undefined, codec),
     decodedKind: "boolean",
     description: "Whether the do-not-disturb window is open now — Undisturbed.active (DP 157 AIoT, Raw protobuf).",
@@ -2542,7 +2474,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "doNotDisturb",
     type: "string",
     kind: "text",
-    provenance: "mega",
     decode: (raw, codec) => decodeDoNotDisturbTime(raw as ParamValue | undefined, codec, UNDISTURBED_FIELD.BEGIN),
     decodedKind: "text",
     description: "Quiet hours start, HH:MM — Undisturbed.begin (DP 157 AIoT, Raw protobuf).",
@@ -2553,7 +2484,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "doNotDisturb",
     type: "string",
     kind: "text",
-    provenance: "mega",
     decode: (raw, codec) => decodeDoNotDisturbTime(raw as ParamValue | undefined, codec, UNDISTURBED_FIELD.END),
     decodedKind: "text",
     description: "Quiet hours end, HH:MM — Undisturbed.end (DP 157 AIoT, Raw protobuf).",
@@ -2570,7 +2500,6 @@ export const VACUUM_CLEAN_MEMBERS = {
   chargeState: {
     readsFrom: "activity",
     type: "string",
-    provenance: "mega",
     decode: (raw, codec) => decodeChargeState(raw as ParamValue | undefined, codec),
     decodedKind: "enum",
     decodedValues: CHARGE_STATES as readonly string[],
@@ -2588,7 +2517,6 @@ export const VACUUM_CLEAN_MEMBERS = {
   triggerSource: {
     readsFrom: "activity",
     type: "string",
-    provenance: "mega",
     decode: (raw, codec) => decodeTriggerSource(raw as ParamValue | undefined, codec),
     decodedKind: "enum",
     decodedValues: TRIGGER_SOURCES as readonly string[],
@@ -2607,7 +2535,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     param: VACUUM_DP.TIMING,
     type: "number",
     kind: "scalar",
-    provenance: "mega",
     decode: (raw, codec) => decodeVacuumScheduleCount(raw, codec),
     decodedKind: "scalar",
     description: "How many schedules the robot holds — TimerResponse.timers (DP 164, Raw protobuf).",
@@ -2624,7 +2551,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "scheduleCount",
     type: "number",
     kind: "scalar",
-    provenance: "mega",
     decode: (raw, codec) => decodeActiveVacuumScheduleCount(raw, codec),
     decodedKind: "scalar",
     description: "How many schedules are on and usable — TimerInfo.status (DP 164, Raw protobuf).",
@@ -2656,7 +2582,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     param: VACUUM_DP.SCENES,
     type: "number",
     kind: "scalar",
-    provenance: "mega",
     decode: (raw, codec) => decodeVacuumSceneCount(raw, codec),
     decodedKind: "scalar",
     description: "How many cleaning scenes the robot holds — SceneResponse.infos (DP 180, Raw protobuf).",
@@ -2671,7 +2596,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: "sceneCount",
     type: "number",
     kind: "scalar",
-    provenance: "mega",
     decode: (raw, codec) => decodeUsableVacuumSceneCount(raw, codec),
     decodedKind: "scalar",
     description: "How many scenes can still run — SceneInfo.valid (DP 180, Raw protobuf).",
@@ -2711,7 +2635,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: VACUUM_DOCK_INFO_SOURCE,
     type: "string",
     kind: "text",
-    provenance: "mega",
     decode: (raw, codec) => decodeRobotInfoText(raw as ParamValue | undefined, codec, ROBOT_INFO_FIELD.WIFI_NAME),
     decodedKind: "text",
     description: "The WiFi network the robot is on — DeviceInfo.wifi_name (DP 169, Raw protobuf).",
@@ -2721,7 +2644,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: VACUUM_DOCK_INFO_SOURCE,
     type: "string",
     kind: "text",
-    provenance: "mega",
     decode: (raw, codec) => decodeRobotInfoText(raw as ParamValue | undefined, codec, ROBOT_INFO_FIELD.WIFI_IP),
     decodedKind: "text",
     description: "The robot's IP on its WiFi network — DeviceInfo.wifi_ip (DP 169, Raw protobuf).",
@@ -2731,7 +2653,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: VACUUM_DOCK_INFO_SOURCE,
     type: "string",
     kind: "identifier",
-    provenance: "mega",
     decode: (raw, codec) => decodeRobotInfoText(raw as ParamValue | undefined, codec, ROBOT_INFO_FIELD.DEVICE_MAC),
     decodedKind: "identifier",
     description: "The robot's MAC address — DeviceInfo.device_mac (DP 169, Raw protobuf).",
@@ -2744,7 +2665,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     readsFrom: VACUUM_DOCK_INFO_SOURCE,
     type: "number",
     kind: "scalar",
-    provenance: "mega",
     decode: (raw, codec) => decodeRobotHardware(raw as ParamValue | undefined, codec),
     decodedKind: "scalar",
     description: "The robot's hardware revision — DeviceInfo.hardware (DP 169, Raw protobuf).",
@@ -2758,7 +2678,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     type: "number",
     unit: "dBm",
     kind: "dbm",
-    provenance: "mega",
     description: "WiFi RSSI in dBm (DP 134, Value ro). Schema-confirmed.",
     available: (ctx: AvailabilityContext) => ctx.paramIds?.has(TUYA_VACUUM_DP.RSSI) ?? false,
   },
@@ -2791,7 +2710,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     unverified: true,
     write: (value) => aiotDp(VACUUM_DP.CONSUMABLES, encodeConsumableReset(value as ConsumablePart)),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Clear the hours on one replaceable part (ConsumableRequest.reset_types over DP 168). " +
       "Frame not captured — unverified.",
@@ -2807,7 +2725,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     unverified: true,
     write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.STOP_TASK, nextModeCtrlSeq())),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Stop the current job (ModeCtrlRequest method 12 over DP 152). Method number not captured — unverified.",
   },
@@ -2819,7 +2736,7 @@ export const VACUUM_CLEAN_MEMBERS = {
     ({ sink }) =>
       (): Promise<void> =>
         sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.RESUME_TASK, nextModeCtrlSeq()))),
-    "Resume a paused job (ModeCtrlRequest method 14 over DP 152). Captured on a live T2351.",
+    "Resume a paused job (ModeCtrlRequest method 14 over DP 152).",
     isAiotVacuum,
   ),
   /**
@@ -2833,7 +2750,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     unverified: true,
     write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_GOWASH, nextModeCtrlSeq())),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Go and wash the mops (ModeCtrlRequest method 10 over DP 152). Method number not captured — unverified.",
   },
@@ -2847,7 +2763,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     unverified: true,
     write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.STOP_GOWASH, nextModeCtrlSeq())),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Stop washing the mops (ModeCtrlRequest method 17 over DP 152). Method number not captured — unverified.",
   },
@@ -2861,7 +2776,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     unverified: true,
     write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.STOP_GOHOME, nextModeCtrlSeq())),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Stop returning to the dock (ModeCtrlRequest method 15 over DP 152). Method number not captured — unverified.",
   },
@@ -2876,7 +2790,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     unverified: true,
     write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_SPOT_CLEAN, nextModeCtrlSeq())),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Spot-clean where the robot stands (ModeCtrlRequest method 3 over DP 152). Method number not captured — unverified.",
   },
@@ -2890,7 +2803,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     unverified: true,
     write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_FAST_MAPPING, nextModeCtrlSeq())),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Run a fast mapping pass (ModeCtrlRequest method 9 over DP 152). Method number not captured — unverified.",
   },
@@ -2904,7 +2816,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     unverified: true,
     write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_GLOBAL_CRUISE, nextModeCtrlSeq())),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Start a global cruise (ModeCtrlRequest method 20 over DP 152). Method number not captured — unverified.",
   },
@@ -2919,7 +2830,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     unverified: true,
     write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_RC_CLEAN, nextModeCtrlSeq())),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Enter remote-control cleaning (ModeCtrlRequest method 5 over DP 152). Method number not captured — unverified.",
   },
@@ -2938,7 +2848,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     unverified: true,
     write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.STOP_TASK, nextModeCtrlSeq())),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Leave remote-control mode (ModeCtrlRequest method 12 STOP_TASK over DP 152, per the DP 155 " +
       "catalogue note). Not captured on a device — unverified.",
@@ -2962,7 +2871,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     enumValues: { 0: "Brake", 1: "Forward", 2: "Back", 3: "Left", 4: "Right" },
     write: (v) => aiotDp(VACUUM_DP.REMOTE_CTRL, String(v)),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Remote-control direction (DP 155 Enum: Brake/Forward/Back/Left/Right). Values from the product " +
       "catalogue; the wire is not captured — unverified.",
@@ -2975,7 +2883,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     param: VACUUM_DP.RESUME_CLEAN,
     type: "bool",
     kind: "boolean",
-    provenance: "mega",
     description: "Resume an interrupted job after charging (DP 156 pause_job, Bool).",
     available: (ctx: AvailabilityContext) => ctx.paramIds?.has(VACUUM_DP.RESUME_CLEAN) ?? false,
   },
@@ -2990,7 +2897,6 @@ export const VACUUM_CLEAN_MEMBERS = {
     unverified: true,
     write: () => aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.STOP_SMART_FOLLOW, nextModeCtrlSeq())),
     available: (ctx: AvailabilityContext) => isAiotVacuum(ctx),
-    provenance: "mega",
     description:
       "Stop smart-follow mode (ModeCtrlRequest method 18 over DP 152). Method number not captured — unverified.",
   },
@@ -3025,9 +2931,6 @@ export const VACUUM_CLEAN_MEMBERS = {
    * The id is the device's own, as {@link VACUUM_CLEAN_MEMBERS.scenes} reports it — `VacuumScene.id`
    * off the `SceneResponse` on DP 180. A scene the device reports invalid stays reportable and running
    * it is still a well-formed request; `VacuumScene.invalidReason` says why the device will refuse.
-   *
-   * Frame shape is byte-proven against the shared outer `ModeCtrlRequest`, and method 24 has been
-   * WATCHED: run on a T2351, it started the named scene.
    */
   startScene: method(
     ({ sink }) =>
@@ -3044,8 +2947,6 @@ export const VACUUM_CLEAN_MEMBERS = {
    *
    * A docked robot sends no map of its own accord, so this is how its room ids and names become
    * readable without a clean. The map arrives on the stream like any other, not as this call's result.
-   *
-   * WATCHED: sent to a docked robot, it pushed its whole map within a second.
    */
   requestMap: method(
     ({ sink }) =>
@@ -3065,11 +2966,10 @@ export const VACUUM_CLEAN_MEMBERS = {
    * carries all three, so they are set together rather than through three setters that would each send
    * the same message with the other two silent.
    *
-   * **The evidence, and its limit.** The frame is field 1 of `CleanParamRequest`, which carries the
-   * very `CleanParam` this module decodes out of field 1 of the reports a live T2351 sends — the
-   * field numbers, the single-field wrappers and the `mop_mode.level` scale are all read off that
-   * capture, and `encodeCleanParam` writes what `decodeCleanParamValue` reads. What is NOT captured is
-   * the write direction itself. It ships as a method rather than an unverified write because the
+   * **The write direction is unconfirmed.** The frame is field 1 of `CleanParamRequest`, which carries
+   * the very `CleanParam` this module decodes out of field 1 of the device's reports — same field
+   * numbers, single-field wrappers and `mop_mode.level` scale — and `encodeCleanParam` writes what
+   * `decodeCleanParamValue` reads. It ships as a method rather than an unverified write because the
    * hazard that rule answers does not arise here: DP 154 is the robot's own settings report, so a frame
    * it does not accept leaves those three reads unchanged, where a wrong fire-and-forget command would
    * look exactly like success.
@@ -3116,9 +3016,6 @@ export const VACUUM_CLEAN_MEMBERS = {
    *
    * `cleanTimes` is how many passes to make over the set; rooms with no `order` are visited in the
    * order given.
-   *
-   * Frame shape is byte-proven against the shared outer `ModeCtrlRequest`, and method 1 has been
-   * WATCHED: run on a T2351, it cleaned the rooms named.
    */
   cleanRooms: method(
     ({ sink }) =>
@@ -3133,8 +3030,7 @@ export const VACUUM_CLEAN_MEMBERS = {
    *
    * Corners are SIGNED centimetres in the map's own frame, whose origin sits wherever the robot first
    * mapped from — negative coordinates are ordinary and are ZigZag-encoded, not written as plain
-   * varints. Same `mapId` reasoning as {@link VACUUM_CLEAN_MEMBERS.cleanRooms}, and the same evidence:
-   * method 2 was run on a T2351 and cleaned the rectangles given.
+   * varints. Same `mapId` reasoning as {@link VACUUM_CLEAN_MEMBERS.cleanRooms}.
    */
   cleanZones: method(
     ({ sink }) =>

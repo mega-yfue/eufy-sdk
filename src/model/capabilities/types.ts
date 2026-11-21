@@ -21,7 +21,7 @@ import type { Capability, Codec, CloudRecord, PropertySpec, PropertyValue, Value
 import type { Members, MemberDeps } from "./members.js";
 // The transport boundary contract lives in core/ — imported by BOTH the capability layer (which
 // produces intent) and the transport layer (which consumes it), so neither imports the other.
-// Capability modules import Command/CommandSink/MediaProvider/ScalarForm straight from core/contracts.
+// Capability modules import Command/CommandSink/MediaProvider straight from core/contracts.
 import type { Command, Ff09SettingsReader, DpInboundFrame } from "../../core/contracts.js";
 
 /**
@@ -257,6 +257,8 @@ export interface AvailabilityContext {
    * `undefined` as an empty set — `ctx.paramIds?.has(dp) ?? false`.
    */
   paramIds?: ReadonlySet<number>;
+  /** The raw value the device last reported for `param`, as the app's `device.params` holds it. */
+  paramValue?: (param: number) => string | undefined;
   /**
    * The product's thing description, when the cloud returned one for its product code: which values each
    * named property offers on this product. Absent when not fetched — fall back to static defaults rather
@@ -471,9 +473,9 @@ export interface CapabilityModule {
    * The capability belongs to whichever device OWNS the group, so a device that hangs off a parent
    * station must not claim it — even when a curated row grants it or the device mirrors the param.
    *
-   * Guard mode is the case that grounds this: a standalone SoloCam/Indoor cam owns its own mode (read
-   * live: `armingMode` answers on a standalone T8170/T8171/T8410), but behind a HomeBase the hub owns
-   * it and the app shows it there, not per camera — an attached T8170 reports no mode at all. Applied
+   * Guard mode is the case that grounds this: a standalone SoloCam/Indoor cam owns its own mode (`armingMode`
+   * answers on it), but behind a HomeBase the hub owns it and the app shows it there, not per camera —
+   * an attached camera reports no mode at all. Applied
    * AFTER the three tiers are unioned (see `resolveDevice`), because the point is to withhold a
    * control the device cannot answer for however it was granted.
    */
