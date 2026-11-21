@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { P2PSession } from "../p2p-session.js";
+import { withGcmKey } from "./session-fixtures.js";
 
 const STATION_SN = "T8000P0000000000";
 const P2P_DID = "XXXXXXX-000000-XXXXX";
@@ -42,7 +43,7 @@ function negotiate(target: P2PSession, cipherId = 3): void {
 describe("level-2 key wait", () => {
   it("answers at once when the key is already negotiated", async () => {
     const target = session(async () => undefined);
-    target.setLevel2Key(LEVEL2_KEY);
+    withGcmKey(target, LEVEL2_KEY);
     await expect(target.awaitLevel2Key(25_000)).resolves.toBe(true);
   });
 
@@ -65,7 +66,7 @@ describe("level-2 key wait", () => {
   it("resolves as soon as a key arrives part-way through the grace", async () => {
     const target = session(async () => undefined);
     const waiting = target.awaitLevel2Key(25_000);
-    setTimeout(() => target.setLevel2Key(LEVEL2_KEY), 10);
+    setTimeout(() => withGcmKey(target, LEVEL2_KEY), 10);
     await expect(waiting).resolves.toBe(true);
   });
 
@@ -77,7 +78,7 @@ describe("level-2 key wait", () => {
       expect((target as unknown as { level2Waiters: unknown[] }).level2Waiters).toHaveLength(1);
       expect(vi.getTimerCount()).toBe(1);
 
-      target.setLevel2Key(LEVEL2_KEY);
+      withGcmKey(target, LEVEL2_KEY);
       await expect(waiting).resolves.toBe(true);
       expect((target as unknown as { level2Waiters: unknown[] }).level2Waiters).toHaveLength(0);
       expect(vi.getTimerCount()).toBe(0);
@@ -125,7 +126,7 @@ describe("level-2 key wait", () => {
       connectionGeneration: 3,
       level2Pending: true,
     });
-    target.setLevel2Key(LEVEL2_KEY);
+    withGcmKey(target, LEVEL2_KEY);
     await closing;
 
     await expect(waiting).resolves.toBe(false);
@@ -205,7 +206,7 @@ describe("level-2 key wait", () => {
     const target = session(async () => undefined);
     connectedAgo(target, 30_000);
     const waiting = target.awaitLevel2Key(40, "call");
-    setTimeout(() => target.setLevel2Key(LEVEL2_KEY), 10);
+    setTimeout(() => withGcmKey(target, LEVEL2_KEY), 10);
 
     await expect(waiting).resolves.toBe(true);
   });
@@ -259,7 +260,7 @@ describe("level-2 key wait", () => {
 
   it("discards a negotiated key when its connection closes", async () => {
     const target = session(async () => undefined);
-    target.setLevel2Key(LEVEL2_KEY);
+    withGcmKey(target, LEVEL2_KEY);
     expect(target.hasLevel2Key).toBe(true);
 
     await target.close();
@@ -272,17 +273,26 @@ describe("level-2 key wait", () => {
  * The app's `checkAesKeyAndResend` asks for `CMD_GATEWAYINFO` again every three seconds, without a limit, until
  * a reply names a `cipher_id` of 1 or more; a reply with `cipher_id` 0, or a refusal, leaves it asking.
  */
-describe("CMD_GATEWAYINFO re-sent until a reply names a cipher", () => {
+/**
+ * The app's notify reader checks after each channel-2 frame, at most once a second, whether the slot holds a key, and
+ * sends the header-only 1100 again on every third check that finds none: no frame on channel 2, no resend.
+ */
+describe("CMD_GATEWAYINFO re-sent by the notify reader's check", () => {
   type Internals = {
     onConnected(addr: object, socket: unknown): void;
     send(addr: unknown, type: unknown, payload?: Buffer): void;
     handleFrame(h: object, p: Buffer, t: number): void;
   };
-  const reply = (target: P2PSession, payload: Buffer): void =>
-    (target as unknown as Internals).handleFrame({ commandId: 1100, signCode: 0, bytesToRead: 64 }, payload, 0);
+  const CONTROL = 2;
+  const notify = (target: P2PSession, commandId: number, payload: Buffer): void =>
+    (target as unknown as Internals).handleFrame(
+      { commandId, signCode: 0, bytesToRead: payload.length },
+      payload,
+      CONTROL,
+    );
   const refusal = (): Buffer => Buffer.from([0x99, 0xff, 0xff, 0xff]);
 
-  it("re-sends at 3 s and 6 s, through a cipher_id 0 reply and a refusal, and stops on a cipher_id of 1 or more", async () => {
+  it("re-sends on every third check while no cipher has been named, through cipher 0 and a refusal, then stops", async () => {
     vi.useFakeTimers();
     try {
       const target = session(async () => undefined);
@@ -295,35 +305,21 @@ describe("CMD_GATEWAYINFO re-sent until a reply names a cipher", () => {
       internals.onConnected({ host: "<cam-lan-ip>", port: 32100 }, undefined);
       expect(asked).toEqual([start]);
 
-      reply(target, gatewayInfo(0));
-      await vi.advanceTimersByTimeAsync(3_000);
-      reply(target, refusal());
-      await vi.advanceTimersByTimeAsync(3_000);
-      expect(asked).toEqual([start, start + 3_000, start + 6_000]);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(asked, "no channel-2 frame, no check").toEqual([start]);
 
-      reply(target, gatewayInfo(3));
-      await vi.advanceTimersByTimeAsync(30_000);
-      expect(asked).toHaveLength(3);
-      await target.close();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+      for (const payload of [gatewayInfo(0), refusal(), Buffer.from("{}")]) {
+        notify(target, payload.length === 2 ? 1351 : 1100, payload);
+        await vi.advanceTimersByTimeAsync(1_001);
+      }
+      expect(asked).toEqual([start, start + 10_000 + 2 * 1_001]);
 
-  it("re-opens a concluded wait with each re-sent request", async () => {
-    vi.useFakeTimers();
-    try {
-      const target = session(async () => undefined);
-      const internals = target as unknown as Internals;
-      internals.send = () => {};
-      internals.onConnected({ host: "<cam-lan-ip>", port: 32100 }, undefined);
-      reply(target, refusal());
-      await expect(target.awaitLevel2Key(25_000)).resolves.toBe(false);
-
-      await vi.advanceTimersByTimeAsync(3_000);
-      const waiting = target.awaitLevel2Key(25_000);
-      target.setLevel2Key(LEVEL2_KEY);
-      await expect(waiting).resolves.toBe(true);
+      notify(target, 1100, gatewayInfo(3));
+      for (let i = 0; i < 6; i++) {
+        await vi.advanceTimersByTimeAsync(1_001);
+        notify(target, 1351, Buffer.from("{}"));
+      }
+      expect(asked).toHaveLength(2);
       await target.close();
     } finally {
       vi.useRealTimers();

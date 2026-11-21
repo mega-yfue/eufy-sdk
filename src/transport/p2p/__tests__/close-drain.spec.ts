@@ -2,6 +2,7 @@ import dgram from "node:dgram";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { P2PSession } from "../p2p-session.js";
 import { RequestMessageType } from "../codec.js";
+import { withGcmKey } from "./session-fixtures.js";
 
 const cleanup: dgram.Socket[] = [];
 async function bound() {
@@ -17,7 +18,7 @@ function sessionWith(socket: dgram.Socket, port?: number) {
     connected: true,
     ...(port === undefined ? {} : { connectAddress: { host: "127.0.0.1", port } }),
   });
-  session.setLevel2Key(Buffer.alloc(32, 1));
+  withGcmKey(session, Buffer.alloc(32, 1));
   return session;
 }
 afterEach(() => {

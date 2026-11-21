@@ -130,11 +130,10 @@ export const STATION_CHANNEL = 255;
  */
 const CMD_GATEWAYINFO = 1100;
 /**
- * How often the session asks again for `CMD_GATEWAYINFO` while its ECB slot is empty: the app's
- * `P2PSessionReceiver::checkAesKeyAndResend` re-sends the same 16-byte request on its third check, one check per
- * second, with no limit, until the slot is filled.
+ * The app's notify reader checks, after a channel-2 frame and at most once per this many ms, whether the slot holds a
+ * key, and sends the header-only `CMD_GATEWAYINFO` again on every third check that finds none.
  */
-const GATEWAY_INFO_RESEND_MS = 3_000;
+const GATEWAY_CHECK_MS = 1_000;
 const CMD_START_REALTIME_MEDIA = 1003;
 const CMD_STOP_REALTIME_MEDIA = 1004;
 /**
@@ -319,17 +318,34 @@ const CMD_CAMERA_INFO = 1103;
 /** AAD for the level-2 (gateway/"signCode 8") AES-256-GCM frames — fixed across all eufy P2P. */
 const GCM_AAD = Buffer.from("eufy security");
 
-/** Commands a version-8 session seals off the GCM branch (`sendP2PSessionCommand`). */
-const GCM_EXEMPT_COMMANDS = new Set([1001, 1054, 1060]);
-
-/** Serial prefixes whose session takes the level-1 key at sign mode 0, on send and on a refused gateway info. */
+/** Serial prefixes the app's native `isStation` names: such a session takes the level-1 key at sign mode <= 0. */
 const LEVEL1_AT_SIGN0_PREFIXES = ["T8001", "T8002", "T8010", "T8030", "T8021", "T8025"];
 
-/** How long a send that finds sign mode 0 waits before sealing by the mode it then reads (29 × 50 ms). */
-const SIGN0_SEND_WAIT_MS = 1_450;
+/** The app's sender re-reads sign mode 0 every 50 ms, 29 times, before it gives up and marks the slot -1. */
+const SIGN0_POLL_MS = 50;
+const SIGN0_POLLS = 29;
 
-/** The level-2 sub-header, counted as one little-endian uint32 from `[00, 03, 02, 01]`. */
-const LEVEL2_SEQ_BASE = 0x01020300;
+/** Commands the app's sender frames on header channel 0xff whatever channel they address. */
+const STATION_HEADER_COMMANDS = new Set([1001, 1002, 1054, 1060]);
+
+/**
+ * The header byte-14 counter some frames carry, cycling 10..251: one byte for the whole native library, shared by
+ * every session — see {@link P2PSession.headerCounter}.
+ */
+let headerCounterByte = 0;
+
+/** The `cmd` of a 1350 body's JSON, as the app's sender reads it to pick the seal; `undefined` for any other body. */
+function jsonCmdOf(body: Buffer): number | undefined {
+  try {
+    const cmd = (JSON.parse(body.toString("utf-8")) as { cmd?: unknown }).cmd;
+    return typeof cmd === "number" ? cmd : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The GCM sub-header word a connect starts at (`zx_update_p2p_connect_info`), little-endian `[04, 03, 02, 01]`. */
+const GCM_WORD_START = 0x01020304;
 
 /**
  * Transport wiring for a PPCS session — internal to the SDK; a host reaches sessions through the facade.
@@ -354,7 +370,10 @@ export interface P2PSessionConfig {
    * for version 8 and the RSA unwrap otherwise.
    */
   resolveCipherKey?: (cipherId: number, version: number) => Promise<string | undefined>;
-  /** The signed-in account's `user_id`, the app's session `uuid`: the GCM key a gateway info sets is built from it. */
+  /**
+   * The user id the app connects a station under (`IUser.getUid`: the station's `admin_user_id`, else the signed-in
+   * account's): the sign-1 GCM key is built from it.
+   */
   userId?: string;
   /** Diagnostics sink. Omit for silence. */
   logger?: Logger;
@@ -511,8 +530,6 @@ export class P2PSession extends EventEmitter {
   private receiveBufferReported = false;
   private connectAddress?: Address;
   private seqNumber = 0;
-  /** The header byte-14 counter some set-payload frames carry, cycling 10..251 — see {@link headerCounter}. */
-  private byte14 = 0;
   /**
    * Sequence counter for frames sent on the **video** data-type channel, which the device tracks
    * separately from the control channel's — today only {@link sendAudioFrame} rides it.
@@ -592,6 +609,12 @@ export class P2PSession extends EventEmitter {
   private sessionVersion = 1;
   private ecbKey?: Buffer;
   private gcmKey?: Buffer;
+  /** The GCM sub-header word, counted on per GCM send. */
+  private gcmWord = GCM_WORD_START;
+  /** Header byte 11: the app's per-connection command counter, written then moved on by every command sent. */
+  private commandCount = 0;
+  /** The 1100 resend check of the app's notify reader: its last run and its run count since the last resend. */
+  private gatewayCheck = { atMs: 0, runs: 0 };
   private level2Seq = 0;
   private rsaPrivateKey?: KeyObject;
   private rsaModulusHex?: string;
@@ -603,11 +626,10 @@ export class P2PSession extends EventEmitter {
    */
   private readonly attachedStartKeys = new Map<number, { kind: "ecc" | "rsa"; answered: boolean }>();
   /**
-   * The gateway infos received and not yet through their key step, the last one's run as `tail`. The app runs
-   * each one's native step and its blocking key lookup on the notify thread, so they take effect one after
-   * another in arrival order.
+   * Channel-2 frames that arrived while a gateway info's key step runs, in arrival order. The app runs that step's
+   * blocking lookup on the thread that reads channel 2, so nothing else on it is read until the step ends.
    */
-  private gatewayInfos: { queued: number; tail?: Promise<void> } = { queued: 0 };
+  private heldNotifies?: Array<[P2PDataFrameHeader, Buffer, number]>;
   /**
    * Whether waiting for a level-2 key can still change the answer: `false` once one has been negotiated,
    * once a negotiation concluded without one, and from the start when nothing can negotiate one.
@@ -615,8 +637,6 @@ export class P2PSession extends EventEmitter {
   private level2Pending: boolean;
   /** Waiters parked in {@link awaitLevel2Key}, woken the moment the negotiation settles either way. */
   private readonly level2Waiters: Array<(outcome: "key" | "terminal" | "closed") => void> = [];
-  /** Re-sends `CMD_GATEWAYINFO` every {@link GATEWAY_INFO_RESEND_MS} while the ECB slot is empty. */
-  private gatewayInfoTimer?: ReturnType<typeof setInterval>;
   /** When this session connected — the instant the level-2 negotiation had its chance to start. */
   private connectedAtMs?: number;
   /** Connection generation that owns every asynchronous result derived from its gateway envelope. */
@@ -626,13 +646,9 @@ export class P2PSession extends EventEmitter {
    * last sent (`"l2"` GCM / `"l1"` ECB). A keepalive tick re-issues the start if the variant should
    * change (the level-2 key arrived after an initial level-1 start), otherwise sends the 1139 nudge.
    */
-  private readonly liveStartedChannels = new Map<number, "l1" | "l2" | "clear" | "set-payload">();
-  /** The `cipher_id` this connection's `CMD_GATEWAYINFO` reply named, once its negotiation has read it. */
-  private gatewayCipherId?: number;
+  private readonly liveStartedChannels = new Map<number, "l1" | "l2">();
   /** Whether this connection's latest `CMD_GATEWAYINFO` reply was a refusal — see {@link gatewayInfoRefused}. */
   private gatewayRefused = false;
-  /** The `n` of the last `[0x01, n]` header this connection sent in the clear — see {@link nextClearCommandBytes}. */
-  private clearCommandCount = 0;
   private readonly unackedLiveStarts = new Map<number, RetainedDatagram & { channel: number }>();
   private liveStartRetransmitTimer?: ReturnType<typeof setInterval>;
   /** Datagrams sent through {@link sendAcknowledged} and not yet acknowledged, by sequence, oldest first. */
@@ -693,13 +709,12 @@ export class P2PSession extends EventEmitter {
   }
 
   /**
-   * Hold the 32-byte key a version-8 gateway info unwraps to, as the app's `setP2PDecryptPrivateKey` does: the GCM
-   * slot, negotiated version 8, sign mode 8.
+   * Hold the 32-byte key a version-8 gateway info unwraps to, as the app's `zx_set_p2p_ecckey` does: the GCM slot and
+   * sign mode 8, the negotiated version left as the gateway info set it.
    */
   setLevel2Key(key: Buffer): void {
     if (key.length !== 32) throw new Error(`level-2 key must be 32 bytes, got ${key.length}`);
     this.gcmKey = key;
-    this.sessionVersion = 8;
     this.signMode = 8;
     this.settleLevel2();
   }
@@ -790,67 +805,72 @@ export class P2PSession extends EventEmitter {
   }
 
   /**
-   * Take one decrypted `CMD_GATEWAYINFO` reply as the app does, in arrival order: its native step
-   * ({@link gatewayInfoSlots}), then its key step, `NotifyInterceptor`'s: the private key of its `cipher_id` for its
-   * header `version` (`resolveCipherKey`), unwrapped by ECIES for version 8 ({@link setLevel2Key}) and by RSA for
-   * any other (the ECB slot, sign mode 2). A reply waits for the previous one's key step before its own native step,
-   * as the app's notify thread blocks on the lookup.
+   * Take one decrypted `CMD_GATEWAYINFO` reply as the app does: its native step ({@link gatewayInfoSlots}), then its
+   * key step, `NotifyInterceptor`'s, for every reply. The key step gets what native hands Java: the `cipher_id` and the
+   * 128 bytes after it (129 at version 8) for a `cipher_id` of 2 or more, the bytes up to the first NUL for 1, and 0 with
+   * no body for a reply naming none. It looks the private key up for the header `version` (`resolveCipherKey`) and
+   * unwraps it by ECIES for version 8 ({@link setLevel2Key}) and by RSA otherwise (the ECB slot, sign mode 2). Channel-2
+   * frames wait in {@link heldNotifies} until it ends, then go through in arrival order.
    *
    * Emits `level2Ready` for either key, and `error` when the ECC unwrap fails; an RSA unwrap failure is only traced,
    * and leaves the session at sign mode 1 as the app's does. The wait in {@link awaitLevel2Key} settles once a key is
-   * held, or once the last queued reply's key step ends without one, which is the only failure traced. A
-   * {@link gatewayInfoRefused} reply concludes with no cloud lookup. A step whose connection generation ended does
-   * nothing.
+   * held, or once a key step ends without one and no held gateway info follows it, which is the only failure traced.
+   * A step whose connection generation ended does nothing.
    */
   private negotiateLevel2Key(gwPayload: Buffer, version: number): void {
+    const cipherId = gwPayload.length >= 4 ? gwPayload.readInt32LE(0) : 0;
+    this.gatewayInfoSlots(cipherId, version);
+    this.gatewayRefused = gatewayInfoRefused(gwPayload);
+    if (!this.cfg.resolveCipherKey) return;
     const generation = this.connectionGeneration;
-    const infos = this.gatewayInfos;
-    const run = async (): Promise<void> => {
-      try {
-        if (generation === this.connectionGeneration) await this.gatewayInfoStep(gwPayload, version, generation);
-      } finally {
-        infos.queued -= 1;
+    this.heldNotifies = [];
+    const after = gwPayload.subarray(4);
+    const body =
+      cipherId >= 2
+        ? after.subarray(0, version === 8 ? 129 : 128)
+        : cipherId === 1
+          ? after.subarray(0, after.includes(0) ? after.indexOf(0) : after.length)
+          : Buffer.alloc(0);
+    void this.gatewayKeyStep(body, Math.max(cipherId, 0), version, generation).finally(() => {
+      if (generation !== this.connectionGeneration) return;
+      const held = this.heldNotifies ?? [];
+      this.heldNotifies = undefined;
+      for (let i = 0; i < held.length; i++) {
+        const heldAgain = this.heldNotifies as typeof held | undefined;
+        if (heldAgain) {
+          heldAgain.push(...held.slice(i));
+          break;
+        }
+        this.handleFrame(...held[i]!);
       }
-    };
-    infos.queued += 1;
-    const tail: Promise<void> = infos.tail ? infos.tail.then(run) : run();
-    infos.tail = tail;
-    void tail.then(() => {
-      if (infos.tail === tail) infos.tail = undefined;
     });
   }
 
-  /** One gateway info's native and key steps — see {@link negotiateLevel2Key}. */
-  private async gatewayInfoStep(gwPayload: Buffer, version: number, generation: number): Promise<void> {
+  /** One gateway info's key step on the body native hands Java — see {@link negotiateLevel2Key}. */
+  private async gatewayKeyStep(body: Buffer, cipherId: number, version: number, generation: number): Promise<void> {
     const ecc = version === 8;
-    const cipherId = gwPayload.length >= 4 ? gwPayload.readInt32LE(0) : 0;
     const conclude = (unavailable: LiveTrace): void => {
-      if (this.hasLevel2Key || this.gatewayInfos.queued > 1) return;
+      if (this.hasLevel2Key || this.heldNotifies?.some(([h]) => h.commandId === CMD_GATEWAYINFO)) return;
       this.trace(unavailable);
       this.settleLevel2();
     };
-    this.gatewayInfoSlots(cipherId, version);
-    this.gatewayCipherId = cipherId;
-    this.gatewayRefused = gatewayInfoRefused(gwPayload);
-    if (!this.cfg.resolveCipherKey) return;
-    if (this.gatewayRefused) {
-      this.logger.debug(`[p2p] ${this.cfg.stationSn} gateway info refused level-2`);
-      conclude({ phase: "level2-unavailable", reason: "gateway-refused" });
-      return;
-    }
     this.level2Pending = true;
     this.trace({ phase: "level2-negotiating", cipherId, version });
     try {
-      const privateKey = await this.cfg.resolveCipherKey(cipherId, version);
+      const privateKey = await this.cfg.resolveCipherKey!(cipherId, version);
       if (this.closed || generation !== this.connectionGeneration) return;
       if (!privateKey) {
         this.logger.debug(`[p2p] ${this.cfg.stationSn} no ECC or RSA key for cipher_id ${cipherId}`);
-        conclude({ phase: "level2-unavailable", reason: "no-cipher-key", cipherId });
+        conclude(
+          this.gatewayRefused
+            ? { phase: "level2-unavailable", reason: "gateway-refused" }
+            : { phase: "level2-unavailable", reason: "no-cipher-key", cipherId },
+        );
         return;
       }
       const key = ecc
-        ? deriveLevel2KeyFromGatewayInfo(gwPayload, privateKey)
-        : deriveLevel2KeyFromRsaGatewayInfo(gwPayload, privateKey);
+        ? deriveLevel2KeyFromGatewayInfo(body, privateKey)
+        : deriveLevel2KeyFromRsaGatewayInfo(body, privateKey);
       if (!key) {
         conclude({ phase: "level2-unavailable", reason: "derivation-failed", cipherId });
         if (ecc) this.emit("error", new Error(`level-2 key derivation failed (cipher_id ${cipherId})`));
@@ -881,9 +901,7 @@ export class P2PSession extends EventEmitter {
   private gatewayInfoSlots(cipherId: number, version: number): void {
     if (cipherId >= 1) {
       this.sessionVersion = version;
-      this.gcmKey = Buffer.alloc(32);
-      this.gcmKey.write((this.cfg.userId ?? "").slice(0, 32), "latin1");
-      this.gcmKey.write(this.cfg.stationSn.slice(-7), "latin1");
+      this.gcmKey = this.userIdKey;
     } else if (cipherId === 0 || !this.level1AtSign0) {
       return;
     }
@@ -891,12 +909,24 @@ export class P2PSession extends EventEmitter {
     this.signMode = 1;
   }
 
-  /** The session slots as a connect starts them (`updateP2PSessionChannelData`): sign mode 0, version 1, no key. */
+  /** The session slots as a connect starts them (`zx_update_p2p_connect_info`): sign mode 0, version 1, no key. */
   private resetSlots(): void {
     this.signMode = 0;
     this.sessionVersion = 1;
     this.ecbKey = undefined;
     this.gcmKey = undefined;
+    this.gcmWord = GCM_WORD_START;
+  }
+
+  /**
+   * The account's user id (32 characters) with the serial's last 7 over its first 7: the GCM key a gateway info
+   * naming a cipher puts in the GCM slot, and the key the app's receiver opens a version-8 sign-1 frame with.
+   */
+  private get userIdKey(): Buffer {
+    const key = Buffer.alloc(32);
+    key.write((this.cfg.userId ?? "").slice(0, 32), "latin1");
+    key.write(this.cfg.stationSn.slice(-7), "latin1");
+    return key;
   }
 
   /** Whether this serial is one {@link LEVEL1_AT_SIGN0_PREFIXES} names. */
@@ -905,30 +935,28 @@ export class P2PSession extends EventEmitter {
   }
 
   /**
-   * Open an inbound frame body as the app's `P2PSessionReceiver::decryptNotifyData` does. Sign 0 stays as is. A
-   * version-8 frame other than a gateway info is AES-256-GCM, AAD "eufy security", under the GCM slot from sign 2 up
-   * (the sign-1 key is not traced, so such a frame stays as is): `tag(16) ‖ nonce(12)`, then the ciphertext at 32 for
-   * sign 8, which carries a 4-byte sub-header, and at 28 otherwise. Any other frame is AES-128-ECB
-   * ({@link decryptP2PData}): sign 2 under the ECB slot, as is while that slot is empty, any other sign under the
-   * level-1 key. Answers `undefined` where GCM does not authenticate.
+   * Open an inbound frame body as the app's `zx_p2p_notify_read` does, by the frame's own header bytes. Sign 0 stays as
+   * is. A version-8 frame other than a gateway info is AES-256-GCM, AAD "eufy security", `tag(16) ‖ nonce(12) ‖
+   * ciphertext` for every sign, under the GCM slot from sign 2 up and under {@link userIdKey} at sign 1; one shorter
+   * than 29 bytes or that does not open stays as it came. Any other frame is AES-128-ECB ({@link decryptP2PData}):
+   * sign 2 under the ECB slot, as is while that slot is empty, any other sign under the level-1 key.
    */
-  private openFrame(header: P2PDataFrameHeader, payload: Buffer): Buffer | undefined {
+  private openFrame(header: P2PDataFrameHeader, payload: Buffer): Buffer {
     const { signCode, version, commandId } = header;
     if (signCode === 0) return payload;
     if (version === 8 && commandId !== CMD_GATEWAYINFO) {
-      if (signCode < 2) return payload;
-      const ctOffset = signCode === 8 ? 32 : 28;
-      if (!this.gcmKey || payload.length < ctOffset) return undefined;
+      const key = signCode >= 2 ? this.gcmKey : this.userIdKey;
+      if (!key || payload.length < 29) return payload;
       try {
-        const d = createDecipheriv("aes-256-gcm", this.gcmKey, payload.subarray(16, 28));
+        const d = createDecipheriv("aes-256-gcm", key, payload.subarray(16, 28));
         d.setAAD(GCM_AAD);
         d.setAuthTag(payload.subarray(0, 16));
-        return Buffer.concat([d.update(payload.subarray(ctOffset)), d.final()]);
+        return Buffer.concat([d.update(payload.subarray(28)), d.final()]);
       } catch {
-        return undefined;
+        return payload;
       }
     }
-    if (signCode === 2) return this.ecbKey ? decryptP2PData(payload, this.ecbKey) : payload;
+    if (signCode === 2) return this.ecbKey?.[0] ? decryptP2PData(payload, this.ecbKey) : payload;
     return decryptP2PData(payload, this.level1Key);
   }
 
@@ -987,10 +1015,9 @@ export class P2PSession extends EventEmitter {
     this.resetInboundSequencing();
     this.resetSlots();
     this.level2Pending = this.cfg.resolveCipherKey !== undefined;
-    this.gatewayInfos = { queued: 0 };
-    this.gatewayCipherId = undefined;
+    this.heldNotifies = undefined;
     this.gatewayRefused = false;
-    this.clearCommandCount = 0;
+    this.commandCount = 0;
 
     const socket = dgram.createSocket("udp4");
     this.socket = socket;
@@ -1367,12 +1394,8 @@ export class P2PSession extends EventEmitter {
     this.relay = undefined;
     this.logger.debug(`[p2p] ${this.cfg.stationSn} connected ${addr.host}:${addr.port}`);
 
+    this.gatewayCheck = { atMs: Date.now(), runs: 0 };
     this.sendCommand(CMD_GATEWAYINFO);
-    this.gatewayInfoTimer = setInterval(() => {
-      if (this.ecbKey) return clearInterval(this.gatewayInfoTimer);
-      this.level2Pending = this.cfg.resolveCipherKey !== undefined;
-      this.sendCommand(CMD_GATEWAYINFO);
-    }, GATEWAY_INFO_RESEND_MS);
     this.send(addr, RequestMessageType.PING, this.lastPongData);
     this.heartbeatTimer = setInterval(() => {
       if (this.connectAddress) this.send(this.connectAddress, RequestMessageType.PING, this.lastPongData);
@@ -1424,13 +1447,7 @@ export class P2PSession extends EventEmitter {
       this.sendMediaPayloadLevel2(CMD_START_REALTIME_MEDIA, channel, accountId, {}, key);
       return;
     }
-    const want = this.hasLevel2Key
-      ? "l2"
-      : this.sendsInTheClear()
-        ? "clear"
-        : this.refusedLevel2
-          ? "set-payload"
-          : "l1";
+    const want = this.hasLevel2Key ? "l2" : "l1";
     if (opts?.force) {
       for (const pending of this.unackedLiveStarts.values()) if (pending.channel === channel) return;
       this.liveStartedChannels.delete(channel);
@@ -1459,20 +1476,8 @@ export class P2PSession extends EventEmitter {
    * `video_type` is 12, and `transaction` is the millisecond timestamp as a string. The device answers a
    * start carrying these values with a keyframe; `encryptkey` is the modulus it RSA-wraps each keyframe's
    * AES media key with (unwrapped by {@link decodeVideoFrame}).
-   *
-   * With `clearMsgId`, the body of a start sent in the clear: `{accountId, encryptkey, msg_id, streamtype: 1}`
-   * only, `msg_id` being `clearMsgId`, which changes from one start to the next.
    */
-  private startLiveJson(channel: number, accountId: string, clearMsgId?: number): Buffer {
-    if (clearMsgId !== undefined) {
-      return Buffer.from(
-        JSON.stringify({
-          commandType: CMD_START_LIVE,
-          data: { accountId, encryptkey: this.rsaModulus(), msg_id: clearMsgId, streamtype: 1 },
-        }),
-        "utf-8",
-      );
-    }
+  private startLiveJson(channel: number, accountId: string): Buffer {
     const now = Date.now();
     return Buffer.from(
       JSON.stringify({
@@ -1506,50 +1511,12 @@ export class P2PSession extends EventEmitter {
    * Send the own-session START_LIVE frame (outer `CMD_CONTROL_PAYLOAD` 1700, inner cmd 1000), sealed by the
    * session ({@link seal}): frame type 10 when the session holds a gateway key, 11 otherwise. The camera RSA-wraps
    * each keyframe's AES media key with the `encryptkey` modulus (unwrapped by {@link decodeVideoFrame}).
-   * A session that {@link sendsInTheClear} sends the clear body instead, frame type 0, header bytes `[0x01, n]` from
-   * {@link nextClearCommandBytes} where it goes in the clear, and `n` as the body's `msg_id`.
-   *
-   * A session that {@link refusedLevel2} sends instead the app's start for it: outer `CMD_SET_PAYLOAD` (1350)
-   * wrapping `{cmd: 1003, payload: {ClientOS, key, entrytype, timestamp, msg_id: 2, streamtype: 2}, account_id}`
-   * in the clear, signCode 0, header bytes `[0x01, 0x00]`, frame type 11, `key` being the modulus each
-   * keyframe's media key is wrapped with.
    */
   private sendStartLiveOwnSession(channel: number, accountId: string): void {
     if (!this.connectAddress) return;
-    let payload: Buffer;
-    let clearMagic: [number, number] | undefined;
-    let frameType: number;
-    let command = CMD_CONTROL_PAYLOAD;
-    if (this.hasLevel2Key) {
-      payload = this.startLiveJson(channel, accountId);
-      frameType = START_LIVE_FRAME_TYPE_L2;
-    } else if (this.sendsInTheClear()) {
-      clearMagic = this.nextClearCommandBytes();
-      payload = this.startLiveJson(channel, accountId, clearMagic[1]);
-      frameType = 0;
-    } else if (this.refusedLevel2) {
-      const payloadJson = {
-        cmd: CMD_START_REALTIME_MEDIA,
-        payload: {
-          ClientOS: "IOS",
-          key: this.rsaModulus(),
-          entrytype: 0,
-          timestamp: Date.now(),
-          msg_id: 2,
-          streamtype: 2,
-        },
-        account_id: accountId,
-      };
-      payload = Buffer.from(JSON.stringify(payloadJson), "utf-8");
-      command = CMD_SET_PAYLOAD;
-      frameType = START_LIVE_FRAME_TYPE_L1;
-    } else {
-      payload = this.startLiveJson(channel, accountId);
-      frameType = START_LIVE_FRAME_TYPE_L1;
-    }
-    this.transmit(command, channel, payload, {
-      streamId: frameType,
-      clearMagic,
+    this.transmit(CMD_CONTROL_PAYLOAD, channel, this.startLiveJson(channel, accountId), {
+      streamId: this.hasLevel2Key ? START_LIVE_FRAME_TYPE_L2 : START_LIVE_FRAME_TYPE_L1,
+      text: true,
       onSent: (data) => {
         for (const [pendingSequence, pending] of this.unackedLiveStarts) {
           if (pending.channel === channel) this.unackedLiveStarts.delete(pendingSequence);
@@ -1559,23 +1526,6 @@ export class P2PSession extends EventEmitter {
         this.armLiveStartRetransmit();
       },
     });
-  }
-
-  /**
-   * Whether this session's own-session start and stop go in the clear: its `CMD_GATEWAYINFO` reply named
-   * `cipher_id` 0.
-   */
-  private sendsInTheClear(): boolean {
-    return this.gatewayCipherId === 0;
-  }
-
-  /**
-   * Header bytes 10-11 of this connection's next command sent in the clear: `[0x01, n]`, with `n` counting
-   * those commands from 1 and never 0. A retransmit repeats its `n`, and the device's reply echoes it.
-   */
-  private nextClearCommandBytes(): [number, number] {
-    this.clearCommandCount = (this.clearCommandCount % 0xff) + 1;
-    return [0x01, this.clearCommandCount];
   }
 
   /**
@@ -1663,7 +1613,7 @@ export class P2PSession extends EventEmitter {
    */
   sendStringPayloadCommand(commandType: number, value: string, channel: number = STATION_CHANNEL): void {
     if (!this.connectAddress) throw new Error(`P2P session ${this.cfg.stationSn} is not connected`);
-    this.transmit(commandType, channel, Buffer.from(value, "utf-8"));
+    this.transmit(commandType, channel, Buffer.from(value, "utf-8"), { text: true });
   }
 
   /**
@@ -1703,8 +1653,8 @@ export class P2PSession extends EventEmitter {
    * `current` writes it as it stands, no mode writes 0.
    */
   private headerCounter(mode?: "bump" | "current"): number {
-    if (mode === "bump") this.byte14 = ((this.byte14 + 5) & 0xff) < 15 ? 10 : this.byte14 + 1;
-    return mode ? this.byte14 : 0;
+    if (mode === "bump") headerCounterByte = ((headerCounterByte + 5) & 0xff) < 15 ? 10 : headerCounterByte + 1;
+    return mode ? headerCounterByte : 0;
   }
 
   /**
@@ -1743,9 +1693,9 @@ export class P2PSession extends EventEmitter {
       "utf-8",
     );
     if (this.hasLevel2Key) {
-      this.transmit(CMD_SET_PAYLOAD, channel, value, { streamId: this.headerCounter(counter) });
+      this.transmit(CMD_SET_PAYLOAD, channel, value, { streamId: this.headerCounter(counter), text: true });
     } else {
-      this.transmit(CMD_SET_PAYLOAD, channel, Buffer.from(JSON.stringify({ cmd, payload }), "utf-8"));
+      this.transmit(CMD_SET_PAYLOAD, channel, Buffer.from(JSON.stringify({ cmd, payload }), "utf-8"), { text: true });
     }
     return true;
   }
@@ -1757,7 +1707,9 @@ export class P2PSession extends EventEmitter {
    * floodlight = `{"commandType":1400,"data":{...}}`). Returns `false` if no level-2 key.
    */
   sendRawLevel2(json: string, channel: number, outerCmd: number = CMD_SET_PAYLOAD): boolean {
-    return this.sendRawLevel2Bytes(Buffer.from(json, "utf-8"), channel, outerCmd);
+    if (!this.connectAddress || !this.hasLevel2Key) return false;
+    this.transmit(outerCmd, channel, Buffer.from(json, "utf-8"), { text: true });
+    return true;
   }
 
   /**
@@ -1788,10 +1740,8 @@ export class P2PSession extends EventEmitter {
    *    `uint32`, the same 4-byte body as the attached talkback frames. The app sends this frame on closing
    *    an own-session camera's live view; the camera stops streaming on it within a second, and keeps
    *    streaming through the 1350-wrapped form.
-   *  - own-session on a session that {@link sendsInTheClear}: the same 4-byte body unencrypted, signCode 0,
-   *    header bytes from {@link nextClearCommandBytes}; on a session that {@link refusedLevel2} the
-   *    same frame with header bytes `[0x01, 0x00]`.
-   *  - without a level-2 key: the bare 1004 command.
+   *  - own-session without a gateway key: the same 4-byte body, sealed by the session.
+   *  - attached without a gateway key: the bare 1004 command.
    */
   stopLiveMedia(channel: number = STATION_CHANNEL, accountId = "", homeBaseAttached = false): void {
     this.liveStartedChannels.delete(channel);
@@ -1808,9 +1758,8 @@ export class P2PSession extends EventEmitter {
       this.sendRawLevel2Bytes(body, channel, CMD_STOP_REALTIME_MEDIA);
     } else if (this.hasLevel2Key) {
       this.sendMediaPayloadLevel2(CMD_STOP_REALTIME_MEDIA, channel, accountId, {});
-    } else if (!homeBaseAttached && (this.sendsInTheClear() || this.refusedLevel2) && this.connectAddress) {
-      const clearMagic: [number, number] = this.sendsInTheClear() ? this.nextClearCommandBytes() : [0x01, 0x00];
-      this.transmit(CMD_STOP_REALTIME_MEDIA, channel, body, { clearMagic });
+    } else if (!homeBaseAttached && this.connectAddress) {
+      this.transmit(CMD_STOP_REALTIME_MEDIA, channel, body);
     } else {
       this.sendCommand(CMD_STOP_REALTIME_MEDIA, channel);
     }
@@ -2037,7 +1986,7 @@ export class P2PSession extends EventEmitter {
     });
     // Per-stream slot id at the "type" byte (channel 0 = slot 0; other cameras get an incrementing slot).
     const streamId = channel === STATION_CHANNEL || channel === 0 ? 0 : 0x0a + (this.level2Seq & 0x7f);
-    this.transmit(CMD_SET_PAYLOAD, channel, Buffer.from(value, "utf-8"), { streamId });
+    this.transmit(CMD_SET_PAYLOAD, channel, Buffer.from(value, "utf-8"), { streamId, text: true });
   }
 
   /**
@@ -2168,61 +2117,75 @@ export class P2PSession extends EventEmitter {
   }
 
   /**
-   * Seal a command body as the app's `sendP2PSessionCommand` does, by the session slots at the moment it seals:
-   *  - negotiated version 8 at sign mode ≥ 1, `cmd` outside {@link GCM_EXEMPT_COMMANDS}: AES-256-GCM under the GCM
-   *    slot, `tag(16) ‖ nonce(12) ‖ seq(4) ‖ ciphertext` with AAD "eufy security", version byte 8, sign byte = the
-   *    mode;
-   *  - sign mode 0 on a {@link LEVEL1_AT_SIGN0_PREFIXES} serial first takes the level-1 key into the ECB slot at
-   *    sign mode 1;
-   *  - sign mode ≥ 1: AES-128-ECB zero-padded under the ECB slot, version byte 1, sign byte = the mode;
-   *  - otherwise in the clear, sign byte 0.
+   * Seal a command body as the app's `zx_p2p_send_command` does, by the session slots at the moment it seals:
+   *  - sign mode <= 0 on a {@link LEVEL1_AT_SIGN0_PREFIXES} serial first takes the level-1 key into the ECB slot at
+   *    sign mode 1; any other session below sign mode 1 sends in the clear;
+   *  - 1001, 1054, 1060 and a 1350 whose JSON `cmd` is 1001 are AES-128-ECB under the ECB slot, sign byte 1 (1001
+   *    and 1054 always, the others on a version-8 session, the sign mode otherwise);
+   *  - any other command on a version-8 session is AES-256-GCM under the GCM slot, `tag(16) ‖ nonce(12) ‖ word(4) ‖
+   *    ciphertext` with AAD "eufy security", version byte 8, sign byte = the mode, the word counted on per send;
+   *  - otherwise AES-128-ECB under the ECB slot, sign byte = the mode. A `text` body is encrypted with its NUL.
+   * An ECB slot that is not a 16-character key marks the slot -2 and sends that frame in the clear.
    */
-  private seal(cmd: number, plaintext: Buffer): { body: Buffer; signCode: number; magic: [number, number] } {
-    if (this.sessionVersion === 8 && this.signMode >= 1 && !GCM_EXEMPT_COMMANDS.has(cmd)) {
+  private seal(cmd: number, plaintext: Buffer, text: boolean): { body: Buffer; signCode: number; version: number } {
+    const clear = { body: plaintext, signCode: 0, version: 1 };
+    if (this.signMode <= 0 && this.level1AtSign0) {
+      this.ecbKey = this.level1Key;
+      this.signMode = 1;
+    }
+    if (this.signMode < 1) return clear;
+    const v8 = this.sessionVersion === 8;
+    const ecbOnly =
+      cmd === 1001 || cmd === 1054 || cmd === 1060 || (cmd === CMD_SET_PAYLOAD && jsonCmdOf(plaintext) === 1001);
+    if (v8 && !ecbOnly) {
       const nonce = randomBytes(12);
       const c = createCipheriv("aes-256-gcm", this.gcmKey!, nonce);
       c.setAAD(GCM_AAD);
       const ct = Buffer.concat([c.update(plaintext), c.final()]);
-      const sub = Buffer.alloc(4);
-      sub.writeUInt32LE((LEVEL2_SEQ_BASE + this.level2Seq++) >>> 0);
-      return { body: Buffer.concat([c.getAuthTag(), nonce, sub, ct]), signCode: this.signMode, magic: [0x08, 0x00] };
+      const word = Buffer.alloc(4);
+      word.writeUInt32LE(this.gcmWord >>> 0);
+      this.gcmWord = (this.gcmWord + 1) >>> 0;
+      return { body: Buffer.concat([c.getAuthTag(), nonce, word, ct]), signCode: this.signMode, version: 8 };
     }
-    if (this.signMode === 0 && this.level1AtSign0) {
-      this.ecbKey = this.level1Key;
-      this.signMode = 1;
+    if (!this.ecbKey || this.ecbKey.length !== 16 || this.ecbKey.includes(0)) {
+      this.signMode = -2;
+      return clear;
     }
-    if (this.signMode >= 1 && this.ecbKey) {
-      return {
-        body: encryptP2PData(paddingP2PData(plaintext), this.ecbKey),
-        signCode: this.signMode,
-        magic: [0x01, 0x00],
-      };
-    }
-    return { body: plaintext, signCode: 0, magic: [0x01, 0x00] };
+    const signCode = cmd === 1001 || cmd === 1054 || (ecbOnly && v8) ? 1 : this.signMode;
+    const body = text ? Buffer.concat([plaintext, Buffer.alloc(1)]) : plaintext;
+    return { body: encryptP2PData(paddingP2PData(body), this.ecbKey), signCode, version: 1 };
   }
 
   /**
-   * Send one command whose body is `plaintext`, sealed by {@link seal}. As in the app, a send that finds sign mode 0
-   * waits {@link SIGN0_SEND_WAIT_MS} first and seals by the mode it then finds; the sequence number is taken when the
-   * datagram goes. `streamId` is header byte 14, `clearMagic` header bytes 10-11 where the frame goes in the clear.
-   * `onSent` sees the datagram as it goes, and a send made inside {@link sendAcknowledged} stays retained however
-   * late it goes. Nothing goes once the connection it was made on has ended.
+   * Send one command whose body is `plaintext`, sealed by {@link seal}, as the app's sender does. One that finds sign
+   * mode 0 re-reads it every {@link SIGN0_POLL_MS} until it changes, at most {@link SIGN0_POLLS} times, then marks the
+   * slot -1 (later sends no longer wait) and seals by what it finds. Header byte 11 is {@link commandCount}, byte 12 the
+   * channel (0xff for {@link STATION_HEADER_COMMANDS}), byte 14 `streamId`; the sequence number and the counters are
+   * taken when the datagram goes. `onSent` sees the datagram as it goes, and a send made inside
+   * {@link sendAcknowledged} stays retained however late it goes. Nothing goes once its connection has ended.
    */
   private transmit(
     cmd: number,
     channel: number,
     plaintext: Buffer,
-    opts: { streamId?: number; clearMagic?: [number, number]; onSent?: (data: Buffer) => void } = {},
+    opts: { streamId?: number; text?: boolean; onSent?: (data: Buffer) => void } = {},
   ): void {
     const generation = this.connectionGeneration;
     const retain = this.capturedCommands !== undefined;
     const go = (late: boolean): void => {
       if (!this.connectAddress || generation !== this.connectionGeneration) return;
-      const sealed = this.seal(cmd, plaintext);
-      const magic = sealed.signCode === 0 ? (opts.clearMagic ?? sealed.magic) : sealed.magic;
+      const sealed = this.seal(cmd, plaintext, opts.text === true);
+      const counter = this.commandCount;
+      this.commandCount = (this.commandCount + 1) & 0xff;
       const data = Buffer.concat([
         buildCommandHeader(this.seqNumber, cmd),
-        buildRawCommandPayload(sealed.body, channel, sealed.signCode, magic, opts.streamId ?? 0),
+        buildRawCommandPayload(
+          sealed.body,
+          STATION_HEADER_COMMANDS.has(cmd) ? STATION_CHANNEL : channel,
+          sealed.signCode,
+          [sealed.version, counter],
+          opts.streamId ?? 0,
+        ),
       ]);
       this.seqNumber = (this.seqNumber + 1) & 0xffff;
       opts.onSent?.(data);
@@ -2230,7 +2193,13 @@ export class P2PSession extends EventEmitter {
       this.send(this.connectAddress, RequestMessageType.DATA, data);
     };
     if (this.signMode !== 0) return go(false);
-    setTimeout(() => go(true), SIGN0_SEND_WAIT_MS).unref?.();
+    let polls = 0;
+    const poll = (): void => {
+      if (this.signMode === 0 && ++polls < SIGN0_POLLS) return void setTimeout(poll, SIGN0_POLL_MS).unref?.();
+      if (this.signMode === 0) this.signMode = -1;
+      go(true);
+    };
+    setTimeout(poll, SIGN0_POLL_MS).unref?.();
   }
 
   /** Send a no-arg command frame (e.g. CMD_GATEWAYINFO) on a channel (default: the station channel). */
@@ -2303,13 +2272,9 @@ export class P2PSession extends EventEmitter {
     this.sendDatabasePayload(value, channel);
   }
 
-  /**
-   * Send the `CMD_SET_PAYLOAD` of a database read or stored-image request, sealed by the session; in the clear, its
-   * header bytes come from {@link nextClearCommandBytes} on a session that {@link sendsInTheClear}.
-   */
+  /** Send the `CMD_SET_PAYLOAD` of a database read or stored-image request, sealed by the session. */
   private sendDatabasePayload(value: string, channel: number): void {
-    const clearMagic = this.sendsInTheClear() ? this.nextClearCommandBytes() : undefined;
-    this.transmit(CMD_SET_PAYLOAD, channel, Buffer.from(value, "utf-8"), { clearMagic });
+    this.transmit(CMD_SET_PAYLOAD, channel, Buffer.from(value, "utf-8"), { text: true });
   }
 
   /**
@@ -2486,13 +2451,7 @@ export class P2PSession extends EventEmitter {
     const cmd = opts.wrapCmd ?? CMD_SET_PAYLOAD;
     const streamId = this.headerCounter(opts.counter);
     this.logger.debug(`[p2p] ${this.cfg.stationSn} sendSetPayload subCmd=${subCmd}`);
-    if (!keyed) return this.transmit(cmd, channel, Buffer.from(value, "utf-8"), { streamId });
-    const body = Buffer.concat([
-      buildCommandHeader(this.seqNumber, cmd),
-      buildRawCommandPayload(Buffer.from(value, "utf-8"), channel, 0, [0x01, 0x00], streamId),
-    ]);
-    this.seqNumber = (this.seqNumber + 1) & 0xffff;
-    this.send(this.connectAddress, RequestMessageType.DATA, body);
+    this.transmit(cmd, channel, Buffer.from(value, "utf-8"), { streamId, text: true });
   }
 
   /**
@@ -2721,15 +2680,37 @@ export class P2PSession extends EventEmitter {
    * over its raw bytes would be noise.
    */
   private handleFrame(header: P2PDataFrameHeader, payload: Buffer, dataType: number): void {
+    if (dataType !== P2PDataType.CONTROL) return this.dispatchFrame(header, payload, dataType);
+    if (this.heldNotifies) return void this.heldNotifies.push([header, payload, dataType]);
+    this.dispatchFrame(header, payload, dataType);
+    this.checkGatewayResend();
+  }
+
+  /**
+   * The app's 1100 resend check: at most once per {@link GATEWAY_CHECK_MS}, while the slot is below sign mode 1 or its
+   * ECB key is empty, every third check sends the header-only `CMD_GATEWAYINFO` again, with no limit.
+   */
+  private checkGatewayResend(): void {
+    const now = Date.now();
+    if (now - this.gatewayCheck.atMs <= GATEWAY_CHECK_MS) return;
+    this.gatewayCheck.atMs = now;
+    if (this.signMode >= 1 && this.ecbKey) return;
+    if (++this.gatewayCheck.runs < 3) return;
+    this.gatewayCheck.runs = 0;
+    this.level2Pending = this.cfg.resolveCipherKey !== undefined;
+    this.sendCommand(CMD_GATEWAYINFO);
+  }
+
+  /** Open and dispatch one inbound frame — see {@link handleFrame}. */
+  private dispatchFrame(header: P2PDataFrameHeader, payload: Buffer, dataType: number): void {
     let data = payload;
     // Media frames (video 1300 / audio 1301) are NOT level-1/2 control frames — their bodies use the
     // per-frame video cipher (RSA-wrapped AES, see decodeVideoFrame) or are plaintext. Leave them raw
     // so the generic control decrypt below doesn't corrupt them; LiveStream decodes video via
     // decodeVideoFrame and strips the audio header itself.
     const isMedia = header.commandId === CMD_VIDEO_FRAME || header.commandId === CMD_AUDIO_FRAME;
-    const opened = isMedia || payload.length === 0 ? undefined : this.openFrame(header, payload);
-    if (opened) data = opened;
-    const openedLevel2 = opened !== undefined && header.signCode >= 2;
+    if (!isMedia && payload.length > 0) data = this.openFrame(header, payload);
+    const openedLevel2 = data !== payload && header.signCode >= 2;
     if (header.commandId === CMD_GATEWAYINFO) {
       this.logger.debug(
         `[p2p] ${this.cfg.stationSn} level-2 gateway info v${header.version} ch ${header.channel} sign ${header.signCode} ${data.length}B (cipher_id ${data.length >= 4 ? data.readInt32LE(0) : 0})`,
@@ -2744,7 +2725,7 @@ export class P2PSession extends EventEmitter {
       const n = data.length - (data.length % 16);
       if (n >= 16)
         this.emit("dbChunk", { stationSn: this.cfg.stationSn, text: data.subarray(0, n).toString("latin1") });
-    } else if (header.commandId === CMD_DATABASE && this.sendsInTheClear()) {
+    } else if (header.commandId === CMD_DATABASE) {
       this.emit("dbChunk", { stationSn: this.cfg.stationSn, text: payload.toString("latin1") });
     }
     const frame: P2PFrame = {
@@ -2843,7 +2824,6 @@ export class P2PSession extends EventEmitter {
     this.connecting = false;
     if (this.lookupTimer) clearInterval(this.lookupTimer);
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
-    clearInterval(this.gatewayInfoTimer);
     if (this.connectTimer) clearTimeout(this.connectTimer);
     this.relay = undefined;
     if (this.audioRetransmitTimer) clearInterval(this.audioRetransmitTimer);

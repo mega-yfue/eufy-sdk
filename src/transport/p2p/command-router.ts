@@ -42,7 +42,7 @@ import {
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { assertNever } from "../../core/util.js";
 import { setTimeout as sleep } from "node:timers/promises";
-import { CONNECT_TIMEOUT_MS, P2PSession, type P2PFrame } from "./p2p-session.js";
+import { CONNECT_TIMEOUT_MS, P2PSession, STATION_CHANNEL, type P2PFrame } from "./p2p-session.js";
 import { LEVEL2_SETTLE_MS } from "./level2-settle.js";
 import { buildDirectBinaryBody, buildStringBody } from "./write-commands.js";
 import { buildDoorlockPassThrough } from "./doorlock-pass-through.js";
@@ -87,12 +87,27 @@ import { traceLiveStart, type LiveTrace } from "./live-trace.js";
 import { stationChannels, stationOf } from "./station-channels.js";
 
 /**
- * `GET_CAMERA_INFO` (1103) body: `[u32 mValue = 255][u32 mValueSub = 903]`, the constants the app's request
- * builder sets for this command (`msgType` 14, packed as two little-endian ints by its native sender). A
- * HomeBase answers on channel 255 with its whole parameter table, every attached device's entries under
- * its own channel.
+ * `GET_CAMERA_INFO` (1103) body of the app's params read (`getParams`): `[u32 mValue = 255][u32 mValueSub = 903]`
+ * (`msgType` 14, two little-endian ints). A HomeBase answers on channel 255 with its whole parameter table, every
+ * attached device's entries under its own channel.
  */
-const STATION_TABLE_QUERY = Buffer.from("ff00000087030000", "hex");
+const GET_PARAMS_BODY = Buffer.from("ff00000087030000", "hex");
+
+/** The serial prefixes the app's request builder counts as a station (`SnKtx.isStation`): such a device is on 255. */
+const REQUEST_STATION_PREFIXES = [
+  "T8001",
+  "T8002",
+  "T8020",
+  "T8010",
+  "T8030",
+  "T8040",
+  "T8023",
+  "T8021",
+  "T9000",
+  "T8N00",
+  "T7000",
+  "T8025",
+];
 
 /**
  * How long each command is given where the level-2 key is a REQUIREMENT — the HomeBase-routed commands
@@ -625,7 +640,7 @@ export class P2PCommandRouter {
       dskKey,
       noBroadcast: this.deps.noBroadcast,
       resolveCipherKey: (cipherId, version) => this.cipherKeyFor(cipherId, adminUserId, stationSn, version),
-      userId: this.deps.mega.auth?.userId,
+      userId: adminUserId,
       logger: this.deps.logger ?? noopLogger,
     });
     session.on("error", (e: Error) => this.reportError(e));
@@ -655,10 +670,7 @@ export class P2PCommandRouter {
       if (this.manager.get(stationSn) !== session) return;
       this.tearDownStation(stationSn);
     });
-    session.on("level2Ready", ({ cipherId }: { cipherId: number }) => {
-      session.sendRawLevel2Bytes(STATION_TABLE_QUERY, 0, P2P_ENVELOPE.GET_CAMERA_INFO);
-      this.deps.onLevel2Ready(stationSn, cipherId);
-    });
+    session.on("level2Ready", ({ cipherId }: { cipherId: number }) => this.deps.onLevel2Ready(stationSn, cipherId));
     session.on("peerAnswer", (atMs: number) => {
       if (this.manager.get(stationSn) === session) this.deps.onPeerAnswer?.(stationSn, atMs);
     });
@@ -667,9 +679,9 @@ export class P2PCommandRouter {
 
   /**
    * The private key of `cipherId` for a gateway info of `version`, as the app's `ConnectKeyFactory` gets it:
-   * from the cache under `${userId}_${cipherId}`, else from `data[0]` of one `get_ciphers` call. Version 8 asks
-   * with `station_sn` and keeps `ecc_private_key`; any other version asks with `sn` and keeps `private_key`.
-   * Only a non-empty key is cached.
+   * from the cache under `${userId}_${cipherId}`, else from `data[0]` of a `get_ciphers` call, asked at most twice
+   * while no key comes back. Version 8 asks with `station_sn` and keeps `ecc_private_key`; any other version asks
+   * with `sn` and keeps `private_key`. Only a non-empty key is cached.
    */
   private async cipherKeyFor(
     cipherId: number,
@@ -680,15 +692,38 @@ export class P2PCommandRouter {
     const cacheKey = `${userId}_${cipherId}`;
     if (this.cipherKeyCache.has(cacheKey)) return this.cipherKeyCache.get(cacheKey);
     const ecc = version === 8;
-    let key: string | undefined;
-    try {
-      const [cipher] = await this.deps.mega.getCiphers([cipherId], userId, stationSn, ecc ? "station_sn" : "sn");
-      key = ecc ? cipher?.ecc_private_key : cipher?.private_key;
-    } catch (e) {
-      this.deps.onError(e instanceof Error ? e : new Error(String(e)));
+    for (let pass = 0; pass < 2; pass++) {
+      try {
+        const [cipher] = await this.deps.mega.getCiphers([cipherId], userId, stationSn, ecc ? "station_sn" : "sn");
+        const key = ecc ? cipher?.ecc_private_key : cipher?.private_key;
+        if (key) {
+          this.cipherKeyCache.set(cacheKey, key);
+          return key;
+        }
+      } catch (e) {
+        this.deps.onError(e instanceof Error ? e : new Error(String(e)));
+      }
     }
-    if (key) this.cipherKeyCache.set(cacheKey, key);
-    return key || undefined;
+    return undefined;
+  }
+
+  /**
+   * The app's params read of a device (`getParams`): {@link GET_PARAMS_BODY} as 1103, opening the station's session
+   * where none is up, on channel 0 where the device's param 6271 is "1", else on 255 for a station
+   * ({@link REQUEST_STATION_PREFIXES}) and on its own channel for any other device. The answer
+   * arrives as the station's camera-info notify. A read that cannot go is only logged, as the app does.
+   */
+  async getParams(sn: string): Promise<void> {
+    try {
+      const dev = await this.deviceFor(sn);
+      await this.ensureStation(stationOf(dev));
+      const { session, channel } = await this.resolveSession(sn);
+      const station = REQUEST_STATION_PREFIXES.some((prefix) => sn.startsWith(prefix));
+      const chl = dev.params?.[6271] === "1" ? 0 : station ? STATION_CHANNEL : channel;
+      session.sendRawLevel1Bytes(GET_PARAMS_BODY, chl, P2P_ENVELOPE.GET_CAMERA_INFO);
+    } catch (e) {
+      (this.deps.logger ?? noopLogger).debug(`[p2p] ${sn} params read not sent`, e);
+    }
   }
 
   /**

@@ -73,12 +73,13 @@ describe("a station that refuses level-2 at gateway info", () => {
     return { session, traces, resolveCipherKey };
   };
 
-  it("settles at once without a cloud cipher lookup, and says why", async () => {
+  /** Native hands the app's key step `cipher_id` 0 and no body for a reply naming no cipher; it still looks it up. */
+  it("looks cipher 0 up, settles without a key, and says why", async () => {
     const { session, traces, resolveCipherKey } = refusedSession();
 
     await expect(session.awaitLevel2Key(1_000)).resolves.toBe(false);
 
-    expect(resolveCipherKey).not.toHaveBeenCalled();
+    expect(resolveCipherKey).toHaveBeenCalledWith(0, 8);
     expect(session.refusedLevel2).toBe(true);
     // The refusal is stated where it happened; a wait begun after it settled answers as any settled wait does.
     expect(traces.filter((trace) => trace.phase === "level2-unavailable")[0]).toEqual({
@@ -135,7 +136,7 @@ describe("a station that refuses level-2 at gateway info", () => {
     const [first, second] = sent as [Buffer, Buffer];
     expect(first.readUInt16LE(8)).toBe(1350); // CMD_SET_PAYLOAD
     expect([first[14], first[15]]).toEqual([0x01, 0x00]);
-    expect([second[14], second[15]]).toEqual([0x01, 0x00]); // not counted per command
+    expect([second[14], second[15]]).toEqual([0x01, 0x01]); // byte 11 counts every command
     expect([first[16], first[17]]).toEqual([0, 0]); // channel 0, signCode 0
     expect(JSON.parse(first.subarray(20).toString("utf-8"))).toEqual({ cmd: 1940, payload: { apiCommand: 6018 } });
   });

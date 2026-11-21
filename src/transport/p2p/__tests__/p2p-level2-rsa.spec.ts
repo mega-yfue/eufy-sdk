@@ -55,29 +55,29 @@ function rawBlock(block: Buffer): Buffer {
 
 describe("deriveLevel2KeyFromRsaGatewayInfo", () => {
   test("recovers the 16-byte key with a base64 PKCS#8 DER private key", () => {
-    expect(deriveLevel2KeyFromRsaGatewayInfo(gatewayInfo(wrapped()), PKCS8_B64)).toEqual(SESSION_KEY);
+    expect(deriveLevel2KeyFromRsaGatewayInfo(wrapped(), PKCS8_B64)).toEqual(SESSION_KEY);
   });
 
   test("recovers the 16-byte key with a PEM private key, PKCS#8 or PKCS#1", () => {
     for (const type of ["pkcs8", "pkcs1"] as const) {
       const pem = privateKey.export({ type, format: "pem" }).toString();
-      expect(deriveLevel2KeyFromRsaGatewayInfo(gatewayInfo(wrapped()), pem)).toEqual(SESSION_KEY);
+      expect(deriveLevel2KeyFromRsaGatewayInfo(wrapped(), pem)).toEqual(SESSION_KEY);
     }
   });
 
   test("answers undefined for a payload shorter than the modulus", () => {
-    expect(deriveLevel2KeyFromRsaGatewayInfo(gatewayInfo(wrapped()).subarray(0, 100), PKCS8_B64)).toBeUndefined();
+    expect(deriveLevel2KeyFromRsaGatewayInfo(wrapped().subarray(0, 100), PKCS8_B64)).toBeUndefined();
   });
 
   test("answers undefined for key material that is not an RSA key", () => {
-    expect(deriveLevel2KeyFromRsaGatewayInfo(gatewayInfo(wrapped()), "bm90IGEga2V5")).toBeUndefined();
-    expect(deriveLevel2KeyFromRsaGatewayInfo(gatewayInfo(wrapped()), "")).toBeUndefined();
+    expect(deriveLevel2KeyFromRsaGatewayInfo(wrapped(), "bm90IGEga2V5")).toBeUndefined();
+    expect(deriveLevel2KeyFromRsaGatewayInfo(wrapped(), "")).toBeUndefined();
   });
 
   test("answers undefined under another RSA key", () => {
     const other = generateKeyPairSync("rsa", { modulusLength: 1024 }).privateKey;
     const otherB64 = other.export({ type: "pkcs8", format: "der" }).toString("base64");
-    expect(deriveLevel2KeyFromRsaGatewayInfo(gatewayInfo(wrapped()), otherB64)).toBeUndefined();
+    expect(deriveLevel2KeyFromRsaGatewayInfo(wrapped(), otherB64)).toBeUndefined();
   });
 
   test("answers undefined for a block that is not PKCS#1 v1.5 encryption padding", () => {
@@ -87,31 +87,28 @@ describe("deriveLevel2KeyFromRsaGatewayInfo", () => {
       Buffer.from([0x00]),
       SESSION_KEY,
     ]);
-    expect(deriveLevel2KeyFromRsaGatewayInfo(gatewayInfo(rawBlock(signaturePadded)), PKCS8_B64)).toBeUndefined();
+    expect(deriveLevel2KeyFromRsaGatewayInfo(rawBlock(signaturePadded), PKCS8_B64)).toBeUndefined();
     const shortPad = Buffer.concat([
       Buffer.from([0x00, 0x02]),
       Buffer.alloc(7, 0x11),
       Buffer.from([0x00]),
       Buffer.alloc(118, 0x22),
     ]);
-    expect(deriveLevel2KeyFromRsaGatewayInfo(gatewayInfo(rawBlock(shortPad)), PKCS8_B64)).toBeUndefined();
+    expect(deriveLevel2KeyFromRsaGatewayInfo(rawBlock(shortPad), PKCS8_B64)).toBeUndefined();
   });
 
-  test("reads the wrapped key as the app does: a C string, its first 16 bytes, zero-padded", () => {
+  /** `new String(plaintext)` handed to the native setter, which copies the string's first 16 bytes. */
+  test("reads the wrapped key as the app does: the plaintext's first 16 bytes as a Java string, zero beyond it", () => {
     const nul = Buffer.concat([SESSION_KEY, Buffer.from([0x00])]);
-    expect(deriveLevel2KeyFromRsaGatewayInfo(gatewayInfo(wrapped(nul)), PKCS8_B64), "16 chars and a NUL").toEqual(
-      SESSION_KEY,
-    );
+    expect(deriveLevel2KeyFromRsaGatewayInfo(wrapped(nul), PKCS8_B64), "16 chars and a NUL").toEqual(SESSION_KEY);
     const long = Buffer.from("0123456789abcdef0123456789abcdef", "latin1");
-    expect(deriveLevel2KeyFromRsaGatewayInfo(gatewayInfo(wrapped(long)), PKCS8_B64), "32 chars").toEqual(SESSION_KEY);
+    expect(deriveLevel2KeyFromRsaGatewayInfo(wrapped(long), PKCS8_B64), "32 chars").toEqual(SESSION_KEY);
     const short = Buffer.concat([Buffer.from("0123456789ab", "latin1"), Buffer.alloc(4)]);
-    expect(
-      deriveLevel2KeyFromRsaGatewayInfo(gatewayInfo(wrapped(Buffer.from("0123456789ab", "latin1"))), PKCS8_B64),
-    ).toEqual(short);
-    expect(
-      deriveLevel2KeyFromRsaGatewayInfo(gatewayInfo(wrapped(Buffer.from([0x00, 0x41]))), PKCS8_B64),
-      "empty",
-    ).toBeUndefined();
+    expect(deriveLevel2KeyFromRsaGatewayInfo(wrapped(Buffer.from("0123456789ab", "latin1")), PKCS8_B64)).toEqual(short);
+    const leadingNul = Buffer.concat([Buffer.from([0xc0, 0x80, 0x41]), Buffer.alloc(13)]);
+    expect(deriveLevel2KeyFromRsaGatewayInfo(wrapped(Buffer.from([0x00, 0x41])), PKCS8_B64), "NUL, A").toEqual(
+      leadingNul,
+    );
   });
 });
 
@@ -163,7 +160,7 @@ function dualSession(): ReturnType<typeof rsaSession> & {
     (session as unknown as SessionInternals).handleFrame(
       { commandId: 1100, bytesToRead: payload.length, version, channel: 0, signCode: 0, type: 0 },
       payload,
-      1,
+      2,
     );
   const head = Buffer.alloc(4);
   head.writeUInt16LE(CIPHER_ID, 0);
@@ -383,5 +380,35 @@ describe("routing on an RSA session", () => {
       [1350, 1, 2],
       [1235, 1, 2],
     ]);
+  });
+});
+
+/** The app's notify thread reads nothing on channel 2 while a gateway info's key lookup blocks it. */
+describe("P2PSession channel 2 during a gateway key lookup", () => {
+  test("holds channel-2 frames until the key step ends, then delivers them in order; other channels flow", async () => {
+    let answer!: (key: string | undefined) => void;
+    const session = new P2PSession({
+      stationSn: STATION_SN,
+      p2pDid: P2P_DID,
+      resolveCipherKey: () => new Promise((resolve) => (answer = resolve)),
+    });
+    const seen: number[] = [];
+    session.on("data", (frame: { commandId: number }) => seen.push(frame.commandId));
+    const handle = (session as unknown as SessionInternals).handleFrame.bind(session);
+    const notify = (commandId: number, dataType: number) =>
+      handle({ commandId, bytesToRead: 2, version: 1, channel: 0, signCode: 0, type: 0 }, Buffer.from("{}"), dataType);
+
+    handle(
+      { commandId: 1100, bytesToRead: 132, version: 1, channel: 0, signCode: 0, type: 0 },
+      gatewayInfo(wrapped()),
+      2,
+    );
+    notify(1351, 2);
+    notify(1103, 2);
+    notify(1306, 0);
+    expect(seen).toEqual([1100, 1306]);
+
+    answer(undefined);
+    await vi.waitFor(() => expect(seen).toEqual([1100, 1306, 1351, 1103]));
   });
 });

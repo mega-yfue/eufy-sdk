@@ -164,12 +164,11 @@ export function decodeP2PCloudIPs(data: string): Address[] {
 }
 
 /**
- * The "Level 1" AES-128-ECB key for P2P command/control encryption — derivable
- * from sn + p2p_did alone (no cipher needed). HomeBase control-channel
- * notifications (sensor/alarm events) use exactly this key.
+ * The level-1 AES-128-ECB key, as the app builds it from the session's DID string: its first 16 characters, the
+ * station serial's last 7 written over the first 7.
  */
 export function p2pCommandEncryptionKey(stationSn: string, p2pDid: string): string {
-  return `${stationSn.slice(-7)}${p2pDid.substring(p2pDid.indexOf("-"), p2pDid.indexOf("-") + 9)}`;
+  return `${stationSn.slice(-7)}${p2pDid.slice(7, 16)}`;
 }
 
 /**
@@ -300,60 +299,55 @@ export function eciesWrap(plaintext: Buffer, peerPublicKey: Buffer, options: Eci
 }
 
 /**
- * Derive the P2P **level-2** (signCode 2/8) AES-256-GCM session key from a *decrypted*
- * `CMD_GATEWAYINFO` (1100) payload and the station's ECC private key (from `get_ciphers`).
- *
- * Layout of the decrypted payload: `cipher_id(2 LE) ‖ 0000 ‖ ECIES-envelope(129)`, where the
- * envelope is `ephemeralPub(33, compressed P-256) ‖ iv(16) ‖ ciphertext(48)`. ECIES =
- * ECDH(eccPriv, ephemeralPub) → eufyKDF(SHA-256/HMAC, label "ECIES") → AES-128-CBC decrypt →
- * 32-byte session key. Reversed from `libmega_media_sdk.so`; verified to reproduce the live key.
- * Returns the 32-byte key, or undefined if the inputs don't parse.
+ * The AES-256-GCM key a version-8 `CMD_GATEWAYINFO` (1100) gives, as the app's native `DecryptECC` reads the body
+ * after `cipher_id`: `ephemeralPub(33, compressed P-256) ‖ iv(16) ‖ ciphertext(48) ‖ HMAC(32)`, under the first 64 hex
+ * characters of the cipher's `ecc_private_key` — ECDH → eufyKDF → HMAC-SHA256 checked with `kdf[16:48]` over
+ * `iv ‖ ciphertext` → AES-128-CBC with `kdf[0:16]`. The key is the first 32 plaintext bytes. Answers `undefined`
+ * where the body is short or does not open.
  */
-export function deriveLevel2KeyFromGatewayInfo(gwPayload: Buffer, eccPrivateKeyHex: string): Buffer | undefined {
-  const plain = eciesUnwrap(gwPayload.subarray(4, 4 + 129), eccPrivateKeyHex);
-  if (!plain) return undefined;
-  const key = plain.subarray(0, 32);
-  return key.length === 32 ? Buffer.from(key) : undefined;
+export function deriveLevel2KeyFromGatewayInfo(body: Buffer, eccPrivateKeyHex: string): Buffer | undefined {
+  const plain = eciesUnwrap(body, eccPrivateKeyHex.slice(0, 64), { verifyHmac: true });
+  return plain && plain.length >= 32 ? Buffer.from(plain.subarray(0, 32)) : undefined;
 }
 
 /**
- * Derive the P2P **level-2** AES-128-ECB session key from a *decrypted* `CMD_GATEWAYINFO` (1100)
- * payload and the RSA private key of a cipher whose `get_ciphers` answer carries no ECC key.
+ * The AES-128-ECB key any other `CMD_GATEWAYINFO` (1100) gives, as the app reads the body after `cipher_id`: the
+ * whole body decrypted `RSA/ECB/PKCS1Padding` under the cipher's `private_key` (PEM or base64 PKCS#8 DER, read as
+ * PKCS#8), the plaintext made a Java `String` (UTF-8), and the first 16 bytes of that string in JNI's modified UTF-8
+ * as the native setter copies them, zero beyond its end. The padding is checked here over the raw RSA result so a wrong key fails closed:
+ * under OpenSSL's implicit rejection, `RSA_PKCS1_PADDING` answers random bytes for it instead of throwing.
  *
- * Layout of the decrypted payload: `cipher_id(2 LE) ‖ 0000 ‖ RSA ciphertext ‖ …`, the ciphertext as
- * long as the key's modulus. It is the session key under PKCS#1 v1.5 encryption padding
- * (`00 02 ‖ ≥8 non-zero bytes ‖ 00 ‖ key`), read as the app reads it: a C string, its first 16 bytes,
- * zero-padded (`ConnectKeyFactory`, native `zx_set_p2p_aeskey`). The padding is checked here over the raw RSA result so a wrong
- * key fails closed: under OpenSSL's implicit rejection, `RSA_PKCS1_PADDING` answers random bytes for it
- * instead of throwing, and those can be 16 bytes long.
- *
- * `rsaPrivateKey` is the `get_ciphers` `private_key`, PEM or base64 PKCS#8 DER.
- *
- * Returns the 16-byte key, or `undefined` when the key does not parse, the payload is short, the padding
- * is wrong or the key is empty (fails closed, never throws).
+ * Answers `undefined` when the key does not parse, the body is not one modulus long or the padding is wrong.
  */
-export function deriveLevel2KeyFromRsaGatewayInfo(gwPayload: Buffer, rsaPrivateKey: string): Buffer | undefined {
+export function deriveLevel2KeyFromRsaGatewayInfo(body: Buffer, rsaPrivateKey: string): Buffer | undefined {
   try {
     const key = rsaPrivateKey.includes("-----BEGIN")
       ? createPrivateKey(rsaPrivateKey)
       : createPrivateKey({ key: Buffer.from(rsaPrivateKey, "base64"), format: "der", type: "pkcs8" });
     const modulusBits = key.asymmetricKeyDetails?.modulusLength;
-    if (!modulusBits) return undefined;
-    const len = Math.ceil(modulusBits / 8);
-    if (gwPayload.length < 4 + len) return undefined;
-    const block = privateDecrypt({ key, padding: constants.RSA_NO_PADDING }, gwPayload.subarray(4, 4 + len));
+    if (!modulusBits || body.length !== Math.ceil(modulusBits / 8)) return undefined;
+    const block = privateDecrypt({ key, padding: constants.RSA_NO_PADDING }, body);
     if (block[0] !== 0x00 || block[1] !== 0x02) return undefined;
     const separator = block.indexOf(0x00, 2);
     if (separator < 10) return undefined;
-    const tail = block.subarray(separator + 1);
-    const end = Math.min(tail.includes(0) ? tail.indexOf(0) : tail.length, 16);
-    if (end === 0) return undefined;
     const sessionKey = Buffer.alloc(16);
-    tail.copy(sessionKey, 0, 0, end);
+    modifiedUtf8(block.subarray(separator + 1).toString("utf-8")).copy(sessionKey, 0, 0, 16);
     return sessionKey;
   } catch {
     return undefined;
   }
+}
+
+/** A string as JNI's `GetStringUTFChars` gives it: modified UTF-8, U+0000 and each UTF-16 unit encoded on their own. */
+function modifiedUtf8(text: string): Buffer {
+  const bytes: number[] = [];
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c > 0 && c < 0x80) bytes.push(c);
+    else if (c < 0x800) bytes.push(0xc0 | (c >> 6), 0x80 | (c & 0x3f));
+    else bytes.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 0x3f), 0x80 | (c & 0x3f));
+  }
+  return Buffer.from(bytes);
 }
 
 /** Local-lookup payload: two zero bytes. */

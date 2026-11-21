@@ -33,7 +33,6 @@ vi.mock("../p2p-session.js", async (importOriginal) => {
 });
 
 const { P2PCommandRouter } = await import("../command-router.js");
-const { P2PSession } = await vi.importActual<typeof import("../p2p-session.js")>("../p2p-session.js");
 
 const DEVICE: EufyDevice = {
   sn: "T8531K0000000000",
@@ -69,17 +68,22 @@ function makeDeps(
 }
 
 describe("P2PCommandRouter.ensureStation — resolveCipherKey cache", () => {
-  it("does NOT cache a failed get_ciphers() call — the next resolve retries and can succeed", async () => {
+  /** `ConnectKeyFactory` asks again once when its first pass leaves no key, and caches only a key. */
+  it("asks a lookup that yields no key once more, and does NOT cache the miss", async () => {
     const getCiphers = vi
       .fn()
       .mockRejectedValueOnce(new Error("fetch failed"))
+      .mockResolvedValueOnce([{ cipher_id: 97 }])
       .mockResolvedValueOnce([{ cipher_id: 97, ecc_private_key: "deadbeef" }]);
-    const router = new P2PCommandRouter(makeDeps(getCiphers));
+    const onError = vi.fn();
+    const router = new P2PCommandRouter(makeDeps(getCiphers, undefined, onError));
 
     await router.ensureStation(DEVICE.sn);
-    expect(await resolveCipherKey(97)).toBeUndefined(); // transient failure
-    expect(await resolveCipherKey(97)).toBe("deadbeef"); // retried, not short-circuited on a poisoned cache entry
+    expect(await resolveCipherKey(97)).toBeUndefined();
     expect(getCiphers).toHaveBeenCalledTimes(2);
+    expect(onError).toHaveBeenCalledOnce();
+    expect(await resolveCipherKey(97)).toBe("deadbeef");
+    expect(getCiphers).toHaveBeenCalledTimes(3);
   });
 
   it("DOES cache a successful get_ciphers() call — a later resolve does not re-fetch", async () => {
@@ -108,31 +112,6 @@ describe("P2PCommandRouter.ensureStation — resolveCipherKey cache", () => {
     expect(getCiphers).toHaveBeenLastCalledWith([97], "0".repeat(40), DEVICE.sn, "sn");
     expect(await resolveCipherKey(98, 8)).toBe("ecc-a");
     expect(getCiphers).toHaveBeenLastCalledWith([98], "0".repeat(40), DEVICE.sn, "station_sn");
-  });
-
-  /** A negotiation's failed lookup is one call, reported once. */
-  it("fetches and reports a failed lookup once", async () => {
-    const getCiphers = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("fetch failed"))
-      .mockResolvedValueOnce([{ cipher_id: 10, ecc_private_key: "", private_key: "cnNhLWtleQ==" }]);
-    const onError = vi.fn();
-    const router = new P2PCommandRouter(makeDeps(getCiphers, undefined, onError));
-    await router.ensureStation(DEVICE.sn);
-    const session = new P2PSession(capturedConfig!);
-    const gatewayInfo = Buffer.alloc(64);
-    gatewayInfo.writeUInt16LE(10, 0);
-
-    (session as unknown as { negotiateLevel2Key(payload: Buffer, version: number): void }).negotiateLevel2Key(
-      gatewayInfo,
-      8,
-    );
-
-    expect(await session.awaitLevel2Key(1_000)).toBe(false);
-    expect(getCiphers).toHaveBeenCalledTimes(1);
-    expect(onError).toHaveBeenCalledTimes(1);
-    expect(await resolveCipherKey(10, 1)).toBe("cnNhLWtleQ==");
-    expect(getCiphers).toHaveBeenCalledTimes(2);
   });
 
   /** Material for the cipher that was asked for is the ordinary answer and states nothing. */

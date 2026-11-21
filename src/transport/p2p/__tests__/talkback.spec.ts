@@ -2,7 +2,7 @@ import { createDecipheriv } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { P2PSession } from "../p2p-session.js";
 import { MAGIC_WORD } from "../codec.js";
-import { atSignMode1 } from "./session-fixtures.js";
+import { atSignMode1, withGcmKey } from "./session-fixtures.js";
 
 /**
  * Byte layout of the host→device talkback frames, asserted against a live capture of the app driving
@@ -35,7 +35,7 @@ function newSession(opts: { level2?: boolean } = {}): { session: P2PSession; sen
   const internals = session as unknown as Internals;
   internals.socket = { send: vi.fn((buf: Buffer) => void sent.push(Buffer.from(buf))) };
   internals.connectAddress = { host: "<cam-lan-ip>", port: 32100 };
-  if (opts.level2) session.setLevel2Key(KEY32);
+  if (opts.level2) withGcmKey(session, KEY32);
   return { session, sent };
 }
 
@@ -343,8 +343,7 @@ describe("talkback start/stop — HomeBase-attached topology", () => {
 
     const { plain, subHeader } = openLevel2(sealed);
     expect(plain).toEqual(Buffer.from([0x03, 0x00, 0x00, 0x00]));
-    expect(subHeader.subarray(1)).toEqual(Buffer.from([0x03, 0x02, 0x01]));
-    expect(subHeader[0]).toBe(dataTypeAndSeq(sent[0]).seq & 0xff);
+    expect(subHeader).toEqual(Buffer.from([0x04, 0x03, 0x02, 0x01])); // the connection's first GCM word
   });
 
   it("sends 1006 with the same shape to stop", () => {

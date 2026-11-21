@@ -41,15 +41,25 @@ describe("a set-payload envelope at sign mode 1", () => {
     expect(json(0).payload).toEqual([{ a: 1 }]);
   });
 
-  it("writes header byte 14 from the session counter: bumped from 10, held by current, 0 otherwise", () => {
+  /** The app's byte-14 counter is one byte for the whole native library, so it runs on across sessions. */
+  it("writes header byte 14 from the shared counter: bumped within 10..251, held by current, 0 otherwise", () => {
     const { s, frame } = session();
     s.sendSetPayload(1025, {}, { counter: "bump" });
     s.sendSetPayload(1025, {}, { counter: "bump" });
     s.sendSetPayload(1025, {}, { counter: "current" });
     s.sendSetPayload(1025, {});
-    expect([0, 1, 2, 3].map((i) => frame(i)[14])).toEqual([10, 11, 11, 0]);
-    Object.assign(s, { byte14: 251 });
-    s.sendSetPayload(1025, {}, { counter: "bump" });
-    expect(frame(4)[14], "wraps back to 10").toBe(10);
+    const first = frame(0)[14]!;
+    expect([1, 2, 3].map((i) => frame(i)[14])).toEqual([first + 1, first + 1, 0]);
+    const other = session();
+    other.s.sendSetPayload(1025, {}, { counter: "current" });
+    expect(other.frame(0)[14], "another session reads the same counter").toBe(first + 1);
+    const seen: number[] = [];
+    for (let i = 0; i < 260; i++) {
+      s.sendSetPayload(1025, {}, { counter: "bump" });
+      seen.push(frame(4 + i)[14]!);
+    }
+    expect(Math.min(...seen)).toBe(10);
+    expect(Math.max(...seen)).toBe(251);
+    expect(seen[seen.indexOf(251) + 1], "wraps back to 10").toBe(10);
   });
 });

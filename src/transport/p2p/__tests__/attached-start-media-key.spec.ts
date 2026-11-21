@@ -2,6 +2,7 @@ import { createECDH } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { P2PSession } from "../p2p-session.js";
 import { parseDataFrameHeader } from "../codec.js";
+import { openSentGcm, withGcmKey } from "./session-fixtures.js";
 
 /**
  * Which media key an attached camera's start offers.
@@ -22,12 +23,11 @@ function attachedSession(stationSn = STATION_SN) {
     connectAddress?: { address: string; port: number };
     signMode: number;
     send: (...args: unknown[]) => void;
-    openFrame: (header: object, payload: Buffer) => Buffer | undefined;
     handleFrame: (header: unknown, payload: Buffer, dataType: number) => void;
   };
   const sendable = () => {
     internals.connectAddress = { address: "203.0.113.1", port: 32100 };
-    built.setLevel2Key(Buffer.alloc(32, 7));
+    withGcmKey(built, Buffer.alloc(32, 7));
   };
   sendable();
   const sent: unknown[][] = [];
@@ -38,7 +38,7 @@ function attachedSession(stationSn = STATION_SN) {
   const startPayload = (): { key: string; ClientOS: string } => {
     const data = sent.at(-1)![2] as Buffer;
     const header = parseDataFrameHeader(data.subarray(4));
-    const plain = internals.openFrame(header, data.subarray(20, 20 + header.bytesToRead));
+    const plain = openSentGcm(built, data.subarray(20, 20 + header.bytesToRead));
     return JSON.parse(plain!.toString("utf8")).payload;
   };
   const offered = (): string => startPayload().key;

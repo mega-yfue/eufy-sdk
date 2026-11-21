@@ -1,3 +1,4 @@
+import { createDecipheriv } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { vi } from "vitest";
 import { noopLogger, type Logger } from "../../../core/logger.js";
@@ -149,4 +150,27 @@ export function routerWithSession(
  */
 export function atSignMode1(session: object, version = 1): void {
   (session as { gatewayInfoSlots(cipherId: number, version: number): void }).gatewayInfoSlots(1, version);
+}
+
+/**
+ * Open a frame a real session sent under its GCM slot: `tag(16) ‖ nonce(12) ‖ sub-header(4) ‖ ciphertext`, AAD
+ * "eufy security". Answers `undefined` where it does not open.
+ */
+export function openSentGcm(session: object, body: Buffer): Buffer | undefined {
+  const key = (session as { gcmKey?: Buffer }).gcmKey;
+  if (!key) return undefined;
+  try {
+    const d = createDecipheriv("aes-256-gcm", key, body.subarray(16, 28));
+    d.setAAD(Buffer.from("eufy security"));
+    d.setAuthTag(body.subarray(0, 16));
+    return Buffer.concat([d.update(body.subarray(32)), d.final()]);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Put a real session where a version-8 gateway info and its unwrapped key put it: version 8, sign mode 8, `key`. */
+export function withGcmKey(session: { setLevel2Key(key: Buffer): void }, key: Buffer): void {
+  atSignMode1(session, 8);
+  session.setLevel2Key(key);
 }

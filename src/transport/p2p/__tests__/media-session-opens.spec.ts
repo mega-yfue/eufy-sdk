@@ -187,7 +187,8 @@ describe("a second live camera on a claimed station session", () => {
     expect(events).toEqual([]);
   });
 
-  it("asks the station for its parameter table once its own session has the key, not on a media session", async () => {
+  /** The app sends nothing on a gateway key: its params read rides the device-list refresh. */
+  it("sends nothing when a session unwraps its gateway key", async () => {
     const r = router();
     (await openLive(r, CAM_A)).attach();
     (await openLive(r, CAM_B)).attach();
@@ -195,7 +196,7 @@ describe("a second live camera on a claimed station session", () => {
     built[0].emit("level2Ready", { cipherId: 1 });
     built[1].emit("level2Ready", { cipherId: 1 });
 
-    expect(built[0].sent).toEqual([[Buffer.from("ff00000087030000", "hex"), 0, 1103]]);
+    expect(built[0].sent).toEqual([]);
     expect(built[1].sent).toEqual([]);
   });
 
