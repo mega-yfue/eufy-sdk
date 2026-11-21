@@ -161,3 +161,42 @@ describe("mega identity error from concurrent calls", () => {
     expect(exchanges).toHaveLength(1);
   });
 });
+
+/** The app's `needExchanged`: an HTTP 463, or a 403 on a signed request, re-exchanges and sends once more, whatever the code. */
+describe("a 463 or 403 on a signed request", () => {
+  it.each([463, 403])("re-exchanges the key and sends once more on %i", async (status) => {
+    const mega = new MegaHttpClient({ email: "synthetic@example.invalid", password: "synthetic", region: "us-pr" });
+    const internals = mega as unknown as {
+      httpPost: (url: string, body: unknown) => Promise<Response>;
+      auth_: { userId: string; authToken: string };
+      sessionKey?: SessionEntry;
+      persist: () => void;
+    };
+    internals.auth_ = { userId: "synthetic-user", authToken: "synthetic-token" };
+    internals.sessionKey = {
+      keyIdent: "stale",
+      shareKey: "00".repeat(16),
+      clientPublicKeyHex: "",
+      clientPrivateKeyHex: "",
+      createdAt: Date.now(),
+    };
+    internals.persist = () => {};
+    let exchanges = 0;
+    let rejected = false;
+    internals.httpPost = vi.fn(async (url: string, body: unknown) => {
+      if (url.includes("/oauth/key/exchange")) {
+        exchanges++;
+        const kx = body as { client_public_key: string };
+        return { status: 200, data: { code: 0, data: { server_public_key: serverKeyExchange(kx.client_public_key) } } };
+      }
+      if (!rejected) {
+        rejected = true;
+        return { status, data: { code: 99999, msg: "synthetic" } };
+      }
+      return { status: 200, data: { code: 0, data: { ok: true } } };
+    });
+
+    await expect(mega.postSigned("app-mega-us-pr.eufy.com", "/synthetic", {}, true)).resolves.toEqual({ ok: true });
+    expect(exchanges).toBe(1);
+  });
+});

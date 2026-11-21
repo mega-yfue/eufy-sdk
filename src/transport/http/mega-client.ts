@@ -798,8 +798,11 @@ export class MegaHttpClient {
       authed &&
       (last?.code === EufyCloudErrorCode.IDENTITY_KEY_STALE ||
         /get identity error|identity error/i.test(last?.msg ?? ""));
-    if (identityError && !retry.identity && this.auth_) {
-      this.logger.debug("[mega] identity error → re-exchanging session key and retrying");
+    // The app's `HttpSendInterceptKt.needExchanged`: HTTP 463, or 403 on a signed request (`isAppDomain` is true by
+    // default), re-exchanges the key and sends once more (`retryIfNeedExchangeKey`).
+    const exchange = identityError || last?.status === 463 || last?.status === 403;
+    if (exchange && !retry.identity && this.auth_) {
+      this.logger.debug(`[mega] ${last?.status}/${last?.code} → re-exchanging session key and retrying`);
       // Only the key this call was signed with: one another call already replaced is the fresh one to use.
       if (host.includes(".eufylife.com")) {
         if (this.sessionKeys.get(host) === entry) this.sessionKeys.delete(host);
