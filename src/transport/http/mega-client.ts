@@ -1102,21 +1102,33 @@ export class MegaHttpClient {
 
   /**
    * The device's long-lived P-256 public key, as the cloud publishes it for key-wrapped commands
-   * (`type=2`): 64 bytes hex with no `04` prefix. A plain authed GET on the security-app host — the
-   * one read here that is neither signed nor body-encrypted, matching how the app fetches it.
+   * (`type=2`): 64 bytes hex with no `04` prefix. The app's `SecurityNetApi.getPublicKey`: `GET v3/app/public_key/query`
+   * on the security host with `app-tab: eufy_security`, signed like every call there (no body to encrypt).
    * Cached per serial for the client's lifetime; the key does not rotate in normal operation.
    */
   async getDevicePublicKey(deviceSn: string): Promise<string> {
     const cached = this.devicePublicKeys.get(deviceSn);
     if (cached) return cached;
-    const url = `https://${this.securityAppHost()}/v1/app/public_key/query?device_sn=${encodeURIComponent(deviceSn)}&type=2`;
+    const host = this.securityAppHost();
+    const entry = await this.ensureSessionKey(host);
+    const url = `https://${host}/v3/app/public_key/query?device_sn=${encodeURIComponent(deviceSn)}&type=2`;
     const res = await fetch(url, {
       method: "GET",
-      headers: { ...this.baseHeaders(), ...this.authTokenHeaders() },
+      headers: {
+        ...this.baseHeaders(),
+        ...signedHeaders(entry, ""),
+        "x-replay-info": "replay",
+        "app-tab": "eufy_security",
+        ...this.authTokenHeaders(),
+      },
       signal: AbortSignal.timeout(20_000),
     });
-    const env = parseMaybeJson(await res.text()) as ApiEnvelope<{ public_key?: string }> | undefined;
-    const key = env?.data?.public_key;
+    const env = parseMaybeJson(await res.text()) as ApiEnvelope<{ public_key?: string } | string> | undefined;
+    const data =
+      typeof env?.data === "string"
+        ? parseMaybeJson(decryptBody(env.data, entry.shareKey).toString("utf-8"))
+        : env?.data;
+    const key = (data as { public_key?: string } | undefined)?.public_key;
     if (res.status !== 200 || env?.code !== 0 || typeof key !== "string" || !key.length) {
       throw new MegaApiError(
         `public_key/query failed (${res.status}/${env?.code}): ${env?.msg ?? "no public key"}`,
