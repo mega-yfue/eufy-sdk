@@ -297,7 +297,7 @@ describe("P2PSession level-2 over an RSA cipher", () => {
     const scalar = Buffer.alloc(8, 0x11);
 
     expect(session.sendRawLevel2Bytes(scalar, 3, 1035)).toBe(true);
-    session.stopLiveMedia(3, ACCOUNT_ID, true);
+    session.sendFrame({ cmd: 1350, body: "json1350", subCmd: 1004, payload: { channel: "$channel" } }, 3, ACCOUNT_ID);
     expect(session.sendControlLevel2(2100, 0, ACCOUNT_ID, { isOpen: 1, userIndex: 0 }, 0)).toBe(true);
 
     expect(sent.map(({ header }) => [header.commandId, header.version, header.signCode])).toEqual([
@@ -312,8 +312,8 @@ describe("P2PSession level-2 over an RSA cipher", () => {
       account_id: ACCOUNT_ID,
       cmd: 1004,
       mChannel: 3,
-      mValue3: 1004,
-      payload: {},
+      mValue3: 0,
+      payload: { channel: 3 },
     });
     expect(plainJson(sent[2].body)).toEqual({
       account_id: ACCOUNT_ID,

@@ -134,27 +134,6 @@ describe("P2PSession.sendControlLevel2 envelope (mValue3)", () => {
   });
 });
 
-describe("P2PSession stream keepalive", () => {
-  test("sends 1139 header-only on the station channel 0xff, whatever camera channel it holds", () => {
-    const session = newSession();
-    withGcmKey(session, KEY);
-    const s = session as unknown as {
-      connectAddress: unknown;
-      send: (to: unknown, type: unknown, data: Buffer) => void;
-      liveStartedChannels: Map<number, string>;
-    };
-    s.connectAddress = { address: "127.0.0.1", port: 32100 };
-    const sent: Buffer[] = [];
-    s.send = (_to, _type, data) => sent.push(data);
-    s.liveStartedChannels.set(3, "l2");
-    session.startLiveMedia(3, "acct");
-    const frame = sent.at(-1)!;
-    const head = frame.indexOf("XZYH");
-    expect(frame.readUInt16LE(head + 4)).toBe(1139);
-    expect(frame[head + 12]).toBe(0xff);
-  });
-});
-
 /**
  * The app's native step of a version-8 gateway info naming a cipher, before any key: sign mode 1 and a GCM slot of the
  * account's user id (32 characters) with the serial's last 7 over its first 7, which seals every send GCM at version

@@ -9,7 +9,7 @@
 import { asBool } from "../../core/util.js";
 import { aiotDp, setJson, setJsonRaw, setPayload, setScalar, setStationScalar, isStationCodec } from "./access.js";
 import type { AvailabilityContext, CommandContext } from "./types.js";
-import { reflectCommand, type Command } from "../../core/contracts.js";
+import { reflectCommand, type Command, type LiveFrames, type SessionFrame } from "../../core/contracts.js";
 import type { ThingMember } from "./thing-description.js";
 import DATA from "./bundle-wires.generated.json" with { type: "json" };
 
@@ -35,22 +35,15 @@ import DATA from "./bundle-wires.generated.json" with { type: "json" };
  * cleared, else the JSON `fallback` the bundle sends when the param is unreported; none and the write is not
  * sent. `next` are the frames sent after it, `after` the cloud write sent once it succeeds.
  */
-export interface BundleFrame {
+export interface BundleFrame extends SessionFrame {
   transport?: string;
-  cmd?: number;
-  subCmd?: number;
-  body?: unknown;
   channel?: number | string;
-  payload?: unknown;
   valueKey?: string;
   coerce?: string;
-  /** A `native` body's sender layout (0x2d9cb4, 0x2da458) and the payload key its second int reads. */
-  layout?: number | string;
+  /** The payload key a `native` body's second int reads. */
   subKey?: string;
-  mValue3?: number;
   seal?: string;
   unzipParams?: boolean;
-  counter?: string;
   session?: Readonly<Record<string, string>>;
   dp?: number;
   value?: unknown;
@@ -122,6 +115,8 @@ interface BundleWires {
       Grouped<{ write?: Grouped<Grouped<BundleFrame | number>>; read?: Grouped<BundleRead>; override?: string }>
     >
   >;
+  /** Per product code, then parent topology ({@link topologyOf}), the indexes of its live and talkback frames. */
+  live?: Grouped<Grouped<{ start: number; stop: number; talkStart?: number; talkStop?: number }>>;
 }
 
 const BUNDLE_WIRES = DATA as unknown as BundleWires;
@@ -155,6 +150,50 @@ export function bundleEntry(identifier: string, ctx: AvailabilityContext) {
   const read = memberOf(reads, topology);
   const write = memberOf(entry?.write, topology);
   return entry && { write: write && frames(write), read, override: entry.override };
+}
+
+/**
+ * The app's `getConnectType(parent_sn)`: the topology a parent serial's prefix names, a T8030 whose character 7 is
+ * `1` as `hb3e`, any other parent (a device that is its own) `standalone`.
+ */
+function topologyOf(parent: string): string {
+  if (parent.startsWith("T8030")) return parent.charAt(7) === "1" ? "hb3e" : "hb3";
+  const hub: Record<string, string> = {
+    T8010: "hb2",
+    T8001: "hb1",
+    T8002: "hb1",
+    T9000: "t9000",
+    T90H1: "t90h1",
+    T8N00: "nvr",
+    T7000: "t7000",
+    T8040: "hb4",
+  };
+  const m80 = /^T802([0-5])/.exec(parent)?.[1];
+  return m80 ? `m802${m80}` : (hub[parent.slice(0, 5)] ?? "standalone");
+}
+
+/**
+ * The frames the app's `open_live_stream`, `close_live_stream`, `start_intercom` and `stop_intercom` send for
+ * `model` under `parentSn` (its own serial when it is its own station), with the ability the app reads off the
+ * first of `params` (the parent's, then the device's) whose param 1103 is an integer
+ * (`DefaultLiveMediaStrategy.getDeviceAbilityData`). `undefined` for a product the bundles give no live view.
+ */
+export function liveFrames(
+  model: string,
+  parentSn: string,
+  params: readonly (Readonly<Record<number, string>> | undefined)[],
+): LiveFrames | undefined {
+  const entry = memberOf(memberOf(BUNDLE_WIRES.live, model), topologyOf(parentSn));
+  if (!entry) return undefined;
+  const frames = BUNDLE_WIRES.frames ?? [];
+  const ability = params.map((p) => p?.[1103]).find((v) => v !== undefined && /^[+-]?\d+$/.test(v));
+  return {
+    start: frames[entry.start]!,
+    stop: frames[entry.stop]!,
+    ...(entry.talkStart !== undefined && { talkStart: frames[entry.talkStart] }),
+    ...(entry.talkStop !== undefined && { talkStop: frames[entry.talkStop] }),
+    ability: Number(ability ?? 0),
+  };
 }
 
 /** A read of a hex-encoded data point, its map keyed by the base64 the SDK holds the point in. */

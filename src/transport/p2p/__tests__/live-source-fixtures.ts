@@ -2,7 +2,13 @@ import { EventEmitter } from "node:events";
 import { Writable } from "node:stream";
 import { H264_CHROMA_PROFILES, splitAnnexbNals } from "../annexb.js";
 import type { P2PFrame } from "../p2p-session.js";
-import type { LiveAudioFrame, LiveStreamHandle, LiveVideoFrame } from "../../../core/contracts.js";
+import type {
+  LiveAudioFrame,
+  LiveFrames,
+  LiveStreamHandle,
+  LiveVideoFrame,
+  SessionFrame,
+} from "../../../core/contracts.js";
 
 /**
  * Shared fixtures for the shared-live-source specs — a fake upstream stream, the source factory that
@@ -30,12 +36,8 @@ export class FakeStream extends EventEmitter implements LiveStreamHandle {
     this.stopped++;
   }
 
-  /** How many re-issues asked for a real start rather than a keepalive — see `undelivered-restart.spec.ts`. */
-  forced = 0;
-
-  nudge(force?: boolean): void {
+  nudge(): void {
     this.nudged++;
-    if (force) this.forced++;
   }
 
   /** Emit one video frame to the source. */
@@ -295,14 +297,23 @@ export function p2pAudioFrame(audioType: number, payload: Buffer, channel = 0): 
   return { commandId: 1301, channel, signCode: 0, data: Buffer.concat([header, payload]) };
 }
 
+/** Synthetic live frames: an own-session 1700/1000 start, the direct 1004 stop, and 1700/1001-1002 talkback. */
+export const LIVE_FRAMES: LiveFrames = {
+  start: { cmd: 1700, subCmd: 1000, body: "json1700", payload: { cmd: 1000, encryptkey: "$key" } },
+  stop: { cmd: 1004, body: "native", payload: {}, layout: "u32-ch" },
+  talkStart: { cmd: 1700, subCmd: 1001, body: "json1700", payload: {} },
+  talkStop: { cmd: 1700, subCmd: 1002, body: "json1700", payload: {} },
+  ability: 0,
+};
+
 /**
  * A fake {@link P2PSession} for the {@link LiveStream} specs: records the channel of every start and stop,
  * and extracts a plaintext frame body exactly as the real session does.
  */
 export class FakeP2PSession extends EventEmitter {
-  /** The channel each `startLiveMedia` named, in order. */
+  /** The channel each start named, in order. */
   readonly starts: (number | undefined)[] = [];
-  /** The channel each `stopLiveMedia` named, in order. */
+  /** The channel each stop named, in order. */
   readonly stops: (number | undefined)[] = [];
 
   get started(): number {
@@ -329,22 +340,9 @@ export class FakeP2PSession extends EventEmitter {
     return data.subarray(VIDEO_HEADER_LEN, VIDEO_HEADER_LEN + declared);
   }
 
-  /** How each delivered keyframe was opened, in the order {@link P2PSession.settleAttachedKey} was told. */
-  readonly settled: ("ecc" | "rsa" | "plain")[] = [];
-  /** What {@link settleAttachedKey} answers: whether the session wants a new start. */
-  restartOnSettle = false;
-
-  settleAttachedKey(_channel: number, opened: "ecc" | "rsa" | "plain"): boolean {
-    this.settled.push(opened);
-    return this.restartOnSettle;
-  }
-
-  startLiveMedia(channel?: number): void {
-    this.starts.push(channel);
-  }
-
-  stopLiveMedia(channel?: number): void {
-    this.stops.push(channel);
+  /** Records a {@link LIVE_FRAMES} start or stop on `channel`. */
+  sendFrame(frame: SessionFrame, channel?: number): void {
+    (frame === LIVE_FRAMES.stop ? this.stops : this.starts).push(channel);
   }
 
   push(frame: Partial<P2PFrame>): void {

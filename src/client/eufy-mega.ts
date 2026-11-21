@@ -90,6 +90,7 @@ import {
 } from "../model/device-family.js";
 import { DeviceType } from "../model/device-types.js";
 import { cameraPowerTier } from "../model/capabilities/battery.js";
+import { liveFrames } from "../model/capabilities/bundle.js";
 import { DeviceRegistry, recordString, type DeviceRecord, type ParamChange } from "./device-registry.js";
 import { PushRepeats } from "./push-repeats.js";
 import type {
@@ -433,6 +434,11 @@ export class EufyMega extends EventEmitter {
       ffmpegLogLevel: opts.ffmpegLogLevel,
       ffmpegPath: opts.ffmpegPath,
       poweredFor: (parentSn) => this.stationPower(parentSn),
+      liveFramesFor: (sn, parentSn) => {
+        const record = (serial: string) => this.registry.list().find((x) => x.sn === serial);
+        const device = record(sn);
+        return device && liveFrames(device.model, parentSn, [record(parentSn)?.params, device.params]);
+      },
       sessionIdle: { batteryIdleMs: opts.p2pIdleMs },
       localAddresses: opts.localAddresses,
       noBroadcast: opts.noBroadcast,

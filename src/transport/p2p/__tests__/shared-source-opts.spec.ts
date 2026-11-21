@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { LIVE_FRAMES } from "./live-source-fixtures.js";
 import { P2PCommandRouter } from "../command-router.js";
 
 /**
@@ -17,6 +18,7 @@ function routerWithSession(
   session: Record<string, unknown> = { on: () => {}, off: () => {} },
 ) {
   const router = new P2PCommandRouter({
+    liveFramesFor: () => LIVE_FRAMES,
     mega: {} as never,
     logger: logger as never,
     listDevices: () => [],
@@ -62,17 +64,16 @@ describe("shared live source construction", () => {
       const session = {
         on: () => {},
         off: () => {},
-        startLiveMedia: vi.fn(),
-        stopLiveMedia: vi.fn(),
+        sendFrame: vi.fn(),
       };
       const router = routerWithSession({ warn: vi.fn(), debug: vi.fn() }, session);
       const consumer = await router.mediaProviderFor("T8000P0000000000").live({ lingerMs: 3e9 });
       consumer.stop();
 
       vi.advanceTimersByTime(7999);
-      expect(session.stopLiveMedia).not.toHaveBeenCalled();
+      expect(session.sendFrame).not.toHaveBeenCalledWith(LIVE_FRAMES.stop, 0, "");
       vi.advanceTimersByTime(1);
-      expect(session.stopLiveMedia).toHaveBeenCalledTimes(1);
+      expect(session.sendFrame).toHaveBeenCalledWith(LIVE_FRAMES.stop, 0, "");
     } finally {
       vi.useRealTimers();
     }
@@ -252,11 +253,11 @@ describe("shared live source options", () => {
     const logger = { warn: vi.fn() };
     const router = routerWithSession(logger);
 
-    await router.sharedLiveSourceFor("T8000P0000000000", { powered: "battery", keepAliveMs: 3000 });
-    await router.sharedLiveSourceFor("T8000P0000000000", { powered: "wired", keepAliveMs: 9000 });
+    await router.sharedLiveSourceFor("T8000P0000000000", { powered: "battery", lingerMs: 3000 });
+    await router.sharedLiveSourceFor("T8000P0000000000", { powered: "wired", lingerMs: 9000 });
 
     const msg = logger.warn.mock.calls[0][0] as string;
-    expect(msg).toMatch(/keepAliveMs/);
+    expect(msg).toMatch(/lingerMs/);
     expect(msg).toMatch(/powered/);
   });
 
