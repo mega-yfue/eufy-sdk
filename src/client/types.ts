@@ -362,10 +362,10 @@ export type EufyMegaEventMap = {
    * reports the SET step's fire-and-forget ack. `dispatch()`/`lock()`/`unlock()`/`setAutoLock()` stay
    * `Promise<void>` and never throw on a missing SET ack (fire-and-forget, same as every other write) —
    * this event is the optional channel for delivery visibility, without the dispatch
-   * contract itself changing shape. Secure-MQTT DP writes use the persistent account connection and
-   * report broker publication (`acked: true`) without an `instanceIp`; that is not device convergence.
+   * contract itself changing shape. A lock's `mqtt-dp` write reports whether the device's reply came within the
+   * descriptor's timeout; a light's DP write reports broker publication (`acked: true`), not device convergence.
    */
-  commandAck: [info: { sn: string; kind: string; acked: boolean; instanceIp?: string; getAcked?: boolean }];
+  commandAck: [info: { sn: string; kind: string; acked: boolean; getAcked?: boolean }];
   /**
    * A write was acknowledged and its declared observation then never converged, so the device never
    * reported the state the write asked for.

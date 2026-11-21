@@ -64,17 +64,14 @@ function makeRouter(plain: Buffer, opts: { noReply?: boolean } = {}) {
     ensureDevices: async () => {},
     onCommandAck: () => {},
     onError: () => {},
+    securityTransport: async () => fakeMqtt as any,
   });
 
   const fakeMqtt = new EventEmitter() as EventEmitter & {
     id: string;
-    subscribeDevice: (d: EufyDevice) => Promise<void>;
     publish: (topic: string, body: string, o?: unknown) => Promise<void>;
-    disconnect: () => Promise<void>;
   };
   fakeMqtt.id = "client-1";
-  fakeMqtt.subscribeDevice = vi.fn().mockResolvedValue(undefined);
-  fakeMqtt.disconnect = vi.fn().mockResolvedValue(undefined);
   fakeMqtt.publish = vi.fn().mockImplementation(async (_topic: string, body: string) => {
     if (opts.noReply) return;
     const { op, time } = decodeEnvelope(body);
@@ -93,8 +90,6 @@ function makeRouter(plain: Buffer, opts: { noReply?: boolean } = {}) {
       });
     }
   });
-
-  vi.spyOn(router as any, "ensureSecurityMqttFor").mockResolvedValue({ mqtt: fakeMqtt, instanceIp: "198.51.100.7" });
   return { router, fakeMqtt };
 }
 
@@ -102,7 +97,7 @@ describe("MqttCommandRouter.getAutoLockState (ff09-mqtt read-only GET)", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  it("decodes a1-a5 into a full AutoLockSnapshot, then disconnects (own one-shot connection)", async () => {
+  it("decodes a1-a5 into a full AutoLockSnapshot", async () => {
     const plain = buildResponsePlain({
       enabled: true,
       delaySeconds: 300,
@@ -110,7 +105,7 @@ describe("MqttCommandRouter.getAutoLockState (ff09-mqtt read-only GET)", () => {
       start: [22, 30],
       end: [6, 15],
     });
-    const { router, fakeMqtt } = makeRouter(plain);
+    const { router } = makeRouter(plain);
     await expect(router.getAutoLockState(SN, { adminUserId: ADMIN, deviceSn: SN })).resolves.toEqual({
       enabled: true,
       delaySeconds: 300,
@@ -118,16 +113,14 @@ describe("MqttCommandRouter.getAutoLockState (ff09-mqtt read-only GET)", () => {
       scheduleStartTime: [22, 30],
       scheduleEndTime: [6, 15],
     });
-    expect(fakeMqtt.disconnect).toHaveBeenCalledOnce();
   });
 
-  it("throws if the GET reply never arrives, still disconnects", async () => {
+  it("throws if the GET reply never arrives", async () => {
     const plain = buildResponsePlain({ enabled: true, delaySeconds: 1, isSchedule: false, start: [0, 0], end: [0, 0] });
-    const { router, fakeMqtt } = makeRouter(plain, { noReply: true });
+    const { router } = makeRouter(plain, { noReply: true });
     const p = router.getAutoLockState(SN, { adminUserId: ADMIN, deviceSn: SN });
     const assertion = expect(p).rejects.toThrow(/no settings GET reply/);
     await vi.advanceTimersByTimeAsync(5000);
     await assertion;
-    expect(fakeMqtt.disconnect).toHaveBeenCalledOnce();
   });
 });

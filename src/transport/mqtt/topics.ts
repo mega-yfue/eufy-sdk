@@ -19,17 +19,11 @@
 import type { EufyDevice } from "../../core/types.js";
 
 /**
- * Which `get_user_mqtt_info` credential a device's realtime traffic rides on. `"default"` is the
- * headerless credential (`eufy_mega`-scoped) that serves every non-life MQTT device.
- *
- * A scope exists only where a DISTINCT credential does. `eufy_life` is one because its topic space is
- * denied to the default credential. The Clean line (`eufy_home`) is NOT: its
- * `cmd/eufy_home/<model>/<sn>/res` subscribe is granted on the
- * default credential, which is the only one `get_user_mqtt_info` was ever asked for. Giving it a scope
- * of its own would open a second connection under the SAME `thing_name` — AWS IoT treats a duplicate
- * client id as a takeover and evicts the incumbent, so both lines would flap.
+ * Which of the app's MQTT stacks, and so which certificate, a device's traffic rides on: `eufy_security` for a
+ * device whose description says `is_support_mqtt` (`app/mqtt/register/iot`), `eufy_life` for a light, and
+ * `"default"` for the rest (the clean line's headerless `get_user_mqtt_info`).
  */
-export type MqttScope = "default" | "eufy_life";
+export type MqttScope = "default" | "eufy_life" | "eufy_security";
 
 /** The `eufy_life` category string, as the cloud record reports it and as the topic segment. */
 const EUFY_LIFE = "eufy_life";
@@ -53,20 +47,9 @@ function topicPrefix(device: EufyDevice): string {
   return device.category;
 }
 
-/**
- * The credential scope a device's topics are granted under. Derived from `EufyDevice.category` — a
- * device record field, not a capability — so this stays on the transport side of the boundary.
- */
+/** The stack a non-security MQTT device rides on, by its record's `category`. */
 export function mqttScopeFor(device: EufyDevice): MqttScope {
   return device.category === EUFY_LIFE ? EUFY_LIFE : "default";
-}
-
-/**
- * The `app-name` request header value for a scope, or `undefined` for the default (headerless)
- * credential — matching the optional argument of `getUserMqttInfo`.
- */
-export function mqttAppName(scope: MqttScope): string | undefined {
-  return scope === EUFY_LIFE ? EUFY_LIFE : undefined;
 }
 
 /**

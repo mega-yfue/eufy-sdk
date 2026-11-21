@@ -60,6 +60,8 @@ export interface BundleFrame extends SessionFrame {
   subVersion?: number;
   functionType?: number;
   needEncrypt?: boolean;
+  /** MQTT: seconds the app waits for the reply. */
+  timeout?: number | string;
   next?: BundleFrame[];
   after?: BundleFrame;
 }
@@ -408,6 +410,7 @@ function mqttCommand(frame: BundleFrame, value: unknown): Command | undefined {
     ...(frame.subVersion !== undefined && { subVersion: frame.subVersion }),
     ...(frame.functionType !== undefined && { functionType: frame.functionType }),
     encrypt: frame.needEncrypt !== false,
+    ...(typeof frame.timeout === "number" && { timeoutS: frame.timeout }),
   };
 }
 
