@@ -132,7 +132,7 @@ function rsaSession(stationSn = STATION_SN): {
     stationSn,
     p2pDid: P2P_DID,
     logger,
-    resolveCipherKey: async (cipherId) => (cipherId === CIPHER_ID ? { ecc: "", rsa: PKCS8_B64 } : undefined),
+    resolveCipherKey: async (cipherId, version) => (cipherId === CIPHER_ID && version !== 8 ? PKCS8_B64 : undefined),
   });
   const ready: unknown[] = [];
   session.on("level2Ready", (e) => ready.push(e));
@@ -154,7 +154,7 @@ function dualSession(): ReturnType<typeof rsaSession> & {
     stationSn: STATION_SN,
     p2pDid: P2P_DID,
     logger,
-    resolveCipherKey: async () => ({ ecc: ecdh.getPrivateKey("hex"), rsa: PKCS8_B64 }),
+    resolveCipherKey: async (_cipherId, version) => (version === 8 ? ecdh.getPrivateKey("hex") : PKCS8_B64),
   });
   const ready: unknown[] = [];
   session.on("level2Ready", (e) => ready.push(e));
@@ -196,7 +196,7 @@ describe("P2PSession level-2 over an RSA cipher", () => {
       stationSn: STATION_SN,
       p2pDid: P2P_DID,
       logger,
-      resolveCipherKey: async () => ({ ecc: "11".repeat(32), rsa: PKCS8_B64 }),
+      resolveCipherKey: async (_cipherId, version) => (version === 8 ? "11".repeat(32) : PKCS8_B64),
     });
     const errors: unknown[] = [];
     session.on("error", (e) => errors.push(e));

@@ -340,14 +340,13 @@ export interface P2PSessionConfig {
   /** Disable UDP broadcast local lookup (e.g. cloud-only). Default false. */
   noBroadcast?: boolean;
   /**
-   * Resolve a station `cipher_id` → its private keys (from cloud `get_ciphers`): `ecc`, the ECC private
-   * key hex (`ecc_private_key`), and `rsa`, the RSA private key (`private_key`). A plain string is the ECC key. Called once per
+   * Resolve a station `cipher_id` named by a `CMD_GATEWAYINFO` reply of header `version` → its private key from
+   * cloud `get_ciphers`: the ECC private key hex for version 8, the RSA private key for any other. Called once per
    * negotiation. When provided, the session auto-negotiates the **level-2** session key on connect: it
-   * reads the `cipher_id` + envelope from the `CMD_GATEWAYINFO` reply and derives the key. With an ECC
-   * key that is the ECIES unwrap and `setLevel2Key()` — so signCode 2/8 frames (camera info, event DB,
-   * event images) decrypt live. A version-1 reply carries the key RSA-encrypted instead, unwrapped with the RSA key.
+   * reads the `cipher_id` + envelope from the `CMD_GATEWAYINFO` reply and derives the key, by the ECIES unwrap
+   * for version 8 and the RSA unwrap otherwise.
    */
-  resolveCipherKey?: (cipherId: number) => Promise<string | { ecc?: string; rsa?: string } | undefined>;
+  resolveCipherKey?: (cipherId: number, version: number) => Promise<string | undefined>;
   /** Diagnostics sink. Omit for silence. */
   logger?: Logger;
 }
@@ -814,12 +813,11 @@ export class P2PSession extends EventEmitter {
     this.trace({ phase: "level2-negotiating", cipherId, version });
     void (async () => {
       try {
-        const resolved = await this.cfg.resolveCipherKey?.(cipherId);
+        const privateKey = await this.cfg.resolveCipherKey?.(cipherId, version);
         if (this.closed || generation !== this.connectionGeneration) return;
-        const keys = typeof resolved === "string" ? { ecc: resolved } : resolved;
-        const eccPrivHex = ecc ? keys?.ecc : undefined;
-        const rsaPrivKey = ecc ? undefined : keys?.rsa;
-        if (!eccPrivHex && !rsaPrivKey) {
+        const eccPrivHex = ecc ? privateKey : undefined;
+        const rsaPrivKey = ecc ? undefined : privateKey;
+        if (!privateKey) {
           this.logger.debug(`[p2p] ${this.cfg.stationSn} no ECC or RSA key for cipher_id ${cipherId}`);
           conclude({ phase: "level2-unavailable", reason: "no-cipher-key", cipherId });
           return;

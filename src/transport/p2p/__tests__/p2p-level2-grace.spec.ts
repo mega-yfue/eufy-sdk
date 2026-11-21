@@ -342,12 +342,12 @@ describe("a gateway-info reply sent in the clear", () => {
     const target = session(resolveCipherKey);
 
     (target as unknown as { handleFrame(h: object, p: Buffer, t: number): void }).handleFrame(
-      { commandId: 1100, signCode: 0, bytesToRead: 64 },
+      { commandId: 1100, signCode: 0, version: 8, bytesToRead: 64 },
       gatewayInfo(97),
       0,
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(resolveCipherKey).toHaveBeenCalledWith(97);
+    expect(resolveCipherKey).toHaveBeenCalledWith(97, 8);
   });
 });

@@ -1204,17 +1204,19 @@ export class MegaHttpClient {
    * is the only wrapping). The `ecc_private_key` is the root of trust for the P2P **level-2**
    * session key: `CMD_GATEWAYINFO(1100)` ships an ECIES envelope decrypted with it
    * (see `deriveLevel2KeyFromGatewayInfo` in `p2p/codec`). `userId` must be the station
-   * `member.admin_user_id`. Endpoint: `/v3/app/cipher/get_ciphers` on the eufylife host.
+   * `member.admin_user_id`. Endpoint: `/v3/app/cipher/get_ciphers` on the eufylife host. `snField` names the
+   * serial's body key: the app's version-8 gateway lookup sends `station_sn`, its RSA lookup `sn`.
    */
   async getCiphers(
     cipherIds: number[],
     userId: string,
     stationSn: string,
+    snField: "station_sn" | "sn" = "station_sn",
   ): Promise<Array<{ cipher_id: number; ecc_private_key?: string; private_key?: string }>> {
     const out = await this.securityAppPost<any>("/v3/app/cipher/get_ciphers", {
       cipher_ids: cipherIds,
       user_id: userId,
-      station_sn: stationSn,
+      [snField]: stationSn,
     });
     // server may return the array directly or under {ciphers|data}
     return (Array.isArray(out) ? out : (out?.ciphers ?? out?.data ?? [])) as Array<{

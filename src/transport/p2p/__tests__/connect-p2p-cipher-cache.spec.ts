@@ -16,8 +16,7 @@ import { traceCollector } from "./session-fixtures.js";
  * session-internal.
  */
 let capturedConfig: P2PSessionConfig | undefined;
-const resolveCipherKey = (cipherId: number) =>
-  capturedConfig!.resolveCipherKey!(cipherId) as Promise<{ ecc?: string; rsa?: string } | undefined>;
+const resolveCipherKey = (cipherId: number, version = 8) => capturedConfig!.resolveCipherKey!(cipherId, version);
 
 vi.mock("../p2p-session.js", async (importOriginal) => {
   const { EventEmitter } = await import("node:events");
@@ -78,14 +77,8 @@ describe("P2PCommandRouter.ensureStation — resolveCipherKey cache", () => {
     const router = new P2PCommandRouter(makeDeps(getCiphers));
 
     await router.ensureStation(DEVICE.sn);
-    expect(capturedConfig?.resolveCipherKey).toBeDefined();
-
-    const first = await resolveCipherKey(97);
-    expect(first).toBeUndefined(); // transient failure
-
-    const second = await resolveCipherKey(97);
-    expect(second?.ecc).toBe("deadbeef"); // retried, not short-circuited on a poisoned cache entry
-
+    expect(await resolveCipherKey(97)).toBeUndefined(); // transient failure
+    expect(await resolveCipherKey(97)).toBe("deadbeef"); // retried, not short-circuited on a poisoned cache entry
     expect(getCiphers).toHaveBeenCalledTimes(2);
   });
 
@@ -94,28 +87,31 @@ describe("P2PCommandRouter.ensureStation — resolveCipherKey cache", () => {
     const router = new P2PCommandRouter(makeDeps(getCiphers));
 
     await router.ensureStation(DEVICE.sn);
-    expect((await resolveCipherKey(97))?.ecc).toBe("cafebabe");
-    expect((await resolveCipherKey(97))?.ecc).toBe("cafebabe");
+    expect(await resolveCipherKey(97)).toBe("cafebabe");
+    expect(await resolveCipherKey(97)).toBe("cafebabe");
     expect(getCiphers).toHaveBeenCalledTimes(1); // second resolve served from cache
   });
 
-  it("takes the first cipher get_ciphers answers, as the app does", async () => {
+  /**
+   * The app's two lookups: a version-8 gateway info asks with `station_sn` and keeps `ecc_private_key`, any other
+   * version asks with `sn` and keeps `private_key`, each from the first entry whatever cipher it names.
+   */
+  it("asks by the gateway info's version and keeps that version's key from the first entry", async () => {
     const getCiphers = vi.fn().mockResolvedValue([
-      { cipher_id: 12, private_key: "rsa-a" },
+      { cipher_id: 12, ecc_private_key: "ecc-a", private_key: "rsa-a" },
       { cipher_id: 97, ecc_private_key: "cafebabe" },
     ]);
     const router = new P2PCommandRouter(makeDeps(getCiphers));
-
     await router.ensureStation(DEVICE.sn);
-    expect(await resolveCipherKey(97)).toEqual({ ecc: undefined, rsa: "rsa-a" });
+
+    expect(await resolveCipherKey(97, 1)).toBe("rsa-a");
+    expect(getCiphers).toHaveBeenLastCalledWith([97], "0".repeat(40), DEVICE.sn, "sn");
+    expect(await resolveCipherKey(98, 8)).toBe("ecc-a");
+    expect(getCiphers).toHaveBeenLastCalledWith([98], "0".repeat(40), DEVICE.sn, "station_sn");
   });
 
-  /**
-   * A negotiation asks the cloud once for both keys of a cipher: a `get_ciphers` call that throws is one
-   * failed lookup, reported once, and a cipher answered with an empty ECC key carries its RSA private key in
-   * that same lookup.
-   */
-  it("resolves both keys of a cipher in one lookup, and fetches and reports a failed one once", async () => {
+  /** A negotiation's failed lookup is one call, reported once. */
+  it("fetches and reports a failed lookup once", async () => {
     const getCiphers = vi
       .fn()
       .mockRejectedValueOnce(new Error("fetch failed"))
@@ -135,7 +131,7 @@ describe("P2PCommandRouter.ensureStation — resolveCipherKey cache", () => {
     expect(await session.awaitLevel2Key(1_000)).toBe(false);
     expect(getCiphers).toHaveBeenCalledTimes(1);
     expect(onError).toHaveBeenCalledTimes(1);
-    expect(await resolveCipherKey(10)).toEqual({ ecc: "", rsa: "cnNhLWtleQ==" });
+    expect(await resolveCipherKey(10, 1)).toBe("cnNhLWtleQ==");
     expect(getCiphers).toHaveBeenCalledTimes(2);
   });
 
@@ -146,7 +142,7 @@ describe("P2PCommandRouter.ensureStation — resolveCipherKey cache", () => {
     const router = new P2PCommandRouter(makeDeps(getCiphers, logger));
 
     await router.ensureStation(DEVICE.sn);
-    expect((await resolveCipherKey(97))?.ecc).toBe("cafebabe");
+    expect(await resolveCipherKey(97)).toBe("cafebabe");
 
     expect(traces).toEqual([]);
   });

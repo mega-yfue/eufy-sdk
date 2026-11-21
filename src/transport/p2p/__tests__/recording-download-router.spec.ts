@@ -119,7 +119,7 @@ describe("recording download through the router", () => {
     const out = await media.downloadRecording!({ recording: RECORDING, cipherId: CIPHER_ID });
 
     expect(sent).toEqual([[1024, `/media/mmcblk0p1/Camera01/${RECORDING}.dat`, ACCOUNT_ID, 1]]);
-    expect(getCiphers).toHaveBeenCalledWith([CIPHER_ID], ACCOUNT_ID, STATION_SN);
+    expect(getCiphers).toHaveBeenCalledWith([CIPHER_ID], ACCOUNT_ID, STATION_SN, "station_sn");
     expect(out.video).toEqual(Buffer.concat([IDR, slice(1)]));
     expect(out.frames).toBe(2);
   });

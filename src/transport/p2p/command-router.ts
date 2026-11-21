@@ -331,8 +331,8 @@ export class P2PCommandRouter {
    * shared — see {@link P2PCommandRouter.openTalkback}.
    */
   private readonly talkbacks = new Map<string, Talkback>();
-  /** cipher_id → its ECC and RSA private keys (one eufylife get_ciphers call per cipher), shared across (re)opens. */
-  private readonly cipherKeyCache = new Map<number, { ecc?: string; rsa?: string }>();
+  /** `${user_id}_${cipher_id}` → the private key its lookup kept, shared across (re)opens as the app's `ConnectKeyFactory` shares it. */
+  private readonly cipherKeyCache = new Map<string, string>();
   /** The recording download in flight per station; a station serves one at a time. */
   private readonly recordingDownloads = new Map<string, Promise<unknown>>();
 
@@ -624,7 +624,7 @@ export class P2PCommandRouter {
       localAddress,
       dskKey,
       noBroadcast: this.deps.noBroadcast,
-      resolveCipherKey: (cipherId: number) => this.cipherKeysFor(cipherId, adminUserId, stationSn),
+      resolveCipherKey: (cipherId, version) => this.cipherKeyFor(cipherId, adminUserId, stationSn, version),
       logger: this.deps.logger ?? noopLogger,
     });
     session.on("error", (e: Error) => this.reportError(e));
@@ -665,27 +665,29 @@ export class P2PCommandRouter {
   }
 
   /**
-   * The ECC and RSA private keys of `cipherId` (`ecc_private_key`, `private_key`), from the router's cache
-   * or one `get_ciphers` call, whose first answer is the key as the app takes it. Only a successful lookup —
-   * one that yields either key — is cached.
+   * The private key of `cipherId` for a gateway info of `version`, as the app's `ConnectKeyFactory` gets it:
+   * from the cache under `${userId}_${cipherId}`, else from `data[0]` of one `get_ciphers` call. Version 8 asks
+   * with `station_sn` and keeps `ecc_private_key`; any other version asks with `sn` and keeps `private_key`.
+   * Only a non-empty key is cached.
    */
-  private async cipherKeysFor(
+  private async cipherKeyFor(
     cipherId: number,
     userId: string,
     stationSn: string,
-  ): Promise<{ ecc?: string; rsa?: string } | undefined> {
-    if (this.cipherKeyCache.has(cipherId)) return this.cipherKeyCache.get(cipherId);
-    let cipher: { ecc_private_key?: string; private_key?: string } | undefined;
+    version: number,
+  ): Promise<string | undefined> {
+    const cacheKey = `${userId}_${cipherId}`;
+    if (this.cipherKeyCache.has(cacheKey)) return this.cipherKeyCache.get(cacheKey);
+    const ecc = version === 8;
+    let key: string | undefined;
     try {
-      // The app takes `data[0]` of `get_ciphers([cipher_id])` (`ConnectKeyFactory`).
-      cipher = (await this.deps.mega.getCiphers([cipherId], userId, stationSn))[0];
+      const [cipher] = await this.deps.mega.getCiphers([cipherId], userId, stationSn, ecc ? "station_sn" : "sn");
+      key = ecc ? cipher?.ecc_private_key : cipher?.private_key;
     } catch (e) {
       this.deps.onError(e instanceof Error ? e : new Error(String(e)));
     }
-    if (cipher?.ecc_private_key === undefined && cipher?.private_key === undefined) return undefined;
-    const keys = { ecc: cipher.ecc_private_key, rsa: cipher.private_key };
-    this.cipherKeyCache.set(cipherId, keys);
-    return keys;
+    if (key) this.cipherKeyCache.set(cacheKey, key);
+    return key || undefined;
   }
 
   /**
@@ -949,7 +951,7 @@ export class P2PCommandRouter {
     const { session, parentSn, channel, accountId } = await this.resolveSession(sn, { signal: opts.signal });
     const path = station.path(channel, opts.recording);
     if (!path) throw new RecordingDownloadError("invalid-recording", `no recording named ${opts.recording}`);
-    const eccKey = station.sealed ? (await this.cipherKeysFor(opts.cipherId, accountId, parentSn))?.ecc : undefined;
+    const eccKey = station.sealed ? await this.cipherKeyFor(opts.cipherId, accountId, parentSn, 8) : undefined;
     if (station.sealed && !eccKey) {
       throw new RecordingDownloadError("key-unavailable", `cipher ${opts.cipherId} could not be obtained`);
     }
