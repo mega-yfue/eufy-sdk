@@ -348,6 +348,8 @@ export class MegaHttpClient {
   private region: RegionShard;
   /** The host `estimate_domain` answered, persisted with the session. */
   private estimatedDomain = "";
+  /** `product_domains.eufy_security` of the last `estimate_domain` reply, `undefined` before one was seen. */
+  private securityDomain?: string;
   /** The in-flight (then settled, so cached) RTC-sign shard request from {@link portalShard}. */
   private portalShardInFlight?: Promise<string>;
   private bootstrapDomain?: string;
@@ -454,6 +456,7 @@ export class MegaHttpClient {
     }
     this.region = saved.region;
     this.estimatedDomain = saved.estimatedDomain ?? "";
+    this.securityDomain = saved.securityDomain;
     this.auth_ = {
       userId: saved.userId,
       accountUserId: saved.accountUserId,
@@ -642,6 +645,8 @@ export class MegaHttpClient {
     const d = env?.data ?? {};
     const domain = (d.domain ?? d.host ?? d.server_secret_info ?? "") as string;
     this.estimatedDomain = domain;
+    const products = d.product_domains as Record<string, unknown> | undefined;
+    this.securityDomain = typeof products?.eufy_security === "string" ? products.eufy_security : "";
     const blob = JSON.stringify(d);
     if (blob.includes("-eu-") || domain.includes("-eu-")) this.region = "eu-pr";
     else if (blob.includes("-us-") || domain.includes("-us-")) this.region = "us-pr";
@@ -1098,6 +1103,10 @@ export class MegaHttpClient {
 
   /** The security-app data host for this region (face recognition, media, etc.). */
   private securityAppHost(): string {
+    // The app's Security category host: `estimate_domain`'s `product_domains.eufy_security`, else its default
+    // (`IotSdkManager.setUserConfig`, `MegaDomain.SECURITY_DOMAIN`). A session stored before one was recorded keeps
+    // the region's host until its next `estimate_domain`.
+    if (this.securityDomain !== undefined) return this.securityDomain || "security-app.eufylife.com";
     const shard = this.region.split("-")[0]; // "eu-pr" → "eu", "us-pr" → "us"
     // US is the DEFAULT host with NO region suffix; `security-app-us.eufylife.com` does not exist
     // (ENOTFOUND). Other regions get a suffix (eu → security-app-eu). Verified via DNS.
@@ -1553,6 +1562,7 @@ export class MegaHttpClient {
       region: this.region,
       countryCode: this.cfg.countryCode,
       estimatedDomain: this.estimatedDomain,
+      securityDomain: this.securityDomain,
       openudid: this.openudid,
       phoneModel: this.phoneModel,
       mediaUserAgent: this.mediaUserAgent,

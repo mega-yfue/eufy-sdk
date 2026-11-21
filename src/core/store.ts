@@ -42,6 +42,8 @@ export interface PersistedSession {
   countryCode?: string;
   /** The host `estimate_domain` answered; it names shards the region classification cannot (`ie`). */
   estimatedDomain?: string;
+  /** `estimate_domain`'s `product_domains.eufy_security`, the app's Security category host. */
+  securityDomain?: string;
   openudid: string;
   /** This install's reported device model + media user-agent, generated once and reused. */
   phoneModel?: string;
