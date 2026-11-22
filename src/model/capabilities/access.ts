@@ -31,7 +31,12 @@ import type { Command, ScalarForm } from "../../core/contracts.js";
  * Set a scalar (integer) param. `form` defaults to `"auto"` — let the session decide the level.
  * Pass an explicit form only when the firmware pins the wire (see {@link ScalarForm}).
  */
-export function setScalar(param: number, value: number, ctx: CommandContext, form: ScalarForm = "auto"): Command {
+export function setScalar(
+  param: number,
+  value: number,
+  ctx: CommandContext,
+  form: ScalarForm = "auto",
+): Extract<Command, { kind: "set-param" }> {
   return { kind: "set-param", param, value, form, channel: ctx.channel };
 }
 
