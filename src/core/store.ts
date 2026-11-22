@@ -40,8 +40,6 @@ export interface PersistedSession {
   region: RegionShard;
   /** The `countryCode` the session was logged in with; a different configured one logs in again. */
   countryCode?: string;
-  /** The host `estimate_domain` answered; it names shards the region classification cannot (`ie`). */
-  estimatedDomain?: string;
   /** `estimate_domain`'s `product_domains.eufy_security`, the app's Security category host. */
   securityDomain?: string;
   openudid: string;

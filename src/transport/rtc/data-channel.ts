@@ -41,12 +41,36 @@ const CMD_GCM: Record<string, (v: number) => boolean> = {
   T8172: (v) => v > 1021,
   T8025: () => false,
 };
+/** The `webrtc_sdk_version` from which a model's PRIV1 runs the Multi KCP type (`file_agent_get_kcp_type`). */
+const KCP_MULTI_FROM: Record<string, string> = {
+  T8223: "6.1.3",
+  T8224: "6.1.3",
+  T8030: "7.1.3",
+  T8025: "7.1.3",
+  T8N00: "7.1.2",
+  T9000: "7.1.2",
+};
 /** The process-wide Wrtc link send counter, zero at load and shared by both header variants. */
 let linkCounter = 0;
 
 /** Whether a device's commands go AES-GCM: by serial prefix and the firmware version with its dots removed. */
 export function cmdGcm(sn: string, version: number): boolean {
   return CMD_GCM[sn.slice(0, 5)]?.(version) ?? true;
+}
+
+/**
+ * Whether a device's PRIV1 runs the Multi KCP type: any model without a floor, or no version, does; a version that is
+ * not `x.y.z` does except on a T8030 or T8025; otherwise the floor is compared on its second and third numbers only, as
+ * the app's `compare_version_bc` does.
+ */
+export function kcpMulti(sn: string, sdkVersion?: string): boolean {
+  const model = sn.slice(0, 5);
+  const from = KCP_MULTI_FROM[model];
+  if (!from || !sdkVersion) return true;
+  if (!/^\d+\.\d+\.\d+$/.test(sdkVersion)) return model !== "T8030" && model !== "T8025";
+  const [, b1, c1] = sdkVersion.split(".").map(Number);
+  const [, b2, c2] = from.split(".").map(Number);
+  return b1 !== b2 ? b1! > b2! : c1! >= c2!;
 }
 
 /**
@@ -272,21 +296,25 @@ const RESEND: [type: string, ms: number, below: number, after: number][] = [
 
 /**
  * Place a PRIV1 call and run its data channel as the app does. `flag` is the call's `sdp_info` byte 2 (3 with the
- * Multi KCP type, else 0); `version` the firmware with its dots removed. The call's 100 or 200 `turn` is the TURN
- * server (port 3478 when it has none); on the 200 the libjuice agent ({@link IceAgent} `juice`) gathers with the
+ * Multi KCP type of {@link kcpMulti}, else 0); `version` the firmware with its dots removed; `counter` the device's
+ * command counter. The call's 100 or 200 `turn` is the TURN server (port 3478 when it has none); on the 200 the libjuice agent ({@link IceAgent} `juice`) gathers with the
  * call's own ufrag and pwd on both sides. Each local candidate of slot `n − 1` (n < 9) goes out as INFO
  * `{"file_candidate", "file_candidate_num"}` and again until the station acks it, every 300 ms (host, 1000 ms after 8
  * sends), 500 ms (srflx, 1500 ms after 6) or 800 ms (relay, 2000 ms after 4), doubled from the fifth resend; once
  * gathering is done the local description goes out once as INFO `{"sdp"}`. A station candidate is added once per slot
  * number. ICE connected opens the channel and sends the KCP transport probe `EF BE 00 00` five times 1 ms apart.
  */
-export function priv1(signal: RtcSignalClient, opts: { sn: string; version: number; flag: number }): RtcDataChannel {
+export function priv1(
+  signal: RtcSignalClient,
+  opts: { sn: string; version: number; flag: number; counter?: RtcCommandCounter },
+): RtcDataChannel {
   const call = signal.call(RtcCallType.PRIV1, opts.flag);
   const agent = new IceAgent(call.ufrag, call.pwd, true);
   const channel = new RtcDataChannel((d) => agent.write(d), {
     multi: (opts.flag & 1) === 1,
     key: call.key,
     gcm: cmdGcm(opts.sn, opts.version),
+    counter: opts.counter,
   });
   const mine = (uuid: string) => uuid === call.uuid;
   const lines: string[] = [];

@@ -37,9 +37,9 @@ pull request.
 - **TypeScript** (strict), `module`/`moduleResolution` **nodenext**, `"type": "module"` → **ESM emit**
   (explicit `.js` import specifiers), target ES2024, `dist/` output. No framework.
 - **Node.js ≥ 24.5.0** required (see `.nvmrc`), not just recommended.
-- Runtime deps: **mqtt, protobufjs, jpeg-js, node-datachannel** — that's all. HTTP is native `fetch`,
-  hashing and ciphers are `node:crypto`, 64-bit integers are `BigInt`. `node-datachannel` is the WebRTC
-  peer of the T9000 transport (no `node:*` WebRTC), loaded on the first T9000 session.
+- Runtime deps: **mqtt, protobufjs, jpeg-js** — that's all. HTTP is native `fetch`, hashing and ciphers
+  are `node:crypto`, 64-bit integers are `BigInt`, the RTC transport's ICE/SRTP/KCP are `node:dgram` and
+  `node:crypto`.
 - Tests: **Vitest** (esbuild type-strip, specs run as real ESM). Type safety is `tsc`'s job via
   `npm run typecheck`, not the test runner's. Formatting: Prettier. No linter.
 - The build ships the library only: `tsc -p tsconfig.build.json` excludes the specs, and

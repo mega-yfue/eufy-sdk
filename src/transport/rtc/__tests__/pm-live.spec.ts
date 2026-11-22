@@ -162,7 +162,7 @@ describe("RtcPmLiveStream", () => {
 
   function stream(gcm = true) {
     const agent = fakeAgent();
-    const s = new RtcPmLiveStream(agent, { call: CALL, gcm, channel: CHANNEL, start: START, stop: STOP });
+    const s = new RtcPmLiveStream(agent, { call: CALL, gcm, cmdGcm: gcm, channel: CHANNEL, start: START, stop: STOP });
     const errors: Error[] = [];
     const frames: LiveVideoFrame[] = [];
     s.on("error", (e) => errors.push(e)).on("video", (f) => frames.push(f));
@@ -255,7 +255,14 @@ describe("RtcPmLiveStream", () => {
 
   it("sends the stop as the next ANKE frame, inner cmd 1004", () => {
     const agent = fakeAgent(true);
-    const s = new RtcPmLiveStream(agent, { call: CALL, gcm: false, channel: CHANNEL, start: START, stop: STOP });
+    const s = new RtcPmLiveStream(agent, {
+      call: CALL,
+      gcm: false,
+      cmdGcm: false,
+      channel: CHANNEL,
+      start: START,
+      stop: STOP,
+    });
     s.start();
     s.stop();
     const f = frameOf(agent.write.mock.calls[1]![0]);

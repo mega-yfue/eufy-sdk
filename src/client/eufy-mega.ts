@@ -77,17 +77,7 @@ import {
   type DeviceInspection,
   type RawParams,
 } from "../model/index.js";
-import {
-  isNvrMediaCamera,
-  isNvrDualLensCamera,
-  isNvrFullHdCamera,
-  isCallDoorbell,
-  isHomeBase,
-  isNvrT8N00,
-  isStation9000,
-  isTuyaVacuum,
-  isVideoSmartLock,
-} from "../model/device-family.js";
+import { isHomeBase, isTuyaVacuum, isVideoSmartLock } from "../model/device-family.js";
 import { DeviceType } from "../model/device-types.js";
 import { cameraPowerTier } from "../model/capabilities/battery.js";
 import { liveFrames } from "../model/capabilities/bundle.js";
@@ -352,7 +342,7 @@ export class EufyMega extends EventEmitter {
   private readonly prewarmTiers: ReadonlySet<PowerTier>;
   /** Transport-side owner of the P2P sessions + all wire senders. */
   private readonly p2p: P2PCommandRouter;
-  /** Transport-side owner of the T9000 station sessions (sibling of {@link p2p}). */
+  /** Transport-side owner of the RTC station clients (sibling of {@link p2p}). */
   private readonly rtc: RtcCommandRouter;
   /** Transport-side owner of the secure-MQTT ff09 lock/garage command path (sibling of {@link p2p}). */
   private readonly mqtt: MqttCommandRouter;
@@ -473,10 +463,8 @@ export class EufyMega extends EventEmitter {
       onFrame: (stationSn, f) => this.onP2PFrame(stationSn, f),
     });
     this.rtc = new RtcCommandRouter({
-      identity: () => this.mega.rtcIdentity(),
-      shard: (route) => (route.mediaTrack ? this.mega.rtcShard : this.mega.portalShard()),
-      estimates: async () => ({ phone: this.mega.rtcShard, web: await this.mega.portalShard() }),
-      country: opts.countryCode,
+      userId: () => this.mega.auth?.userId,
+      appId: this.mega.openudid,
       logger: opts.logger,
       ffmpegPath: opts.ffmpegPath,
       onError: (e) => this.reportError(e),
@@ -1010,14 +998,14 @@ export class EufyMega extends EventEmitter {
    * receives nothing until a command dials it again. The first reopen runs at once; one that fails is
    * retried after {@link STATION_REOPEN_MIN_MS}, doubling up to {@link STATION_REOPEN_MAX_MS}, until the
    * session connects or the generation ends. One reopen is pending per station at a time, and each failure
-   * is reported once, by {@link P2PCommandRouter.ensureStation}. A HomeBase S1 Pro (T9000) answers no P2P
-   * lookup, so it is never reopened.
+   * is reported once, by {@link P2PCommandRouter.ensureStation}. A station on an RTC route is not connected over
+   * P2P by the app, so it is never reopened.
    */
   private reopenWiredStation(sn: string): void {
     const generation = this.realtimeGeneration;
     if (generation?.epoch !== this.realtimeEpoch) return;
     if (this.p2p.stationKeyOf(sn) !== sn || !this.registry.p2pDevices().some((d) => d.sn === sn)) return;
-    if (this.stationPower(sn) !== "wired" || this.stationOf(sn).t9000) return;
+    if (this.stationPower(sn) !== "wired" || this.rtcRouteFor(sn)) return;
     const reopen = this.stationReopens.get(sn) ?? { timer: new Timer(), delayMs: 0 };
     this.stationReopens.set(sn, reopen);
     if (reopen.timer.pending) return;
@@ -1301,27 +1289,16 @@ export class EufyMega extends EventEmitter {
 
   /**
    * The station a device's commands go through: the device itself, or the HomeBase the registry links it
-   * to. Answers the target record, the station record and serial, the station's `device_type`, and the
-   * `t9000` / `t8n00` / `callDoorbell` family flags.
+   * to. Answers the target record, the station record and serial, and the station's `device_type`.
    */
   private stationOf(sn: string) {
     const devices = this.registry.list();
     const target = devices.find((d) => d.sn === sn);
     const stationSn = target?.stationSn || sn;
     const station = devices.find((d) => d.sn === stationSn);
-    const raw = (station?.raw ?? {}) as { device_type?: unknown; member?: { admin_user_id?: unknown } };
+    const raw = (station?.raw ?? {}) as Record<string, unknown> & { member?: { admin_user_id?: unknown } };
     const deviceType = typeof raw.device_type === "number" ? raw.device_type : undefined;
-    const family = { deviceType, model: station?.model };
-    return {
-      target,
-      station,
-      stationSn,
-      raw,
-      deviceType,
-      t9000: isStation9000(family),
-      t8n00: isNvrT8N00(family),
-      callDoorbell: isCallDoorbell(family),
-    };
+    return { target, station, stationSn, raw, deviceType };
   }
 
   /** The vendor DeviceType of the station a device hangs off; `undefined` for a station itself. */
@@ -1395,11 +1372,9 @@ export class EufyMega extends EventEmitter {
    * The `eufy_life` DP writes (smart lights) are secure-MQTT-only. `aiot-dp` routes to either the
    * Anker AIoT MQTT stack or the legacy Tuya REST router depending on the device's category
    * (`eufy_home_tuya` → Tuya, everything else → MQTT). The capability layer emits a single `aiot-dp`
-   * kind and stays transport-agnostic; only the facade sees both sides and decides here. A T9000 or T8N00
-   * station and the devices attached to it go over RTC, with an attached device's command refused
-   * unless its channel resolves back to it on the station. T8N00 uses full SDP and admits direct and
-   * relay candidates; T9000 retains compact SDP and relay-only candidates. A call doorbell's route serves
-   * media only, and the RTC router refuses a command on it. Everything else is P2P.
+   * kind and stays transport-agnostic; only the facade sees both sides and decides here. A device with an
+   * {@link rtcRouteFor} route goes over RTC, an attached device's command refused unless its channel resolves
+   * back to it on the station. Everything else is P2P.
    */
   private routeCommand(sn: string, cmd: Command): Promise<boolean | void> {
     if (
@@ -1439,44 +1414,51 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * The RTC route for a T9000 or T8N00 station or a device attached to one, or a call doorbell that is its
-   * own station, decided by the station's model classification; `undefined` for any other device. A T8N00
-   * route carries its native `call` signalling; a doorbell route does too, and streams its video on a media
-   * track. The admin id is the station's `member.admin_user_id`, else the logged-in user.
+   * The RTC route of a device the app connects natively (`DeviceWebrtcKtx.isWebrtc`), read off its station: the
+   * station's description reads `is_connect_webrtc` 2, or 1 (`true`) on one listing no
+   * `is_connect_webrtc_sub_device_list` (a T8030 or T8025 listing one stays P2P here), and the station's record
+   * carries what the app's `WebrtcInterceptor` refuses a request without: `p2p_did`, `p2p_license` and an IPv4
+   * `signaling_servers` entry. `undefined` otherwise. The admin id is the station's `member.admin_user_id`.
    */
   private rtcRouteFor(sn: string): RtcRoute | undefined {
-    const { target, station, stationSn, raw, t9000, t8n00: native, callDoorbell } = this.stationOf(sn);
-    const doorbell = callDoorbell && stationSn === sn;
-    if (!target || !station || !(t9000 || native || doorbell)) return undefined;
-    const member = raw.member?.admin_user_id;
-    const adminUserId = typeof member === "string" && member ? member : undefined;
-    const base: RtcRoute = { stationSn, adminUserId, attached: stationSn !== sn };
-    if (doorbell) return { ...base, signalingMode: "call", iceTransportPolicy: "all", mediaTrack: true };
-    return native ? { ...base, signalingMode: "call", iceTransportPolicy: "all" } : base;
+    const { target, station, stationSn, raw } = this.stationOf(sn);
+    const things = this.registry.thingsOf(stationSn)?.properties;
+    const connect = things?.is_connect_webrtc?.defaultValue;
+    const level = connect === "true" ? 1 : Number(connect);
+    if (!target || !station || !(level > 1 || (level === 1 && !things?.is_connect_webrtc_sub_device_list)))
+      return undefined;
+    const text = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+    const host = (Array.isArray(raw.signaling_servers) ? raw.signaling_servers : [])
+      .map((s) => /^(?:https:\/\/)?([^/]*)/.exec(String(s))?.[1] ?? "")
+      .find((h) => /^\d{1,3}(\.\d{1,3}){3}$/.test(h));
+    const did = text(raw.p2p_did);
+    const lic = text(raw.p2p_license);
+    if (!host || !did || !lic) return undefined;
+    return {
+      stationSn,
+      attached: stationSn !== sn,
+      adminUserId: text(raw.member?.admin_user_id),
+      did,
+      lic,
+      host,
+      version: Number(String(raw.main_sw_version ?? "").replace(/\./g, "")) || 0,
+      sdkVersion: text(raw.webrtc_sdk_version),
+    };
   }
 
   /**
-   * The RTC media provider for a station on a media-track route, or a camera attached to a T9000 whose
-   * `device_channel` resolves back to it on the station; `undefined` otherwise. A camera attached to a T8N00 gets the
-   * NVR's dedicated media call when {@link isNvrMediaCamera} admits it.
+   * The RTC media of a device on an RTC route: the station's own on channel 0 unless its record states one, an
+   * attached camera's when its `device_channel` resolves back to it on the station; `undefined` otherwise.
    */
   private rtcMediaFor(sn: string): MediaProvider | undefined {
     const route = this.rtcRouteFor(sn);
-    if (route?.mediaTrack) return this.rtc.trackMediaProviderFor(route);
-    if (!route?.attached) return undefined;
-    const camera = this.registry.list().find((d) => d.sn === sn);
-    const raw = (camera?.raw ?? {}) as { device_channel?: unknown };
-    const channel = typeof raw.device_channel === "number" ? raw.device_channel : undefined;
-    if (channel === undefined || this.registry.serialForFrame(route.stationSn, channel) !== sn) return undefined;
-    if (route.signalingMode === "call") {
-      if (!camera || !isNvrMediaCamera(camera)) return undefined;
-      return this.rtc.nvrMediaProviderFor(
-        { ...route, cameraSn: sn, channel },
-        isNvrDualLensCamera(camera) ? [0, 1] : [0],
-        isNvrFullHdCamera(camera) ? ["1080p"] : undefined,
-      );
-    }
-    return this.rtc.mediaProviderFor({ ...route, cameraSn: sn, channel });
+    if (!route) return undefined;
+    const raw = (this.registry.list().find((d) => d.sn === sn)?.raw ?? {}) as { device_channel?: unknown };
+    const channel = typeof raw.device_channel === "number" ? raw.device_channel : route.attached ? undefined : 0;
+    if (channel === undefined || (route.attached && this.registry.serialForFrame(route.stationSn, channel) !== sn))
+      return undefined;
+    // CALLER INPUT: the RTC player's open/close_live_stream JSON, absent until the bundle data carries it.
+    return this.rtc.mediaProviderFor({ ...route, cameraSn: sn, channel, live: undefined });
   }
 
   /**
@@ -2044,19 +2026,18 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * Keep a T9000 station's RTC command session open and warm, so a command fires without a cold reconnect.
-   * Answers the hold's disposer; throws for any other station, and while logged out.
+   * Bring an RTC station's command channel up now, so a command fires without a cold connect. Answers the hold's
+   * disposer; throws for any other station, and while logged out.
    */
   keepStationWarm(stationSn: string): () => void {
-    const { t9000 } = this.stationOf(stationSn);
     const route = this.rtcRouteFor(stationSn);
-    if (!t9000 || !route) throw new Error(`rtc: ${stationSn} has no warm command session`);
+    if (!route || route.attached) throw new Error(`rtc: ${stationSn} has no warm command session`);
     return this.rtc.keepWarm(route);
   }
 
   /** Eagerly open P2P sessions for WIRED stations only (persistent — they don't drain). Battery
-   *  stations stay closed until an on-demand open, and a HomeBase S1 Pro (T9000), which answers no P2P
-   *  lookup and is driven over RTC, is never opened here. Best-effort per station: one that fails is
+   *  stations stay closed until an on-demand open, and a station on an RTC route, which the app does not
+   *  connect over P2P, is never opened here. Best-effort per station: one that fails is
    *  handed to {@link reopenWiredStation}. */
   private async warmWiredP2P(
     readiness = createPlaneReadiness(),
@@ -2065,7 +2046,7 @@ export class EufyMega extends EventEmitter {
     const wired = new Set<string>();
     for (const d of this.registry.p2pDevices()) {
       const key = this.p2p.stationKeyOf(d.sn);
-      if (this.stationPower(key) === "wired" && !this.stationOf(key).t9000) wired.add(key);
+      if (this.stationPower(key) === "wired" && !this.rtcRouteFor(key)) wired.add(key);
     }
     readiness.required = wired.size;
     readiness.pending = wired.size;
@@ -2117,8 +2098,8 @@ export class EufyMega extends EventEmitter {
    *
    * Five gates. `autoRealtime: false` means the SDK opens nothing on its own initiative at all;
    * {@link EufyMegaOptions.prewarmEvents} must name the event, and it names none by default, which is
-   * what makes pre-warm opt-in; the station must be one the account actually reports; it must not be a
-   * HomeBase S1 Pro (T9000), which answers no P2P lookup and is driven over RTC; and its power tier must
+   * what makes pre-warm opt-in; the station must be one the account actually reports; it must not be on an
+   * RTC route, which the app does not connect over P2P; and its power tier must
    * be one {@link EufyMegaOptions.prewarmTiers} allows.
    *
    * The tier is resolved for the STATION whose session would open, which is why an attached camera is
@@ -2136,7 +2117,7 @@ export class EufyMega extends EventEmitter {
     if (!this.prewarmEvents.has(event)) return;
     const station = this.p2p.stationKeyOf(deviceSn);
     if (!this.registry.list().some((device) => device.sn === station)) return;
-    if (this.stationOf(station).t9000) return;
+    if (this.rtcRouteFor(station)) return;
     if (!this.prewarmTiers.has(this.stationPower(station))) return;
     void this.p2p.prewarm(station, this.opts.prewarmMs);
   }
@@ -2323,8 +2304,8 @@ export class EufyMega extends EventEmitter {
 
   /**
    * The rows of one of a station's own tables (`history_record_info`, `person_basic_info`, …), read over
-   * the transport the station speaks: the control channel of a HomeBase S1 Pro (T9000), P2P for any
-   * other station. The query is the table's whole content; the rows are the station's, shaped by it.
+   * the transport the station speaks: the RTC data channel on an RTC route, P2P for any other
+   * station. The query is the table's whole content; the rows are the station's, shaped by it.
    *
    * Resolves with the rows the station returned. Rejects on a serial not in the device list, on a record
    * stating no `admin_user_id`, on a station that cannot be reached, on a query the station refuses, and
@@ -2341,22 +2322,23 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * One image stored on a HomeBase S1 Pro (T9000), by the on-station path a table row names
-   * (`thumb_path`, …), read over the station's control channel.
+   * One image stored on a station on an RTC route, by the on-station path a table row names
+   * (`thumb_path`, …), read over the station's data channel.
    *
    * Resolves with the image bytes as the station holds them. Rejects on a serial not in the device list,
-   * on a record stating no `admin_user_id`, on a station other than a T9000, on a station that cannot be
+   * on a record stating no `admin_user_id`, on a station on no RTC route, on a station that cannot be
    * reached, and on the reply not arriving in time. Fetching the image is the transport's; this resolves
    * which station and which account id.
    */
   async readStationImage(stationSn: string, filePath: string, opts: StationReadOptions = {}): Promise<Buffer> {
     const { station, route } = await this.stationReadTarget("readStationImage", stationSn);
-    if (!route) throw new Error(`readStationImage: ${station} is not a T9000; its stored images are not read here`);
+    if (!route)
+      throw new Error(`readStationImage: ${station} is not an RTC station; its stored images are not read here`);
     return this.rtc.readImage(route, filePath, opts);
   }
 
   /**
-   * The station a database read goes to, its `admin_user_id` and, for a T9000, its RTC route. Throws,
+   * The station a database read goes to, its `admin_user_id` and its RTC route, if any. Throws,
    * prefixed with `op`, on a serial the device list does not carry and on a record stating no admin id.
    */
   private async stationReadTarget(
@@ -2369,7 +2351,7 @@ export class EufyMega extends EventEmitter {
     if (!found.station) throw new Error(`${op}: ${station} is not in the device list`);
     const accountId = this.adminUserIdOf(station);
     if (!accountId) throw new Error(`${op}: no admin_user_id on record for ${station}`);
-    return { station, accountId, route: found.t9000 ? this.rtcRouteFor(station) : undefined };
+    return { station, accountId, route: this.rtcRouteFor(station) };
   }
 
   /** The station's own `admin_user_id`, which its database refuses the query without. */
@@ -2568,11 +2550,7 @@ export class EufyMega extends EventEmitter {
         ? await this.fetchDpCatalog(rec.model)
         : undefined;
     const rtcRoute = this.rtcRouteFor(sn);
-    const refusedCommandKinds: ReadonlySet<Command["kind"]> | undefined = !rtcRoute
-      ? undefined
-      : rtcRoute.mediaTrack
-        ? PORTAL_COMMAND_KINDS
-        : RTC_CONTROL_REFUSED_KINDS;
+    const refusedCommandKinds = rtcRoute ? RTC_CONTROL_REFUSED_KINDS : undefined;
     return {
       channel,
       timezone: recordString(parentRaw ?? {}, "time_zone"),

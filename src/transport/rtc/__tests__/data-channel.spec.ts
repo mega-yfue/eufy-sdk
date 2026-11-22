@@ -1,7 +1,8 @@
 import { createCipheriv, createDecipheriv } from "node:crypto";
 import { crc32 } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
-import { RtcDataChannel, cmdGcm, readLinkMessage, wrtcLink } from "../data-channel.js";
+import { RtcDataChannel, cmdGcm, kcpMulti, readLinkMessage, wrtcLink } from "../data-channel.js";
+import { mediaGcm } from "../pm-live.js";
 import { Kcp } from "../kcp.js";
 
 const KEY = "0123456789abcdefXYZ";
@@ -139,5 +140,18 @@ describe("RtcDataChannel commands", () => {
     expect([cmdGcm("T9000P0000000000", 4099), cmdGcm("T9000P0000000000", 4100)]).toEqual([false, true]);
     expect([cmdGcm("T8N00P0000000000", 1150), cmdGcm("T8N00P0000000000", 1205)]).toEqual([true, false]);
     expect([cmdGcm("T8025P0000000000", 9999), cmdGcm("T8410P0000000000", 1)]).toEqual([false, true]);
+  });
+
+  it("splits the media GCM gate from the command one where the app's differ", () => {
+    expect([mediaGcm("T8223P0000000000", 1), cmdGcm("T8223P0000000000", 1)]).toEqual([true, false]);
+    expect([mediaGcm("T8172P0000000000", 1021), cmdGcm("T8172P0000000000", 1021)]).toEqual([true, false]);
+    expect([mediaGcm("T9000P0000000000", 4099), mediaGcm("T9000P0000000000", 4100)]).toEqual([false, true]);
+  });
+
+  it("picks the PRIV1 KCP type off the webrtc_sdk_version as file_agent_get_kcp_type does", () => {
+    expect([kcpMulti("T9000P0000000000", "9.1.1"), kcpMulti("T9000P0000000000", "0.1.2")]).toEqual([false, true]);
+    expect([kcpMulti("T8223P0000000000", "6.1.2"), kcpMulti("T8223P0000000000", "1.2.0")]).toEqual([false, true]);
+    expect([kcpMulti("T8030P0000000000", "x"), kcpMulti("T9000P0000000000", "x")]).toEqual([false, true]);
+    expect([kcpMulti("T8170P0000000000", "0.0.0"), kcpMulti("T9000P0000000000")]).toEqual([true, true]);
   });
 });

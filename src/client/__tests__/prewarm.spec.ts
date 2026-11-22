@@ -60,6 +60,9 @@ function fleet(): EufyDevice[] {
 function makeClient(opts: Record<string, unknown> = {}, devices: EufyDevice[] = fleet()) {
   const eufy = new EufyMega({ email: "t@example.com", password: "x", ...opts });
   vi.spyOn((eufy as any).registry, "list").mockReturnValue(devices);
+  vi.spyOn((eufy as any).registry, "thingsOf").mockImplementation((sn: unknown) =>
+    String(sn).startsWith("T9000") ? { properties: { is_connect_webrtc: { defaultValue: "2" } } } : undefined,
+  );
   const prewarm = vi.spyOn((eufy as any).p2p, "prewarm").mockResolvedValue(undefined);
   const fire = (event: string, deviceSn: string) => (eufy as any).prewarmForEvent(event, deviceSn);
   return { eufy, prewarm, fire };
@@ -161,7 +164,7 @@ describe("event pre-warm policy", () => {
     expect(c.prewarm).not.toHaveBeenCalled();
   });
 
-  /** A HomeBase S1 Pro answers no P2P lookup; a camera behind one is reached over RTC, never P2P. */
+  /** A HomeBase S1 Pro is connected natively by the app; a camera behind one is reached over RTC, never P2P. */
   it("declines a camera behind a HomeBase S1 Pro (T9000)", () => {
     const s1Pro = "T9000P0000000000";
     const s1ProChild = "T8000P0000000004";
@@ -174,7 +177,12 @@ describe("event pre-warm policy", () => {
         model: "T9000",
         deviceClass: "homebase",
         stationSn: s1Pro,
-        raw: { device_type: DeviceType.STATION_9000 },
+        raw: {
+          device_type: DeviceType.STATION_9000,
+          p2p_did: "SYNTH-000000-AAAAA",
+          p2p_license: "SYNLIC",
+          signaling_servers: ["https://192.0.2.7"],
+        },
       },
       { ...common, sn: s1ProChild, model: "T8199", deviceClass: "camera", stationSn: s1Pro, raw: { parent_sn: s1Pro } },
     ] as unknown as EufyDevice[];

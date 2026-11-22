@@ -303,15 +303,6 @@ function tokenRejected(code: number | undefined, msg: string | undefined): boole
 }
 
 /**
- * The shard a mega domain names: its regional prefix (`…-ie-…` / `…-ie.` → `ie-pr`), or `undefined` when it
- * names none.
- */
-function shardOfDomain(domain: string): string | undefined {
-  const m = /-([a-z]{2})(?:[.-]|$)/i.exec(domain);
-  return m ? `${m[1].toLowerCase()}-pr` : undefined;
-}
-
-/**
  * {@link MegaHttpClient.postSigned}'s bookkeeping for the two recoveries it performs on itself, so each is
  * attempted once per call rather than once per rejection.
  * @internal
@@ -346,12 +337,8 @@ const CLOUD_MODULE_HOSTS: Readonly<Record<string, string>> = {
 export class MegaHttpClient {
   private readonly cfg: Required<Pick<MegaClientConfig, "appName" | "appVersion" | "countryCode">> & MegaClientConfig;
   private region: RegionShard;
-  /** The host `estimate_domain` answered, persisted with the session. */
-  private estimatedDomain = "";
   /** `product_domains.eufy_security` of the last `estimate_domain` reply, `undefined` before one was seen. */
   private securityDomain?: string;
-  /** The in-flight (then settled, so cached) RTC-sign shard request from {@link portalShard}. */
-  private portalShardInFlight?: Promise<string>;
   private bootstrapDomain?: string;
   private sessionKey?: SessionEntry;
   /** Per-host ECDH session keys for non-mega gateways (e.g. eufylife) keyed by host. */
@@ -455,7 +442,6 @@ export class MegaHttpClient {
       return undefined;
     }
     this.region = saved.region;
-    this.estimatedDomain = saved.estimatedDomain ?? "";
     this.securityDomain = saved.securityDomain;
     this.auth_ = {
       userId: saved.userId,
@@ -489,50 +475,6 @@ export class MegaHttpClient {
   /** The account's country code as configured (e.g. `"FR"`), the one logins are sent with. */
   get countryCode(): string {
     return this.cfg.countryCode;
-  }
-
-  /**
-   * The shard the estimated domain names (`…-ie-…`/`…-ie.` → `ie-pr`), else {@link regionShard}. The
-   * eu/us classification cannot name shards like `ie-pr`.
-   */
-  get rtcShard(): string {
-    return shardOfDomain(this.estimatedDomain) ?? this.region;
-  }
-
-  /**
-   * The shard the RTC signalling signs on, from `estimate_domain` asked with the portal's WEB identity
-   * (`Model-Type: WEB`, `App-Name: eufy_mega`) — the identity the sign itself is sent with, which can name
-   * a different shard than the PHONE identity does for one account. The in-flight request is shared by
-   * concurrent first callers, and once it settles to a shard the resolved promise is the cache; a call
-   * that fails or names no shard answers {@link rtcShard}, clears the field and is asked again next time.
-   */
-  async portalShard(): Promise<string> {
-    return (this.portalShardInFlight ??= this.fetchPortalShard());
-  }
-
-  private async fetchPortalShard(): Promise<string> {
-    try {
-      const res = await this.estimateDomainRequest({ "Model-Type": "WEB", "App-Name": "eufy_mega" });
-      const domain = (res.data as ApiEnvelope<Record<string, unknown>>)?.data?.domain;
-      const shard = typeof domain === "string" ? shardOfDomain(domain) : undefined;
-      if (shard) {
-        this.logger.debug("[mega] portal shard:", shard);
-        return shard;
-      }
-    } catch (e) {
-      this.logger.debug("[mega] portal estimate_domain failed:", e instanceof Error ? e.message : String(e));
-    }
-    this.portalShardInFlight = undefined;
-    return this.rtcShard;
-  }
-
-  /**
-   * The credentials the RTC signalling needs; `undefined` while logged out. The sign is refused
-   * ("gtoken not equal userid") unless its gtoken is the one every authed HTTP call carries.
-   */
-  rtcIdentity(): { authToken: string; userId: string; gtoken: string } | undefined {
-    if (!this.auth_) return undefined;
-    return { authToken: this.auth_.authToken, userId: this.auth_.userId, gtoken: gtoken(this.gtokenUserId()) };
   }
 
   /**
@@ -628,23 +570,17 @@ export class MegaHttpClient {
     return { status: res.status, data: parseMaybeJson(await res.text()) };
   }
 
-  /** POST `estimate_domain` with the given identity headers. */
-  private estimateDomainRequest(headers: Record<string, string>) {
-    return this.httpPost(
-      `https://mega-${this.region}.eufy.com/passport/estimate_domain`,
-      { ab: this.cfg.countryCode.toLowerCase(), mode: 1 },
-      { ...headers, "content-type": "application/json" },
-    );
-  }
-
   /** Step 1: discover the account's region shard (and the bootstrap host). */
   async estimateDomain(): Promise<void> {
-    const res = await this.estimateDomainRequest(this.baseHeaders());
+    const res = await this.httpPost(
+      `https://mega-${this.region}.eufy.com/passport/estimate_domain`,
+      { ab: this.cfg.countryCode.toLowerCase(), mode: 1 },
+      { ...this.baseHeaders(), "content-type": "application/json" },
+    );
     this.logger.debug("[mega] estimate_domain raw:", JSON.stringify(res.data).slice(0, 400));
     const env = res.data as ApiEnvelope<Record<string, unknown>>;
     const d = env?.data ?? {};
     const domain = (d.domain ?? d.host ?? d.server_secret_info ?? "") as string;
-    this.estimatedDomain = domain;
     const products = d.product_domains as Record<string, unknown> | undefined;
     this.securityDomain = typeof products?.eufy_security === "string" ? products.eufy_security : "";
     const blob = JSON.stringify(d);
@@ -1561,7 +1497,6 @@ export class MegaHttpClient {
       geoKey: this.auth_.geoKey,
       region: this.region,
       countryCode: this.cfg.countryCode,
-      estimatedDomain: this.estimatedDomain,
       securityDomain: this.securityDomain,
       openudid: this.openudid,
       phoneModel: this.phoneModel,
