@@ -7,6 +7,7 @@
  * @module model/capabilities/bundle
  */
 import { asBool, isStationSerial } from "../../core/util.js";
+import { encodeVarint, RawDpWriter } from "../../core/raw-dp-writer.js";
 import { aiotDp, setJson, setJsonRaw, setPayload, setScalar, setStationScalar } from "./access.js";
 import type { AvailabilityContext, CommandContext } from "./types.js";
 import { reflectCommand, type Command, type LiveFrames, type SessionFrame } from "../../core/contracts.js";
@@ -578,17 +579,86 @@ function sessionCommand(
   return undefined;
 }
 
+/** A protobuf varint at `i` of `b`: its value and the index after it, `undefined` past the end. */
+function varintAt(b: Uint8Array, i: number): [number, number] | undefined {
+  for (let n = 0, k = 0; i < b.length && k < 10; k++) {
+    const byte = b[i++]!;
+    n += (byte & 0x7f) * 2 ** (7 * k);
+    if (byte < 0x80) return [n, i];
+  }
+  return undefined;
+}
+
+/**
+ * Protobuf body `b` with the field at each path of `sets` (`.`-joined field numbers, `n:i` the i-th repeat of
+ * `n`, as the generator decodes) set as the bundles' google-protobuf writes it: a number or boolean as a varint,
+ * anything in a length-delimited field as its text, a zero, `false` or `""` left out (proto3) with the messages
+ * around it kept; every other byte as is. `undefined` for bytes that are not a message, a path not in them, or a
+ * value its field cannot carry.
+ */
+function setProto(b: Uint8Array, sets: ReadonlyMap<string, unknown>): number[] | undefined {
+  const out: number[] = [];
+  const seen = new Map<number, number>();
+  let hit = 0;
+  for (let i = 0; i < b.length;) {
+    const tag = varintAt(b, i);
+    if (!tag) return undefined;
+    const [field, wire] = [Math.floor(tag[0] / 8), tag[0] % 8];
+    const len = wire === 2 ? varintAt(b, tag[1]) : undefined;
+    const fixed = wire === 1 ? 8 : wire === 5 ? 4 : undefined;
+    const end = wire === 0 ? varintAt(b, tag[1])?.[1] : len ? len[0] + len[1] : fixed && tag[1] + fixed;
+    if (end === undefined || end > b.length) return undefined;
+    const n = seen.get(field) ?? 0;
+    seen.set(field, n + 1);
+    const key = n ? `${field}:${n}` : String(field);
+    const inner = new Map(
+      [...sets].flatMap(([p, v]) => (p.startsWith(`${key}.`) ? [[p.slice(key.length + 1), v]] : [])),
+    );
+    const v = sets.get(key);
+    // ponytail: a negative int32 (ten bytes in google-protobuf) is not written; add it when a template takes one.
+    const x = Number(v);
+    const w = new RawDpWriter();
+    if (inner.size) {
+      const body = len && setProto(b.subarray(len[1], end), inner);
+      if (!body) return undefined;
+      w.bytes(field, body);
+      hit += inner.size;
+    } else if (!sets.has(key)) out.push(...b.subarray(i, end));
+    else if (wire === 0 && Number.isSafeInteger(x) && x >= 0) {
+      if (x) w.int(field, x);
+      hit++;
+    } else if (wire === 2) {
+      if (String(v)) w.bytes(field, Buffer.from(String(v)));
+      hit++;
+    } else return undefined;
+    out.push(...w.toBytes());
+    i = end;
+  }
+  return hit === sets.size ? out : undefined;
+}
+
 /**
  * A templated data-point value with its fields set as the app sets them per write, each from a token:
  * `$now` the epoch ms (a number), any other filled by `fill` (`$sn`, `$input.<key>`, …); the field `""` is
- * the whole value. The value is a JSON object, as is or hex-encoded (`hex-json`); `undefined` for any other
- * value, a protobuf among them, whose fields cannot be set without its schema, or a token with no value.
+ * the whole value. The value is a JSON object, as is or hex-encoded (`hex-json`), or a protobuf ({@link setProto})
+ * in its frame's framing: bare hex (`hex`), behind its varint length in hex (`hex-len`) or base64. `undefined`
+ * for any other value, or a token with no value.
  */
 function templated(frame: BundleFrame, value: unknown, fill: (x: unknown) => unknown): unknown {
   const fields = objectOf(frame.template);
   if (!fields) return undefined;
   const set = (token: unknown) => (token === "$now" ? Date.now() : fill(token));
   if ("" in fields) return set(fields[""]);
+  if (["hex", "hex-len", "base64"].includes(frame.encoding!) && typeof value === "string") {
+    const b64 = frame.encoding === "base64";
+    const raw = Buffer.from(value, b64 ? "base64" : "hex");
+    const len = frame.encoding === "hex" ? [0, 0] : varintAt(raw, 0);
+    const sets = new Map(Object.entries(fields).map(([k, t]) => [k, set(t)]));
+    if (!len || (len[1] && len[0] + len[1] !== raw.length) || [...sets.values()].includes(undefined)) return undefined;
+    const body = setProto(raw.subarray(len[1]), sets);
+    const framed = body && (len[1] ? [...encodeVarint(body.length), ...body] : body);
+    return framed && Buffer.from(framed).toString(b64 ? "base64" : "hex");
+  }
   const hex = frame.encoding?.startsWith("hex") && typeof value === "string";
   const object = parse(hex ? Buffer.from(value as string, "hex").toString("utf8") : value);
   if (!object) return undefined;
@@ -661,7 +731,7 @@ function cloudCommand(frame: BundleFrame, fill: (x: unknown) => unknown): Comman
 
 /**
  * The {@link Command} a bundle frame is for `value` on this device, its tokens filled: `$value`, `$channel`
- * (the device channel, 255 for a station), `$now` (epoch ms, a string), `$nowS` (epoch seconds), `$input.<key>` (a key of
+ * (the device channel, 255 for a station), `$now` (epoch ms, a string), `$nowS` (epoch seconds), `$seq` (the bundles' `getRandom`, 1000–9999), `$input.<key>` (a key of
  * the written value, a JSON object), `$sn` (the device serial) and `$station` (its
  * station's), `$param:…` (the device's cached param, {@link BundleFrame}), `$userId` left to the transport, which fills the user id (an `account_id` key left out: the envelope's), then `{"$b64": <template>}` the filled template as base64 JSON, then the frames after it as `next`. `undefined` for a frame no builder can carry: a `ble`
  * or unknown transport, an `mqtt` one its builder refuses, an unknown body, a seal other than `ecb` or on a non-JSON body, a scalar with no integer value, a bare JSON
@@ -674,6 +744,7 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
     $channel: isStationSerial(ctx.serial ?? "") ? 255 : ctx.channel,
     $now: String(Date.now()),
     $nowS: Math.floor(Date.now() / 1000),
+    $seq: Math.floor(1e3 + 9e3 * Math.random()),
     $sn: ctx.serial,
     $station: ctx.stationSerial ?? ctx.serial,
   };

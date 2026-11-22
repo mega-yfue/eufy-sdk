@@ -1,4 +1,5 @@
-import { thingRead, thingWrite, type BundleFrame } from "../bundle.js";
+import { frameCommand, thingRead, thingWrite, type BundleFrame } from "../bundle.js";
+import { byteCodec } from "./proto-bytes.js";
 import type { ThingDescription, ThingProperty } from "../thing-description.js";
 import type { CommandContext } from "../types.js";
 import DATA from "../bundle-wires.generated.json" with { type: "json" };
@@ -436,5 +437,58 @@ describe("named transforms, as the parsers apply them", () => {
     expect(
       write("video_setting_image_effect_set", "T8172", { brightness: 101, contrast: 1, saturation: 1, chrome: 1 }),
     ).toBeUndefined();
+  });
+});
+
+describe("a templated protobuf data point", () => {
+  const PROTO = ["hex", "hex-len", "base64"];
+  const protos = data.frames!.filter((f) => PROTO.includes(f.encoding!) && f.template);
+  /** The varint or text at `path` (`n:i` the i-th repeat of `n`) of the frame's message. */
+  const leaf = (f: BundleFrame, path: string) => {
+    const v = f.value as string;
+    let fields =
+      f.encoding === "hex"
+        ? byteCodec.nested(Buffer.from(v, "hex"))
+        : byteCodec.decode(f.encoding === "base64" ? v : Buffer.from(v, "hex").toString("base64"));
+    let hit;
+    for (const key of path.split(".")) {
+      const [n, i = 0] = key.split(":").map(Number);
+      hit = fields?.filter((x) => x.field === n)[i!];
+      fields = hit?.kind === "bytes" ? byteCodec.nested(hit.value) : undefined;
+    }
+    return hit?.kind === "int" ? Number(hit.value) : hit?.value.toString("utf8");
+  };
+  const ctx = { channel: 0, paramIds: new Set<number>() } as unknown as CommandContext;
+
+  it("re-encodes every one of the data byte for byte, its fields set to what they hold", () => {
+    expect(protos.length).toBe(216);
+    for (const f of protos) {
+      const input: Record<string, unknown> = {};
+      for (const [path, token] of Object.entries(f.template as Record<string, string>)) {
+        const v = leaf(f, path);
+        if (token === "$seq") vi.spyOn(Math, "random").mockReturnValue(((v as number) - 1000) / 9000);
+        else input[token.slice("$input.".length)] = v;
+      }
+      const value = f.encoding === "base64" ? f.value : Buffer.from(f.value as string, "hex").toString("base64");
+      expect(frameCommand(f, JSON.stringify(input), ctx), JSON.stringify(f)).toEqual({
+        kind: "aiot-dp",
+        dp: f.dp,
+        value,
+      });
+    }
+  });
+  it("sets T2070's custom fan and water as its bundle builds it, a false leaving its message empty", () => {
+    const f = frameOf(data.wires.ecl_custom_fan_water!["T2070 T2071 T2081 T2280 T2351"]!.write!.standalone!["*"]!);
+    // The bundle's `controlDevice` answers for {seq, mapId, isCleaningScheduledTask, isEnable: 1, smartMode: 1}.
+    expect(frameCommand(f, '{"seq":7,"mapId":3,"isCleaningScheduledTask":false}', ctx)).toEqual({
+      kind: "aiot-dp",
+      dp: 170,
+      value: "DAgFEAcYA1IEIgIIAQ==",
+    });
+    expect(frameCommand(f, '{"seq":300,"mapId":2,"isCleaningScheduledTask":true}', ctx)).toEqual({
+      kind: "aiot-dp",
+      dp: 170,
+      value: "DwgFEKwCGAJSBiICCAEoAQ==",
+    });
   });
 });
