@@ -6,9 +6,7 @@
  * PM call of its own ({@link pmIce}, {@link RtcPmLiveStream}). Both seal under the station's one
  * {@link RtcCommandCounter}.
  *
- * `set-payload` rides `1350`, JSON `{account_id, cmd, mValue3, payload}`; `set-json` rides `1700`, JSON
- * `{account_id, cmd, commandType, data}`; on channel 255 for the station, the device's own channel for an attached
- * one. Other command kinds are refused. A command waits for the data channel in 20 ms steps, as the app's
+ * Commands go as the app's RTC sender frames them ({@link RtcCommandRouter.dispatchCommand}). A command waits for the data channel in 20 ms steps, as the app's
  * `getRtcFileChannelConnectedStatus` wait does, and settles on its reply, which is not an observation of the
  * resulting state. A wait that runs out drops the data channel (or, before login, the station), so the next command
  * starts over.
@@ -40,6 +38,7 @@ import {
 } from "../p2p/database-wire.js";
 import { openReadableFromConsumer } from "../p2p/readable-egress.js";
 import { SharedLiveSource, attachUnlessAborted } from "../p2p/shared-live-source.js";
+import { buildDirectBinaryBody, setPayloadJson } from "../p2p/write-commands.js";
 import { RtcCallType } from "./call.js";
 import { cmdGcm, kcpMulti, priv1, type RtcCommandCounter, type RtcDataChannel } from "./data-channel.js";
 import { pmIce } from "./ice.js";
@@ -106,13 +105,35 @@ class StationStreamBusyError extends Error {
   }
 }
 
-/** The command kinds the data channel frames — `set-payload` over `1350`, `set-json` over `1700`. */
-export const RTC_CONTROL_COMMAND_KINDS: ReadonlySet<Command["kind"]> = new Set<Command["kind"]>([
-  "set-payload",
-  "set-json",
-]);
-const isRtcControlCommand = (cmd: Command): cmd is Extract<Command, { kind: "set-payload" | "set-json" }> =>
-  RTC_CONTROL_COMMAND_KINDS.has(cmd.kind);
+/**
+ * The app's RTC sender (`cmd_sender_send_command`) frames a native command by its id, over the same ids and groups
+ * as its P2P sender: `A` `[u32 channel][u32 value][account_id → 128]` on the device channel, `B` `[u32 value]
+ * [account_id → 128]` on 255, `C` that on the device channel, `I` `[u32 channel][u32 value]` on the device channel,
+ * `J` `[u32 value][u32 value_sub]` on 255, `E` the JSON text (on the device channel for 1204, 1271 and 1350, else
+ * 255). Every other id is framed some other way, sent nowhere, or not implemented (-103).
+ */
+const NATIVE_GROUPS: Record<string, readonly number[]> = {
+  A: [
+    1011, 1015, 1017, 1019, 1035, 1045, 1056, 1145, 1146, 1152, 1200, 1207, 1210, 1213, 1214, 1226, 1227, 1229, 1230,
+    1233, 1236, 1240, 1241, 1243, 1246, 1272, 1273, 1275, 1400, 1401, 1402, 1403, 1408, 1409, 1410, 1412, 1413, 1506,
+    1507, 1607, 1609, 1610, 1611, 1702, 1703, 1704, 1705, 1706, 1707, 1708, 1709,
+  ],
+  B: [
+    1029, 1034, 1036, 1043, 1057, 1203, 1218, 1219, 1220, 1221, 1222, 1223, 1224, 1232, 1234, 1235, 1237, 1238, 1248,
+    1253, 1257, 1269, 1800,
+  ],
+  C: [1249, 1250, 1251, 1252, 9258],
+  E: [1060, 1204, 1254, 1255, 1256, 1258, 1259, 1260, 1261, 1262, 1264, 1271, 1350, 1404],
+  I: [1013, 1202, 1205, 1206],
+  J: [1026, 1164, 1201],
+};
+const nativeGroup = (id: number) => Object.keys(NATIVE_GROUPS).find((g) => NATIVE_GROUPS[g]!.includes(id));
+const JSON_ON_DEVICE_CHANNEL = [1204, 1271, 1350];
+
+/** The command kinds the data channel cannot frame as the app does: the string body carries the app's ECC block. */
+export const RTC_REFUSED_COMMAND_KINDS: ReadonlySet<Command["kind"]> = new Set<Command["kind"]>(["p2p-string"]);
+
+const u32s = (...v: number[]) => Buffer.from(new Uint32Array(v.map((x) => x >>> 0)).buffer);
 
 export class RtcCommandRouter {
   private readonly stations = new Map<string, Station>();
@@ -121,20 +142,67 @@ export class RtcCommandRouter {
 
   constructor(private readonly deps: RtcCommandRouterDeps) {}
 
+  /**
+   * Send a command as the app's RTC sender frames it: `set-payload` as `1350` ({@link setPayloadJson}), `set-json` as
+   * `1700` `{commandType, data}`, both on 255 for the station and the device's channel for an attached one; the native
+   * kinds by their id's group in {@link NATIVE_GROUPS}. Refused: a kind or id the app's RTC sender does not frame, a
+   * lock-sealed payload, a payload with a header counter.
+   */
   async dispatchCommand(route: RtcRoute, cmd: Command): Promise<void> {
-    if (!isRtcControlCommand(cmd))
-      throw new Error(`rtc: ${cmd.kind} is not routable over the RTC data channel (only set-payload or set-json)`);
-    const account_id = this.accountId(route);
-    const json =
-      cmd.kind === "set-json"
-        ? { account_id, cmd: cmd.param, commandType: cmd.param, data: cmd.data }
-        : { account_id, cmd: cmd.cmd, mValue3: cmd.mValue3 ?? 0, payload: cmd.payload };
+    const { id, body, channel } = this.frame(route, cmd);
     const data = await this.dataChannel(route);
-    await data.command(
-      cmd.kind === "set-json" ? 1700 : 1350,
-      JSON.stringify(json),
-      route.attached ? cmd.channel : STATION_CHANNEL,
-    );
+    await data.command(id, body, channel);
+  }
+
+  private frame(route: RtcRoute, cmd: Command): { id: number; body: string | Buffer; channel: number } {
+    const own = (channel: number) => (route.attached ? channel : STATION_CHANNEL);
+    switch (cmd.kind) {
+      case "set-json":
+        return {
+          id: 1700,
+          body: JSON.stringify({ commandType: cmd.param, data: cmd.data }),
+          channel: own(cmd.channel),
+        };
+      case "set-payload": {
+        if (cmd.lock || cmd.counter) break;
+        const { channel, mValue3, unzip } = cmd;
+        const body = setPayloadJson(cmd.cmd, cmd.payload, {
+          accountId: this.accountId(route),
+          channel,
+          mValue3,
+          unzip,
+        });
+        return { id: 1350, body, channel: own(channel) };
+      }
+      case "set-json-raw": {
+        if (nativeGroup(cmd.cmd) !== "E") break;
+        const body = JSON.stringify({ account_id: this.accountId(route), ...cmd.data });
+        return { id: cmd.cmd, body, channel: JSON_ON_DEVICE_CHANNEL.includes(cmd.cmd) ? cmd.channel : STATION_CHANNEL };
+      }
+      case "p2p-int-string": {
+        const { cmd: id, form, value, channel } = cmd;
+        if (form && nativeGroup(id) === "J") return { id, body: u32s(cmd.valueSub, value), channel: STATION_CHANNEL };
+        if (!form && nativeGroup(id) === "I") return { id, body: u32s(channel, value), channel };
+        break;
+      }
+      case "set-param":
+      case "p2p-station-scalar": {
+        const { value, channel } = cmd;
+        const id = cmd.kind === "set-param" ? cmd.param : cmd.cmd;
+        const group = nativeGroup(id);
+        if (group === "I") return { id, body: u32s(channel, value), channel };
+        if (cmd.kind === "set-param" && cmd.form) break;
+        if (group === "A") return { id, body: buildDirectBinaryBody(value, this.accountId(route), channel), channel };
+        if (group === "B" || group === "C")
+          return {
+            id,
+            body: buildDirectBinaryBody(value, this.accountId(route)),
+            channel: group === "B" ? STATION_CHANNEL : channel,
+          };
+      }
+    }
+    const id = "cmd" in cmd ? cmd.cmd : "param" in cmd ? cmd.param : "";
+    throw new Error(`rtc: ${cmd.kind} ${id} is not framed by the app's RTC sender`);
   }
 
   /**
@@ -277,7 +345,7 @@ export class RtcCommandRouter {
     const timeoutMs = opts.timeoutMs ?? DB_TABLE_TIMEOUT_MS;
     const signal = AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(opts.signal ? [opts.signal] : [])]);
     const data = await this.dataChannel(route, opts.signal);
-    const json = JSON.stringify({ account_id: this.accountId(route), cmd, mValue3: 0, payload });
+    const json = setPayloadJson(cmd, payload, { accountId: this.accountId(route), channel: STATION_CHANNEL });
     return new Promise<T>((resolve, reject) => {
       const settle = (fn: () => void) => {
         data.off("notify", onNotify).off("close", onClose);

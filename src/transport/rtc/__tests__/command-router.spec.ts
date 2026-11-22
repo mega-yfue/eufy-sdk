@@ -62,10 +62,58 @@ describe("RtcCommandRouter on the native layers", () => {
     await router.dispatchCommand(ROUTE, { kind: "set-payload", cmd: 1214, mValue3: 0, payload: { x: 1 }, channel: 3 });
     expect(data.command).toHaveBeenCalledExactlyOnceWith(
       1350,
-      JSON.stringify({ account_id: "synthetic-admin", cmd: 1214, mValue3: 0, payload: { x: 1 } }),
+      JSON.stringify({ account_id: "synthetic-admin", cmd: 1214, mChannel: 3, mValue3: 0, payload: { x: 1 } }),
       3,
     );
     expect(priv1.mock.calls[0]![1]).toMatchObject({ sn: ROUTE.stationSn, version: 4100, flag: 3 });
+    router.close();
+  });
+
+  it("frames the native kinds as the app's RTC sender groups their ids", async () => {
+    const { router, data } = layers();
+    const account = Buffer.alloc(128);
+    account.write("synthetic-admin");
+    const u32 = (...v: number[]) => Buffer.from(new Uint32Array(v).buffer);
+    await router.dispatchCommand(ROUTE, { kind: "set-param", param: 1035, value: 1, channel: 3 });
+    await router.dispatchCommand(ROUTE, { kind: "p2p-station-scalar", cmd: 1235, value: 7, channel: 3 });
+    await router.dispatchCommand(ROUTE, { kind: "set-param", param: 1250, value: 2, channel: 3 });
+    await router.dispatchCommand(ROUTE, { kind: "set-param", param: 1013, value: 5, channel: 3, form: "int-pair" });
+    await router.dispatchCommand(ROUTE, { kind: "p2p-int-string", cmd: 1202, value: 9, valueSub: 3, channel: 3 });
+    await router.dispatchCommand(ROUTE, {
+      kind: "p2p-int-string",
+      cmd: 1201,
+      value: 4,
+      valueSub: 6,
+      channel: 255,
+      form: "int-pair",
+    });
+    await router.dispatchCommand(ROUTE, { kind: "set-json-raw", cmd: 1271, data: { t: 1 }, channel: 3 });
+    await router.dispatchCommand(ROUTE, { kind: "set-json-raw", cmd: 1255, data: { t: 2 }, channel: 3 });
+    expect(data.command.mock.calls).toEqual([
+      [1035, Buffer.concat([u32(3, 1), account]), 3],
+      [1235, Buffer.concat([u32(7), account]), 255],
+      [1250, Buffer.concat([u32(2), account]), 3],
+      [1013, u32(3, 5), 3],
+      [1202, u32(3, 9), 3],
+      [1201, u32(6, 4), 255],
+      [1271, JSON.stringify({ account_id: "synthetic-admin", t: 1 }), 3],
+      [1255, JSON.stringify({ account_id: "synthetic-admin", t: 2 }), 255],
+    ]);
+    router.close();
+  });
+
+  it("refuses what the app's RTC sender does not frame, before connecting", async () => {
+    const { router, priv1 } = layers();
+    for (const cmd of [
+      { kind: "set-param", param: 1044, value: 1, channel: 3 },
+      { kind: "set-param", param: 1035, value: 1, channel: 3, form: "int-pair" },
+      { kind: "set-json-raw", cmd: 1035, data: {}, channel: 3 },
+      { kind: "p2p-int-string", cmd: 1035, value: 1, valueSub: 3, channel: 3 },
+      { kind: "p2p-string", cmd: 1217, value: "name", channel: 3 },
+      { kind: "set-payload", cmd: 1214, payload: {}, channel: 3, counter: "bump" },
+    ] as const)
+      await expect(router.dispatchCommand(ROUTE, cmd)).rejects.toThrow("not framed by the app's RTC sender");
+    expect(priv1).not.toHaveBeenCalled();
     router.close();
   });
 
