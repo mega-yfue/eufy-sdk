@@ -663,7 +663,7 @@ function cloudCommand(frame: BundleFrame, fill: (x: unknown) => unknown): Comman
  * The {@link Command} a bundle frame is for `value` on this device, its tokens filled: `$value`, `$channel`
  * (the device channel, 255 for a station), `$now` (epoch ms, a string), `$nowS` (epoch seconds), `$input.<key>` (a key of
  * the written value, a JSON object), `$sn` (the device serial) and `$station` (its
- * station's), `$param:…` (the device's cached param, {@link BundleFrame}), `$userId` left to the transport, which fills the user id (an `account_id` key left out: the envelope's), then the frames after it as `next`. `undefined` for a frame no builder can carry: a `ble`
+ * station's), `$param:…` (the device's cached param, {@link BundleFrame}), `$userId` left to the transport, which fills the user id (an `account_id` key left out: the envelope's), then `{"$b64": <template>}` the filled template as base64 JSON, then the frames after it as `next`. `undefined` for a frame no builder can carry: a `ble`
  * or unknown transport, an `mqtt` one its builder refuses, an unknown body, a seal other than `ecb` or on a non-JSON body, a scalar with no integer value, a bare JSON
  * body that is not an object, a data point whose template cannot be set, a cloud call with another method, or a
  * frame after it that is any of these.
@@ -714,7 +714,9 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
       : Array.isArray(x)
         ? x.map(fill)
         : x && typeof x === "object"
-          ? spread(x as Record<string, unknown>)
+          ? "$b64" in x
+            ? Buffer.from(JSON.stringify(fill(x.$b64))).toString("base64")
+            : spread(x as Record<string, unknown>)
           : x;
   // `"$input": "..."` (`"...|weekDays"`): the parser passes the host's object through there, so it is spread in.
   const spread = (o: Record<string, unknown>) => {
