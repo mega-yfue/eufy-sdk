@@ -716,6 +716,45 @@ describe("the regenerated data's forms", () => {
     expect(read("{}"), "no list: as is").toBe("{}");
   });
 
+  it("writes a zone as the device's ZoneInfo: each 0-1 point x1000 rounded up from .5, its rect's bounds, the index as is", () => {
+    const pots = [
+      {
+        points: [
+          { x: 0.1, y: 0.2 },
+          { x: 0.6, y: 0.15 },
+          { x: 0.7, y: 1 },
+          { x: 0.05, y: 0.75 },
+        ],
+      },
+    ];
+    const sent = (zone: object) => thingWrite("activityzone_config", JSON.stringify(zone), ctx("T8425"));
+    expect(sent({ index: 2, pots: [...pots, { points: [{ x: 0, y: 0 }] }] })).toMatchObject({
+      cmd: 6201,
+      payload: {
+        activezone: {
+          account: "$userId",
+          DetSensitivity: 0,
+          MoveDetStatus: 1,
+          Normalized: 0,
+          zonecount: 1,
+          polygens: [
+            {
+              points: [
+                { x: 101, y: 201 },
+                { x: 601, y: 151 },
+                { x: 701, y: 1000 },
+                { x: 51, y: 751 },
+              ],
+            },
+          ],
+          points: [{ LeftPointX: 51, LeftPointY: 151, RightPointX: 701, RightPointY: 1000 }],
+        },
+        index: 2,
+      },
+    });
+    expect(sent({ index: 0 }), "no pots: the bundle throws").toBeUndefined();
+  });
+
   it("reads the response-timeout schedule as the bundle re-stringifies it, a looping one unwrapped", () => {
     const read = (o: unknown) =>
       thingRead("device_response_timeout_schedule", ctx("T8214"), (p) =>
