@@ -982,6 +982,20 @@ const TRANSFORMS: Record<string, (v: unknown, input: Row, param?: Param) => unkn
   endHhmm: (_, i) => hhmm(i.endHour, i.endMin),
   /** `device_cross_cam_group` (1073): the decoded text without its NULs. */
   stripNul: (v) => String(v).replace(/\0/g, ""),
+  /** `filterCrossCamSensorDevices` (1072): a JSON list re-stringified without the sensors' serials, `"[]"` for a blank text, as is when no list. */
+  crossCamFilter: (v) => {
+    if (typeof v !== "string" || !v.trim()) return "[]";
+    try {
+      const list: unknown = JSON.parse(v);
+      return Array.isArray(list)
+        ? JSON.stringify(
+            list.filter((e) => typeof e !== "string" || !/^T(90[CEFGKMPRS]0|90R1|89[01267]0|8931)/.test(e)),
+          )
+        : v;
+    } catch {
+      return v;
+    }
+  },
 };
 
 /** `x` with every `week` list of plain values as `[{day: <int>}]`, as the bundles' schedule parsers rewrite it. */
