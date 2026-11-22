@@ -467,7 +467,7 @@ describe("frameCommand on the other transports", () => {
         1,
         ctx("T2351"),
       ),
-      "a protobuf",
+      "a path the protobuf lacks",
     ).toBeUndefined();
     expect(
       frameCommand({ transport: "dp", dp: 1, value: {}, template: { seq: "$input.seq" } }, "{}", ctx("T2351")),
