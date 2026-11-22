@@ -456,6 +456,34 @@ export function paddingP2PData(data: Buffer, blocksize = 16): Buffer {
   return out;
 }
 
+const GCM_AAD = Buffer.from("eufy security");
+
+/**
+ * An AES-GCM command body, AES-128 or AES-256 by the key's length, AAD "eufy security", a fresh 12-byte nonce:
+ * `tag(16) ‖ nonce(12) ‖ word(4, LE) ‖ ciphertext`.
+ */
+export function gcmSeal(key: Buffer, plaintext: Buffer, word: number): Buffer {
+  const nonce = randomBytes(12);
+  const c = createCipheriv(key.length === 16 ? "aes-128-gcm" : "aes-256-gcm", key, nonce);
+  c.setAAD(GCM_AAD);
+  const ct = Buffer.concat([c.update(plaintext), c.final()]);
+  const w = Buffer.alloc(4);
+  w.writeUInt32LE(word >>> 0);
+  return Buffer.concat([c.getAuthTag(), nonce, w, ct]);
+}
+
+/** An inbound AES-GCM body `tag(16) ‖ nonce(12) ‖ ciphertext` opened under `key`; `undefined` when it does not open. */
+export function gcmOpen(key: Buffer, body: Buffer): Buffer | undefined {
+  try {
+    const d = createDecipheriv(key.length === 16 ? "aes-128-gcm" : "aes-256-gcm", key, body.subarray(16, 28));
+    d.setAAD(GCM_AAD);
+    d.setAuthTag(body.subarray(0, 16));
+    return Buffer.concat([d.update(body.subarray(28)), d.final()]);
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * The plaintext body of an **int+string** command: `valueSub(u32 LE) ‖ value(u32 LE) ‖ strValue` in the 128-byte-chunk
  * length form ({@link stringWithLength}), omitted when empty. The eufy app's shape for the floodlight/spotlight manual
@@ -480,7 +508,7 @@ export function stringPairCommandBody(strValue: string, strValueSub: string): Bu
 
 /**
  * A command payload around an already sealed (or plaintext) `data`, with its frame fields verbatim:
- * `len(u16) ‖ 0000 ‖ magic(2) ‖ [channel, signCode] ‖ [streamId, 00] ‖ data`.
+ * `len(u32 LE) ‖ magic(2) ‖ [channel, signCode] ‖ [streamId, 00] ‖ data`.
  */
 export function buildRawCommandPayload(
   data: Buffer,
@@ -489,11 +517,10 @@ export function buildRawCommandPayload(
   magic: [number, number] = [0x01, 0x00],
   streamId = 0,
 ): Buffer {
-  const header = Buffer.allocUnsafe(2);
-  header.writeUInt16LE(data.length, 0);
+  const header = Buffer.allocUnsafe(4);
+  header.writeUInt32LE(data.length, 0);
   return Buffer.concat([
     header,
-    Buffer.from([0x00, 0x00]),
     Buffer.from([magic[0] & 0xff, magic[1] & 0xff]),
     Buffer.from([channel & 0xff, signCode & 0xff]),
     Buffer.from([streamId & 0xff, 0x00]),

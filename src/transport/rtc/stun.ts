@@ -33,8 +33,10 @@ export const Attr = {
   TRANSPORT: 0x0019,
   MAPPED: 0x0020,
   PRIORITY: 0x0024,
+  USE_CANDIDATE: 0x0025,
   FINGERPRINT: 0x8028,
   CONTROLLED: 0x8029,
+  CONTROLLING: 0x802a,
 } as const;
 
 export interface StunMessage {

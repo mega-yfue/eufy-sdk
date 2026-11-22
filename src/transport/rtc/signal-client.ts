@@ -29,6 +29,8 @@
  * 7. A station INFO (kind 4) request is answered 200 with its own header: for a session of ours its whole body,
  *    twice 15 ms apart; otherwise the body head, once, on the signalling socket. A PM session reads `sdp` once
  *    (`ice-u`, `ice-p`, `asc`, `vsc`, `sg`, `sgc`) and `candidate`, one per host / srflx / relay.
+ *    A PRIV1 session, once its call drew a 100 or 200, reads `file_candidate` with its `file_candidate_num`; an INFO 200
+ *    on it whose attach, decrypted then base64-decoded, is `{"file_candidate_num": n}` acks our candidate n.
  *    An INFO of ours (kind 4, byte 15 = 0, byte 18 = 1, byte 44 = 1 for a candidate) goes out once on the call socket,
  *    its attach JSON under the session key. The call's ICE reaching connected ends the CALL repeat.
  * 8. Hang-up of a PRIV1 or PM call sends nothing: the session and its socket close.
@@ -114,6 +116,10 @@ export interface RtcSignalEvents {
   /** A PM session's remote description lines, once. */
   sdp: [uuid: string, sdp: RtcRemoteSdp];
   candidate: [uuid: string, candidate: string];
+  /** A PRIV1 session's remote candidate line and its slot number. */
+  fileCandidate: [uuid: string, candidate: string, num: number];
+  /** The station acked our PRIV1 candidate `num`. */
+  fileCandidateAck: [uuid: string, num: number];
 }
 
 export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
@@ -271,10 +277,11 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
     else if (kind === RtcKind.CALL && response) this.onCallAnswer(p.header, p.body);
     else if (kind === RtcKind.ACK && !response) this.send(reply200(p.header, callBodyHead(p.body)));
     else if (kind === RtcKind.INFO && !response) this.onInfo(p.header, p.body);
+    else if (kind === RtcKind.INFO && p.header.readUInt16LE(16) === 200) this.onInfoAck(p.header, p.body);
   }
 
-  /** The decrypted attach JSON of a call body, `{}` when it is absent or unreadable. */
-  private attach(header: Buffer, body: Buffer): Record<string, unknown> {
+  /** The decrypted attach JSON of a call body (base64 text first when `base64`), `{}` when absent or unreadable. */
+  private attach(header: Buffer, body: Buffer, base64 = false): Record<string, unknown> {
     const n = body.readUInt16LE(4);
     let a = body.subarray(RTC_CALL_BODY_LENGTH, RTC_CALL_BODY_LENGTH + n);
     try {
@@ -282,7 +289,8 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
     } catch {
       return {};
     }
-    return jsonObject(readNullTerminatedString(a)) ?? {};
+    const text = readNullTerminatedString(a);
+    return jsonObject(base64 ? Buffer.from(text, "base64").toString() : text) ?? {};
   }
 
   private onCallAnswer(header: Buffer, body: Buffer): void {
@@ -326,8 +334,12 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
     const ok = reply200(header, body);
     this.send(ok, socket);
     setTimeout(() => this.calls.has(uuid) && this.send(ok, socket), 15);
-    if (c.type !== RtcCallType.PM) return;
     const a = this.attach(header, body);
+    if (c.type === RtcCallType.PRIV1) {
+      const { file_candidate: line, file_candidate_num: num } = a;
+      if (c.trying && typeof line === "string" && typeof num === "number") this.emit("fileCandidate", uuid, line, num);
+      return;
+    }
     if (typeof a.sdp === "string" && a.sdp && !c.sdp) {
       c.sdp = true;
       const o = jsonObject(a.sdp);
@@ -344,6 +356,13 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
       c.candidates.add(kind);
       this.emit("candidate", uuid, cand);
     }
+  }
+
+  private onInfoAck(header: Buffer, body: Buffer): void {
+    const uuid = callUuidOf(body);
+    if (this.calls.get(uuid)?.type !== RtcCallType.PRIV1) return;
+    const num = this.attach(header, body, true).file_candidate_num;
+    if (typeof num === "number") this.emit("fileCandidateAck", uuid, num);
   }
 
   private onDiscover(header: Buffer, body: Buffer): void {
