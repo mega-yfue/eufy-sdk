@@ -29,6 +29,8 @@
  * 7. A station INFO (kind 4) request is answered 200 with its own header: for a session of ours its whole body,
  *    twice 15 ms apart; otherwise the body head, once, on the signalling socket. A PM session reads `sdp` once
  *    (`ice-u`, `ice-p`, `asc`, `vsc`, `sg`, `sgc`) and `candidate`, one per host / srflx / relay.
+ *    An INFO of ours (kind 4, byte 15 = 0, byte 18 = 1, byte 44 = 1 for a candidate) goes out once on the call socket,
+ *    its attach JSON under the session key. The call's ICE reaching connected ends the CALL repeat.
  * 8. Hang-up of a PRIV1 or PM call sends nothing: the session and its socket close.
  */
 import { EventEmitter } from "node:events";
@@ -69,7 +71,7 @@ const WORK_PROTOCOL = 2;
 const P2P_TYPE: Record<number, string> = { [RtcCallType.PRIV1]: "priv1", [RtcCallType.PM]: "priv_p2p" };
 const SDP_KEYS = ["ice-u", "ice-p", "asc", "vsc", "sg", "sgc"] as const;
 let callCount = 1;
-type RtcRemoteSdp = Record<(typeof SDP_KEYS)[number], string>;
+export type RtcRemoteSdp = Record<(typeof SDP_KEYS)[number], string>;
 
 /**
  * The device record's inputs: hub serial, `p2p_did`, `p2p_license`, first IPv4 `signaling_servers` host; the
@@ -178,6 +180,24 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
     this.calls.set(uuid, c);
     this.repeatCall(c, Date.now());
     return { uuid, ...sdp };
+  }
+
+  /**
+   * An INFO request (kind 4, byte 18 = 1, byte 44 = `flag`, 1 marking a candidate) on the call's socket, attach =
+   * `json` under the session key; nothing once the session is deleted.
+   */
+  info(uuid: string, json: object, flag = 0): void {
+    const c = this.calls.get(uuid);
+    if (!c?.session) return;
+    const header = this.request(RtcKind.INFO, 0, flag);
+    header[18] = 1;
+    const attach = rtcEncrypt(Buffer.from(JSON.stringify(json)), this.sessionKey, header.readUInt32LE(8));
+    this.send(rtcPacket(header, RtcBody.CALL, callBody(uuid, this.contactId, attach)), this.callSocket(c.type));
+  }
+
+  /** The call's ICE reached the app's state 2 (connected): its CALL repeat ends. */
+  connected(uuid: string): void {
+    clearTimeout(this.calls.get(uuid)?.timer);
   }
 
   /** End a call: a PRIV1 or PM hang-up sends nothing, the session and its socket close. */
