@@ -17,9 +17,9 @@ import { decryptP2PData, encryptP2PData, paddingP2PData } from "../p2p/codec.js"
 
 export const RTC_HEADER_LENGTH = 60;
 /** Message kinds (header byte 4). */
-export const RtcKind = { REG: 1, DISCOVER: 9 } as const;
+export const RtcKind = { REG: 1, CALL: 2, ACK: 3, INFO: 4, DISCOVER: 9 } as const;
 /** Body kinds (header byte 41). */
-export const RtcBody = { JSON: 2, PUBKEY: 3, SESSION_KEY: 4, KEEP_ALIVE: 6 } as const;
+export const RtcBody = { JSON: 2, PUBKEY: 3, SESSION_KEY: 4, KEEP_ALIVE: 6, CALL: 7 } as const;
 /** The key string the client decrypts the server's 401 with. */
 export const RTC_DEFAULT_KEY = "&#%@!_eufy_anker";
 /** The client byte (header byte 13) the app writes on every packet. */
