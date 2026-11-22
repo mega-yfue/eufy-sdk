@@ -36,6 +36,7 @@ function fixture(model: string, props: Record<string, string> = {}, record: Reco
     rtc: { dispatchCommand(route: RtcRoute, cmd: Command): Promise<void> };
     p2p: { dispatchCommand(sn: string, cmd: Command): Promise<void> };
     routeCommand(sn: string, cmd: Command): Promise<void>;
+    rtcRouteFor(sn: string): RtcRoute | undefined;
   };
   internals.registry.devices = [
     { sn: HUB, model, raw: { device_type: DeviceType.STATION_9000, ...record } },
@@ -84,7 +85,6 @@ describe("native RTC routing off is_connect_webrtc", () => {
   it.each([
     ["no is_connect_webrtc", {}, RECORD],
     ["is_connect_webrtc 0", { is_connect_webrtc: "0" }, RECORD],
-    ["a sub-device list (T8030, T8025)", { is_connect_webrtc: "1", is_connect_webrtc_sub_device_list: "[]" }, RECORD],
     ["no IPv4 signalling server", { is_connect_webrtc: "2" }, { ...RECORD, signaling_servers: ["https://a.invalid"] }],
     ["no license", { is_connect_webrtc: "2" }, { ...RECORD, p2p_license: "" }],
   ])("keeps a station with %s on P2P", async (_, props, record) => {
@@ -92,6 +92,36 @@ describe("native RTC routing off is_connect_webrtc", () => {
     await internals.routeCommand(HUB, command);
     expect(p2p).toHaveBeenCalledExactlyOnceWith(HUB, command);
     expect(rtc).not.toHaveBeenCalled();
+  });
+
+  describe("a station at 1 with a sub-device list (T8030, T8025)", () => {
+    const sub = (list: string) => ({ is_connect_webrtc: "1", is_connect_webrtc_sub_device_list: list });
+
+    it("sends the station's and a listed child's commands over RTC and keeps the station's P2P connection", async () => {
+      const { internals, rtc, p2p } = fixture("T8030", sub('["T8425"]'));
+      await internals.routeCommand(HUB, command);
+      await internals.routeCommand(CAMERA, command);
+      expect(rtc.mock.calls.map(([r]) => r.attached)).toEqual([false, true]);
+      expect(p2p).not.toHaveBeenCalled();
+      expect(internals.rtcRouteFor(HUB)).toBeUndefined();
+    });
+
+    it("keeps every command on P2P when no child model is listed", async () => {
+      const { internals, rtc, p2p } = fixture("T8030", sub('["T8223"]'));
+      await internals.routeCommand(CAMERA, command);
+      expect(p2p).toHaveBeenCalledOnce();
+      expect(rtc).not.toHaveBeenCalled();
+    });
+
+    it("sends a T8223 child's 1700 1000-1002 and 1004-1006 over RTC and the rest over P2P", async () => {
+      const { internals, rtc, p2p } = fixture("T8025", sub('["T8223"]'));
+      internals.registry.devices[1]!.model = "T8223";
+      const live: Command = { kind: "set-json", param: 1001, data: {}, channel: 3 };
+      const stop: Command = { kind: "set-param", param: 1004, value: 0, channel: 3 };
+      for (const c of [command, live, stop]) await internals.routeCommand(CAMERA, c);
+      expect(rtc.mock.calls.map(([, c]) => c)).toEqual([live, stop]);
+      expect(p2p).toHaveBeenCalledExactlyOnceWith(CAMERA, command);
+    });
   });
 
   it("refuses an attached device whose channel does not resolve back to it, before sending", async () => {

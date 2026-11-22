@@ -1382,7 +1382,9 @@ export class EufyMega extends EventEmitter {
       if (isTuyaVacuum(dev)) return this.tuya.dispatchCommand(sn, cmd);
       return this.mqtt.dispatchCommand(sn, cmd);
     }
-    const route = this.rtcRouteFor(sn);
+    const id = cmd.kind === "set-json" ? 1700 : cmd.kind === "set-payload" ? 1350 : "cmd" in cmd ? cmd.cmd : cmd.param;
+    const sub = cmd.kind === "set-json" ? cmd.param : cmd.kind === "set-payload" ? cmd.cmd : 0;
+    const route = this.rtcRouteFor(sn, { cmd: id, sub, channel: cmd.channel });
     if (route) {
       if (route.attached && this.registry.serialForFrame(route.stationSn, cmd.channel) !== sn)
         return Promise.reject(new Error("RTC command requires an unambiguous attached-device channel"));
@@ -1394,16 +1396,23 @@ export class EufyMega extends EventEmitter {
   /**
    * The RTC route of a device the app connects natively (`DeviceWebrtcKtx.isWebrtc`), read off its station: the
    * station's description reads `is_connect_webrtc` 2, or 1 (`true`) on one listing no
-   * `is_connect_webrtc_sub_device_list` (a T8030 or T8025 listing one stays P2P here), and the station's record
-   * carries what the app's `WebrtcInterceptor` refuses a request without: `p2p_did`, `p2p_license` and an IPv4
-   * `signaling_servers` entry. `undefined` otherwise. The admin id is the station's `member.admin_user_id`.
+   * `is_connect_webrtc_sub_device_list`, and the station's record carries what the app's `WebrtcInterceptor` refuses
+   * a request without: `p2p_did`, `p2p_license` and an IPv4 `signaling_servers` entry. `undefined` otherwise. The
+   * admin id is the station's `member.admin_user_id`.
+   *
+   * A station at 1 with a sub-device list (a T8030 or T8025) keeps its P2P connection, so it has no route without
+   * `send`; with a child model in the list, `send` (the command id, its inner id, its header channel) goes as the
+   * app's `sendCommandByWebrtc` decides: channel 255 and a child other than a T8223 or T8224 over RTC, a T8223 or
+   * T8224 child (`isUglyConnection`, an empty `uglyCommands`) only for 1700 with inner 1000 to 1002 and for 1004 to
+   * 1006.
    */
-  private rtcRouteFor(sn: string): RtcRoute | undefined {
+  private rtcRouteFor(sn: string, send?: { cmd: number; sub: number; channel: number }): RtcRoute | undefined {
     const { target, station, stationSn, raw } = this.stationOf(sn);
     const things = this.registry.thingsOf(stationSn)?.properties;
     const connect = things?.is_connect_webrtc?.defaultValue;
     const level = connect === "true" ? 1 : Number(connect);
-    if (!target || !station || !(level > 1 || (level === 1 && !things?.is_connect_webrtc_sub_device_list)))
+    const list = things?.is_connect_webrtc_sub_device_list?.defaultValue;
+    if (!target || !station || !(level > 1 || (level === 1 && (!list || (send && this.rtcSubSend(sn, list, send))))))
       return undefined;
     const text = (v: unknown) => (typeof v === "string" && v ? v : undefined);
     const host = (Array.isArray(raw.signaling_servers) ? raw.signaling_servers : [])
@@ -1422,6 +1431,21 @@ export class EufyMega extends EventEmitter {
       version: Number(String(raw.main_sw_version ?? "").replace(/\./g, "")) || 0,
       sdkVersion: text(raw.webrtc_sdk_version),
     };
+  }
+
+  /** Whether a station-at-1 sub-device-list command goes RTC — see {@link rtcRouteFor}. */
+  private rtcSubSend(sn: string, list: unknown, send: { cmd: number; sub: number; channel: number }): boolean {
+    let models: unknown;
+    try {
+      models = JSON.parse(String(list));
+    } catch {
+      return false;
+    }
+    const { target, stationSn } = this.stationOf(sn);
+    const children = this.registry.list().filter((d) => d.stationSn === stationSn && d.sn !== stationSn);
+    if (!Array.isArray(models) || !children.some((d) => d.model && models.includes(d.model))) return false;
+    if (send.channel === 255 || sn === stationSn || !["T8223", "T8224"].includes(target?.model ?? "")) return true;
+    return send.cmd === 1700 ? send.sub >= 1000 && send.sub <= 1002 : send.cmd >= 1004 && send.cmd <= 1006;
   }
 
   /**
@@ -2008,7 +2032,7 @@ export class EufyMega extends EventEmitter {
    * disposer; throws for any other station, and while logged out.
    */
   keepStationWarm(stationSn: string): () => void {
-    const route = this.rtcRouteFor(stationSn);
+    const route = this.rtcRouteFor(stationSn, { cmd: 0, sub: 0, channel: 255 });
     if (!route || route.attached) throw new Error(`rtc: ${stationSn} has no warm command session`);
     return this.rtc.keepWarm(route);
   }
@@ -2329,7 +2353,7 @@ export class EufyMega extends EventEmitter {
     if (!found.station) throw new Error(`${op}: ${station} is not in the device list`);
     const accountId = this.adminUserIdOf(station);
     if (!accountId) throw new Error(`${op}: no admin_user_id on record for ${station}`);
-    return { station, accountId, route: this.rtcRouteFor(station) };
+    return { station, accountId, route: this.rtcRouteFor(station, { cmd: 1350, sub: 1306, channel: 255 }) };
   }
 
   /** The station's own `admin_user_id`, which its database refuses the query without. */
