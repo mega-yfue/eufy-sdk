@@ -15,7 +15,7 @@ describe("native bodies", () => {
   it("sends the string body level-2 on a keyed session, level-1 on a keyless one, on channel 255", async () => {
     const keyed = withSends(true);
     await onFakeTime(() => routerWithSession(keyed).dispatchCommand(STATION_SN, rename));
-    expect(keyed.sendRawLevel2Bytes).toHaveBeenCalledWith(buildStringBody(3, "Garden", ACCOUNT_ID), 255, 1217, 8);
+    expect(keyed.sendRawLevel2Bytes).toHaveBeenCalledWith(buildStringBody(3, "Garden", ACCOUNT_ID), 255, 1217);
     const keyless = withSends(false);
     await onFakeTime(() => routerWithSession(keyless).dispatchCommand(STATION_SN, rename));
     expect(keyless.sendRawLevel1Bytes).toHaveBeenCalledWith(buildStringBody(3, "Garden", ACCOUNT_ID), 255, 1217);
@@ -36,7 +36,7 @@ describe("native bodies", () => {
     } as const;
     const keyed = withSends(true);
     await onFakeTime(() => routerWithSession(keyed).dispatchCommand(STATION_SN, command));
-    expect(keyed.sendRawLevel2Bytes).toHaveBeenCalledWith(pair, 255, 1201, 8);
+    expect(keyed.sendRawLevel2Bytes).toHaveBeenCalledWith(pair, 255, 1201);
     expect(keyed.sendIntStringCommand).not.toHaveBeenCalled();
     const keyless = withSends(false);
     await onFakeTime(() => routerWithSession(keyless).dispatchCommand(STATION_SN, command));

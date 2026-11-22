@@ -403,7 +403,6 @@ describe("lock capability — SmartDrop lid", () => {
         payload: { isOpen: 1, userIndex: 0 },
         channel: 0,
         mValue3: 0,
-        level2Sender: "set-payload",
       },
     ]);
     expect(lid.lock).toBeUndefined();

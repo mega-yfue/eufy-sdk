@@ -425,6 +425,7 @@ export class EufyMega extends EventEmitter {
       mega: this.mega,
       onError: (e) => this.reportError(e),
       logger: opts.logger,
+      onListFetched: (devices) => this.getParamsOnRefresh(devices),
     });
     this.p2p = new P2PCommandRouter({
       mega: this.mega,
@@ -1442,6 +1443,21 @@ export class EufyMega extends EventEmitter {
    * session the cloud has rejected REJECTS, with {@link SessionExpiredError}. An empty list would be
    * indistinguishable from an account with no devices.
    */
+  /**
+   * The app's read on every cloud device-list refresh (`securityDeviceListModifier`, `getParamsOnRefresh` on): a
+   * params read over P2P of each root device — a station, or a device on no station — of the security, care and pet
+   * categories that has P2P connection data.
+   */
+  private getParamsOnRefresh(devices: EufyDevice[]): void {
+    for (const dev of devices) {
+      const raw = (dev.raw ?? {}) as Record<string, unknown>;
+      const root = (dev.stationSn ?? dev.sn) === dev.sn;
+      const p2p = !!(dev.p2pDid || raw.app_conn || raw.license || raw.signaling_servers);
+      if (!root || !p2p || !["eufy_security", "eufy_care", "eufy_pet"].includes(dev.category ?? "")) continue;
+      void this.p2p.getParams(dev.sn);
+    }
+  }
+
   async getDevices(): Promise<EufyDevice[]> {
     const devices = await this.registry.getDevices();
     for (const dev of devices) {

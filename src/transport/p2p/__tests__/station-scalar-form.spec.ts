@@ -41,7 +41,7 @@ describe("p2p-station-scalar seal", () => {
       }),
     );
     expect(session.sendRawLevel1Bytes).not.toHaveBeenCalled();
-    expect(session.sendRawLevel2Bytes).toHaveBeenCalledWith(buildDirectBinaryBody(1, ACCOUNT_ID), 255, 1224, 8);
+    expect(session.sendRawLevel2Bytes).toHaveBeenCalledWith(buildDirectBinaryBody(1, ACCOUNT_ID), 255, 1224);
   });
 
   it("no form on a keyed session → level-2 only", async () => {
@@ -55,6 +55,6 @@ describe("p2p-station-scalar seal", () => {
       }),
     );
     expect(session.sendRawLevel1Bytes).not.toHaveBeenCalled();
-    expect(session.sendRawLevel2Bytes).toHaveBeenCalledWith(buildDirectBinaryBody(2, ACCOUNT_ID), 255, 1235, 8);
+    expect(session.sendRawLevel2Bytes).toHaveBeenCalledWith(buildDirectBinaryBody(2, ACCOUNT_ID), 255, 1235);
   });
 });

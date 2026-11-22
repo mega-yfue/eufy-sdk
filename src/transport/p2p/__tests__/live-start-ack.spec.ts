@@ -10,6 +10,7 @@ import {
 } from "../codec.js";
 import { LIVE_TRACE_MESSAGE } from "../live-trace.js";
 import { P2PSession } from "../p2p-session.js";
+import { atSignMode1 } from "./session-fixtures.js";
 
 const STATION_SN = "T8000P0000000000";
 const P2P_DID = "XXXXXXX-000000-XXXXX";
@@ -19,7 +20,7 @@ const ADDRESS = { host: "127.0.0.1", port: 1 };
 const FRAME_BODY_OFFSET = 20;
 
 /**
- * A connected own-session camera whose socket send is captured: the start frame and its retransmission are
+ * A connected own-session camera at sign mode 1 whose socket send is captured: the start frame and its retransmission are
  * what the device would receive, so the assertions read the exact bytes handed to the socket.
  */
 function harness() {
@@ -33,6 +34,7 @@ function harness() {
   };
   target.connectAddress = ADDRESS;
   target.send = send;
+  atSignMode1(session);
   return {
     session,
     send,
