@@ -443,6 +443,13 @@ describe("named transforms, as the parsers apply them", () => {
 describe("a templated protobuf data point", () => {
   const PROTO = ["hex", "hex-len", "base64"];
   const protos = data.frames!.filter((f) => PROTO.includes(f.encoding!) && f.template);
+  /** The standalone frame of `identifier` on the product group listing `product`. */
+  const robot = (identifier: string, product: string) =>
+    frameOf(
+      Object.entries(data.wires[identifier]!).find(([k]) => k.split(" ").includes(product))![1].write!.standalone![
+        "*"
+      ]!,
+    );
   /** The varint or text at `path` (`n:i` the i-th repeat of `n`) of the frame's message. */
   const leaf = (f: BundleFrame, path: string) => {
     const v = f.value as string;
@@ -461,8 +468,10 @@ describe("a templated protobuf data point", () => {
   const ctx = { channel: 0, paramIds: new Set<number>() } as unknown as CommandContext;
 
   it("re-encodes every one of the data byte for byte, its fields set to what they hold", () => {
-    expect(protos.length).toBe(262);
-    for (const f of protos) {
+    // A transformed field (`|<name>`) is set from the host's value, not read back: its own cases below.
+    const plain = protos.filter((f) => !JSON.stringify(f.template).includes("|"));
+    expect(plain.length).toBe(262);
+    for (const f of plain) {
       const input: Record<string, unknown> = {};
       for (const [path, token] of Object.entries(f.template as Record<string, string>)) {
         const v = leaf(f, path);
@@ -490,6 +499,45 @@ describe("a templated protobuf data point", () => {
       kind: "aiot-dp",
       dp: 143,
       value: Buffer.from("08fc2a10032a00", "hex").toString("base64"),
+    });
+  });
+  it("sends a room list as the bundles' repeated {id, order}, from 1 or (T2080A cleaning) from 0", () => {
+    // The bundles' `controlDevice` answers for these inputs.
+    const room = '{"roomIds":[2,5,9],"cleanTimes":2,"mapId":3,"seq":7}';
+    expect(frameCommand(robot("ecl_start_room_clean", "T2070"), room, ctx)).toEqual({
+      kind: "aiot-dp",
+      dp: 152,
+      value: "HAgBEAciFgoECAIQAQoECAUQAgoECAkQAxACGAM=",
+    });
+    expect(frameCommand(robot("ecl_start_room_clean", "T2080A"), room, ctx)).toEqual({
+      kind: "aiot-dp",
+      dp: 152,
+      value: Buffer.from("1a0801100722140a0208020a04080510010a040809100210021803", "hex").toString("base64"),
+    });
+    const order = robot("ecl_custom_order", "T2070");
+    expect(frameCommand(order, '{"selectRooms":[4,1],"mapId":3,"isEnable":true,"seq":7}', ctx)).toEqual({
+      kind: "aiot-dp",
+      dp: 170,
+      value: "GggFEAcYA1ISCgIIARIMCgQIBBABCgQIARAC",
+    });
+    expect(frameCommand(order, '{"selectRooms":[],"mapId":3,"isEnable":false,"seq":7}', ctx)).toEqual({
+      kind: "aiot-dp",
+      dp: 170,
+      value: "DAgFEAcYA1IECgASAA==",
+    });
+    const json = frameCommand(robot("ecl_custom_order", "T2261A"), '{"selectRooms":[4,1],"mapId":3}', ctx) as {
+      value: string;
+    };
+    expect(JSON.parse(Buffer.from(json.value, "base64").toString("utf8"))).toEqual({
+      method: "globalRooms",
+      data: {
+        mapId: 3,
+        property: [
+          { roomId: 4, cleanOrder: 1 },
+          { roomId: 1, cleanOrder: 2 },
+        ],
+      },
+      timestamp: NOW,
     });
   });
   it("sets T2070's custom fan and water as its bundle builds it, a false leaving its message empty", () => {
