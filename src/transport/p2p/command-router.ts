@@ -779,7 +779,7 @@ export class P2PCommandRouter {
     switch (cmd.kind) {
       // ── Intents — the transport picks the encryption level (see resolveScalarParam / setJson). ──
       case "set-param":
-        return (await this.resolveScalarParam(sn, cmd.param, cmd.value, cmd.form)) === true;
+        return (await this.resolveScalarParam(sn, cmd.param, cmd.value, cmd.form, !cmd.unanswered)) === true;
       case "set-json":
         return (
           (await this.routeControl(sn, P2P_ENVELOPE.CONTROL_PAYLOAD, { commandType: cmd.param, data: cmd.data })) ===

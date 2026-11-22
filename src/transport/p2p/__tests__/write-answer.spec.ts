@@ -144,6 +144,15 @@ describe("a level-2 setting write settles on the device's answer", () => {
     expect(error).toBeInstanceOf(CommandResultError);
     expect(error).toMatchObject({ commandId: PARAM, code: undefined, timeoutMs: 30_000 });
   });
+
+  it("sends a write the device returns no code for unread, without waiting", async () => {
+    vi.useFakeTimers();
+    const { router, session } = station();
+    const outcome = router.dispatchCommand(DEVICE_SN, { ...write, unanswered: true });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expect(outcome).resolves.toBe(false);
+    expect(session.sendRawLevel2Bytes).toHaveBeenCalledTimes(5);
+  });
 });
 
 /** A connected session whose socket captures each datagram handed to it. */
