@@ -663,7 +663,7 @@ function cloudCommand(frame: BundleFrame, fill: (x: unknown) => unknown): Comman
  * The {@link Command} a bundle frame is for `value` on this device, its tokens filled: `$value`, `$channel`
  * (the device channel, 255 for a station), `$now` (epoch ms, a string), `$nowS` (epoch seconds), `$input.<key>` (a key of
  * the written value, a JSON object), `$sn` (the device serial) and `$station` (its
- * station's), `$param:…` (the device's cached param, {@link BundleFrame}), a `$userId` key left to the transport, which fills the user id, then the frames after it as `next`. `undefined` for a frame no builder can carry: a `ble`
+ * station's), `$param:…` (the device's cached param, {@link BundleFrame}), `$userId` left to the transport, which fills the user id (an `account_id` key left out: the envelope's), then the frames after it as `next`. `undefined` for a frame no builder can carry: a `ble`
  * or unknown transport, an `mqtt` one its builder refuses, an unknown body, a seal other than `ecb` or on a non-JSON body, a scalar with no integer value, a bare JSON
  * body that is not an object, a data point whose template cannot be set, a cloud call with another method, or a
  * frame after it that is any of these.
@@ -678,13 +678,17 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
     $station: ctx.stationSerial ?? ctx.serial,
   };
   const input = parse(value) ?? {};
-  // `$input.<key>[|weekDays]`: the host's field, its `week` lists as `[{day}]` where the bundle's schedule parser sends that.
+  let unfilled = false;
+  // `$input.<key>[|<transform>]`: the host's field, as the bundle's parser transforms it ({@link TRANSFORMS});
+  // nothing sent where the transform refuses the value, as the parser throws on it.
   const inputOf = (ref: string) => {
     const [key, transform] = ref.split("|");
     const v = input[key!];
-    return transform === "weekDays" ? weekDays(v) : v;
+    if (!transform) return v;
+    const out = TRANSFORMS[transform]?.(v, input);
+    unfilled ||= out === undefined;
+    return out;
   };
-  let unfilled = false;
   const param = (x: string) => {
     const [, id, path, op, m, fallback] =
       /^\$param:(\d+)((?:\.[^.|&?]+)*)(?:(\||&~)(\d+))?(?:\?\?(.*))?$/.exec(x) ?? [];
@@ -715,7 +719,9 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
   // `"$input": "..."` (`"...|weekDays"`): the parser passes the host's object through there, so it is spread in.
   const spread = (o: Record<string, unknown>) => {
     const rest = Object.fromEntries(
-      Object.entries(o).flatMap(([k, v]) => (v === "$userId" || k === "$input" ? [] : [[k, fill(v)]])),
+      Object.entries(o).flatMap(([k, v]) =>
+        (v === "$userId" && k === "account_id") || k === "$input" ? [] : [[k, fill(v)]],
+      ),
     );
     const mark = o["$input"];
     if (typeof mark !== "string" || !mark.startsWith("...")) return rest;
@@ -758,6 +764,60 @@ export function thingWrite(identifier: string, value: string, ctx: CommandContex
         : value);
   return frame && frameCommand(frame, typed, ctx);
 }
+
+const boolInt = (v: unknown) => (v === true || v === 1 || v === "1" || v === "true" ? 1 : 0);
+/** Detection type → its bits, as `doMotionDetectionTypeToCMDValue_NVR_V2` sums them. */
+const NVR_TYPES: Record<number, number> = { 0: 0x30000, 1: 3, 2: 4, 3: 8, 4: 0x8000, 7: 1 << 18 };
+/** The bundles' `calculate`: percentage `r` (0–100) on `[min, max]`, 50 at `center`. */
+const calculate = (min: number, max: number, center: number, r: unknown) => {
+  const n = Number(r);
+  if (!(n >= 0 && n <= 100)) return undefined;
+  return Math.round(n <= 50 ? min + (n / 50) * (center - min) : center + ((n - 50) / 50) * (max - center));
+};
+/** The bundles' `toInt`: an integer, or a string of one, else `d` (NaN, sent as `null`). */
+const toInt = (v: unknown, d = Number.NaN) =>
+  Number.isInteger(v) ? v : typeof v === "string" && /^-?\d+$/.test(v.trim()) ? Number.parseInt(v, 10) : d;
+type Row = Record<string, unknown>;
+const rows = (v: unknown, f: (e: Row) => Row) => (Array.isArray(v) ? v.map((e) => f((e ?? {}) as Row)) : v);
+
+/** The transforms a bundle's parser applies to one host field before it sends it (`$input.<key>|<name>`). */
+const TRANSFORMS: Record<string, (v: unknown, input: Row) => unknown> = {
+  /** The schedule parsers: each `week` list as `[{day}]`. */
+  weekDays: (v) => weekDays(v),
+  /** `LightAmbientLightingSettingParser`: each loop's week a day bitmask, its `enable` 0 while `sunset2rise` is on. */
+  ambientLoop: (v, input) =>
+    rows(v, (e) => ({
+      ...e,
+      week: (Array.isArray(e.week) ? e.week : [])
+        .map((d) => (d && typeof d === "object" ? (d as Row).day : d))
+        .reduce((m: number, d) => m | (1 << Number(d)), 0),
+      ...(boolInt(input.sunset2rise) ? { enable: 0 } : {}),
+    })),
+  boolInt,
+  /** `DeviceMotionDetectionParser1298`: comma-listed detection types summed on their bits (`doMotionDetectionTypeToCMDValue_NVR_V2`). */
+  nvrTypes: (v) =>
+    v === ""
+      ? 0
+      : String(v)
+          .split(",")
+          .reduce((n, t) => n + (NVR_TYPES[Number(t)] ?? Number.NaN), 0),
+  /** `VideoSettingImageEffectSetParser`: each 0–100 percentage on the device's scale (the bundles' `calculate`). */
+  imageBrightness: (v) => calculate(80, 500, 256, v),
+  imageContrast: (v) => calculate(50, 1000, 256, v),
+  imageSaturation: (v) => calculate(1024, 20480, 4096, v),
+  imageChrome: (v) => calculate(-10240, 10240, 0, v),
+  /** `DeviceChimeMinibaseChimeSettingParser`: each chime's fields normalised, `trigger_type` 1. */
+  chimes: (v) =>
+    rows(v, (e) => ({
+      chime_mac: e.chime_mac,
+      chime_sn: e.chime_sn,
+      enable: boolInt(e.enable),
+      volume: toInt(e.volume, 13),
+      voice_type: toInt(e.voice_type),
+      is_play: boolInt(e.is_play),
+      trigger_type: 1,
+    })),
+};
 
 /** `x` with every `week` list of plain values as `[{day: <int>}]`, as the bundles' schedule parsers rewrite it. */
 function weekDays(x: unknown): unknown {
