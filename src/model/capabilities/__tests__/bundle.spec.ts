@@ -1,4 +1,4 @@
-import { frameCommand, qualityOf, thingWrite, type BundleFrame } from "../bundle.js";
+import { frameCommand, qualityOf, thingRead, thingWrite, type BundleFrame } from "../bundle.js";
 import { parseThingsList, type ThingDescription } from "../thing-description.js";
 import { power } from "./bundle-fixture.js";
 import type { CommandContext } from "../types.js";
@@ -686,6 +686,18 @@ describe("the regenerated data's forms", () => {
     expect(qualityOf(b64(cfg), "mode_0")).toBe(2);
     expect(qualityOf("3", "cur_mode")).toBe(3);
     expect(qualityOf(b64({ mode_0: { quality: 2 } }), "cur_mode"), "no cur_mode").toBeUndefined();
+  });
+
+  it("reads a base64 config as the text the bundle decodes, url-safe or standard", () => {
+    const dnd = JSON.stringify({ enable: 1, start_time: "22:00", end_time: "07:00" });
+    const raw = { 6495: Buffer.from(dnd).toString("base64url"), 1254: Buffer.from('{"plans":[]}').toString("base64") };
+    const read = (id: string) => thingRead(id, ctx("T8024"), (p) => raw[p as keyof typeof raw]);
+    expect(read("device_not_disturb_config")).toBe(dnd);
+    expect(read("arming_schedule_config")).toBe('{"plans":[]}');
+    expect(
+      thingRead("arming_schedule_config", ctx("T8024"), () => "{}"),
+      "no base64: as is",
+    ).toBe("{}");
   });
 
   it("leaves a $userId key to the transport", () => {

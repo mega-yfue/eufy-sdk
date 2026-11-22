@@ -98,8 +98,13 @@ interface BundleRead {
   quality?: { param: number; select: QualitySelect; map: Readonly<Record<string, string>> };
   /** Whole records the ranks read wrong, checked first: every `[param, raw]` reported reads `ui`. */
   exact?: readonly { record: readonly (readonly [number, string])[]; ui: string }[];
-  /** A JSON (or base64 JSON) report read at `path` (`.`-joined keys), then `map`, else as is. */
+  /**
+   * A JSON (or base64 JSON) report read at `path` (`.`-joined keys, `k=v` the list element whose `k` is `v`),
+   * then `map`, else as is.
+   */
   field?: { param: number; path: string; map?: Readonly<Record<string, string>> };
+  /** A base64 report read as its UTF-8 text ({@link textOf}). */
+  text?: { param: number; asIs?: true };
 }
 
 /** The config mode whose quality is read, or `{ui}`: no quality, the read is that value. */
@@ -272,6 +277,17 @@ function decoded(raw: unknown): unknown {
   }
 }
 
+/**
+ * A base64 report's text as the app decodes it: `""` for none; with `asIs` (`decodeBase64String`) a report that is
+ * no base64 (`isBase64Str`) as it is, without (`decodeToBase64UrlSafe`) whatever it decodes to.
+ */
+const textOf = (read: { asIs?: true }, raw: string): string =>
+  !raw
+    ? ""
+    : read.asIs && !(raw.length % 4 === 0 && /^(?!\d+$)(?:[A-Za-z0-9+/]+|[A-Za-z0-9_-]+)={0,2}$/.test(raw))
+      ? raw
+      : Buffer.from(raw, "base64").toString("utf8");
+
 /** A report's integer as the app reads it, `NaN` for none. */
 const intOf = (v: unknown): string => String(Number.parseInt(String(v), 10));
 
@@ -313,8 +329,12 @@ const valueOn = (read: BundleRead, param: number, raw: string, other: RawOf = ()
   const q = read.quality?.param === param ? qualityOf(raw, read.quality.select, other) : undefined;
   if (typeof q === "object") return keyed(q.ui);
   if (q !== undefined) return keyed(read.quality!.map[q] ?? read.quality!.map.default);
+  if (read.text?.param === param) return textOf(read.text, raw);
   if (read.field?.param === param) {
-    const v = read.field.path.split(".").reduce<unknown>((o, k) => objectOf(o)?.[k], decoded(raw));
+    const v = read.field.path.split(".").reduce<unknown>((o, k) => {
+      const [key, is] = k.split("=");
+      return is !== undefined && Array.isArray(o) ? o.find((e) => objectOf(e)?.[key!] === is) : objectOf(o)?.[k];
+    }, decoded(raw));
     if (v === undefined || v === null) return undefined;
     const text = typeof v === "object" ? JSON.stringify(v) : String(v);
     return keyed(read.field.map?.[text] ?? text);
@@ -324,7 +344,7 @@ const valueOn = (read: BundleRead, param: number, raw: string, other: RawOf = ()
 
 /** The raw `param` holds for the identifier's `value`: its map key, the value itself, none on a decoded param. */
 const rawOn = (read: BundleRead, param: number, value: string): string | undefined => {
-  if (read.quality?.param === param || read.field?.param === param) return undefined;
+  if ([read.quality, read.field, read.text].some((d) => d?.param === param)) return undefined;
   const map = read.map?.[param];
   return map ? Object.keys(map).find((raw) => keyed(map[raw]) === value) : value;
 };
