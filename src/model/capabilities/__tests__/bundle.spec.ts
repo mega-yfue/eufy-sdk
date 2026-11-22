@@ -725,6 +725,31 @@ describe("the regenerated data's forms", () => {
     expect(read({ count: 1, schedules: { loop: 0 } })).toBe('{"count":1,"schedules":{"loop":0}}');
   });
 
+  it("reads a mower data point as its message's toObject: 160 at passwd.value, 180 whole", () => {
+    const read = (id: string, param: number, hex: string) =>
+      thingRead(id, ctx("T2880"), (p) => (p === param ? Buffer.from(hex, "hex").toString("base64") : undefined));
+    const pw = (hex: string) => read("ecl_mow_get_home_assistant_config_passwd", 160, hex);
+    expect(pw("0a020801" + "1204" + "0a02" + Buffer.from("pw").toString("hex"))).toBe("pw");
+    expect(pw("1200"), "set, empty").toBe("");
+    expect(pw("0a020801"), "no passwd").toBeUndefined();
+    const fn = "0a0166" + "1001" + "1a0146";
+    const list = "0a04" + Buffer.from("core").toString("hex") + "1208" + fn + "1203" + "0a0167";
+    expect(read("ecl_mow_debug_panel_ack_result", 180, "08b219" + "1001" + "2215" + list)).toBe(
+      JSON.stringify({
+        seq: 3250,
+        type: 1,
+        getFunctionListResult: {
+          moduleName: "core",
+          functionListList: [
+            { name: "f", hasAlias: true, alias: "F" },
+            { name: "g", hasAlias: false, alias: "" },
+          ],
+        },
+      }),
+    );
+    expect(read("ecl_mow_debug_panel_ack_result", 180, "00"), "the app's cut prefix").toBe('{"seq":0,"type":0}');
+  });
+
   it("leaves a $userId key to the transport", () => {
     const frame: BundleFrame = {
       cmd: 1271,

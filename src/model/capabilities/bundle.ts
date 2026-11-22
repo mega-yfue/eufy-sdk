@@ -99,13 +99,21 @@ interface BundleRead {
   /** Whole records the ranks read wrong, checked first: every `[param, raw]` reported reads `ui`. */
   exact?: readonly { record: readonly (readonly [number, string])[]; ui: string }[];
   /**
-   * A JSON (or base64 JSON) report read at `path` (`.`-joined keys, `k=v` the list element whose `k` is `v`),
+   * A JSON (or base64 JSON) report, or a base64 protobuf one as `message`'s `toObject` ({@link toObject}), read at
+   * `path` (`.`-joined keys, `k=v` the list element whose `k` is `v`; none the whole report, an object as JSON),
    * then `map`, else as is.
    */
-  field?: { param: number; path: string; map?: Readonly<Record<string, string>> };
+  field?: { param: number; path?: string; message?: Messages; map?: Readonly<Record<string, string>> };
   /** A base64 report read as its UTF-8 text ({@link textOf}), through the named `transform` ({@link TRANSFORMS}). */
   text?: { param: number; asIs?: true; transform?: string };
 }
+
+/**
+ * A google-protobuf message schema as the bundle's generated code holds it, the read's message first, then those it
+ * holds: per message its fields in declaration order, `[number, toObject key, reader (uint32, enum, bool, string) or
+ * message, repeated]`.
+ */
+type Messages = Readonly<Record<string, readonly (readonly [number, string, string, true?])[]>>;
 
 /** The config mode whose quality is read, or `{ui}`: no quality, the read is that value. */
 type QualityTake = "mode_0" | "mode_1" | { ui: string };
@@ -333,10 +341,12 @@ const valueOn = (read: BundleRead, param: number, raw: string, other: RawOf = ()
   if (q !== undefined) return keyed(read.quality!.map[q] ?? read.quality!.map.default);
   if (read.text?.param === param) return textOf(read.text, raw);
   if (read.field?.param === param) {
-    const v = read.field.path.split(".").reduce<unknown>((o, k) => {
+    const { path, message } = read.field;
+    const from = message ? toObject(message, Buffer.from(raw === "AA==" ? "" : raw, "base64")) : decoded(raw);
+    const v = (path?.split(".") ?? []).reduce<unknown>((o, k) => {
       const [key, is] = k.split("=");
       return is !== undefined && Array.isArray(o) ? o.find((e) => objectOf(e)?.[key!] === is) : objectOf(o)?.[k];
-    }, decoded(raw));
+    }, from);
     if (v === undefined || v === null) return undefined;
     const text = typeof v === "object" ? JSON.stringify(v) : String(v);
     return keyed(read.field.map?.[text] ?? text);
@@ -613,6 +623,51 @@ function varintAt(b: Uint8Array, i: number): [number, number] | undefined {
   return undefined;
 }
 
+/** The protobuf field at `i` of `b`: its number, wire type, varint `[value, end]`, length-delimited `[length, start]` and end; `undefined` past the end. */
+function fieldAt(b: Uint8Array, i: number) {
+  const tag = varintAt(b, i);
+  if (!tag) return undefined;
+  const wire = tag[0] % 8;
+  const len = wire === 2 ? varintAt(b, tag[1]) : undefined;
+  const fixed = wire === 1 ? 8 : wire === 5 ? 4 : undefined;
+  const value = wire === 0 ? varintAt(b, tag[1]) : undefined;
+  const end = value ? value[1] : len ? len[0] + len[1] : fixed && tag[1] + fixed;
+  return end === undefined || end > b.length ? undefined : { field: Math.floor(tag[0] / 8), wire, value, len, end };
+}
+
+/**
+ * Protobuf `b` as google-protobuf's `toObject` gives message `name` of `message` (its first): an absent scalar its default
+ * (`0`, `false`, `""`), an absent message none, a repeated field a list, the last of a repeated singular field, an unknown
+ * field skipped; `undefined` for bytes that are not the message.
+ */
+function toObject(message: Messages, b: Uint8Array, name = Object.keys(message)[0]!): Row | undefined {
+  const fields = message[name]!;
+  const defaults: Record<string, unknown> = { string: "", bool: false, uint32: 0, enum: 0 };
+  const out = Object.fromEntries(fields.map(([, key, type, many]) => [key, many ? [] : defaults[type]]));
+  for (let i = 0; i < b.length;) {
+    const at = fieldAt(b, i);
+    if (!at) return undefined;
+    const f = fields.find(([n]) => n === at.field);
+    if (f) {
+      const [, key, type, many] = f;
+      const bytes = at.len && b.subarray(at.len[1], at.end);
+      const v =
+        type in message
+          ? bytes && toObject(message, bytes, type)
+          : type === "string"
+            ? bytes && Buffer.from(bytes).toString("utf8")
+            : type === "bool" && at.value
+              ? at.value[0] !== 0
+              : at.value?.[0];
+      if (v === undefined) return undefined;
+      if (many) (out[key] as unknown[]).push(v);
+      else out[key] = v;
+    }
+    i = at.end;
+  }
+  return out;
+}
+
 /** A `{field: n}` message (a room and its order) as google-protobuf writes it, a zero left out; `undefined` for another value. */
 function messageOf(o: unknown): readonly number[] | undefined {
   if (!o || typeof o !== "object") return undefined;
@@ -635,13 +690,9 @@ function setProto(b: Uint8Array, sets: ReadonlyMap<string, unknown>): number[] |
   const seen = new Map<number, number>();
   let hit = 0;
   for (let i = 0; i < b.length;) {
-    const tag = varintAt(b, i);
-    if (!tag) return undefined;
-    const [field, wire] = [Math.floor(tag[0] / 8), tag[0] % 8];
-    const len = wire === 2 ? varintAt(b, tag[1]) : undefined;
-    const fixed = wire === 1 ? 8 : wire === 5 ? 4 : undefined;
-    const end = wire === 0 ? varintAt(b, tag[1])?.[1] : len ? len[0] + len[1] : fixed && tag[1] + fixed;
-    if (end === undefined || end > b.length) return undefined;
+    const at = fieldAt(b, i);
+    if (!at) return undefined;
+    const { field, wire, len, end } = at;
     const n = seen.get(field) ?? 0;
     seen.set(field, n + 1);
     const key = n ? `${field}:${n}` : String(field);
