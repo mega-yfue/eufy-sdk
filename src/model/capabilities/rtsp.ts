@@ -118,13 +118,9 @@ function publishable(ctx: AvailabilityContext): boolean {
   return kindRoutable("set-param", ctx);
 }
 
-/**
- * The RTSP publish switch, both directions — a plain scalar, verified live on both topologies. Sent unread: a
- * station returns no result code under the switch, and states the outcome in the published state it reports
- * and, once publishing, in the URL it pushes under the same id.
- */
+/** The RTSP publish switch, both directions — a plain scalar on both topologies, settled on the device's answer. */
 function publishCommand(on: boolean, ctx: CommandContext): Command {
-  return { ...setScalar(RTSP_PARAM.STREAM_SWITCH, on ? 1 : 0, ctx), unanswered: true };
+  return setScalar(RTSP_PARAM.STREAM_SWITCH, on ? 1 : 0, ctx);
 }
 
 /**
