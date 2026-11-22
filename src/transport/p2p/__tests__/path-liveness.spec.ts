@@ -136,3 +136,38 @@ describe("a session's path liveness", () => {
     expect(stale[0]).toMatchObject({ phase: "path-stale" });
   });
 });
+
+describe("a session's heartbeat", () => {
+  /** A session on a socket whose sends and close complete at once, and the PINGs and closes it saw. */
+  function beating() {
+    const { built, internals } = session();
+    const send = vi.fn((_packet: Buffer, _port: number, _host: string, done?: () => void) => done?.());
+    internals.socket = { send, close: (done: () => void) => done() } as unknown as dgram.Socket;
+    const closed = vi.fn();
+    built.on("close", closed);
+    const beat = () => (built as unknown as { heartbeat: () => void }).heartbeat();
+    return { internals, send, closed, beat };
+  }
+
+  it("pings a path that is answering", () => {
+    const { internals, send, closed, beat } = beating();
+    internals.lastPeerAt = Date.now() - 1_000;
+    beat();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(closed).not.toHaveBeenCalled();
+  });
+
+  it("keeps pinging a path that has not answered since connection", () => {
+    const { send, closed, beat } = beating();
+    beat();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(closed).not.toHaveBeenCalled();
+  });
+
+  it("closes the session once its path has been silent past three heartbeats", async () => {
+    const { internals, closed, beat } = beating();
+    internals.lastPeerAt = Date.now() - 16_000;
+    beat();
+    await vi.waitFor(() => expect(closed).toHaveBeenCalledTimes(1));
+  });
+});

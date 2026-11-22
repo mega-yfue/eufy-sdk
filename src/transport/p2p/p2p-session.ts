@@ -1356,10 +1356,24 @@ export class P2PSession extends EventEmitter {
     // Nudge the station to start reporting, then heartbeat.
     this.sendCommand(CMD_GATEWAYINFO);
     this.send(addr, RequestMessageType.PING, this.lastPongData);
-    this.heartbeatTimer = setInterval(() => {
-      if (this.connectAddress) this.send(this.connectAddress, RequestMessageType.PING, this.lastPongData);
-    }, HEARTBEAT_MS);
+    this.heartbeatTimer = setInterval(() => this.heartbeat(), HEARTBEAT_MS);
     this.emit("connect");
+  }
+
+  /**
+   * One heartbeat tick: PING the connected peer, or close the session once its path has stopped answering.
+   *
+   * {@link pathAnswering} is false only where the peer answered and then went silent for
+   * {@link PATH_SILENCE_MS}, so a connection that never answered keeps its heartbeat. Closing emits `close`,
+   * which is what releases the session's owner to open another: a silent path is never held open for the
+   * next command to find.
+   */
+  private heartbeat(): void {
+    if (!this.pathAnswering) {
+      void this.close().catch((error) => this.emit("error", error));
+      return;
+    }
+    if (this.connectAddress) this.send(this.connectAddress, RequestMessageType.PING, this.lastPongData);
   }
 
   /**
