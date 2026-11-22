@@ -589,12 +589,22 @@ function varintAt(b: Uint8Array, i: number): [number, number] | undefined {
   return undefined;
 }
 
+/** A `{field: n}` message (a room and its order) as google-protobuf writes it, a zero left out; `undefined` for another value. */
+function messageOf(o: unknown): readonly number[] | undefined {
+  if (!o || typeof o !== "object") return undefined;
+  const w = new RawDpWriter();
+  for (const [k, v] of Object.entries(o))
+    if (!Number.isSafeInteger(v) || (v as number) < 0) return undefined;
+    else if (v) w.int(Number(k), v as number);
+  return w.toBytes();
+}
+
 /**
  * Protobuf body `b` with the field at each path of `sets` (`.`-joined field numbers, `n:i` the i-th repeat of
  * `n`, as the generator decodes) set as the bundles' google-protobuf writes it: a number or boolean as a varint,
- * anything in a length-delimited field as its text, a zero, `false` or `""` left out (proto3) with the messages
- * around it kept; every other byte as is. `undefined` for bytes that are not a message, a path not in them, or a
- * value its field cannot carry.
+ * anything in a length-delimited field as its text, a list as that many repeats of its field ({@link messageOf}),
+ * a zero, `false` or `""` left out (proto3) with the messages around it kept; every other byte as is.
+ * `undefined` for bytes that are not a message, a path not in them, or a value its field cannot carry.
  */
 function setProto(b: Uint8Array, sets: ReadonlyMap<string, unknown>): number[] | undefined {
   const out: number[] = [];
@@ -618,7 +628,14 @@ function setProto(b: Uint8Array, sets: ReadonlyMap<string, unknown>): number[] |
     // ponytail: a negative int32 (ten bytes in google-protobuf) is not written; add it when a template takes one.
     const x = Number(v);
     const w = new RawDpWriter();
-    if (inner.size) {
+    const list = sets.get(String(field));
+    if (Array.isArray(list)) {
+      // The list stands for every repeat of its field, written at the first.
+      const messages = n ? [] : list.map(messageOf);
+      if (messages.includes(undefined)) return undefined;
+      for (const m of messages) w.bytes(field, m!);
+      hit += n ? 0 : 1;
+    } else if (inner.size) {
       const body = len && setProto(b.subarray(len[1], end), inner);
       if (!body) return undefined;
       w.bytes(field, body);
@@ -640,9 +657,9 @@ function setProto(b: Uint8Array, sets: ReadonlyMap<string, unknown>): number[] |
 /**
  * A templated data-point value with its fields set as the app sets them per write, each from a token:
  * `$now` the epoch ms (a number), any other filled by `fill` (`$sn`, `$input.<key>`, …); the field `""` is
- * the whole value. The value is a JSON object, as is or hex-encoded (`hex-json`), or a protobuf ({@link setProto})
- * in its frame's framing: bare hex (`hex`), behind its varint length in hex (`hex-len`) or base64. `undefined`
- * for any other value, or a token with no value.
+ * the whole value. The value is a JSON object, as is or hex-encoded (`hex-json`), a field by its `.`-joined path,
+ * or a protobuf ({@link setProto}) in its frame's framing: bare hex (`hex`), behind its varint length in hex
+ * (`hex-len`) or base64. `undefined` for any other value, or a token with no value.
  */
 function templated(frame: BundleFrame, value: unknown, fill: (x: unknown) => unknown): unknown {
   const fields = objectOf(frame.template);
@@ -662,10 +679,13 @@ function templated(frame: BundleFrame, value: unknown, fill: (x: unknown) => unk
   const hex = frame.encoding?.startsWith("hex") && typeof value === "string";
   const object = parse(hex ? Buffer.from(value as string, "hex").toString("utf8") : value);
   if (!object) return undefined;
-  const out = { ...object };
-  for (const [key, token] of Object.entries(fields)) {
-    out[key] = set(token);
-    if (out[key] === undefined) return undefined;
+  const out = structuredClone(object);
+  for (const [path, token] of Object.entries(fields)) {
+    const keys = path.split(".");
+    const parent = keys.slice(0, -1).reduce<unknown>((o, k) => (o as Record<string, unknown> | undefined)?.[k], out);
+    const v = set(token);
+    if (!parent || typeof parent !== "object" || v === undefined) return undefined;
+    (parent as Record<string, unknown>)[keys[keys.length - 1]!] = v;
   }
   const json = typeof value === "string" ? JSON.stringify(out) : out;
   return hex ? Buffer.from(json as string, "utf8").toString("hex") : json;
@@ -914,6 +934,12 @@ const TRANSFORMS: Record<string, (v: unknown, input: Row, param?: Param) => unkn
   /** `DeviceMotionDetectionParser` v4/v7: `ai_detect_type` over cached 1298, `ai_notification` over 6028 (`.includes` first: missing throws). */
   hb3Types: hb3(1298),
   hb3Notify: hb3(6028, true),
+  /** `encodeModeRoomCleanRequest` / `encodeCustomOrderRequest`: each room id with its order from 1, a repeated `{1: id, 2: order}`. */
+  ordered: (v) => (Array.isArray(v) ? v.map((id, i) => ({ 1: id, 2: i + 1 })) : undefined),
+  /** The T2080A family's `encodeModeRoomCleanRequest`: the order from 0. */
+  ordered0: (v) => (Array.isArray(v) ? v.map((id, i) => ({ 1: id, 2: i })) : undefined),
+  /** The JSON `globalRooms` / `editRooms` custom order: `{roomId, cleanOrder}` from 1. */
+  cleanOrder: (v) => (Array.isArray(v) ? v.map((roomId, i) => ({ roomId, cleanOrder: i + 1 })) : undefined),
 };
 
 /** `x` with every `week` list of plain values as `[{day: <int>}]`, as the bundles' schedule parsers rewrite it. */
