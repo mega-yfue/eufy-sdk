@@ -850,7 +850,7 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
   // nothing sent where the transform refuses the value, as the parser throws on it.
   const inputOf = (ref: string) => {
     const [key, transform] = ref.split("|");
-    const v = input[key!];
+    const v = key ? input[key] : input;
     if (!transform) return v;
     const out = TRANSFORMS[transform]?.(v, input, ctx.paramValue);
     unfilled ||= out === undefined;
@@ -885,7 +885,7 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
             ? Buffer.from(JSON.stringify(fill(x.$b64))).toString("base64")
             : spread(x as Record<string, unknown>)
           : x;
-  // `"$input": "..."` (`"...|weekDays"`): the parser passes the host's object through there, so it is spread in.
+  // `"$input": "...[<key>][|<transform>]"`: the host's object (or its key), as the parser transforms it, spread in there.
   const spread = (o: Record<string, unknown>) => {
     const rest = Object.fromEntries(
       Object.entries(o).flatMap(([k, v]) =>
@@ -894,8 +894,7 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
     );
     const mark = o["$input"];
     if (typeof mark !== "string" || !mark.startsWith("...")) return rest;
-    const host = mark === "...|weekDays" ? weekDays(input) : input;
-    return { ...(host as Record<string, unknown>), ...rest };
+    return { ...(inputOf(mark.slice(3)) as Record<string, unknown>), ...rest };
   };
   const transport = frame.transport ?? "p2p";
   const head =
