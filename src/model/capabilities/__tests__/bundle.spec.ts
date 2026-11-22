@@ -1,4 +1,4 @@
-import { frameCommand, qualityOf, type BundleFrame } from "../bundle.js";
+import { frameCommand, qualityOf, thingWrite, type BundleFrame } from "../bundle.js";
 import { parseThingsList, type ThingDescription } from "../thing-description.js";
 import { power } from "./bundle-fixture.js";
 import type { CommandContext } from "../types.js";
@@ -37,6 +37,19 @@ const ctx = (model: string, extra: Partial<CommandContext> = {}): CommandContext
 const attached = { homeBaseAttached: true, stationSerial: "T8030P0000000000" };
 
 describe("frameCommand", () => {
+  it("T8217 device_motion_detection: each selection's bits over its cached param's others, nothing without ai_notification", () => {
+    const sent = (value: object) =>
+      thingWrite(
+        "device_motion_detection",
+        JSON.stringify(value),
+        ctx("T8217", { paramValue: (p) => (p === 1298 ? "7" : undefined) }),
+      ) as { cmd?: number; payload?: object } | undefined;
+    expect(sent({ ai_detect_type: "5,4", ai_notification: "5" })).toMatchObject({
+      cmd: 1298,
+      payload: { ai_detect_type: 32775, push_detect_type: 3, ai_notification: 3 },
+    });
+    expect(sent({ ai_detect_type: "5,4" })).toBeUndefined();
+  });
   it("fills $param tokens from the device's cached params: a JSON field, bits, the fallback, else refuses", () => {
     const frame: BundleFrame = {
       cmd: 1350,

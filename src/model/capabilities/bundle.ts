@@ -685,7 +685,7 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
     const [key, transform] = ref.split("|");
     const v = input[key!];
     if (!transform) return v;
-    const out = TRANSFORMS[transform]?.(v, input);
+    const out = TRANSFORMS[transform]?.(v, input, ctx.paramValue);
     unfilled ||= out === undefined;
     return out;
   };
@@ -780,8 +780,29 @@ const toInt = (v: unknown, d = Number.NaN) =>
 type Row = Record<string, unknown>;
 const rows = (v: unknown, f: (e: Row) => Row) => (Array.isArray(v) ? v.map((e) => f((e ?? {}) as Row)) : v);
 
+type Param = (id: number) => string | undefined;
+/** `DeviceMotionDetectionParser` v4/v7 (T8217 `{5,4}`, T85M0 `{5,6}`): type → bit, the two bits it owns being 0x8003. */
+// ponytail: one table for both products; read the mapping off the description's associatedValues if a third differs.
+const HB3_TYPES: Record<number, number> = { 4: 0x8000, 5: 3, 6: 0x8000 };
+/** `doMotionDetectionTypeToCMDValue_HB3_V3`: the selection's bits over cached param `id`'s others; `strict`, a non-string throws. */
+const hb3 =
+  (id: number, strict = false) =>
+  (v: unknown, _: Row, param?: Param) =>
+    typeof v !== "string"
+      ? v || strict
+        ? undefined
+        : 0
+      : !v
+        ? 0
+        : v
+            .split(",")
+            .reduce(
+              (n, t) => n | (HB3_TYPES[Number(t)] ?? 0),
+              (Number.parseInt(String(param?.(id)), 10) || 0) & ~0x8003,
+            );
+
 /** The transforms a bundle's parser applies to one host field before it sends it (`$input.<key>|<name>`). */
-const TRANSFORMS: Record<string, (v: unknown, input: Row) => unknown> = {
+const TRANSFORMS: Record<string, (v: unknown, input: Row, param?: Param) => unknown> = {
   /** The schedule parsers: each `week` list as `[{day}]`. */
   weekDays: (v) => weekDays(v),
   /** `LightAmbientLightingSettingParser`: each loop's week a day bitmask, its `enable` 0 while `sunset2rise` is on. */
@@ -817,6 +838,9 @@ const TRANSFORMS: Record<string, (v: unknown, input: Row) => unknown> = {
       is_play: boolInt(e.is_play),
       trigger_type: 1,
     })),
+  /** `DeviceMotionDetectionParser` v4/v7: `ai_detect_type` over cached 1298, `ai_notification` over 6028 (`.includes` first: missing throws). */
+  hb3Types: hb3(1298),
+  hb3Notify: hb3(6028, true),
 };
 
 /** `x` with every `week` list of plain values as `[{day: <int>}]`, as the bundles' schedule parsers rewrite it. */
