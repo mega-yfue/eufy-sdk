@@ -789,6 +789,32 @@ describe("the regenerated data's forms", () => {
     expect((cmd as { data: object }).data).not.toHaveProperty("pots");
   });
 
+  it("writes a privacy zone as its two-point rects x1000, the host's own fields over the defaults (1350/1295)", () => {
+    const pots = [
+      {
+        points: [
+          { x: 0.1, y: 0.2 },
+          { x: 0.6, y: 0.75 },
+          { x: 0, y: 0 },
+          { x: 0, y: 0 },
+        ],
+      },
+    ];
+    const sent = (zone: object) => thingWrite("set_privacy_zone", JSON.stringify(zone), ctx("T6310"));
+    expect(sent({ pots })).toMatchObject({
+      cmd: 1295,
+      payload: {
+        account: "$userId",
+        DetSensitivity: 500,
+        MoveDetStatus: 1,
+        Normalized: 1,
+        points: [{ LeftPointX: 100, LeftPointY: 200, RightPointX: 600, RightPointY: 750 }],
+      },
+    });
+    expect(sent({ pots: [], DetSensitivity: 3 })).toMatchObject({ payload: { DetSensitivity: 3, MoveDetStatus: 0 } });
+    expect(sent({ pots: [{ points: [{ x: 0, y: 0 }] }] }), "one point: the bundle throws").toBeUndefined();
+  });
+
   it("reads the response-timeout schedule as the bundle re-stringifies it, a looping one unwrapped", () => {
     const read = (o: unknown) =>
       thingRead("device_response_timeout_schedule", ctx("T8214"), (p) =>

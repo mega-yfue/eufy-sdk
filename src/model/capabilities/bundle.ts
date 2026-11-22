@@ -1088,6 +1088,32 @@ const TRANSFORMS: Record<string, (v: unknown, input: Row, param?: Param) => unkn
       return undefined;
     }
   },
+  /**
+   * `toRestorePrivacyRectZoneTwoPot`, normalized (`SetPrivacyZoneParser1295`): each pot's first two points ×1000
+   * rounded as a rect, the host's `DetSensitivity` (500), `MoveDetStatus` (1 with a pot) and `Normalized` (1);
+   * nothing sent where the bundle throws.
+   */
+  privacyRect: (v, input) => {
+    try {
+      const { DetSensitivity = 500, MoveDetStatus = 0, Normalized = 1 } = input;
+      const k = (n: unknown) => Math.round(1000 * Number(n));
+      const points = (v as { points: Row[] }[]).map(({ points: [l, r] }) => ({
+        LeftPointX: k(l!.x),
+        LeftPointY: k(l!.y),
+        RightPointX: k(r!.x),
+        RightPointY: k(r!.y),
+      }));
+      return {
+        account: "$userId",
+        DetSensitivity,
+        MoveDetStatus: MoveDetStatus || (points.length ? 1 : 0),
+        Normalized,
+        points,
+      };
+    } catch {
+      return undefined;
+    }
+  },
   /** `device_response_timeout_schedule` (6440, `decodeBase64StringToJSON`: `{}` for no JSON): its `schedules` as JSON when they `loop`, else the whole. */
   timeoutSchedule: (v) => {
     let o: { schedules?: { loop?: unknown } } | null;
