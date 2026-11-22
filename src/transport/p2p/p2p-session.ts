@@ -19,12 +19,10 @@ import { resolve4 } from "node:dns/promises";
 import { isIP } from "node:net";
 import {
   constants,
-  createCipheriv,
   createECDH,
   createDecipheriv,
   generateKeyPairSync,
   privateDecrypt,
-  randomBytes,
   type KeyObject,
 } from "node:crypto";
 import {
@@ -55,6 +53,8 @@ import {
   deriveLevel2KeyFromRsaGatewayInfo,
   frameMessage,
   gatewayInfoRefused,
+  gcmOpen,
+  gcmSeal,
   hasHeader,
   p2pCommandEncryptionKey,
   parseDataFrameHeader,
@@ -242,8 +242,6 @@ const RESULT_BODY_MAX = 132;
  * channel it belongs to.
  */
 const CMD_CAMERA_INFO = 1103;
-/** AAD for the level-2 (gateway/"signCode 8") AES-256-GCM frames — fixed across all eufy P2P. */
-const GCM_AAD = Buffer.from("eufy security");
 
 /** Serial prefixes the app's native `isStation` names: such a session takes the level-1 key at sign mode <= 0. */
 const LEVEL1_AT_SIGN0_PREFIXES = ["T8001", "T8002", "T8010", "T8030", "T8021", "T8025"];
@@ -743,15 +741,7 @@ export class P2PSession extends EventEmitter {
     if (signCode === 0) return payload;
     if (version === 8 && commandId !== CMD_GATEWAYINFO) {
       const key = signCode >= 2 ? this.gcmKey : this.userIdKey;
-      if (!key || payload.length < 29) return payload;
-      try {
-        const d = createDecipheriv("aes-256-gcm", key, payload.subarray(16, 28));
-        d.setAAD(GCM_AAD);
-        d.setAuthTag(payload.subarray(0, 16));
-        return Buffer.concat([d.update(payload.subarray(28)), d.final()]);
-      } catch {
-        return payload;
-      }
+      return (key && payload.length >= 29 && gcmOpen(key, payload)) || payload;
     }
     if (signCode === 2) return this.ecbKey?.[0] ? decryptP2PData(payload, this.ecbKey) : payload;
     return decryptP2PData(payload, this.level1Key);
@@ -1567,14 +1557,9 @@ export class P2PSession extends EventEmitter {
     const ecbOnly =
       cmd === 1001 || cmd === 1054 || cmd === 1060 || (cmd === CMD_SET_PAYLOAD && jsonCmdOf(plaintext) === 1001);
     if (v8 && !ecbOnly) {
-      const nonce = randomBytes(12);
-      const c = createCipheriv("aes-256-gcm", this.gcmKey!, nonce);
-      c.setAAD(GCM_AAD);
-      const ct = Buffer.concat([c.update(plaintext), c.final()]);
-      const word = Buffer.alloc(4);
-      word.writeUInt32LE(this.gcmWord >>> 0);
+      const body = gcmSeal(this.gcmKey!, plaintext, this.gcmWord);
       this.gcmWord = (this.gcmWord + 1) >>> 0;
-      return { body: Buffer.concat([c.getAuthTag(), nonce, word, ct]), signCode: this.signMode, version: 8 };
+      return { body, signCode: this.signMode, version: 8 };
     }
     if (!this.ecbKey || this.ecbKey.length !== 16 || this.ecbKey.includes(0)) {
       this.signMode = -2;

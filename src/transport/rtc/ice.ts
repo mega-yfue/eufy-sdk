@@ -11,6 +11,13 @@
  * USERNAME, PRIORITY, ICE-CONTROLLED, MESSAGE-INTEGRITY under the remote pwd, FINGERPRINT. A check from the station
  * is answered with its XOR-MAPPED-ADDRESS and triggers a check back. The first answered check is the selected pair:
  * `connected`, then a check on it every 2.5 s. Every other datagram from a peer is `data`.
+ *
+ * With `juice` it is instead the PRIV1 data channel's libjuice agent: role controlling (ICE-CONTROLLING, the selected
+ * pair nominated at once with USE-CANDIDATE), server-reflexive candidates from a Binding to {@link JUICE_STUN} and from
+ * the Allocate's mapped address besides host and relay, one candidate per address, written as libjuice does:
+ * `a=candidate:<n> 1 UDP <priority> <ip> <port> typ <type>`, srflx and relay followed by ` raddr 0.0.0.0 rport 0`,
+ * `n` the candidate's place in the local description from 1, the priority `((pref << 16 | 0x7fff) − (n − 1)) << 8 |
+ * 255` with pref host 126, srflx 100, relay 0.
  */
 import { EventEmitter } from "node:events";
 import { createSocket, type Socket } from "node:dgram";
@@ -57,6 +64,9 @@ export interface IceEvents {
 }
 
 const PRFLX_PRIORITY = ((110 << 24) | (0xffff << 8) | 255) >>> 0;
+/** The STUN server libjuice is configured with on the app's PRIV1 data channel, whatever the call says. */
+export const JUICE_STUN = { host: "stun.l.google.com", port: 19302 };
+const JUICE_PREF = { host: 126, srflx: 100, relay: 0 };
 
 export class IceAgent extends EventEmitter<IceEvents> {
   turn?: TurnServer;
@@ -74,10 +84,12 @@ export class IceAgent extends EventEmitter<IceEvents> {
   private selected?: Pair;
   private ticks = 0;
   private closed = false;
+  private readonly offered = new Set<string>();
 
   constructor(
     private readonly ufrag: string,
     private readonly pwd: string,
+    private readonly juice = false,
   ) {
     super();
     this.socket.on("message", (msg, from) => this.onDatagram(msg, from));
@@ -89,9 +101,14 @@ export class IceAgent extends EventEmitter<IceEvents> {
     await new Promise<void>((resolve) => this.socket.bind(0, resolve));
     const { port } = this.socket.address();
     for (const i of Object.values(networkInterfaces()).flat())
-      if (i?.family === "IPv4" && !i.internal) this.emit("candidate", candidate("host", { address: i.address, port }));
+      if (i?.family === "IPv4" && !i.internal) this.offer("host", { address: i.address, port });
     this.timers.push(setInterval(() => this.tick(), 50));
-    if (this.turn) await this.allocate(this.turn);
+    await Promise.all([this.turn && this.allocate(this.turn), this.juice && this.reflexive()]);
+  }
+
+  /** A datagram to the selected pair; nothing before one is selected. */
+  write(data: Buffer): void {
+    if (this.selected) this.sendVia(this.selected, data);
   }
 
   /** A station candidate line (`candidate:` or `a=candidate:`): component 1, UDP, IPv4. */
@@ -122,8 +139,9 @@ export class IceAgent extends EventEmitter<IceEvents> {
     const attrs: [number, Buffer][] = [
       [Attr.USERNAME, Buffer.from(`${this.remote.ufrag}:${this.ufrag}`)],
       [Attr.PRIORITY, u32(PRFLX_PRIORITY)],
-      [Attr.CONTROLLED, this.tie],
+      [this.juice ? Attr.CONTROLLING : Attr.CONTROLLED, this.tie],
     ];
+    if (this.juice && pair === this.selected) attrs.push([Attr.USE_CANDIDATE, Buffer.alloc(0)]);
     this.sendVia(pair, encodeStun(Stun.BINDING, id, attrs, Buffer.from(this.remote.pwd), true));
   }
 
@@ -141,9 +159,11 @@ export class IceAgent extends EventEmitter<IceEvents> {
   }
 
   private onDatagram(msg: Buffer, from: Address): void {
+    const m = decodeStun(msg);
+    const done = m && this.pending.get(m.id.toString("hex"));
+    if (done) return done(m);
     if (this.turn && from.address === this.turnIp && from.port === this.turn.port) {
-      const m = decodeStun(msg);
-      if (m?.type !== Stun.DATA) return void (m && this.pending.get(m.id.toString("hex"))?.(m));
+      if (m?.type !== Stun.DATA) return;
       const peer = readXorAddress(m.attrs.get(Attr.PEER));
       const data = m.attrs.get(Attr.DATA);
       if (peer && data) this.onPeer(data, { remote: peer, relay: true });
@@ -176,6 +196,7 @@ export class IceAgent extends EventEmitter<IceEvents> {
       if (this.selected) return;
       this.selected = pair;
       this.checks.clear();
+      if (this.juice) this.check(pair);
       this.emit("connected");
     }
   }
@@ -203,7 +224,8 @@ export class IceAgent extends EventEmitter<IceEvents> {
     this.relay = relay;
     const lifetime = r.attrs.get(Attr.LIFETIME)?.readUInt32BE() ?? 600;
     const mapped = readXorAddress(r.attrs.get(Attr.MAPPED));
-    this.emit("candidate", candidate("relay", relay, mapped));
+    if (this.juice && mapped) this.offer("srflx", mapped);
+    this.offer("relay", relay, mapped);
     for (const p of this.pairs.filter((q) => !q.relay)) this.relayPair(p.remote);
     this.timers.push(
       setInterval(() => void this.turnRequest(Stun.REFRESH, []), Math.max(lifetime - 60, 60) * 1000),
@@ -220,7 +242,7 @@ export class IceAgent extends EventEmitter<IceEvents> {
       const all: [number, Buffer][] = a
         ? [...attrs, [Attr.USERNAME, Buffer.from(turn.user)], [Attr.REALM, a.realm], [Attr.NONCE, a.nonce]]
         : attrs;
-      const r = await this.transact(id, encodeStun(method, id, all, a?.key));
+      const r = await this.transact(id, encodeStun(method, id, all, a?.key), { address: this.turnIp, port: turn.port });
       if (!r) return undefined;
       if ((r.type & Stun.CLASS) === Stun.SUCCESS) return a && r.integrity && !stunIntegrity(r, a.key) ? undefined : r;
       const realm = r.attrs.get(Attr.REALM) ?? a?.realm;
@@ -231,8 +253,32 @@ export class IceAgent extends EventEmitter<IceEvents> {
     return undefined;
   }
 
-  /** One STUN transaction to the TURN server: sent at 0, then 250 ms doubling, seven sends in all. */
-  private transact(id: Buffer, msg: Buffer): Promise<StunMessage | undefined> {
+  /** The server-reflexive candidate: a Binding to {@link JUICE_STUN}, its XOR-MAPPED-ADDRESS. */
+  private async reflexive(): Promise<void> {
+    const address = await lookup(JUICE_STUN.host, { family: 4 }).then(
+      (r) => r.address,
+      () => "",
+    );
+    const id = randomBytes(12);
+    const r =
+      address && (await this.transact(id, encodeStun(Stun.BINDING, id, []), { address, port: JUICE_STUN.port }));
+    const mapped = r && readXorAddress(r.attrs.get(Attr.MAPPED));
+    if (mapped && !this.closed) this.offer("srflx", mapped);
+  }
+
+  private offer(type: "host" | "srflx" | "relay", a: Address, raddr?: Address): void {
+    if (!this.juice) return void this.emit("candidate", candidate(type as "host" | "relay", a, raddr));
+    const key = `${a.address}:${a.port}`;
+    if (this.offered.has(key)) return;
+    this.offered.add(key);
+    const n = this.offered.size;
+    const priority = ((((JUICE_PREF[type] << 16) | 0x7fff) - (n - 1)) * 256 + 255) >>> 0;
+    const related = type === "host" ? "" : " raddr 0.0.0.0 rport 0";
+    this.emit("candidate", `a=candidate:${n} 1 UDP ${priority} ${a.address} ${a.port} typ ${type}${related}`);
+  }
+
+  /** One STUN transaction to a server: sent at 0, then 250 ms doubling, seven sends in all. */
+  private transact(id: Buffer, msg: Buffer, to: Address): Promise<StunMessage | undefined> {
     const key = id.toString("hex");
     return new Promise((resolve) => {
       let timer: NodeJS.Timeout | undefined;
@@ -245,7 +291,7 @@ export class IceAgent extends EventEmitter<IceEvents> {
       };
       const send = () => {
         if (this.closed || sends++ === 7) return done();
-        this.send(msg, { address: this.turnIp, port: this.turn!.port });
+        this.send(msg, to);
         timer = setTimeout(send, rto);
         rto *= 2;
       };
@@ -280,8 +326,11 @@ function pmAnswer(ufrag: string, pwd: string, ssrc: number): string {
   }).replaceAll("=", "\\u003d");
 }
 
-/** The call's `turn` (an object or its JSON text) as a server, `undefined` without an address and a port. */
-function turnServer(turn: unknown): TurnServer | undefined {
+/**
+ * The call's `turn` (an object or its JSON text) as a server, `undefined` without an address, or without a port when
+ * no `port` stands in for a missing or zero one (libjuice takes 3478).
+ */
+export function turnServer(turn: unknown, port?: number): TurnServer | undefined {
   let t = turn;
   try {
     if (typeof t === "string") t = JSON.parse(t);
@@ -289,10 +338,11 @@ function turnServer(turn: unknown): TurnServer | undefined {
     return undefined;
   }
   const o = (t ?? {}) as Record<string, unknown>;
-  if (typeof o.turn_addr !== "string" || !o.turn_addr || typeof o.turn_port !== "number") return undefined;
+  const p = port && !o.turn_port ? port : o.turn_port;
+  if (typeof o.turn_addr !== "string" || !o.turn_addr || typeof p !== "number") return undefined;
   return {
     host: o.turn_addr,
-    port: o.turn_port,
+    port: p,
     user: String(o.turn_user ?? ""),
     password: String(o.turn_password ?? ""),
   };

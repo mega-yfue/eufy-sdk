@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSocket, Socket } from "node:dgram";
 import { once } from "node:events";
 import { callBody } from "../call.js";
+import { priv1 } from "../data-channel.js";
 import { IceAgent, pmIce } from "../ice.js";
 import {
   parseRtcDatagram,
@@ -25,6 +26,10 @@ import {
   xorAddress,
 } from "../stun.js";
 
+vi.mock("node:dns/promises", () => ({
+  lookup: (host: string) =>
+    host.includes(".google.") ? Promise.reject(new Error("offline")) : Promise.resolve({ address: host }),
+}));
 vi.mock("node:os", async (orig) => ({
   ...(await orig<typeof import("node:os")>()),
   networkInterfaces: () => ({ lo: [{ family: "IPv4", internal: false, address: "127.0.0.1" }] }),
@@ -157,5 +162,82 @@ describe("pmIce", () => {
     await new Promise((r) => setTimeout(r, 1100));
     expect(calls()).toBe(before);
     expect(before).toBeLessThan(10);
+  });
+});
+
+describe("priv1", () => {
+  it("trades file_candidate INFOs until acked, sends the local sdp, connects as ICE-controlling and nominates", async () => {
+    const sent: { socket: Socket; p: RtcPacket }[] = [];
+    const send = Socket.prototype.send;
+    vi.spyOn(Socket.prototype, "send").mockImplementation(function (this: Socket, msg: unknown, ...rest: unknown[]) {
+      const p = parseRtcDatagram(msg as Buffer);
+      if (p) sent.push({ socket: this, p });
+      else (send as (...a: unknown[]) => void).apply(this, [msg, ...rest]);
+    } as never);
+    const client = new RtcSignalClient({ sn: SN, did: "XXXXXXX-000000-XXXXX", lic: "AAAAAA", host: "127.0.0.1" });
+    client.sessionKey = KEY;
+    const channel = priv1(client, { sn: SN, version: 1, flag: 3 });
+    const uuid = sent[0]!.p.body.toString("latin1", 6, 42);
+    const station = (kind: number, json: object, status = 0) => {
+      const h = rtcHeader({ kind, sn: SN, seq: 42, route: 9, ts: TS });
+      h[18] = 1;
+      if (status) {
+        h[14] = 1;
+        h.writeUInt16LE(status, 16);
+      }
+      const text = Buffer.from(
+        kind === 4 && status ? Buffer.from(JSON.stringify(json)).toString("base64") : JSON.stringify(json),
+      );
+      sent[0]!.socket.emit(
+        "message",
+        wrapRtcPacket(rtcPacket(h, 7, callBody(uuid, "station", rtcEncrypt(text, KEY, TS)))),
+      );
+    };
+    const infos = () =>
+      sent
+        .filter((x) => x.p.header.readUInt16LE(4) === 4 && x.p.header[14] === 0)
+        .map(
+          ({ p }) =>
+            JSON.parse(strip(rtcDecrypt(p.body.subarray(76), KEY, p.header.readUInt32LE(8)))) as Record<
+              string,
+              string | number
+            >,
+        );
+    closers.push(
+      () => channel.close(),
+      () => client.close(),
+    );
+    station(2, {}, 200);
+    await vi.waitFor(() => expect(infos().some((i) => "sdp" in i)).toBe(true));
+    const cand = infos().find((i) => "file_candidate" in i)!;
+    expect(cand).toEqual({
+      file_candidate: expect.stringMatching(/^a=candidate:1 1 UDP 2122317823 127\.0\.0\.1 \d+ typ host$/),
+      file_candidate_num: 0,
+    });
+    const sdp = String(infos().find((i) => "sdp" in i)!.sdp);
+    const [, ufrag, pwd] = /^a=ice-ufrag:(.+)\r\na=ice-pwd:(.+)\r\n/.exec(sdp)!;
+    expect(sdp).toBe(
+      `a=ice-ufrag:${ufrag}\r\na=ice-pwd:${pwd}\r\n${cand.file_candidate}\r\na=end-of-candidates\r\na=ice-options:ice2\r\n`,
+    );
+    await vi.waitFor(() => expect(infos().filter((i) => i.file_candidate_num === 0).length).toBeGreaterThan(1));
+    station(4, { file_candidate_num: 0 }, 200);
+    const acked = infos().length;
+    const peer = new IceAgent(ufrag!, pwd!);
+    closers.push(() => peer.close());
+    const checks: Buffer[] = [];
+    const roles = new Set<string>();
+    (peer as unknown as { socket: Socket }).socket.on("message", (m) => {
+      const a = decodeStun(m)?.attrs;
+      if (a?.has(Attr.CONTROLLING)) roles.add(a.has(Attr.USE_CANDIDATE) ? "nominate" : "check");
+    });
+    peer.on("data", (d) => checks.push(d));
+    peer.on("candidate", (c) => station(4, { file_candidate: c, file_candidate_num: 0 }));
+    peer.addRemoteCandidate(String(cand.file_candidate));
+    await peer.start(ufrag!, pwd!);
+    await vi.waitFor(() => expect(channel.connected).toBe(true));
+    await vi.waitFor(() => expect(checks.length).toBe(5));
+    expect(checks.every((d) => d.equals(Buffer.from([0xef, 0xbe, 0, 0])))).toBe(true);
+    await vi.waitFor(() => expect([...roles].sort()).toEqual(["check", "nominate"]));
+    expect(infos().filter((i) => "file_candidate" in i)).toHaveLength(acked - 1);
   });
 });
