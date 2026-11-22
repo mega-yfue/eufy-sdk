@@ -95,6 +95,28 @@ function xzyh(cmd: number, body: Buffer, channel: number, version: number, sign:
   return Buffer.concat([Buffer.from(MAGIC_WORD), id, buildRawCommandPayload(body, channel, sign, [version, 0])]);
 }
 
+/** The per-device count every AES-GCM command carries, from 0x01020304, shared by the data channel and RTCP. */
+export interface RtcCommandCounter {
+  word: number;
+}
+
+/**
+ * A command's `XZYH` frame, its JSON text as the body (no NUL) and header byte 12 = `channel`. With `seal` and a body
+ * of 1 to 0x200000 bytes it is AES-128-GCM under the first 16 bytes of the key: byte 10 `0x0a`, byte 13 1, body
+ * {@link gcmSeal} under the counter, which counts on.
+ */
+export function commandFrame(
+  cmd: number,
+  json: string,
+  channel: number,
+  seal?: { key: Buffer; counter: RtcCommandCounter },
+): Buffer {
+  const text = Buffer.from(json);
+  return seal && text.length >= 1 && text.length <= 0x200000
+    ? xzyh(cmd, gcmSeal(seal.key, text, seal.counter.word++), channel, GCM_VERSION, 1)
+    : xzyh(cmd, text, channel, 1, 0);
+}
+
 function kcp(conv: number, out: (d: Buffer) => void): Kcp {
   const k = new Kcp(conv, out);
   k.nodelay(1, conv === 1 ? 2 : 1, 2, 1);
@@ -129,19 +151,20 @@ export class RtcDataChannel extends EventEmitter<RtcDataChannelEvents> {
   ]);
   private readonly pending: Pending[] = [];
   private readonly key: Buffer;
-  private word = 0x01020304;
+  private readonly seal?: { key: Buffer; counter: RtcCommandCounter };
   private readonly timer: NodeJS.Timeout;
 
   /**
    * `out` sends one datagram on the ICE pair. `key` is the PRIV1 call's `sdp_info` key, whose first 16 bytes key the
-   * command GCM; `gcm` is {@link cmdGcm} for the device; `multi` the Multi KCP type.
+   * command GCM; `gcm` is {@link cmdGcm} for the device, `counter` its command counter; `multi` the Multi KCP type.
    */
   constructor(
     private readonly out: (datagram: Buffer) => void,
-    private readonly opts: { multi: boolean; key: string; gcm: boolean },
+    private readonly opts: { multi: boolean; key: string; gcm: boolean; counter?: RtcCommandCounter },
   ) {
     super();
     this.key = Buffer.from(opts.key, "latin1").subarray(0, 16);
+    if (opts.gcm) this.seal = { key: this.key, counter: opts.counter ?? { word: 0x01020304 } };
     const send = (conv: number) => (d: Buffer) => this.out(opts.multi ? Buffer.concat([prefix(conv), d]) : d);
     this.kcps = opts.multi ? [kcp(1, send(1)), kcp(3, send(3))] : [kcp(1, send(1))];
     this.timer = setInterval(() => {
@@ -161,19 +184,13 @@ export class RtcDataChannel extends EventEmitter<RtcDataChannelEvents> {
   }
 
   /**
-   * Send a 1350 or 1700 command on the data channel, the app's route for all but its RTCP-bound live commands: its
-   * JSON text as the body (no NUL), header byte 12 = `channel`; resolves with the
-   * reply body, rejects after 20 s (35 s for a 1350 whose `cmd` is 6236). With {@link cmdGcm} and a non-empty body the
-   * frame is AES-128-GCM: byte 10 `0x0a`, byte 13 1, body {@link gcmSeal} under the counter that starts at
-   * 0x01020304 and counts every encrypted command.
+   * Send a 1350 or 1700 command on the data channel, the app's route for all but its RTCP-bound live commands, as
+   * {@link commandFrame} (sealed with {@link cmdGcm}); resolves with the reply body, rejects after 20 s (35 s for a
+   * 1350 whose `cmd` is 6236).
    */
   command(cmd: 1350 | 1700, json: string, channel = 0): Promise<Buffer> {
     if (!this.connected) return Promise.reject(new Error("rtc data channel not connected"));
-    const text = Buffer.from(json);
-    const gcm = this.opts.gcm && text.length >= 1 && text.length <= 0x200000;
-    const frame = gcm
-      ? xzyh(cmd, gcmSeal(this.key, text, this.word++), channel, GCM_VERSION, 1)
-      : xzyh(cmd, text, channel, 1, 0);
+    const frame = commandFrame(cmd, json, channel, this.seal);
     for (let o = 0; o < frame.length; o += CHUNK)
       this.kcps[0]!.send(wrtcLink(CMD, frame.subarray(o, o + CHUNK), this.opts.multi));
     const long = cmd === 1350 && jsonCmd(json) === 6236;

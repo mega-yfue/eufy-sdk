@@ -106,6 +106,11 @@ export class IceAgent extends EventEmitter<IceEvents> {
     await Promise.all([this.turn && this.allocate(this.turn), this.juice && this.reflexive()]);
   }
 
+  /** Whether a pair is selected. */
+  get connected(): boolean {
+    return this.selected !== undefined;
+  }
+
   /** A datagram to the selected pair; nothing before one is selected. */
   write(data: Buffer): void {
     if (this.selected) this.sendVia(this.selected, data);
