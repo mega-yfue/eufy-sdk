@@ -16,12 +16,38 @@
  * 4. 200 with body kind 6 = the NUL-terminated contact_id; header byte 44 is echoed in later regs.
  *
  * The app's work protocol (2, header byte 15 of reg) starts no login timer: reg goes out once per settled
- * DISCOVER, and nothing resends it.
+ * DISCOVER, and nothing resends it. A request the server leaves unanswered for 5 s is not resent either: the app's
+ * timeout scan has no caller.
+ *
+ * 5. CALL (kind 2, header byte 15 = 2, byte 18 = 1, byte 44 = the process-wide call counter from 1) on a UDP socket
+ *    of its own per call type, body kind 7 = {@link callBody} of the session uuid and the contact_id, attach = the
+ *    call JSON under the session key. The sealed packet goes out again unchanged on {@link nextCallRepeat}.
+ * 6. Answers on that socket, by status: 100 Trying = `turn`, once; 200 = `ftv`, `pbsdp` (else `transport_caps`) and
+ *    `turn` if no Trying came, then once per session the ack (kind 3, fresh ts and seq, byte 43 echoed, body =
+ *    {@link callBodyHead}). Any other status deletes only the session, unless header byte 13 is in 4..8: then 480
+ *    hangs the call up, 486 is busy (repeat ends, socket stays). A station kind 3 request is answered 200 with its own header and body head.
+ * 7. A station INFO (kind 4) request is answered 200 with its own header: for a session of ours its whole body,
+ *    twice 15 ms apart; otherwise the body head, once, on the signalling socket. A PM session reads `sdp` once
+ *    (`ice-u`, `ice-p`, `asc`, `vsc`, `sg`, `sgc`) and `candidate`, one per host / srflx / relay.
+ * 8. Hang-up of a PRIV1 or PM call sends nothing: the session and its socket close.
  */
 import { EventEmitter } from "node:events";
 import { createSocket, type Socket } from "node:dgram";
-import { randomInt } from "node:crypto";
+import { createHash, randomInt } from "node:crypto";
 import { readNullTerminatedString } from "../p2p/codec.js";
+import {
+  RTC_CALL_BODY_LENGTH,
+  RtcCallType,
+  callBody,
+  callBodyHead,
+  callUuid,
+  callUuidOf,
+  nextCallRepeat,
+  pbTransportCaps,
+  randomChars,
+  sdpInfo,
+  type RtcCallSdp,
+} from "./call.js";
 import {
   RTC_DEFAULT_KEY,
   RTC_HEADER_LENGTH,
@@ -40,15 +66,36 @@ import {
 export const RTC_SIGNAL_PORT = 5062;
 const DISCOVER_INTERVAL_MS = 20_000;
 const WORK_PROTOCOL = 2;
-const ALNUM = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const P2P_TYPE: Record<number, string> = { [RtcCallType.PRIV1]: "priv1", [RtcCallType.PM]: "priv_p2p" };
+const SDP_KEYS = ["ice-u", "ice-p", "asc", "vsc", "sg", "sgc"] as const;
+let callCount = 1;
+type RtcRemoteSdp = Record<(typeof SDP_KEYS)[number], string>;
 
-/** The device record's inputs: hub serial, `p2p_did`, `p2p_license`, first IPv4 `signaling_servers` host. */
+/**
+ * The device record's inputs: hub serial, `p2p_did`, `p2p_license`, first IPv4 `signaling_servers` host; the
+ * account's user id and the client's app id.
+ */
 export interface RtcSignalOptions {
   sn: string;
   did: string;
   lic: string;
   host: string;
   port?: number;
+  userId?: string;
+  appId?: string;
+}
+
+interface RtcCall {
+  type: number;
+  packet: Buffer;
+  start: number;
+  timer?: NodeJS.Timeout;
+  /** The signalling session; an error answer deletes it while the channel keeps its repeat. */
+  session: boolean;
+  trying?: boolean;
+  acked?: boolean;
+  sdp?: boolean;
+  candidates: Set<string>;
 }
 
 export interface RtcSignalEvents {
@@ -56,6 +103,15 @@ export interface RtcSignalEvents {
   login: [contactId: string];
   /** A second 401 in a row. */
   failure: [];
+  /** The station's first 100 (or a 200 without one): its `turn` object. */
+  trying: [uuid: string, turn: unknown];
+  /** The station's 200, once per session. */
+  answer: [uuid: string, answer: { ftv?: number; transportCaps?: number }];
+  busy: [uuid: string];
+  hangup: [uuid: string];
+  /** A PM session's remote description lines, once. */
+  sdp: [uuid: string, sdp: RtcRemoteSdp];
+  candidate: [uuid: string, candidate: string];
 }
 
 export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
@@ -71,6 +127,8 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
   private unauthorized = 0;
   private b44 = 0;
   private discoverTimer?: NodeJS.Timeout;
+  private readonly calls = new Map<string, RtcCall>();
+  private readonly callSockets = new Map<number, Socket>();
 
   constructor(private readonly opts: RtcSignalOptions) {
     super();
@@ -87,7 +145,61 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
 
   close(): void {
     clearInterval(this.discoverTimer);
+    for (const uuid of this.calls.keys()) this.hangup(uuid);
     this.socket.close();
+  }
+
+  /** Call the station on a PRIV1 or PM channel; `flag` is `sdp_info` byte 2. */
+  call(type: number, flag = 1): { uuid: string } & RtcCallSdp {
+    const { sn, did, lic, userId = "", appId = "" } = this.opts;
+    const uuid = callUuid(type, sn, appId, did, lic);
+    const header = this.request(RtcKind.CALL, 2, callCount++ & 0xff);
+    header[18] = 1;
+    const ts = header.readUInt32LE(8);
+    const { info, ...sdp } = sdpInfo(flag);
+    const json = JSON.stringify({
+      account: createHash("md5")
+        .update(`0${userId}${ts | 0}`)
+        .digest("hex"),
+      ftv: 20,
+      call_type: "scall",
+      eufy_p2p_type: P2P_TYPE[type],
+      sdp_info: info.toString("base64"),
+      to: "device",
+      eufy_from_contact: this.contactId,
+      eufy_video_format: 0,
+      eufy_network_type: 1,
+      eufy_app_id: appId,
+      token: rtcEncrypt(this.didLic(), this.sessionKey, ts).toString("base64"),
+    });
+    const attach = rtcEncrypt(Buffer.from(json), this.sessionKey, ts);
+    const packet = rtcPacket(header, RtcBody.CALL, callBody(uuid, this.contactId, attach));
+    const c: RtcCall = { type, packet, start: Math.floor(Date.now() / 1000), session: true, candidates: new Set() };
+    this.calls.set(uuid, c);
+    this.repeatCall(c, Date.now());
+    return { uuid, ...sdp };
+  }
+
+  /** End a call: a PRIV1 or PM hang-up sends nothing, the session and its socket close. */
+  hangup(uuid: string): void {
+    const c = this.calls.get(uuid);
+    if (!c) return;
+    clearTimeout(c.timer);
+    this.calls.delete(uuid);
+    this.callSockets.get(c.type)?.close();
+    this.callSockets.delete(c.type);
+  }
+
+  private repeatCall(c: RtcCall, now: number): void {
+    this.send(c.packet, this.callSocket(c.type));
+    const at = nextCallRepeat(c.start, now);
+    if (at !== undefined) c.timer = setTimeout(() => this.repeatCall(c, at), at - Date.now());
+  }
+
+  private callSocket(type: number): Socket {
+    let s = this.callSockets.get(type);
+    if (!s) this.callSockets.set(type, (s = createSocket("udp4").on("message", (msg) => this.onDatagram(msg))));
+    return s;
   }
 
   private nextSeq(): number {
@@ -96,8 +208,8 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
     return s;
   }
 
-  private send(packet: Buffer): void {
-    this.socket.send(wrapRtcPacket(packet), this.opts.port ?? RTC_SIGNAL_PORT, this.host);
+  private send(packet: Buffer, socket = this.socket): void {
+    socket.send(wrapRtcPacket(packet), this.opts.port ?? RTC_SIGNAL_PORT, this.host);
   }
 
   private request(kind: number, extra = 0, b44 = 0) {
@@ -131,9 +243,87 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
       this.discovered = false;
       this.discover();
     }
-    if (p.header[14] !== 1 || readNullTerminatedString(p.header.subarray(20, 36), "latin1") !== this.opts.sn) return;
-    if (kind === RtcKind.DISCOVER) this.onDiscover(p.header, p.body);
-    else if (kind === RtcKind.REG) this.onLogin(p.header, p.body);
+    if (readNullTerminatedString(p.header.subarray(20, 36), "latin1") !== this.opts.sn) return;
+    const response = p.header[14] === 1;
+    if (kind === RtcKind.DISCOVER && response) this.onDiscover(p.header, p.body);
+    else if (kind === RtcKind.REG && response) this.onLogin(p.header, p.body);
+    else if (p.body.length < RTC_CALL_BODY_LENGTH) return;
+    else if (kind === RtcKind.CALL && response) this.onCallAnswer(p.header, p.body);
+    else if (kind === RtcKind.ACK && !response) this.send(reply200(p.header, callBodyHead(p.body)));
+    else if (kind === RtcKind.INFO && !response) this.onInfo(p.header, p.body);
+  }
+
+  /** The decrypted attach JSON of a call body, `{}` when it is absent or unreadable. */
+  private attach(header: Buffer, body: Buffer): Record<string, unknown> {
+    const n = body.readUInt16LE(4);
+    let a = body.subarray(RTC_CALL_BODY_LENGTH, RTC_CALL_BODY_LENGTH + n);
+    try {
+      if (header[18] === 1 && n) a = rtcDecrypt(a, this.sessionKey, header.readUInt32LE(8));
+    } catch {
+      return {};
+    }
+    return jsonObject(readNullTerminatedString(a)) ?? {};
+  }
+
+  private onCallAnswer(header: Buffer, body: Buffer): void {
+    const uuid = callUuidOf(body);
+    const c = this.calls.get(uuid);
+    if (!c?.session) return;
+    const status = header.readUInt16LE(16);
+    if (status !== 100 && status !== 200) {
+      c.session = false;
+      if (header[13]! < 4 || header[13]! > 8) return;
+      if (status === 480) {
+        this.hangup(uuid);
+        this.emit("hangup", uuid);
+      } else if (status === 486) {
+        clearTimeout(c.timer);
+        this.emit("busy", uuid);
+      }
+      return;
+    }
+    const a = this.attach(header, body);
+    if (!c.trying) {
+      c.trying = true;
+      this.emit("trying", uuid, a.turn);
+    }
+    if (status !== 200 || c.acked) return;
+    c.acked = true;
+    const caps = typeof a.pbsdp === "string" ? pbTransportCaps(a.pbsdp) : a.transport_caps;
+    this.emit("answer", uuid, {
+      ftv: typeof a.ftv === "number" ? a.ftv : undefined,
+      transportCaps: typeof caps === "number" ? caps : undefined,
+    });
+    const ack = rtcHeader({ kind: RtcKind.ACK, sn: this.opts.sn, seq: this.nextSeq(), route: header[43]! });
+    this.send(rtcPacket(ack, RtcBody.CALL, callBodyHead(body)), this.callSocket(c.type));
+  }
+
+  private onInfo(header: Buffer, body: Buffer): void {
+    const uuid = callUuidOf(body);
+    const c = this.calls.get(uuid);
+    if (!c?.session) return this.send(reply200(header, callBodyHead(body)));
+    const socket = this.callSocket(c.type);
+    const ok = reply200(header, body);
+    this.send(ok, socket);
+    setTimeout(() => this.calls.has(uuid) && this.send(ok, socket), 15);
+    if (c.type !== RtcCallType.PM) return;
+    const a = this.attach(header, body);
+    if (typeof a.sdp === "string" && a.sdp && !c.sdp) {
+      c.sdp = true;
+      const o = jsonObject(a.sdp);
+      if (o)
+        this.emit(
+          "sdp",
+          uuid,
+          Object.fromEntries(SDP_KEYS.map((k) => [k, typeof o[k] === "string" ? o[k] : ""])) as RtcRemoteSdp,
+        );
+    }
+    const cand = typeof a.candidate === "string" ? a.candidate : "";
+    const kind = ["host", "srflx", "relay"].find((t) => cand.includes(t));
+    if (kind && !c.candidates.has(kind)) {
+      c.candidates.add(kind);
+      this.emit("candidate", uuid, cand);
+    }
   }
 
   private onDiscover(header: Buffer, body: Buffer): void {
@@ -142,12 +332,7 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
       return;
     }
     if (header[41] !== RtcBody.JSON) return;
-    let addr: unknown;
-    try {
-      addr = (JSON.parse(readNullTerminatedString(body)) as { server_addr?: unknown }).server_addr;
-    } catch {
-      return;
-    }
+    const addr = jsonObject(readNullTerminatedString(body))?.server_addr;
     if (typeof addr !== "string" || addr.length < 2) return;
     if (addr !== "self") this.host = addr;
     this.discovered = true;
@@ -167,7 +352,7 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
       const ts = header.readUInt32LE(8);
       const modulus = readNullTerminatedString(rtcDecrypt(body, RTC_DEFAULT_KEY, ts), "latin1");
       if (modulus.length !== 256) return;
-      this.sessionKey = Array.from({ length: 16 }, () => ALNUM[randomInt(ALNUM.length)]).join("");
+      this.sessionKey = randomChars(16);
       const rsa = rsaEncrypt(Buffer.from(this.sessionKey, "latin1"), modulus);
       const auth = rtcEncrypt(this.didLic(), this.sessionKey, ts);
       this.send(
@@ -188,6 +373,23 @@ function u16(n: number): Buffer {
   const b = Buffer.alloc(2);
   b.writeUInt16LE(n);
   return b;
+}
+
+function jsonObject(text: string): Record<string, unknown> | undefined {
+  try {
+    const o: unknown = JSON.parse(text);
+    return o && typeof o === "object" ? (o as Record<string, unknown>) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A received request's header answered 200, seq kept, over `body`. */
+function reply200(rx: Buffer, body: Buffer): Buffer {
+  const h = echo(rx, rx[42]!);
+  h[14] = 1;
+  h.writeUInt16LE(200, 16);
+  return rtcPacket(h, RtcBody.CALL, body);
 }
 
 /** A received header copied as a request (the app's `NewRTCProtocolByHead`): flags and bytes 37..39 cleared. */
