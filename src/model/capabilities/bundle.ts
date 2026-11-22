@@ -48,6 +48,8 @@ export interface BundleFrame extends SessionFrame {
   session?: Readonly<Record<string, string>>;
   dp?: number;
   value?: unknown;
+  /** A data point's value per value of the input `key` (the bundle's own table, `fanToString[speed]`). */
+  values?: { key: string; map: Readonly<Record<string, unknown>> };
   template?: unknown;
   encoding?: string;
   domain?: string;
@@ -691,9 +693,10 @@ function templated(frame: BundleFrame, value: unknown, fill: (x: unknown) => unk
   return hex ? Buffer.from(json as string, "utf8").toString("hex") : json;
 }
 
-/** The data-point write a `dp` frame is, a templated value set per write, a hex value as base64. */
+/** The data-point write a `dp` frame is, its value by the input's table or templated per write, a hex value as base64. */
 function dpCommand(frame: BundleFrame, fill: (x: unknown) => unknown): Command | undefined {
-  const filled = fill(frame.value);
+  // A list of one reads as its element (`String([3])`), a longer one as none of the table's keys.
+  const filled = fill(frame.values ? frame.values.map[String(fill(`$input.${frame.values.key}`))] : frame.value);
   const value = frame.template === undefined ? filled : templated(frame, filled, fill);
   if (typeof frame.dp !== "number") return undefined;
   if (frame.encoding?.startsWith("hex"))

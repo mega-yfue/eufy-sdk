@@ -472,7 +472,9 @@ describe("a templated protobuf data point", () => {
     const plain = protos.filter((f) => !JSON.stringify(f.template).includes("|"));
     expect(plain.length).toBe(262);
     for (const f of plain) {
-      const input: Record<string, unknown> = {};
+      // A table's key (`values`) is the one its own value is listed under.
+      const table = f.values && Object.entries(f.values.map).find(([, v]) => v === f.value)?.[0];
+      const input: Record<string, unknown> = table === undefined ? {} : { [f.values!.key]: Number(table) };
       for (const [path, token] of Object.entries(f.template as Record<string, string>)) {
         const v = leaf(f, path);
         if (token === "$seq") vi.spyOn(Math, "random").mockReturnValue(((v as number) - 1000) / 9000);
@@ -555,6 +557,27 @@ describe("a templated protobuf data point", () => {
       kind: "aiot-dp",
       dp: 107,
       value: '{"en":true,"start_t":"2205","end_t":"0730"}',
+    });
+  });
+  it("sends a value through the bundle's own table, a list of one by its element", () => {
+    // The bundles' `controlDevice` answers for these inputs; a longer list is not in the table, so not sent.
+    const hex = (h: string) => Buffer.from(h, "hex").toString("base64");
+    const reset = robot("ecl_reset_accessory", "T2261A");
+    expect(frameCommand(reset, '{"consumables":[6]}', ctx)).toEqual({
+      kind: "aiot-dp",
+      dp: 116,
+      value: hex("7b22636f6e73756d61626c65223a7b227265736574223a5b224442225d7d7d"),
+    });
+    expect(frameCommand(reset, '{"consumables":[0,1]}', ctx)).toBeUndefined();
+    expect(frameCommand(robot("ecl_reset_accessory", "T2210"), '{"consumables":[2]}', ctx)).toEqual({
+      kind: "aiot-dp",
+      dp: 150,
+      value: '{"dust_filter":0}',
+    });
+    expect(frameCommand(robot("ecl_update_suction", "T2261A"), '{"speed":2}', ctx)).toEqual({
+      kind: "aiot-dp",
+      dp: 102,
+      value: "Turbo",
     });
   });
   it("sets T2070's custom fan and water as its bundle builds it, a false leaving its message empty", () => {
