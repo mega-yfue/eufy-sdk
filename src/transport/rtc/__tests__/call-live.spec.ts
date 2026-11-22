@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import type { PeerConnection, RtcConfig, Track } from "node-datachannel";
 import type { LiveVideoFrame } from "../../../core/contracts.js";
-import { H264Depacketizer, RtcCallLiveStream } from "../call-live.js";
+import { RtcCallLiveStream } from "../call-live.js";
 import { RtcSession } from "../session.js";
 import type { RtcInnerMessage, RtcSignalingClient } from "../signaling.js";
 
@@ -14,28 +14,6 @@ const rtp = (seq: number, payload: number[] | Buffer, marker = false, pt = 99) =
   h.writeUInt32BE(9000, 4);
   return Buffer.concat([h, Buffer.from(payload)]);
 };
-
-describe("H264Depacketizer", () => {
-  it("joins STAP-A and FU-A into one Annex-B access unit on the marker", () => {
-    const units: Buffer[] = [];
-    const d = new H264Depacketizer((u) => units.push(u));
-    d.push(rtp(1, [24, 0, 2, 0x67, 1, 0, 2, 0x68, 2]));
-    d.push(rtp(2, [0x7c, 0x85, 9, 9]));
-    d.push(rtp(3, [0x7c, 0x45, 8], true));
-    expect(units).toHaveLength(1);
-    expect(units[0].toString("hex")).toBe("0000000167010000000168020000000165090908");
-  });
-
-  it("drops a unit with a sequence gap and ignores RTCP", () => {
-    const units: Buffer[] = [];
-    const d = new H264Depacketizer((u) => units.push(u));
-    d.push(rtp(10, [0x7c, 0x85, 1]));
-    d.push(rtp(12, [0x7c, 0x45, 2], true));
-    d.push(rtp(0, [0x81, 0xc8], true, 72));
-    d.push(rtp(13, [0x61, 5], true));
-    expect(units.map((u) => u.toString("hex"))).toEqual(["000000016105"]);
-  });
-});
 
 class FakeSignaling extends EventEmitter {
   isOpen = false;

@@ -16,7 +16,7 @@ import { rawDpCodec } from "../raw-dp.js";
 export const RtcCallType = { PRIV1: 5, PM: 6 } as const;
 export const RTC_CALL_BODY_LENGTH = 76;
 const ALNUM = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+export const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 export function randomChars(n: number, alphabet = ALNUM): string {
   return Array.from({ length: n }, () => alphabet[randomInt(alphabet.length)]).join("");
