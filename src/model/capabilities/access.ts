@@ -58,7 +58,7 @@ export function setJsonRaw(cmd: number, data: Record<string, unknown>, ctx: Comm
 }
 
 /**
- * Set a param carried in the `SET_PAYLOAD` (1350) envelope — `{account_id,cmd,mChannel,mValue3:cmd,
+ * Set a param carried in the `SET_PAYLOAD` (1350) envelope — `{account_id,cmd,mChannel,mValue3:0,
  * payload}`, GCM signCode 8 — NOT the bare `{commandType,data}` 1700 wrapper `setJson` uses. The wire
  * eufy uses for a few doorbell controls (status-LED 1716 `{light_enable}`). Level-2 by default; the
  * sink resolves the session/account_id and replays the frame.
