@@ -3,6 +3,7 @@ import { coerceEnumValue, enumLabels } from "../../core/util.js";
 import { HOMEBASE_TYPES, isHomeBase, isStation9000 } from "../device-family.js";
 import { hasReportedEasSwitch } from "./camera.js";
 import { setPayload, setStationScalar } from "./access.js";
+import { bundled } from "./bundle.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
 import type { AvailabilityContext, CapabilityModule, CommandContext } from "./types.js";
 import type { Command } from "../../core/contracts.js";
@@ -53,14 +54,8 @@ export const SirenVolume = { Low: 1, Mid: 2, High: 3 } as const;
 /** A siren volume level — the value side of {@link SirenVolume}. */
 export type SirenVolumeValue = (typeof SirenVolume)[keyof typeof SirenVolume];
 
-/**
- * The alarm-duration presets the app offers, in seconds (1/5/10/15 minutes).
- * `setAlarmDuration` accepts exactly these (rejecting others),
- * the same way the arming capability makes its delay presets the parameter type.
- */
-export const SirenAlarmDuration = { Min1: 60, Min5: 300, Min10: 600, Min15: 900 } as const;
-/** A siren alarm duration in seconds — the value side of {@link SirenAlarmDuration}. */
-export type SirenAlarmDurationValue = (typeof SirenAlarmDuration)[keyof typeof SirenAlarmDuration];
+/** `sensor_alarm_timeout` as each product's settings bundle writes and reads it. */
+const ALARM_TIMEOUT = bundled(["sensor_alarm_timeout"], SIREN_PARAM.ALARM_TIMEOUT, true);
 
 /** HomeBase alarm tone options, 1-indexed. */
 export const HubAlarmTone = { Tone1: 1, Tone2: 2 } as const;
@@ -276,24 +271,14 @@ export const SIREN_MEMBERS = {
       return level === undefined ? undefined : sirenPayload(SIREN_PARAM.ALARM_VOLUME, { volume: level }, ctx);
     },
   },
-  /** The presets the product's description lists (`sensor_alarm_timeout`), else the app's four. */
+  /** The app's UI value for `sensor_alarm_timeout` (the description names each); absent where it lists none. */
   alarmDuration: {
-    param: SIREN_PARAM.ALARM_TIMEOUT,
-    type: "number",
-    unit: "s",
-    kind: "seconds",
-    available: isSensorCodec,
-    requires: [SIREN_PARAM.ALARM_TIMEOUT],
-    enumValues: enumLabels(SirenAlarmDuration),
-    thing: ["sensor_alarm_timeout"],
-    args: [{ name: "seconds", kind: "seconds", description: "One of the app's presets: 60/300/600/900." }],
+    type: "enum",
+    kind: "scalar",
+    ...ALARM_TIMEOUT,
     description:
-      "How long an alarm sounds before stopping itself (61006 APP_CMD_DEV_ALARM_TIMEOUT), seconds. " +
-      "Write: 1350 SET_PAYLOAD {value}; app presets 60/300/600/900.",
-    write: (v, ctx) => {
-      const seconds = coerceEnumValue(SirenAlarmDuration, v);
-      return seconds === undefined ? undefined : sirenPayload(SIREN_PARAM.ALARM_TIMEOUT, { value: seconds }, ctx);
-    },
+      "How long an alarm sounds before stopping itself, as the app's own value for the product (its " +
+      "description names each), written and read as the product's settings bundle does.",
   },
   /**
    * Read-only: the id comes from the app, which fixes neither the polarity nor a write frame. Typed

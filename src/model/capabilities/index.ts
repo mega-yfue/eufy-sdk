@@ -40,7 +40,7 @@ import { MOTION } from "./motion.js";
 import { PERSON_DETECTION } from "./person-detection.js";
 import { BATTERY } from "./battery.js";
 export { RtspRecordingMode, type RtspRecordingModeValue, type RtspAuthScheme } from "./rtsp.js";
-export { SirenVolume, type SirenVolumeValue, SirenAlarmDuration, type SirenAlarmDurationValue } from "./siren.js";
+export { SirenVolume, type SirenVolumeValue } from "./siren.js";
 /**
  * Ask what a bound capability can be told to change but can never report back, and what it reports without
  * that value reflecting its own setter.

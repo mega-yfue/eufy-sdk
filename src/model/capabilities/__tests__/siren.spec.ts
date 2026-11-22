@@ -9,11 +9,27 @@ import type { Command } from "../../../core/contracts.js";
 /** The bound `dev.siren()` object — every write is a member, derived in the barrel. */
 const sirenOf = (c: CommandContext) => bind<SirenActions>("siren", c);
 
+/** `sensor_alarm_timeout` as T90R0's description lists it, and as T90G0's (an int with no members). */
+const timeout = (data_type: object) =>
+  parseThingsList({
+    things_list: [
+      { profile: { product_code: "T0000" }, properties: [{ identifier: "sensor_alarm_timeout", data_type }] },
+    ],
+  }).T0000!;
+const T90R0_TIMEOUT = timeout({
+  type: "ienum",
+  specs: {
+    eunmList: ["1min", "5min", "10min", "15min"].map((desc, i) => ({ value: String(i), desc, associatedValue: "" })),
+  },
+});
+const T90G0_TIMEOUT = timeout({ type: "int", specs: {} });
+
 const ctx = (paramIds = [61008, 1825, 61006, 1828], channel = 16): CommandContext =>
   ({
     channel,
     codec: "sensor",
     deviceType: DeviceType.SIREN_SENSOR_E20,
+    model: "T90R0",
     serial: "T90R00000000000",
     paramIds: new Set(paramIds),
   }) as CommandContext;
@@ -70,10 +86,15 @@ describe("siren capability module", () => {
       });
     });
 
-    it("setAlarmDuration emits {value} in seconds", async () => {
-      const { acts: a, sent } = sirenOf(ctx());
-      await a.setAlarmDuration!(300);
+    it("setAlarmDuration sends the app's UI value as its bundle's seconds", async () => {
+      const { acts: a, sent } = sirenOf({ ...ctx(), things: T90R0_TIMEOUT });
+      await a.setAlarmDuration!(1);
       expect(sent[0]).toMatchObject({ kind: "set-payload", cmd: SIREN_PARAM.ALARM_TIMEOUT, payload: { value: 300 } });
+    });
+
+    it("offers no alarm duration where the description lists none, as the app offers none (T90G0)", () => {
+      const a = sirenOf({ ...ctx(), model: "T90G0", serial: "T90G00000000000", things: T90G0_TIMEOUT }).acts;
+      expect(a.setAlarmDuration).toBeUndefined();
     });
 
     it("test + stop are momentary triggers gated on volume plus ring-state evidence", async () => {
@@ -116,7 +137,7 @@ describe("siren capability module", () => {
     );
 
     it("retains configured duration and volume on the volume-plus-timeout evidence path", () => {
-      const actions = sirenOf(ctx([1825, 61006])).acts;
+      const actions = sirenOf({ ...ctx([1825, 61006]), things: T90R0_TIMEOUT }).acts;
 
       expect("volume" in actions).toBe(true);
       expect(actions.setVolume).toBeDefined();
@@ -144,12 +165,10 @@ describe("siren capability module", () => {
       expect(a.stop).toBeUndefined();
     });
 
-    it("rejects out-of-range volume and non-preset duration rather than sending", async () => {
+    it("rejects out-of-range volume rather than sending", async () => {
       const { acts: a, sent } = sirenOf(ctx());
       await expect(a.setVolume!(4)).rejects.toThrow(/1\/2\/3/);
       await expect(a.setVolume!(0)).rejects.toThrow(/1\/2\/3/);
-      await expect(a.setAlarmDuration!(120)).rejects.toThrow(/60\/300\/600\/900/);
-      await expect(a.setAlarmDuration!(0)).rejects.toThrow(/60\/300\/600\/900/);
       expect(sent).toEqual([]);
     });
 
