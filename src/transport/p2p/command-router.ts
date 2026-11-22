@@ -222,6 +222,9 @@ function sameLiveOpt(a: unknown, b: unknown): boolean {
 }
 
 /** The P2P session + routing params resolved for a device serial (see {@link P2PCommandRouter.resolveSession}). */
+/** `x` as JSON, a `"$userId"` a bundle's parser put in it (`ZoneInfo.account`) the account id, as the 1350 envelope fills it. */
+const withUser = (x: unknown, accountId: string) => JSON.stringify(x, (_, v) => (v === "$userId" ? accountId : v));
+
 interface ResolvedSession {
   session: P2PSession;
   parentSn: string;
@@ -1670,7 +1673,7 @@ export class P2PCommandRouter {
       sn,
       outerCmd,
       ({ session, accountId }) =>
-        session.sendStringPayloadCommand(outerCmd, JSON.stringify({ account_id: accountId, ...data }), channel),
+        session.sendStringPayloadCommand(outerCmd, withUser({ account_id: accountId, ...data }, accountId), channel),
       undefined,
       true,
     );
@@ -2189,7 +2192,8 @@ export class P2PCommandRouter {
     outerCmd: number,
     inner: { commandType: number; data: unknown },
   ): Promise<boolean | void> {
-    const json = JSON.stringify(inner);
-    return this.sendAnswered(sn, outerCmd, (r) => r.session.sendStringPayloadCommand(outerCmd, json, r.channel));
+    return this.sendAnswered(sn, outerCmd, (r) =>
+      r.session.sendStringPayloadCommand(outerCmd, withUser(inner, r.accountId), r.channel),
+    );
   }
 }

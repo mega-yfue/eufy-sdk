@@ -103,6 +103,25 @@ describe("a level-2 setting write settles on the device's answer", () => {
     expect(session.sendStringPayloadCommand).toHaveBeenCalledTimes(1);
   });
 
+  it("fills a $userId the bundle's parser put in a control write's data with the account id", async () => {
+    const session = Object.assign(connectedSession(false), {
+      sendStringPayloadCommand: vi.fn((commandId: number, _json: string, channel: number) =>
+        queueMicrotask(() => session.emit("commandResult", { code: 0, channel, commandId })),
+      ),
+    });
+    const data = { account: "$userId", zonecount: 0 };
+    await routerWithSession(session, { accountId: "acct-1" }).dispatchCommand(DEVICE_SN, {
+      kind: "set-json",
+      param: 6042,
+      data,
+      channel: CHANNEL,
+    });
+    expect(JSON.parse(session.sendStringPayloadCommand.mock.calls[0]![1])).toEqual({
+      commandType: 6042,
+      data: { account: "acct-1", zonecount: 0 },
+    });
+  });
+
   it("sends on a fresh session when the one it resolved closed before the send", async () => {
     const closing = Object.assign(connectedSession(false), {
       close: vi.fn(async () => {}),
