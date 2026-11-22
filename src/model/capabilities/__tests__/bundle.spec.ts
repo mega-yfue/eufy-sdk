@@ -716,6 +716,15 @@ describe("the regenerated data's forms", () => {
     expect(read("{}"), "no list: as is").toBe("{}");
   });
 
+  it("reads the response-timeout schedule as the bundle re-stringifies it, a looping one unwrapped", () => {
+    const read = (o: unknown) =>
+      thingRead("device_response_timeout_schedule", ctx("T8214"), (p) =>
+        p === 6440 ? Buffer.from(JSON.stringify(o)).toString("base64") : undefined,
+      );
+    expect(read({ count: 1, schedules: { loop: 1, week: [1] } })).toBe('{"loop":1,"week":[1]}');
+    expect(read({ count: 1, schedules: { loop: 0 } })).toBe('{"count":1,"schedules":{"loop":0}}');
+  });
+
   it("leaves a $userId key to the transport", () => {
     const frame: BundleFrame = {
       cmd: 1271,

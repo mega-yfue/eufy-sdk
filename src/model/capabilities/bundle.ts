@@ -996,6 +996,16 @@ const TRANSFORMS: Record<string, (v: unknown, input: Row, param?: Param) => unkn
       return v;
     }
   },
+  /** `device_response_timeout_schedule` (6440, `decodeBase64StringToJSON`: `{}` for no JSON): its `schedules` as JSON when they `loop`, else the whole. */
+  timeoutSchedule: (v) => {
+    let o: { schedules?: { loop?: unknown } } | null;
+    try {
+      o = JSON.parse(String(v));
+    } catch {
+      o = {};
+    }
+    return JSON.stringify(o?.schedules?.loop ? o.schedules : o);
+  },
 };
 
 /** `x` with every `week` list of plain values as `[{day: <int>}]`, as the bundles' schedule parsers rewrite it. */
