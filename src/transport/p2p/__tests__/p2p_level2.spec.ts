@@ -134,6 +134,14 @@ describe("P2PSession.sendSetPayload envelope (mValue3)", () => {
     );
     expect(env).toMatchObject({ account_id: "acct", cmd: 1293, mChannel: 6, mValue3: 0, payload: { x: 1 } });
   });
+  it("fills a `$userId` the parser put in the params with the account id (the chime's `encrypt_key`)", () => {
+    const session = newSession();
+    withGcmKey(session, KEY);
+    const env = captureEnvelope(session, () =>
+      session.sendSetPayload(6239, { chimes: [], encrypt_key: "$userId" }, { accountId: "acct", channel: 0 }),
+    );
+    expect(env).toMatchObject({ account_id: "acct", payload: { chimes: [], encrypt_key: "acct" } });
+  });
 });
 
 /**

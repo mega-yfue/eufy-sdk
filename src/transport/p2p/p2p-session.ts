@@ -1878,7 +1878,9 @@ export class P2PSession extends EventEmitter {
       mValue3: opts.mValue3 ?? 0,
       ...(opts.omitPayload ? {} : opts.unzip ? (payload as object) : { payload }),
     };
-    const value = keyed ? JSON.stringify(inner).replace(/=/g, "\\u003d") : JSON.stringify(inner);
+    // A `"$userId"` the bundle's parser put in the params (`encrypt_key`) is the account id, as the envelope's.
+    const json = JSON.stringify(inner, (_, v) => (v === "$userId" ? (opts.accountId ?? "") : v));
+    const value = keyed ? json.replace(/=/g, "\\u003d") : json;
     const cmd = opts.wrapCmd ?? CMD_SET_PAYLOAD;
     const streamId = this.headerCounter(opts.counter);
     this.logger.debug(`[p2p] ${this.cfg.stationSn} sendSetPayload subCmd=${subCmd}`);

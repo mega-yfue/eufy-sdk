@@ -78,7 +78,7 @@ const contextOf = (r: { identifier: string; type: string; model: string; variant
 
 /**
  * `x` with the bundle's tokens as the app fills them on this device for `value`, no param reported (a
- * `$param:` token's `??` fallback); a `$userId` key left out.
+ * `$param:` token's `??` fallback); an `account_id: "$userId"` key left out.
  */
 const filled = (x: unknown, value: unknown, ctx: CommandContext): unknown => {
   const tokens: Record<string, unknown> = {
@@ -94,7 +94,9 @@ const filled = (x: unknown, value: unknown, ctx: CommandContext): unknown => {
   if (Array.isArray(x)) return x.map((v) => filled(v, value, ctx));
   if (x && typeof x === "object")
     return Object.fromEntries(
-      Object.entries(x).flatMap(([k, v]) => (v === "$userId" ? [] : [[k, filled(v, value, ctx)]])),
+      Object.entries(x).flatMap(([k, v]) =>
+        v === "$userId" && k === "account_id" ? [] : [[k, filled(v, value, ctx)]],
+      ),
     );
   return x;
 };
@@ -352,5 +354,64 @@ describe("auto_cruise_schedule_list on a T8171", () => {
     expect(command.data?.schedules).toEqual({
       loop: [{ start_time: "08:00", end_time: "09:00", week: [{ day: 1 }, { day: 3 }] }],
     });
+  });
+});
+
+/** A field the bundle's parser transforms before it sends it (`$input.<key>|<name>`) goes out transformed. */
+describe("named transforms, as the parsers apply them", () => {
+  const write = (identifier: string, model: string, value: unknown) =>
+    thingWrite(
+      identifier,
+      JSON.stringify(value),
+      contextOf({ identifier, type: "text", model, variant: "", topology: "standalone" }),
+    ) as { cmd?: number; payload?: Record<string, unknown> } | undefined;
+
+  it("T8425 ambient light: week as a bitmask, each loop's enable 0 while sunset2rise is on", () => {
+    const loop = [{ start_h: 8, week: [1, 3], enable: 1 }];
+    expect(
+      write("light_ambient_lighting_setting", "T8425", { enable: true, sunset2rise: true, loop })?.payload,
+    ).toMatchObject({
+      enable: 1,
+      sunset2rise: 1,
+      schedule: [{ start_h: 8, week: 10, enable: 0 }],
+    });
+    expect(write("light_ambient_lighting_setting", "T8425", { sunset2rise: false, loop })?.payload).toMatchObject({
+      schedule: [{ week: 10, enable: 1 }],
+    });
+  });
+
+  it("T8213 chimes: each normalised, encrypt_key left to the transport", () => {
+    const chimes = [{ chime_sn: "SN", chime_mac: "MAC", enable: true, volume: "7", is_play: 0 }];
+    expect(write("device_chime_minibase_chime_setting", "T8213", { chimes })).toMatchObject({
+      cmd: 6239,
+      payload: {
+        chimes: [
+          {
+            chime_sn: "SN",
+            chime_mac: "MAC",
+            enable: 1,
+            volume: 7,
+            voice_type: Number.NaN,
+            is_play: 0,
+            trigger_type: 1,
+          },
+        ],
+        encrypt_key: "$userId",
+      },
+    });
+  });
+
+  it("T8172 motion detection: detection types summed on their bits; image effect on the device's scale", () => {
+    expect(
+      write("device_motion_detection", "T8172", { ai_detect_type: "1,2", ai_notification: "", ai_switch: true })
+        ?.payload,
+    ).toMatchObject({ ai_detect_type: 7, ai_notification: 0, push_detect_type: 0 });
+    expect(
+      write("video_setting_image_effect_set", "T8172", { brightness: 50, contrast: 100, saturation: 0, chrome: 75 })
+        ?.payload,
+    ).toEqual(expect.objectContaining({ brightness: 256, contrast: 1000, saturation: 1024, chrome: 5120 }));
+    expect(
+      write("video_setting_image_effect_set", "T8172", { brightness: 101, contrast: 1, saturation: 1, chrome: 1 }),
+    ).toBeUndefined();
   });
 });
