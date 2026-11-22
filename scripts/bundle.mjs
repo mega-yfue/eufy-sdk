@@ -28,8 +28,7 @@ const pkg = JSON.parse(readFileSync("package.json", "utf8"));
  *
  * Bundling one would defeat the lazy loads it is there to preserve and ship a second copy of a
  * package the consumer already resolves. Read from `dependencies` so adding one cannot silently
- * change what is inlined; a native one like `node-datachannel` would look for its binding next to
- * `dist/` if inlined.
+ * change what is inlined.
  */
 const external = Object.keys(pkg.dependencies ?? {});
 

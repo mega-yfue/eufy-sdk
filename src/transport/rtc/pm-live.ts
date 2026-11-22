@@ -25,6 +25,22 @@ const VIDEO_PT: Record<number, "h264" | "h265"> = { 97: "h265", 99: "h264" };
 /** How far in ms a live-stream trailer timestamp may lie ahead of the clock: 100 years of 365.25 days. */
 const TRAILER_AHEAD = 3155760000000n;
 
+/** The app's media AES-GCM gate (`RTCSdkClient.setDeviceVersion`, `isEncVersion`); any other model always encrypts. */
+const MEDIA_GCM: Record<string, (v: number) => boolean> = {
+  T8223: () => true,
+  T8224: () => true,
+  T8030: () => true,
+  T8025: () => true,
+  T8172: (v) => v >= 1021,
+  T8N00: (v) => (v >= 1089 && v < 1200) || v >= 1209,
+  T9000: (v) => v >= 4100,
+};
+
+/** Whether a device's live media is AES-GCM: by serial prefix and the firmware version with its dots removed. */
+export function mediaGcm(sn: string, version: number): boolean {
+  return MEDIA_GCM[sn.slice(0, 5)]?.(version) ?? true;
+}
+
 /** The `ANKE` checksum of a frame: bytes 0..15 and the payload its length field states. */
 export function ankeChecksum(f: Buffer): number {
   let sum = 0;
@@ -136,8 +152,10 @@ export class Anke {
 export interface RtcPmLiveOptions {
   /** The PM call's `sdp_info`: its audio value is the RTCP sender SSRC, its key and iv the media AES-GCM's. */
   call: RtcCallSdp;
-  /** Whether the device runs the media and command AES-GCM ({@link cmdGcm}). */
+  /** Whether the device's media is AES-GCM ({@link mediaGcm}). */
   gcm: boolean;
+  /** Whether its live commands are ({@link cmdGcm}). */
+  cmdGcm: boolean;
   /** The live commands' header channel, which the station also writes as each video frame's last byte. */
   channel: number;
   /** The 1350 JSON texts that start (inner `cmd` 1003) and stop (1004) the view. */
@@ -188,7 +206,7 @@ export class RtcPmLiveStream extends EventEmitter implements LiveStreamHandle {
     super();
     this.logger = opts.logger ?? noopLogger;
     this.anke = new Anke(opts.call.audio, (p) => agent.write(p));
-    if (opts.gcm)
+    if (opts.cmdGcm)
       this.seal = {
         key: Buffer.from(opts.call.key, "latin1").subarray(0, 16),
         counter: opts.counter ?? { word: 0x01020304 },

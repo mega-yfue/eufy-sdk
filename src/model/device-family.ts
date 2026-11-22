@@ -129,26 +129,11 @@ export const isOutdoorPanTilt = (ctx: FamilyContext): boolean => has(OUTDOOR_PT_
 export const isFloodLight = (ctx: FamilyContext): boolean => has(FLOODLIGHT_TYPES, ctx.deviceType);
 /** HomeBase-family hub (has a speaker/alarm) — a station EXCLUDING the NVRs, per `HOMEBASE_TYPES`. */
 export const isHomeBase = (ctx: FamilyContext): boolean => has(HOMEBASE_TYPES, ctx.deviceType);
-/** HomeBase S1 Pro (`STATION_9000`), the station the app drives over its WebRTC control channel. */
+/** HomeBase S1 Pro (`STATION_9000`). */
 export const isStation9000 = (ctx: FamilyContext): boolean => ctx.deviceType === DeviceType.STATION_9000;
-/** T8N00 NVR, identified by its reported model. */
-export const isNvrT8N00 = (ctx: FamilyContext): boolean => ctx.model === "T8N00";
-
-/** Camera models whose media a T8N00 serves over its call. */
-const NVR_MEDIA_CAMERA_MODELS: ReadonlySet<string> = new Set(["T8E00", "T8P00", "T8P10", "T8162", "T8410", "T8214"]);
-/** A camera attached to a T8N00 whose media the NVR's call serves. */
-export const isNvrMediaCamera = (ctx: FamilyContext): boolean =>
-  ctx.model !== undefined && NVR_MEDIA_CAMERA_MODELS.has(ctx.model);
-/** PoE S4 camera with independently streamed fixed and movable optical views. */
-export const isNvrDualLensCamera = (ctx: FamilyContext): boolean => ctx.model === "T8E00";
-
-/** NVR cameras that support an explicit 1080p live output. */
-export const isNvrFullHdCamera = (ctx: FamilyContext): boolean => ctx.model === "T8E00" || ctx.model === "T8P00";
-/** Video Doorbell C31 (T8223) or C30 (T8224), streamed by the app over the portal `call` route. */
-export const isCallDoorbell = (ctx: FamilyContext): boolean => ctx.model === "T8223" || ctx.model === "T8224";
 /** Gets `doorbell` but has run no doorbell write: the C30/C31 and the video locks T85V0/T85M0. */
 export const isUntriedDoorbell = (ctx: FamilyContext): boolean =>
-  isCallDoorbell(ctx) || ctx.model === "T85V0" || ctx.model === "T85M0";
+  ["T8223", "T8224", "T85V0", "T85M0"].includes(ctx.model ?? "");
 /** Wired doorbell (DeviceType.DOORBELL). */
 export const isWiredDoorbell = (ctx: FamilyContext): boolean => ctx.deviceType === DeviceType.DOORBELL;
 

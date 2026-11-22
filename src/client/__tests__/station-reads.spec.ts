@@ -5,8 +5,8 @@ import { EufyMega } from "../eufy-mega.js";
 /**
  * `readStationTable` and `readStationImage` resolve which station, which transport and which account
  * id, and hand the read to that transport, which owns assembling the reply and is specced with it.
- * These cover the facade's half: a HomeBase S1 Pro (T9000) reads over its control channel, a table on
- * any other station over its P2P session, an image only on a T9000, and both refuse a station they
+ * These cover the facade's half: a station on an RTC route reads over its data channel, a table on
+ * any other station over its P2P session, an image only on an RTC route, and both refuse a station they
  * cannot name.
  */
 const HUB = "T8010P0000000000";
@@ -15,13 +15,15 @@ const CAMERA = "T8000P0000000002";
 const THUMB = "/zx/hdd_data0/Camera020000/event/202604/20260410/20260410153000_thumb.jpg";
 const ROWS = [{ device_sn: CAMERA, record_id: 7, thumb_path: THUMB }];
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+/** The record inputs the native RTC route needs, synthetic. */
+const RTC_INPUTS = { p2p_did: "SYNTH-000000-AAAAA", p2p_license: "SYNLIC", signaling_servers: ["https://192.0.2.7"] };
 
 function harness(opts: { adminUserId?: string; session?: null } = {}) {
   const eufy = new EufyMega({ email: "t@example.com", password: "x", autoRealtime: false, pollMs: 0 });
   const readDatabase = vi.fn().mockResolvedValue(ROWS);
   const session = opts.session === null ? null : { readDatabase };
   const internals = eufy as unknown as {
-    registry: { list: () => unknown[] };
+    registry: { list: () => unknown[]; thingsOf: (sn: string) => unknown };
     rtc: { readTable: unknown; readImage: unknown };
     p2p: {
       stationKeyOf: (sn: string) => string;
@@ -32,9 +34,12 @@ function harness(opts: { adminUserId?: string; session?: null } = {}) {
   const member = { admin_user_id: opts.adminUserId ?? "ADMIN-0000" };
   vi.spyOn(internals.registry, "list").mockReturnValue([
     { sn: HUB, model: "T8010", raw: { device_type: DeviceType.STATION, member } },
-    { sn: T9000, model: "T9000", raw: { device_type: DeviceType.STATION_9000, member } },
+    { sn: T9000, model: "T9000", raw: { device_type: DeviceType.STATION_9000, member, ...RTC_INPUTS } },
     { sn: CAMERA, model: "T8425", stationSn: T9000, raw: { parent_sn: T9000, device_channel: 2 } },
   ]);
+  vi.spyOn(internals.registry, "thingsOf").mockImplementation((sn) =>
+    sn === T9000 ? { properties: { is_connect_webrtc: { defaultValue: "2" } } } : undefined,
+  );
   const rtcTable = vi
     .spyOn(internals.rtc as { readTable: () => Promise<unknown[]> }, "readTable")
     .mockResolvedValue(ROWS);
@@ -63,7 +68,7 @@ describe("readStationTable", () => {
     const { eufy, readDatabase, rtcTable } = harness();
     expect(await eufy.readStationTable(CAMERA, "history_record_info", { timeoutMs: 500 })).toEqual(ROWS);
     expect(rtcTable).toHaveBeenCalledExactlyOnceWith(
-      { stationSn: T9000, adminUserId: "ADMIN-0000", attached: false },
+      expect.objectContaining({ stationSn: T9000, adminUserId: "ADMIN-0000", attached: false }),
       "history_record_info",
       { timeoutMs: 500 },
     );
@@ -91,15 +96,15 @@ describe("readStationImage", () => {
     const control = new AbortController();
     expect((await eufy.readStationImage(T9000, THUMB, { signal: control.signal })).equals(JPEG)).toBe(true);
     expect(rtcImage).toHaveBeenCalledExactlyOnceWith(
-      { stationSn: T9000, adminUserId: "ADMIN-0000", attached: false },
+      expect.objectContaining({ stationSn: T9000, adminUserId: "ADMIN-0000", attached: false }),
       THUMB,
       { signal: control.signal },
     );
   });
 
-  it("refuses a station other than a T9000, one not in the device list and one stating no admin id", async () => {
+  it("refuses a station on no RTC route, one not in the device list and one stating no admin id", async () => {
     const { eufy, rtcImage } = harness();
-    await expect(eufy.readStationImage(HUB, THUMB)).rejects.toThrow(/is not a T9000/);
+    await expect(eufy.readStationImage(HUB, THUMB)).rejects.toThrow(/is not an RTC station/);
     await expect(eufy.readStationImage("T8010P0000000009", THUMB)).rejects.toThrow(/not in the device list/);
     const { eufy: unnamed, rtcImage: unnamedImage } = harness({ adminUserId: "" });
     await expect(unnamed.readStationImage(T9000, THUMB)).rejects.toThrow(/admin_user_id/);

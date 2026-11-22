@@ -504,6 +504,12 @@ export class DeviceRegistry {
     return this.things.get(model ?? "")?.properties[identifier]?.defaultValue;
   }
 
+  /** `sn`'s product description resolved for its listed record ({@link thingsFor}). */
+  thingsOf(sn: string): ThingDescription | undefined {
+    const dev = this.devices.find((d) => d.sn === sn);
+    return dev && this.thingsFor(dev, stationOf(dev), dev.params ?? {});
+  }
+
   /**
    * The device's product description resolved for this device ({@link resolveThing}): against its serial
    * and firmware (`main_sw_version`), the station it is reached through and that station's firmware, the

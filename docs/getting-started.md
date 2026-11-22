@@ -12,9 +12,7 @@ your own account.
 
 - **Node.js ≥ 24.5.0** — the client uses `node --env-file` and native fetch-era APIs, and needs the
   OpenSSL 3.5.1 that 24.5.0 bundles to decode E2E camera video. See `.nvmrc`.
-- **Runtime dependencies — four:** `mqtt`, `protobufjs`, `node-datachannel` (the WebRTC peer of the
-  HomeBase S1 Pro (T9000) transport, loaded on its first session; prebuilt for 64-bit hosts only), and
-  `jpeg-js` (a pure-JS,
+- **Runtime dependencies — three:** `mqtt`, `protobufjs` and `jpeg-js` (a pure-JS,
   zero-transitive-dependency, BSD-3-Clause baseline JPEG codec — required to reconstruct v2 push
   thumbnails; there is no Node built-in JPEG codec). Everything else is Node built-ins (`fetch`,
   `node:crypto`, `BigInt`). `jpeg-js` is synchronous, so a v2 reconstruction blocks the Node.js event
