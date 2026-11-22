@@ -700,6 +700,13 @@ describe("the regenerated data's forms", () => {
     ).toBe("{}");
   });
 
+  it("reads the cross-camera group without its NULs, as the bundle strips them", () => {
+    const raw = Buffer.from('[{"group":1}]\0\0').toString("base64");
+    expect(thingRead("device_cross_cam_group", ctx("T8N00"), (p) => (p === 1073 ? raw : undefined))).toBe(
+      '[{"group":1}]',
+    );
+  });
+
   it("leaves a $userId key to the transport", () => {
     const frame: BundleFrame = {
       cmd: 1271,

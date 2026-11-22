@@ -103,8 +103,8 @@ interface BundleRead {
    * then `map`, else as is.
    */
   field?: { param: number; path: string; map?: Readonly<Record<string, string>> };
-  /** A base64 report read as its UTF-8 text ({@link textOf}). */
-  text?: { param: number; asIs?: true };
+  /** A base64 report read as its UTF-8 text ({@link textOf}), through the named `transform` ({@link TRANSFORMS}). */
+  text?: { param: number; asIs?: true; transform?: string };
 }
 
 /** The config mode whose quality is read, or `{ui}`: no quality, the read is that value. */
@@ -279,14 +279,16 @@ function decoded(raw: unknown): unknown {
 
 /**
  * A base64 report's text as the app decodes it: `""` for none; with `asIs` (`decodeBase64String`) a report that is
- * no base64 (`isBase64Str`) as it is, without (`decodeToBase64UrlSafe`) whatever it decodes to.
+ * no base64 (`isBase64Str`) as it is, without (`decodeToBase64UrlSafe`) whatever it decodes to; then its `transform`.
  */
-const textOf = (read: { asIs?: true }, raw: string): string =>
-  !raw
+const textOf = (read: { asIs?: true; transform?: string }, raw: string): string => {
+  const text = !raw
     ? ""
     : read.asIs && !(raw.length % 4 === 0 && /^(?!\d+$)(?:[A-Za-z0-9+/]+|[A-Za-z0-9_-]+)={0,2}$/.test(raw))
       ? raw
       : Buffer.from(raw, "base64").toString("utf8");
+  return read.transform ? String(TRANSFORMS[read.transform]!(text, {})) : text;
+};
 
 /** A report's integer as the app reads it, `NaN` for none. */
 const intOf = (v: unknown): string => String(Number.parseInt(String(v), 10));
@@ -920,7 +922,10 @@ const hb3 =
               (Number.parseInt(String(param?.(id)), 10) || 0) & ~0x8003,
             );
 
-/** The transforms a bundle's parser applies to one host field before it sends it (`$input.<key>|<name>`). */
+/**
+ * The transforms a bundle's parser applies to one host field before it sends it (`$input.<key>|<name>`), or to a
+ * report's text after it decodes it (a `text` read's `transform`).
+ */
 const TRANSFORMS: Record<string, (v: unknown, input: Row, param?: Param) => unknown> = {
   /** The schedule parsers: each `week` list as `[{day}]`. */
   weekDays: (v) => weekDays(v),
@@ -975,6 +980,8 @@ const TRANSFORMS: Record<string, (v: unknown, input: Row, param?: Param) => unkn
   /** T2210's do-not-disturb `start_t` / `end_t`. */
   startHhmm: (_, i) => hhmm(i.startHour, i.startMin),
   endHhmm: (_, i) => hhmm(i.endHour, i.endMin),
+  /** `device_cross_cam_group` (1073): the decoded text without its NULs. */
+  stripNul: (v) => String(v).replace(/\0/g, ""),
 };
 
 /** `x` with every `week` list of plain values as `[{day: <int>}]`, as the bundles' schedule parsers rewrite it. */
