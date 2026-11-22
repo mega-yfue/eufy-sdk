@@ -421,7 +421,18 @@ const COMMAND_OBSERVATION = Symbol("command-observation");
  * from the device record — nothing transport- or route-specific lives in the intent.
  */
 export type Command =
-  | { kind: "set-param"; param: number; value: number; form: ScalarForm; channel: number }
+  | {
+      kind: "set-param";
+      param: number;
+      value: number;
+      form: ScalarForm;
+      channel: number;
+      /**
+       * The device returns no result code under `param` for this write, so the write is sent unread. Absent,
+       * a write the transport can read an answer to settles on that answer.
+       */
+      unanswered?: true;
+    }
   | { kind: "set-json"; param: number; data: Record<string, unknown>; channel: number }
   // `set-json-raw` differs from `set-json` in ONE way: the wire's outer P2P command IS `cmd` itself
   // (no `1700` CONTROL_PAYLOAD wrapper, no `{commandType,data}` nesting) — the plaintext is exactly
@@ -458,6 +469,12 @@ export type Command =
    * resolves the device key and the member display name from the device record.
    */
   | ({ kind: "keyed-payload-actuate" } & Ff09Identity)
+  /**
+   * `doorlock-pass-through-actuate` — a lock/unlock the device's station relays to the lock it is paired to,
+   * sealed under a key derived from the station owner and the station serial. P2P-only; the router resolves
+   * the station, its owner identity and the lock's channel from the device records.
+   */
+  | ({ kind: "doorlock-pass-through-actuate" } & Ff09Identity)
   | { kind: "ff09-autolock"; adminUserId: string; deviceSn: string; enabled: boolean; delaySeconds?: number }
   | { kind: "ff09-setting-toggle"; adminUserId: string; deviceSn: string; settingId: number; value: boolean }
   // `mqtt-dp` — an `eufy_life` secure-MQTT "DP" TLV write (smart lights + kin). The capability supplies

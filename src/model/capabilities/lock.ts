@@ -1,4 +1,4 @@
-import { isClassicWifiLock, isSmartDrop, isVideoSmartLock } from "../device-family.js";
+import { isBluetoothLock, isClassicWifiLock, isSmartDrop, isVideoSmartLock } from "../device-family.js";
 import { DeviceType } from "../device-types.js";
 import { asBool } from "../../core/util.js";
 import { LockPushEvent } from "../push-events.js";
@@ -42,11 +42,12 @@ export const LOCK_SETTING_ID = {
  *
  * Everything is DERIVED from `LOCK_MEMBERS`. `lock`/`unlock` drive every lock-family actuator over the
  * wire its family takes: the shared `ff09` frame on the T8531 video smart lock and the T85D0 garage door,
- * the T8530 video lock's own `set-payload`, and the keyed-payload envelope on the classic Wi-Fi lock (the
- * `T8520`-range unit that never negotiates a session key). The setting toggles ride `ff09` only. This
- * module emits ONE transport-neutral intent per wire (identity fields only, no wire bytes, no cipher, no
- * routing key) and names no transport: the command sink routes P2P vs MQTT by the device's topology, and
- * the chosen transport's command router builds the frame + envelope and re-resolves its own routing tail.
+ * the T8530 video lock's own `set-payload`, the keyed-payload envelope on the classic Wi-Fi lock (the
+ * `T8520`-range unit that never negotiates a session key), and the station's door-lock pass-through on the
+ * Bluetooth lock. The setting toggles ride `ff09` only. This module emits ONE transport-neutral intent per
+ * wire (identity fields only, no wire bytes, no cipher, no routing key) and names no transport: the command
+ * sink routes P2P vs MQTT by the device's topology, and the chosen transport's command router builds the
+ * frame + envelope and re-resolves its own routing tail.
  * Which pipe it is does not reach `dev.lock()` — its surface is identical either way, the same way
  * P2P-vs-cloud is hidden for live media.
  *
@@ -101,7 +102,11 @@ function actuate(engage: boolean, ctx: CommandContext, sink: CommandSink): Promi
     });
   }
   return sink.dispatch({
-    kind: isClassicWifiLock(ctx) ? "keyed-payload-actuate" : "ff09-actuate",
+    kind: isClassicWifiLock(ctx)
+      ? "keyed-payload-actuate"
+      : isBluetoothLock(ctx)
+        ? "doorlock-pass-through-actuate"
+        : "ff09-actuate",
     engage,
     adminUserId: ctx.adminUserId,
     username: ctx.accountName ?? "",
@@ -176,9 +181,13 @@ function nativeReport(signal: InboundSignal): Record<string, unknown> | undefine
 /**
  * Whether the device speaks the `ff09` settings frames at all. The classic Wi-Fi lock actuates over its
  * own keyed envelope and never negotiates the session key those frames ride on, so a settings write
- * aimed at it can only time out — the members are withheld there rather than offered and failing.
+ * aimed at it can only time out — the members are withheld there rather than offered and failing. The
+ * Bluetooth lock is withheld too: on the one unit tried, its T8021 bridge's session held only the set-payload
+ * key, so the SDK refused the settings frame before sending it. Whether the lock would accept a settings frame
+ * at all is untested.
  */
-const speaksFf09Settings = (ctx: CommandContext): boolean => !isClassicWifiLock(ctx) && !isSmartDrop(ctx);
+const speaksFf09Settings = (ctx: CommandContext): boolean =>
+  !isClassicWifiLock(ctx) && !isBluetoothLock(ctx) && !isSmartDrop(ctx);
 
 /**
  * Rain Mode's gate: the P2P video lock, and only a device that takes the `ff09` settings frame. Not the
@@ -418,7 +427,9 @@ export const LOCK_MEMBERS = {
     ...provided(
       "ff09Settings",
       (f, { ctx }) =>
-        isVideoSmartLock(ctx) || isSmartDrop(ctx) ? undefined : (): Promise<AutoLockSnapshot> => f.getAutoLockState(),
+        isVideoSmartLock(ctx) || isSmartDrop(ctx) || isBluetoothLock(ctx)
+          ? undefined
+          : (): Promise<AutoLockSnapshot> => f.getAutoLockState(),
       "Read the current auto-lock settings via a live round-trip.",
     ),
     answers: true,

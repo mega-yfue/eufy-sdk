@@ -188,6 +188,13 @@ export const isVideoSmartLock = (ctx: FamilyContext): boolean => ctx.deviceType 
 export const isSmartDrop = (ctx: FamilyContext): boolean => ctx.deviceType === DeviceType.SMART_DROP;
 
 /**
+ * The Bluetooth smart lock, DeviceType 50 (`LOCK_BLE`), paired to a station that relays its commands: its
+ * actuation rides the station's door-lock pass-through, not the `ff09` frame. Driven on hardware on a unit
+ * paired to a Wi-Fi bridge.
+ */
+export const isBluetoothLock = (ctx: FamilyContext): boolean => ctx.deviceType === DeviceType.LOCK_BLE;
+
+/**
  * The classic Wi-Fi smart lock — the unit whose actuation rides a per-command ECDH-wrapped key rather than
  * the shared `ff09` frame: DeviceType 51 with a serial in the `T8520` range whose seventh character is `2`,
  * the one range driven on hardware. The DeviceType alone does not identify it, since later units share the

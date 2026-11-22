@@ -67,6 +67,15 @@ describe("rtsp capability module", () => {
     expect(sent.map((c) => (c as { value: number }).value)).toEqual([1, 0]);
   });
 
+  it("sends the publish switch unread, in both directions", async () => {
+    const { acts: actions, sent } = bind<RtspActions>("rtsp", ctx);
+
+    await actions.publish!();
+    await actions.withdraw!();
+
+    expect(sent.map((c) => (c as { unanswered?: true }).unanswered)).toEqual([true, true]);
+  });
+
   it("builds the auth setting for a HomeBase-attached camera; enforcement belongs to the RTSP endpoint", async () => {
     const attached = { ...ctx, homeBaseAttached: true } as CommandContext;
     const { acts: actions, sent } = bind<RtspActions>("rtsp", attached);

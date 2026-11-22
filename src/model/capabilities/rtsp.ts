@@ -1,6 +1,6 @@
 import type { Command } from "../../core/contracts.js";
 import { asBool, enumLabels } from "../../core/util.js";
-import { setJson, setPayload, setScalar } from "./access.js";
+import { setJson, setPayload } from "./access.js";
 import { kindRoutable, method, propertiesOf, type Members, type Surface } from "./members.js";
 import type { AvailabilityContext, CapabilityModule, CommandContext, DecodedState, InboundSignal } from "./types.js";
 
@@ -118,9 +118,20 @@ function publishable(ctx: AvailabilityContext): boolean {
   return kindRoutable("set-param", ctx);
 }
 
-/** The RTSP publish switch, both directions — a plain scalar, verified live on both topologies. */
+/**
+ * The RTSP publish switch, both directions — a plain scalar, verified live on both topologies. Sent unread: a
+ * station returns no result code under the switch, and states the outcome in the published state it reports
+ * and, once publishing, in the URL it pushes under the same id.
+ */
 function publishCommand(on: boolean, ctx: CommandContext): Command {
-  return setScalar(RTSP_PARAM.STREAM_SWITCH, on ? 1 : 0, ctx);
+  return {
+    kind: "set-param",
+    param: RTSP_PARAM.STREAM_SWITCH,
+    value: on ? 1 : 0,
+    form: "auto",
+    channel: ctx.channel,
+    unanswered: true,
+  };
 }
 
 /**
