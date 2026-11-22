@@ -67,13 +67,15 @@ describe("rtsp capability module", () => {
     expect(sent.map((c) => (c as { value: number }).value)).toEqual([1, 0]);
   });
 
-  it("sends the publish switch unread, in both directions", async () => {
+  it("sends the publish switch as a plain write that settles on the device's answer, as the app does", async () => {
     const { acts: actions, sent } = bind<RtspActions>("rtsp", ctx);
 
     await actions.publish!();
     await actions.withdraw!();
 
-    expect(sent.map((c) => (c as { unanswered?: true }).unanswered)).toEqual([true, true]);
+    expect(sent).toEqual(
+      [1, 0].map((value) => ({ kind: "set-param", param: RTSP_PARAM.STREAM_SWITCH, value, form: "auto", channel: 2 })),
+    );
   });
 
   it("builds the auth setting for a HomeBase-attached camera; enforcement belongs to the RTSP endpoint", async () => {
