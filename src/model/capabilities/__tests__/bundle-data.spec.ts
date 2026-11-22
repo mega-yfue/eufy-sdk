@@ -338,6 +338,29 @@ describe("a config write the parser passes through", () => {
     expect(command.data).toMatchObject({ schedule: [{ start: "08:00", end: "18:00" }], mode: 1 });
     expect(command.data).not.toHaveProperty("$input");
   });
+  it("sends T8028's DND config whole, in base64 inside a type json MQTT write", () => {
+    const ctx = contextOf({
+      identifier: "device_not_disturb_config",
+      type: "text",
+      model: "T8028",
+      variant: "",
+      topology: "standalone",
+    });
+    const config = {
+      version: 2,
+      enable: 1,
+      schedules: [{ id: "1-a", enable: 1, start_h: 22, start_m: 0, end_h: 6, end_m: 0, weeks: [0, 6] }],
+    };
+    const data = Buffer.from(JSON.stringify({ cmd: 6521, payload: config })).toString("base64");
+    expect(thingWrite("device_not_disturb_config", JSON.stringify(config), ctx)).toEqual({
+      kind: "mqtt-json",
+      mqttCmdCode: 9,
+      cmd: 1350,
+      payload: { data },
+      needAck: false,
+      timeoutS: 15,
+    });
+  });
 });
 
 describe("auto_cruise_schedule_list on a T8171", () => {
