@@ -461,7 +461,7 @@ describe("a templated protobuf data point", () => {
   const ctx = { channel: 0, paramIds: new Set<number>() } as unknown as CommandContext;
 
   it("re-encodes every one of the data byte for byte, its fields set to what they hold", () => {
-    expect(protos.length).toBe(216);
+    expect(protos.length).toBe(262);
     for (const f of protos) {
       const input: Record<string, unknown> = {};
       for (const [path, token] of Object.entries(f.template as Record<string, string>)) {
@@ -477,15 +477,30 @@ describe("a templated protobuf data point", () => {
       });
     }
   });
+  it("sets a T2801 bool in its wrapper as the bundle does, false an empty message", () => {
+    const f = frameOf(data.wires.ecl_mow_defogger_control!["T2801 T280B T2880 T2880B"]!.write!.standalone!["*"]!);
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const sent = (on: boolean) => frameCommand(f, JSON.stringify({ force_heating: on }), ctx);
+    expect(sent(true)).toEqual({
+      kind: "aiot-dp",
+      dp: 143,
+      value: Buffer.from("08fc2a10032a020801", "hex").toString("base64"),
+    });
+    expect(sent(false)).toEqual({
+      kind: "aiot-dp",
+      dp: 143,
+      value: Buffer.from("08fc2a10032a00", "hex").toString("base64"),
+    });
+  });
   it("sets T2070's custom fan and water as its bundle builds it, a false leaving its message empty", () => {
     const f = frameOf(data.wires.ecl_custom_fan_water!["T2070 T2071 T2081 T2280 T2351"]!.write!.standalone!["*"]!);
     // The bundle's `controlDevice` answers for {seq, mapId, isCleaningScheduledTask, isEnable: 1, smartMode: 1}.
-    expect(frameCommand(f, '{"seq":7,"mapId":3,"isCleaningScheduledTask":false}', ctx)).toEqual({
+    expect(frameCommand(f, '{"seq":7,"mapId":3,"isCleaningScheduledTask":false,"smartMode":1}', ctx)).toEqual({
       kind: "aiot-dp",
       dp: 170,
       value: "DAgFEAcYA1IEIgIIAQ==",
     });
-    expect(frameCommand(f, '{"seq":300,"mapId":2,"isCleaningScheduledTask":true}', ctx)).toEqual({
+    expect(frameCommand(f, '{"seq":300,"mapId":2,"isCleaningScheduledTask":true,"smartMode":1}', ctx)).toEqual({
       kind: "aiot-dp",
       dp: 170,
       value: "DwgFEKwCGAJSBiICCAEoAQ==",
