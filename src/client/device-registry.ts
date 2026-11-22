@@ -200,6 +200,8 @@ export interface DeviceRegistryDeps {
   onError: (e: unknown) => void;
   /** Diagnostics sink for facts that are NOT errors — see the owner-gated overlay note on {@link DeviceRegistry.record}. */
   logger?: Logger;
+  /** Sees the devices each successful {@link DeviceRegistry.getDevices} fetched, before any kept from an earlier list. */
+  onListFetched?: (devices: EufyDevice[]) => void;
 }
 
 /**
@@ -221,6 +223,7 @@ export class DeviceRegistry {
   private readonly mega: MegaHttpClient;
   private readonly onError: (e: unknown) => void;
   private readonly logger: Logger;
+  private readonly onListFetched?: (devices: EufyDevice[]) => void;
   private devices: EufyDevice[] = [];
   /** Per-(station, channel) capability cache for {@link capabilitiesForFrame}; `null` = negative hit. */
   private readonly frameCapsCache = new Map<string, ReadonlySet<Capability> | null>();
@@ -280,6 +283,7 @@ export class DeviceRegistry {
     this.mega = deps.mega;
     this.onError = deps.onError;
     this.logger = deps.logger ?? noopLogger;
+    this.onListFetched = deps.onListFetched;
   }
 
   /** The current device cache (last {@link getDevices} result). */
@@ -366,6 +370,7 @@ export class DeviceRegistry {
     await this.loadCloudDps(seen);
     await this.loadThings(seen);
     this.lastRefreshPartial = partial;
+    this.onListFetched?.([...seen.values()]);
     if (partial) for (const prev of this.devices) if (!seen.has(prev.sn)) seen.set(prev.sn, prev);
     this.devices = [...seen.values()];
     // Device list changed → drop stale (station,channel)→caps and serial→caps entries. Params feed

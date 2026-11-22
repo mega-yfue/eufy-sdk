@@ -2,6 +2,7 @@ import { createCipheriv, randomBytes } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { encryptP2PData, p2pCommandEncryptionKey } from "../codec.js";
 import { P2PSession } from "../p2p-session.js";
+import { withGcmKey } from "./session-fixtures.js";
 
 /**
  * A `CMD_DATABASE` reply reaches `readDatabase` as text whichever way the station sealed it.
@@ -34,10 +35,17 @@ function session(): P2PSession {
   return built;
 }
 
-/** Deliver one reply frame as the datagram reassembly would. */
+/** Deliver one reply frame as the datagram reassembly would; a GCM-sealed one (signCode 2) at version 8. */
 function deliver(target: P2PSession, signCode: number, payload: Buffer): void {
   (target as unknown as { handleFrame(h: unknown, p: Buffer, d: number): void }).handleFrame(
-    { commandId: CMD_DATABASE, channel: 255, signCode, bytesToRead: payload.length, type: 0 },
+    {
+      commandId: CMD_DATABASE,
+      channel: 255,
+      signCode,
+      version: signCode === 2 ? 8 : 1,
+      bytesToRead: payload.length,
+      type: 0,
+    },
     payload,
     1,
   );
@@ -55,7 +63,7 @@ function sealed(text: string): Buffer {
 describe("P2PSession database reply", () => {
   it("answers the rows of a reply sealed under the session key", async () => {
     const s = session();
-    s.setLevel2Key(SESSION_KEY);
+    withGcmKey(s, SESSION_KEY);
     const read = s.readDatabase("person_basic_info", { accountId: "ADMIN-0000", timeoutMs: 200 });
     deliver(s, 2, sealed(TABLE));
     expect((await read).map((r) => (r as { name: string }).name)).toEqual(["Alex", "stranger1"]);
@@ -63,7 +71,7 @@ describe("P2PSession database reply", () => {
 
   it("assembles a sealed reply that arrives as several frames", async () => {
     const s = session();
-    s.setLevel2Key(SESSION_KEY);
+    withGcmKey(s, SESSION_KEY);
     const read = s.readDatabase("person_basic_info", { timeoutMs: 200 });
     const mid = Math.floor(TABLE.length / 2);
     deliver(s, 2, sealed(TABLE.slice(0, mid)));

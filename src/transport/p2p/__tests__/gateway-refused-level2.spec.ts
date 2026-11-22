@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { StationKeyUnavailableError } from "../../../core/contracts.js";
-import { gatewayInfoCipherId, gatewayInfoRefused } from "../codec.js";
+import { gatewayInfoRefused } from "../codec.js";
 import { P2PSession } from "../p2p-session.js";
 import { P2PCommandRouter, type P2PRouterDeps } from "../command-router.js";
 import { decryptFf09Frame, LOCK_API_COMMAND } from "../../ff09.js";
@@ -47,8 +47,6 @@ describe("gatewayInfoRefused", () => {
     const reply = gatewayResult();
     expect(reply.subarray(0, 4).toString("hex")).toBe("99ffffff");
     expect(gatewayInfoRefused(reply)).toBe(true);
-    // What the cipher read alone makes of it — the id nobody holds a key for.
-    expect(gatewayInfoCipherId(reply)).toBe(65433);
   });
 
   it("does not read a reply that names a cipher as a refusal", () => {
@@ -75,12 +73,13 @@ describe("a station that refuses level-2 at gateway info", () => {
     return { session, traces, resolveCipherKey };
   };
 
-  it("settles at once without a cloud cipher lookup, and says why", async () => {
+  /** Native hands the app's key step `cipher_id` 0 and no body for a reply naming no cipher; it still looks it up. */
+  it("looks cipher 0 up, settles without a key, and says why", async () => {
     const { session, traces, resolveCipherKey } = refusedSession();
 
     await expect(session.awaitLevel2Key(1_000)).resolves.toBe(false);
 
-    expect(resolveCipherKey).not.toHaveBeenCalled();
+    expect(resolveCipherKey).toHaveBeenCalledWith(0, 8);
     expect(session.refusedLevel2).toBe(true);
     // The refusal is stated where it happened; a wait begun after it settled answers as any settled wait does.
     expect(traces.filter((trace) => trace.phase === "level2-unavailable")[0]).toEqual({
@@ -88,20 +87,6 @@ describe("a station that refuses level-2 at gateway info", () => {
       reason: "gateway-refused",
       source: session.traceId,
     });
-  });
-
-  it("settles the one bounded re-ask on the next refusal", async () => {
-    const { session } = refusedSession();
-    const sent = collectSends(session);
-
-    expect(session.repromptLevel2Key()).toBe(true);
-    const wait = session.awaitLevel2Key(60_000, "call");
-    negotiate(session, gatewayResult());
-
-    await expect(wait).resolves.toBe(false);
-    expect(sent).toHaveLength(1);
-    expect(session.refusedLevel2).toBe(true);
-    expect(session.repromptLevel2Key()).toBe(false);
   });
 
   it("is not a refused station when the reply named a cipher", () => {
@@ -120,31 +105,38 @@ describe("a station that refuses level-2 at gateway info", () => {
     expect(resolveCipherKey).toHaveBeenCalledOnce();
   });
 
-  it("withdraws the refusal when a later reply names a cipher", () => {
+  it("withdraws the refusal when a later reply names a cipher", async () => {
     const { session } = refusedSession();
     negotiate(session, cipherGatewayInfo(7));
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(session.refusedLevel2).toBe(false);
   });
 
   it("is not a refused station once it holds the set-payload key", () => {
     const { session } = refusedSession();
-    (session as unknown as { level2EcbKey: Buffer }).level2EcbKey = Buffer.alloc(16);
+    (session as unknown as { signMode: number }).signMode = 2;
 
     expect(session.refusedLevel2).toBe(false);
   });
 
+  /** At sign mode 0 the app's sender waits 1.45 s before it seals, and then sends in the clear. */
   it("frames a control payload in the app's clear form: signCode 0, header [01 00], only {cmd, payload}", () => {
+    vi.useFakeTimers();
     const { session } = refusedSession();
     const sent = collectSends(session);
 
     expect(session.sendControlLevel2(1940, 0, ADMIN, { apiCommand: 6018 }, 0, true)).toBe(true);
     expect(session.sendControlLevel2(1940, 0, ADMIN, { apiCommand: 6018 }, 0, true)).toBe(true);
+    vi.advanceTimersByTime(1_449);
+    expect(sent).toHaveLength(0);
+    vi.advanceTimersByTime(1);
+    vi.useRealTimers();
 
     const [first, second] = sent as [Buffer, Buffer];
     expect(first.readUInt16LE(8)).toBe(1350); // CMD_SET_PAYLOAD
     expect([first[14], first[15]]).toEqual([0x01, 0x00]);
-    expect([second[14], second[15]]).toEqual([0x01, 0x00]); // not counted per command
+    expect([second[14], second[15]]).toEqual([0x01, 0x01]); // byte 11 counts every command
     expect([first[16], first[17]]).toEqual([0, 0]); // channel 0, signCode 0
     expect(JSON.parse(first.subarray(20).toString("utf-8"))).toEqual({ cmd: 1940, payload: { apiCommand: 6018 } });
   });

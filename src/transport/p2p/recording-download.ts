@@ -3,7 +3,7 @@
  * holds every way the station models differ; the rest is shared.
  *
  * The request is `CMD_DOWNLOAD_VIDEO` (1024) in the string-pair shape
- * ({@link buildStringPairCommandPayload}) on the camera's channel. The station answers on
+ * ({@link stringPairCommandBody}) on the camera's channel. The station answers on
  * {@link RECORDING_DATA_TYPE}, tagged with that channel, with the recording's `CMD_VIDEO_FRAME` (1300) and
  * `CMD_AUDIO_FRAME` (1301) frames, faster than real time, then `CMD_DOWNLOAD_FINISH` (1304) on the control
  * data type, tagged with the station's {@link RecordingStation.finishChannel} whatever the camera's channel.

@@ -2,6 +2,7 @@ import { createDecipheriv } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { P2PSession } from "../p2p-session.js";
 import { MAGIC_WORD } from "../codec.js";
+import { withGcmKey } from "./session-fixtures.js";
 
 /**
  * The live stop frame follows the session topology, as the start does.
@@ -19,7 +20,7 @@ function session(): { session: P2PSession; sent: Buffer[] } {
   const internals = built as unknown as { socket: { send: (buf: Buffer) => void }; connectAddress: object };
   internals.socket = { send: vi.fn((buf: Buffer) => void sent.push(Buffer.from(buf))) };
   internals.connectAddress = { host: "<cam-lan-ip>", port: 32100 };
-  built.setLevel2Key(KEY32);
+  withGcmKey(built, KEY32);
   return { session: built, sent };
 }
 

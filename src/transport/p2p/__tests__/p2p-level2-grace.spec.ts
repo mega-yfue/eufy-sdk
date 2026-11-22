@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { P2PSession } from "../p2p-session.js";
+import { withGcmKey } from "./session-fixtures.js";
 
 const STATION_SN = "T8000P0000000000";
 const P2P_DID = "XXXXXXX-000000-XXXXX";
@@ -42,7 +43,7 @@ function negotiate(target: P2PSession, cipherId = 3): void {
 describe("level-2 key wait", () => {
   it("answers at once when the key is already negotiated", async () => {
     const target = session(async () => undefined);
-    target.setLevel2Key(LEVEL2_KEY);
+    withGcmKey(target, LEVEL2_KEY);
     await expect(target.awaitLevel2Key(25_000)).resolves.toBe(true);
   });
 
@@ -65,7 +66,7 @@ describe("level-2 key wait", () => {
   it("resolves as soon as a key arrives part-way through the grace", async () => {
     const target = session(async () => undefined);
     const waiting = target.awaitLevel2Key(25_000);
-    setTimeout(() => target.setLevel2Key(LEVEL2_KEY), 10);
+    setTimeout(() => withGcmKey(target, LEVEL2_KEY), 10);
     await expect(waiting).resolves.toBe(true);
   });
 
@@ -77,7 +78,7 @@ describe("level-2 key wait", () => {
       expect((target as unknown as { level2Waiters: unknown[] }).level2Waiters).toHaveLength(1);
       expect(vi.getTimerCount()).toBe(1);
 
-      target.setLevel2Key(LEVEL2_KEY);
+      withGcmKey(target, LEVEL2_KEY);
       await expect(waiting).resolves.toBe(true);
       expect((target as unknown as { level2Waiters: unknown[] }).level2Waiters).toHaveLength(0);
       expect(vi.getTimerCount()).toBe(0);
@@ -125,7 +126,7 @@ describe("level-2 key wait", () => {
       connectionGeneration: 3,
       level2Pending: true,
     });
-    target.setLevel2Key(LEVEL2_KEY);
+    withGcmKey(target, LEVEL2_KEY);
     await closing;
 
     await expect(waiting).resolves.toBe(false);
@@ -205,7 +206,7 @@ describe("level-2 key wait", () => {
     const target = session(async () => undefined);
     connectedAgo(target, 30_000);
     const waiting = target.awaitLevel2Key(40, "call");
-    setTimeout(() => target.setLevel2Key(LEVEL2_KEY), 10);
+    setTimeout(() => withGcmKey(target, LEVEL2_KEY), 10);
 
     await expect(waiting).resolves.toBe(true);
   });
@@ -259,7 +260,7 @@ describe("level-2 key wait", () => {
 
   it("discards a negotiated key when its connection closes", async () => {
     const target = session(async () => undefined);
-    target.setLevel2Key(LEVEL2_KEY);
+    withGcmKey(target, LEVEL2_KEY);
     expect(target.hasLevel2Key).toBe(true);
 
     await target.close();
@@ -269,102 +270,60 @@ describe("level-2 key wait", () => {
 });
 
 /**
- * Asking again after a negotiation concluded without a key.
- *
- * The negotiation is one-shot per connection: the station is prompted for `CMD_GATEWAYINFO` on connect, and
- * if that reply never lands the session settles "no key" and every later wait answers false at once. That is
- * correct for best-effort media, which proceeds at level-1 — but a command whose only wire is level-2 is then
- * refused for the whole life of that connection, though a fresh session negotiates a key normally.
- *
- * Measured: an own-session camera whose power rides the level-2 privacy envelope refused `setEnabled` with
- * "level-2 key not ready" and stayed refused, leaving the camera switched off; opening a stream built a new
- * session, which negotiated (cipher id observed) and let the same write through immediately.
- *
- * So a caller that cannot proceed without the key may ask the station ONE more time. Media never does — it
- * has a level-1 path and re-prompting on every frame would be noise.
+ * The app's `checkAesKeyAndResend` asks for `CMD_GATEWAYINFO` again every three seconds, without a limit, until
+ * a reply names a `cipher_id` of 1 or more; a reply with `cipher_id` 0, or a refusal, leaves it asking.
  */
-describe("level-2 key re-prompt", () => {
-  it("re-prompts the station once when a settled negotiation left no key", async () => {
-    const target = session(async () => "00".repeat(32));
-    const sent: number[] = [];
-    (target as unknown as { sendCommand(c: number): void }).sendCommand = (c) => sent.push(c);
-    (target as unknown as { connectAddress?: object }).connectAddress = { host: "0.0.0.0", port: 1 };
+/**
+ * The app's notify reader checks after each channel-2 frame, at most once a second, whether the slot holds a key, and
+ * sends the header-only 1100 again on every third check that finds none: no frame on channel 2, no resend.
+ */
+describe("CMD_GATEWAYINFO re-sent by the notify reader's check", () => {
+  type Internals = {
+    onConnected(addr: object, socket: unknown): void;
+    send(addr: unknown, type: unknown, payload?: Buffer): void;
+    handleFrame(h: object, p: Buffer, t: number): void;
+  };
+  const CONTROL = 2;
+  const notify = (target: P2PSession, commandId: number, payload: Buffer): void =>
+    (target as unknown as Internals).handleFrame(
+      { commandId, signCode: 0, bytesToRead: payload.length },
+      payload,
+      CONTROL,
+    );
+  const refusal = (): Buffer => Buffer.from([0x99, 0xff, 0xff, 0xff]);
 
-    // Conclude the negotiation with no key — what a GATEWAYINFO reply that never lands amounts to.
-    (target as unknown as { settleLevel2(): void }).settleLevel2();
-    // The wait is then already exhausted: it answers at once rather than spending its grace.
-    await expect(target.awaitLevel2Key(25_000)).resolves.toBe(false);
+  it("re-sends on every third check while no cipher has been named, through cipher 0 and a refusal, then stops", async () => {
+    vi.useFakeTimers();
+    try {
+      const target = session(async () => undefined);
+      const asked: number[] = [];
+      const internals = target as unknown as Internals;
+      internals.send = (_addr, _type, payload) => {
+        if (payload && payload.length >= 10 && payload.readUInt16LE(8) === 1100) asked.push(Date.now());
+      };
+      const start = Date.now();
+      internals.onConnected({ host: "<cam-lan-ip>", port: 32100 }, undefined);
+      expect(asked).toEqual([start]);
 
-    const asked = target.repromptLevel2Key();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(asked, "no channel-2 frame, no check").toEqual([start]);
 
-    expect(asked).toBe(true);
-    expect(sent).toEqual([1100]); // CMD_GATEWAYINFO
-    // Re-opened: the wait now spends its grace again instead of refusing instantly, so a reply that
-    // arrives late can still satisfy it.
-    const started = Date.now();
-    await expect(target.awaitLevel2Key(120)).resolves.toBe(false);
-    expect(Date.now() - started).toBeGreaterThanOrEqual(100);
-  });
+      for (const payload of [gatewayInfo(0), refusal(), Buffer.from("{}")]) {
+        notify(target, payload.length === 2 ? 1351 : 1100, payload);
+        await vi.advanceTimersByTimeAsync(1_001);
+      }
+      expect(asked).toEqual([start, start + 10_000 + 2 * 1_001]);
 
-  it("does not re-prompt a session that already holds a key", () => {
-    const target = session(async () => "00".repeat(32));
-    const sent: number[] = [];
-    (target as unknown as { sendCommand(c: number): void }).sendCommand = (c) => sent.push(c);
-    target.setLevel2Key(LEVEL2_KEY);
-
-    expect(target.repromptLevel2Key()).toBe(false);
-    expect(sent).toEqual([]);
-  });
-
-  it("does not re-prompt a session that never negotiates one at all", () => {
-    const target = session(); // no resolveCipherKey → nothing can negotiate
-    const sent: number[] = [];
-    (target as unknown as { sendCommand(c: number): void }).sendCommand = (c) => sent.push(c);
-
-    expect(target.repromptLevel2Key()).toBe(false);
-    expect(sent).toEqual([]);
-  });
-
-  it("asks at most once per connection, so a burst of commands cannot flood the station", () => {
-    const target = session(async () => "00".repeat(32));
-    const sent: number[] = [];
-    (target as unknown as { sendCommand(c: number): void }).sendCommand = (c) => sent.push(c);
-    (target as unknown as { connectAddress?: object }).connectAddress = { host: "0.0.0.0", port: 1 };
-
-    expect(target.repromptLevel2Key()).toBe(true);
-    expect(target.repromptLevel2Key()).toBe(false);
-    expect(target.repromptLevel2Key()).toBe(false);
-    expect(sent).toEqual([1100]);
-  });
-
-  /**
-   * The reply to the re-prompt is negotiated like the first one. A negotiation that concluded without a
-   * key leaves the gate open, so the reply to the re-prompt runs the cipher lookup again and settles the
-   * re-opened wait.
-   */
-  it("negotiates the reply to the re-prompt after a first negotiation left no key", async () => {
-    const resolveCipherKey = vi.fn(async () => undefined);
-    const target = session(resolveCipherKey);
-    (target as unknown as { sendCommand(c: number): void }).sendCommand = () => {};
-    (target as unknown as { connectAddress?: object }).connectAddress = { host: "0.0.0.0", port: 1 };
-    const reply = (): void =>
-      (target as unknown as { handleFrame(h: object, p: Buffer, t: number): void }).handleFrame(
-        { commandId: 1100, signCode: 0, bytesToRead: 64 },
-        gatewayInfo(3),
-        0,
-      );
-
-    reply();
-    await expect(target.awaitLevel2Key(25_000)).resolves.toBe(false);
-    expect(target.repromptLevel2Key()).toBe(true);
-
-    const started = Date.now();
-    const waiting = target.awaitLevel2Key(1_000, "call");
-    reply();
-
-    await expect(waiting).resolves.toBe(false);
-    expect(Date.now() - started).toBeLessThan(500);
-    expect(resolveCipherKey).toHaveBeenCalledTimes(2);
+      notify(target, 1100, gatewayInfo(3));
+      for (let i = 0; i < 6; i++) {
+        await vi.advanceTimersByTimeAsync(1_001);
+        notify(target, 1351, Buffer.from("{}"));
+      }
+      expect(asked).toHaveLength(2);
+      await target.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -379,12 +338,12 @@ describe("a gateway-info reply sent in the clear", () => {
     const target = session(resolveCipherKey);
 
     (target as unknown as { handleFrame(h: object, p: Buffer, t: number): void }).handleFrame(
-      { commandId: 1100, signCode: 0, bytesToRead: 64 },
+      { commandId: 1100, signCode: 0, version: 8, bytesToRead: 64 },
       gatewayInfo(97),
       0,
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(resolveCipherKey).toHaveBeenCalledWith(97);
+    expect(resolveCipherKey).toHaveBeenCalledWith(97, 8);
   });
 });

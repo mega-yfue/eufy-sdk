@@ -78,8 +78,8 @@ export function setJsonRaw(
  * ## When this envelope takes `form: "auto"`
  *
  * Left at the default the frame is level-2 ONLY, and on a station holding no level-2 key that does not
- * fail — it WAITS: the transport spends the full level-2 grace, re-prompts, spends it again, and only
- * then throws. Every caller with a shorter bound sees a hang rather than a refusal, so a control on a
+ * fail — it WAITS: the transport spends the full level-2 grace and only then
+ * throws. Every caller with a shorter bound sees a hang rather than a refusal, so a control on a
  * device that may be its own keyless station is effectively unreachable. `"auto"` hands the choice to
  * the session (`sendBySessionLevel`), which seals level-2 wherever a key exists — unchanged for a
  * HomeBase — and level-1 where none does.

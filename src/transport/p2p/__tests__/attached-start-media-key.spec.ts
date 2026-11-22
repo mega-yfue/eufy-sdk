@@ -2,6 +2,7 @@ import { createECDH } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { P2PSession } from "../p2p-session.js";
 import { parseDataFrameHeader } from "../codec.js";
+import { openSentGcm, withGcmKey } from "./session-fixtures.js";
 
 /**
  * Which media key an attached camera's start offers.
@@ -20,14 +21,13 @@ function attachedSession(stationSn = STATION_SN) {
   built.on("error", () => undefined);
   const internals = built as unknown as {
     connectAddress?: { address: string; port: number };
-    level2Key?: Buffer;
+    signMode: number;
     send: (...args: unknown[]) => void;
-    decryptLevel2: (payload: Buffer, signCode: number) => Buffer | undefined;
     handleFrame: (header: unknown, payload: Buffer, dataType: number) => void;
   };
   const sendable = () => {
     internals.connectAddress = { address: "203.0.113.1", port: 32100 };
-    internals.level2Key = Buffer.alloc(32, 7);
+    withGcmKey(built, Buffer.alloc(32, 7));
   };
   sendable();
   const sent: unknown[][] = [];
@@ -38,7 +38,7 @@ function attachedSession(stationSn = STATION_SN) {
   const startPayload = (): { key: string; ClientOS: string } => {
     const data = sent.at(-1)![2] as Buffer;
     const header = parseDataFrameHeader(data.subarray(4));
-    const plain = internals.decryptLevel2(data.subarray(20, 20 + header.bytesToRead), header.signCode);
+    const plain = openSentGcm(built, data.subarray(20, 20 + header.bytesToRead));
     return JSON.parse(plain!.toString("utf8")).payload;
   };
   const offered = (): string => startPayload().key;
@@ -46,7 +46,7 @@ function attachedSession(stationSn = STATION_SN) {
     internals.handleFrame({ commandId: 1300, channel, signCode: 0, bytesToRead: 22 }, Buffer.alloc(22), 1);
   const unsendable = () => {
     internals.connectAddress = undefined;
-    internals.level2Key = undefined;
+    internals.signMode = 0;
   };
   return { session: built, offered, startPayload, video, sent, sendable, unsendable };
 }

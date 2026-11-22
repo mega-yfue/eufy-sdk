@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { P2PSession } from "../p2p-session.js";
 import { LIVE_TRACE_MESSAGE } from "../live-trace.js";
 import { parseDataFrameHeader } from "../codec.js";
+import { openSentGcm, withGcmKey } from "./session-fixtures.js";
 
 /**
  * A HomeBase-attached camera's media start has no level-1 wire.
@@ -30,12 +31,10 @@ function attachedSession(withKey: boolean) {
   });
   const internals = built as unknown as {
     connectAddress?: { address: string; port: number };
-    level2Key?: Buffer;
     send: (...args: unknown[]) => void;
-    decryptLevel2: (payload: Buffer, signCode: number) => Buffer | undefined;
   };
   internals.connectAddress = { address: "203.0.113.1", port: 32100 };
-  if (withKey) internals.level2Key = Buffer.alloc(32, 7);
+  if (withKey) withGcmKey(built, Buffer.alloc(32, 7));
   const sent: unknown[][] = [];
   internals.send = (...args: unknown[]) => sent.push(args);
   return {
@@ -46,7 +45,7 @@ function attachedSession(withKey: boolean) {
       const data = sent[index]![2] as Buffer;
       const header = parseDataFrameHeader(data.subarray(4));
       const body = data.subarray(20, 20 + header.bytesToRead);
-      const plain = internals.decryptLevel2(body, header.signCode);
+      const plain = openSentGcm(built, body);
       if (!plain) throw new Error("captured media command did not decrypt");
       return { header, value: JSON.parse(plain.toString("utf8")) };
     },

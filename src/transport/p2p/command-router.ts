@@ -42,7 +42,7 @@ import {
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { assertNever } from "../../core/util.js";
 import { setTimeout as sleep } from "node:timers/promises";
-import { CONNECT_TIMEOUT_MS, P2PSession, type P2PFrame } from "./p2p-session.js";
+import { CONNECT_TIMEOUT_MS, P2PSession, STATION_CHANNEL, type P2PFrame } from "./p2p-session.js";
 import { LEVEL2_SETTLE_MS } from "./level2-settle.js";
 import { buildDirectBinaryBody, buildStringBody } from "./write-commands.js";
 import { buildDoorlockPassThrough } from "./doorlock-pass-through.js";
@@ -87,12 +87,27 @@ import { traceLiveStart, type LiveTrace } from "./live-trace.js";
 import { stationChannels, stationOf } from "./station-channels.js";
 
 /**
- * `GET_CAMERA_INFO` (1103) body: `[u32 mValue = 255][u32 mValueSub = 903]`, the constants the app's request
- * builder sets for this command (`msgType` 14, packed as two little-endian ints by its native sender). A
- * HomeBase answers on channel 255 with its whole parameter table, every attached device's entries under
- * its own channel.
+ * `GET_CAMERA_INFO` (1103) body of the app's params read (`getParams`): `[u32 mValue = 255][u32 mValueSub = 903]`
+ * (`msgType` 14, two little-endian ints). A HomeBase answers on channel 255 with its whole parameter table, every
+ * attached device's entries under its own channel.
  */
-const STATION_TABLE_QUERY = Buffer.from("ff00000087030000", "hex");
+const GET_PARAMS_BODY = Buffer.from("ff00000087030000", "hex");
+
+/** The serial prefixes the app's request builder counts as a station (`SnKtx.isStation`): such a device is on 255. */
+const REQUEST_STATION_PREFIXES = [
+  "T8001",
+  "T8002",
+  "T8020",
+  "T8010",
+  "T8030",
+  "T8040",
+  "T8023",
+  "T8021",
+  "T9000",
+  "T8N00",
+  "T7000",
+  "T8025",
+];
 
 /**
  * How long each command is given where the level-2 key is a REQUIREMENT — the HomeBase-routed commands
@@ -115,8 +130,7 @@ const KEEP_LEVEL1_SESSION_MODELS: ReadonlySet<string> = new Set(["T8423"]);
  *
  * `connect` applies to every call on a station, because nothing can be addressed to one before its session is
  * up, and it is the session's own connect deadline: a session that reaches it closes itself, so waiting past it
- * waits on a connection that can no longer answer. `level2Grace` applies twice where the key is required: the
- * negotiation is re-prompted once.
+ * waits on a connection that can no longer answer. `level2Grace` applies once where the key is required.
  */
 export const P2P_STATION_WAITS = {
   connect: CONNECT_TIMEOUT_MS,
@@ -332,8 +346,8 @@ export class P2PCommandRouter {
    * shared — see {@link P2PCommandRouter.openTalkback}.
    */
   private readonly talkbacks = new Map<string, Talkback>();
-  /** cipher_id → its ECC and RSA private keys (one eufylife get_ciphers call per cipher), shared across (re)opens. */
-  private readonly cipherKeyCache = new Map<number, { ecc?: string; rsa?: string }>();
+  /** `${user_id}_${cipher_id}` → the private key its lookup kept, shared across (re)opens as the app's `ConnectKeyFactory` shares it. */
+  private readonly cipherKeyCache = new Map<string, string>();
   /** The recording download in flight per station; a station serves one at a time. */
   private readonly recordingDownloads = new Map<string, Promise<unknown>>();
 
@@ -521,11 +535,8 @@ export class P2PCommandRouter {
     const session = await this.openSession(mediaKey, parentSn);
     try {
       await this.awaitConnected(session, parentSn, signal);
-      let ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal);
-      if (!ready && session.repromptLevel2Key()) {
-        ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal);
-      }
-      if (!ready) throw new StationKeyUnavailableError(parentSn);
+      if (!(await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal)))
+        throw new StationKeyUnavailableError(parentSn);
       return session;
     } catch (error) {
       if (!signal?.aborted && this.manager.get(mediaKey) === session) {
@@ -628,7 +639,8 @@ export class P2PCommandRouter {
       localAddress,
       dskKey,
       noBroadcast: this.deps.noBroadcast,
-      resolveCipherKey: (cipherId: number) => this.cipherKeysFor(session, cipherId, adminUserId, stationSn),
+      resolveCipherKey: (cipherId, version) => this.cipherKeyFor(cipherId, adminUserId, stationSn, version),
+      userId: adminUserId,
       logger: this.deps.logger ?? noopLogger,
     });
     session.on("error", (e: Error) => this.reportError(e));
@@ -641,7 +653,7 @@ export class P2PCommandRouter {
         frame.raw.every((byte) => byte === 0) &&
         adminUserId
       ) {
-        session.sendIntStringCommand(CommandType.CMD_GET_DEVICE_PING, 0, 0, adminUserId, frame.channel, 0);
+        session.sendIntStringCommand(CommandType.CMD_GET_DEVICE_PING, 0, 0, adminUserId, frame.channel);
       }
       if (announces) this.deps.onFrame(stationSn, frame);
     });
@@ -658,10 +670,7 @@ export class P2PCommandRouter {
       if (this.manager.get(stationSn) !== session) return;
       this.tearDownStation(stationSn);
     });
-    session.on("level2Ready", ({ cipherId }: { cipherId: number }) => {
-      session.sendRawLevel2Bytes(STATION_TABLE_QUERY, 0, P2P_ENVELOPE.GET_CAMERA_INFO, 8);
-      this.deps.onLevel2Ready(stationSn, cipherId);
-    });
+    session.on("level2Ready", ({ cipherId }: { cipherId: number }) => this.deps.onLevel2Ready(stationSn, cipherId));
     session.on("peerAnswer", (atMs: number) => {
       if (this.manager.get(stationSn) === session) this.deps.onPeerAnswer?.(stationSn, atMs);
     });
@@ -669,37 +678,52 @@ export class P2PCommandRouter {
   }
 
   /**
-   * The ECC and RSA private keys of `cipherId` (`ecc_private_key`, `private_key`), from the router's cache
-   * or one `get_ciphers` call. When the cloud answers with another cipher that carries an ECC key and the
-   * asked one does not, that one is used and traced on `session`. Only a successful lookup — one that
-   * yields either key — is cached.
+   * The private key of `cipherId` for a gateway info of `version`, as the app's `ConnectKeyFactory` gets it:
+   * from the cache under `${userId}_${cipherId}`, else from `data[0]` of a `get_ciphers` call, asked at most twice
+   * while no key comes back. Version 8 asks with `station_sn` and keeps `ecc_private_key`; any other version asks
+   * with `sn` and keeps `private_key`. Only a non-empty key is cached.
    */
-  private async cipherKeysFor(
-    session: P2PSession,
+  private async cipherKeyFor(
     cipherId: number,
     userId: string,
     stationSn: string,
-  ): Promise<{ ecc?: string; rsa?: string } | undefined> {
-    if (this.cipherKeyCache.has(cipherId)) return this.cipherKeyCache.get(cipherId);
-    let cipher: { ecc_private_key?: string; private_key?: string } | undefined;
-    try {
-      const ciphers = await this.deps.mega.getCiphers([cipherId], userId, stationSn);
-      cipher = ciphers.find((c) => Number(c.cipher_id) === cipherId);
-      if (cipher?.ecc_private_key === undefined && ciphers[0]?.ecc_private_key !== undefined) {
-        cipher = ciphers[0];
-        this.traceOnStation(session, {
-          phase: "cipher-fallback",
-          cipherId,
-          answeredCipherId: Number(ciphers[0].cipher_id),
-        });
+    version: number,
+  ): Promise<string | undefined> {
+    const cacheKey = `${userId}_${cipherId}`;
+    if (this.cipherKeyCache.has(cacheKey)) return this.cipherKeyCache.get(cacheKey);
+    const ecc = version === 8;
+    for (let pass = 0; pass < 2; pass++) {
+      try {
+        const [cipher] = await this.deps.mega.getCiphers([cipherId], userId, stationSn, ecc ? "station_sn" : "sn");
+        const key = ecc ? cipher?.ecc_private_key : cipher?.private_key;
+        if (key) {
+          this.cipherKeyCache.set(cacheKey, key);
+          return key;
+        }
+      } catch (e) {
+        this.deps.onError(e instanceof Error ? e : new Error(String(e)));
       }
-    } catch (e) {
-      this.deps.onError(e instanceof Error ? e : new Error(String(e)));
     }
-    if (cipher?.ecc_private_key === undefined && cipher?.private_key === undefined) return undefined;
-    const keys = { ecc: cipher.ecc_private_key, rsa: cipher.private_key };
-    this.cipherKeyCache.set(cipherId, keys);
-    return keys;
+    return undefined;
+  }
+
+  /**
+   * The app's params read of a device (`getParams`): {@link GET_PARAMS_BODY} as 1103, opening the station's session
+   * where none is up, on channel 0 where the device's param 6271 is "1", else on 255 for a station
+   * ({@link REQUEST_STATION_PREFIXES}) and on its own channel for any other device. The answer
+   * arrives as the station's camera-info notify. A read that cannot go is only logged, as the app does.
+   */
+  async getParams(sn: string): Promise<void> {
+    try {
+      const dev = await this.deviceFor(sn);
+      await this.ensureStation(stationOf(dev));
+      const { session, channel } = await this.resolveSession(sn);
+      const station = REQUEST_STATION_PREFIXES.some((prefix) => sn.startsWith(prefix));
+      const chl = dev.params?.[6271] === "1" ? 0 : station ? STATION_CHANNEL : channel;
+      session.sendRawLevel1Bytes(GET_PARAMS_BODY, chl, P2P_ENVELOPE.GET_CAMERA_INFO);
+    } catch (e) {
+      (this.deps.logger ?? noopLogger).debug(`[p2p] ${sn} params read not sent`, e);
+    }
   }
 
   /**
@@ -784,7 +808,6 @@ export class P2PCommandRouter {
             cmd.mValue3,
             undefined,
             cmd.form,
-            cmd.level2Sender,
             true,
             cmd.unzip,
             cmd.counter,
@@ -964,9 +987,7 @@ export class P2PCommandRouter {
     const { session, parentSn, channel, accountId } = await this.resolveSession(sn, { signal: opts.signal });
     const path = station.path(channel, opts.recording);
     if (!path) throw new RecordingDownloadError("invalid-recording", `no recording named ${opts.recording}`);
-    const eccKey = station.sealed
-      ? (await this.cipherKeysFor(session, opts.cipherId, accountId, parentSn))?.ecc
-      : undefined;
+    const eccKey = station.sealed ? await this.cipherKeyFor(opts.cipherId, accountId, parentSn, 8) : undefined;
     if (station.sealed && !eccKey) {
       throw new RecordingDownloadError("key-unavailable", `cipher ${opts.cipherId} could not be obtained`);
     }
@@ -1722,7 +1743,7 @@ export class P2PCommandRouter {
    *
    * `waitLevel2` states what the caller does about the key:
    *
-   *  - `true` — cannot frame without it. Waits the full grace, re-prompts once, and throws if refused.
+   *  - `true` — cannot frame without it. Waits the full grace and throws if refused.
    *  - `"settle"` — picks its seal once from {@link P2PSession.hasLevel2Key}. Waits {@link LEVEL2_SETTLE_MS}
    *    session-scoped for the negotiation to conclude either way, then proceeds. Never throws.
    *  - `"soft"` — frames per send and is re-issued, so it does not wait at all.
@@ -1734,9 +1755,6 @@ export class P2PCommandRouter {
    * A `"soft"` caller frames per send: an own-session start issued with no key rides level 1, and its own
    * re-issue rides level 2 once the key lands. Nothing bounds an unanswered `CMD_GATEWAYINFO`, so a waiting
    * caller's grace is the bound, charged from connect.
-   *
-   * Only a caller that REQUIRES the key re-prompts — see {@link P2PSession.repromptLevel2Key}, which explains
-   * why one settled negotiation is not the last word.
    *
    * A session whose {@link P2PSession.pathAnswering} is false is closed and re-resolved before it is handed
    * over: the station answers every heartbeat, so a path silent past several of them is gone. So is a session
@@ -1754,7 +1772,6 @@ export class P2PCommandRouter {
     opts: {
       waitLevel2?: boolean | "soft" | "settle";
       requireLevel2ForAttached?: boolean;
-      level2Sender?: "set-payload";
       clearFallback?: boolean;
       signal?: AbortSignal;
     } = {},
@@ -1815,11 +1832,7 @@ export class P2PCommandRouter {
       }
       const required = opts.waitLevel2 !== "soft" || (opts.requireLevel2ForAttached === true && homeBaseAttached);
       if (!required) return { session, parentSn, channel, accountId, homeBaseAttached };
-      const sender = opts.level2Sender ?? "every";
-      let ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call", sender), opts.signal);
-      if (!ready && session.repromptLevel2Key()) {
-        ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call", sender), opts.signal);
-      }
+      const ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), opts.signal);
       const sendsClear =
         opts.clearFallback === true &&
         !homeBaseAttached &&
@@ -1852,7 +1865,7 @@ export class P2PCommandRouter {
     return this.sendAnswered(
       sn,
       { commandId: outerCmd, channel: resolved.channel },
-      ({ session, channel, accountId }) => session.sendRawLevel2Bytes(body(accountId, channel), channel, outerCmd, 8),
+      ({ session, channel, accountId }) => session.sendRawLevel2Bytes(body(accountId, channel), channel, outerCmd),
       resolved,
       !answered,
     );
@@ -1879,7 +1892,7 @@ export class P2PCommandRouter {
         sn,
         answer,
         ({ session, accountId }) =>
-          session.sendRawLevel2Bytes(buildDirectBinaryBody(value, accountId), channel, outerCmd, 8),
+          session.sendRawLevel2Bytes(buildDirectBinaryBody(value, accountId), channel, outerCmd),
         resolved,
         true,
       );
@@ -1919,7 +1932,7 @@ export class P2PCommandRouter {
         this.sendAnswered(
           sn,
           answer,
-          ({ session, accountId }) => session.sendRawLevel2Bytes(body(accountId), channel, cmd, 8),
+          ({ session, accountId }) => session.sendRawLevel2Bytes(body(accountId), channel, cmd),
           undefined,
           true,
         ),
@@ -2005,8 +2018,7 @@ export class P2PCommandRouter {
    * standalone camera never negotiates a level-2 key, so pinning this to level 2 makes the envelope
    * unreachable on exactly the devices that serve their own RTSP stream; a standalone
    * camera accepts the level-1 form. With no `form` (default) it stays level-2 only and waits for the
-   * key every level-2 sender uses; `level2Sender: "set-payload"` also takes an RSA cipher's AES-128-ECB
-   * key (see {@link P2PSession.sendControlLevel2}). A `resolved` session keeps the wait its caller gave it.
+   * key. A `resolved` session keeps the wait its caller gave it.
    * `"int-string"` pins the level-1 form whatever the session holds, as the app seals 1350/1001.
    *
    * Either seal goes once through {@link sendAnswered}, which holds the device's slot until the `SET_PAYLOAD`
@@ -2020,7 +2032,6 @@ export class P2PCommandRouter {
     mValue3?: number,
     resolved?: ResolvedSession,
     form?: ScalarForm,
-    level2Sender?: "set-payload",
     answered = false,
     unzip = false,
     counter?: "bump" | "current",
@@ -2058,7 +2069,7 @@ export class P2PCommandRouter {
       answer,
       ({ session, accountId, sendsClear }) =>
         session.sendControlLevel2(cmd, channel, accountId, payload, mValue3 ?? 0, sendsClear, unzip, counter),
-      resolved ?? (await this.resolveSession(sn, { waitLevel2: true, level2Sender })),
+      resolved ?? (await this.resolveSession(sn, { waitLevel2: true })),
       !answered,
     );
   }
@@ -2368,10 +2379,7 @@ export class P2PCommandRouter {
    * but four hex digits throws rather than writing the wrong user.
    */
   private async sendDoorlockPassThrough(sn: string, cmd: Ff09Identity): Promise<void> {
-    const { session, parentSn, channel } = await this.resolveSession(sn, {
-      waitLevel2: true,
-      level2Sender: "set-payload",
-    });
+    const { session, parentSn, channel } = await this.resolveSession(sn, { waitLevel2: true });
     const member = ((this.recordFor(parentSn)?.raw as Record<string, unknown> | undefined)?.member ?? {}) as Record<
       string,
       unknown
