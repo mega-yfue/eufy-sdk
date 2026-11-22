@@ -871,6 +871,9 @@ const calculate = (min: number, max: number, center: number, r: unknown) => {
 const toInt = (v: unknown, d = Number.NaN) =>
   Number.isInteger(v) ? v : typeof v === "string" && /^-?\d+$/.test(v.trim()) ? Number.parseInt(v, 10) : d;
 type Row = Record<string, unknown>;
+/** The bundles' `h.toString().padStart(2, "0") + m.toString().padStart(2, "0")`, undefined where `toString` throws. */
+const hhmm = (h: unknown, m: unknown) =>
+  h == null || m == null ? undefined : String(h).padStart(2, "0") + String(m).padStart(2, "0");
 const rows = (v: unknown, f: (e: Row) => Row) => (Array.isArray(v) ? v.map((e) => f((e ?? {}) as Row)) : v);
 
 type Param = (id: number) => string | undefined;
@@ -940,6 +943,15 @@ const TRANSFORMS: Record<string, (v: unknown, input: Row, param?: Param) => unkn
   ordered0: (v) => (Array.isArray(v) ? v.map((id, i) => ({ 1: id, 2: i })) : undefined),
   /** The JSON `globalRooms` / `editRooms` custom order: `{roomId, cleanOrder}` from 1. */
   cleanOrder: (v) => (Array.isArray(v) ? v.map((roomId, i) => ({ roomId, cleanOrder: i + 1 })) : undefined),
+  /** `ecl_toggle_do_not_disturb`: `stringToHex` of `isOn ? "1" : "0"` and the start and end times. */
+  dnd: (_, i) =>
+    ((s, e) => (s && e ? Buffer.from((i.isOn ? "1" : "0") + s + e).toString("hex") : undefined))(
+      hhmm(i.startHour, i.startMin),
+      hhmm(i.endHour, i.endMin),
+    ),
+  /** T2210's do-not-disturb `start_t` / `end_t`. */
+  startHhmm: (_, i) => hhmm(i.startHour, i.startMin),
+  endHhmm: (_, i) => hhmm(i.endHour, i.endMin),
 };
 
 /** `x` with every `week` list of plain values as `[{day: <int>}]`, as the bundles' schedule parsers rewrite it. */

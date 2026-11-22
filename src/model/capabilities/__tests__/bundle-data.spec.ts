@@ -540,6 +540,23 @@ describe("a templated protobuf data point", () => {
       timestamp: NOW,
     });
   });
+  it("sends do-not-disturb as the bundles' ASCII hex, or T2210's JSON times", () => {
+    // The bundles' `controlDevice` answers for these inputs.
+    const dnd = '{"isOn":true,"startHour":22,"startMin":5,"endHour":7,"endMin":30}';
+    const hex = (h: string) => Buffer.from(h, "hex").toString("base64");
+    const t2261a = robot("ecl_toggle_do_not_disturb", "T2261A");
+    expect(frameCommand(t2261a, dnd, ctx)).toEqual({ kind: "aiot-dp", dp: 139, value: hex("313232303530373330") });
+    expect(frameCommand(t2261a, '{"isOn":false,"startHour":"9","startMin":0,"endHour":10,"endMin":0}', ctx)).toEqual({
+      kind: "aiot-dp",
+      dp: 139,
+      value: hex("303039303031303030"),
+    });
+    expect(frameCommand(robot("ecl_toggle_do_not_disturb", "T2210"), dnd, ctx)).toEqual({
+      kind: "aiot-dp",
+      dp: 107,
+      value: '{"en":true,"start_t":"2205","end_t":"0730"}',
+    });
+  });
   it("sets T2070's custom fan and water as its bundle builds it, a false leaving its message empty", () => {
     const f = frameOf(data.wires.ecl_custom_fan_water!["T2070 T2071 T2081 T2280 T2351"]!.write!.standalone!["*"]!);
     // The bundle's `controlDevice` answers for {seq, mapId, isCleaningScheduledTask, isEnable: 1, smartMode: 1}.
