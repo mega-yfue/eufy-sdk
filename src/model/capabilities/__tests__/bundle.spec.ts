@@ -707,6 +707,15 @@ describe("the regenerated data's forms", () => {
     );
   });
 
+  it("reads the cross-camera list without the sensors, re-stringified as the bundle filters it", () => {
+    const read = (text: string) =>
+      thingRead("device_cross_cam_list", ctx("T8N00"), (p) =>
+        p === 1072 ? Buffer.from(text).toString("base64") : undefined,
+      );
+    expect(read('["T8900X0000000000", "T8410X0000000000"]')).toBe('["T8410X0000000000"]');
+    expect(read("{}"), "no list: as is").toBe("{}");
+  });
+
   it("leaves a $userId key to the transport", () => {
     const frame: BundleFrame = {
       cmd: 1271,
