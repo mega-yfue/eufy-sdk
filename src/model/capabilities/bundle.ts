@@ -953,6 +953,11 @@ const hhmm = (h: unknown, m: unknown) =>
 const rows = (v: unknown, f: (e: Row) => Row) => (Array.isArray(v) ? v.map((e) => f((e ?? {}) as Row)) : v);
 
 type Param = (id: number) => string | undefined;
+/** `ZonePot.toDeviceZonePot`, normalized: `min(1000, round(1000 * v + .5))` (NaN is 1000). */
+const up = (v: unknown) => {
+  const r = Math.round(1000 * Number(v) + 0.5);
+  return r < 1000 ? r : 1000;
+};
 /** `DeviceMotionDetectionParser` v4/v7 (T8217 `{5,4}`, T85M0 `{5,6}`): type → bit, the two bits it owns being 0x8003. */
 // ponytail: one table for both products; read the mapping off the description's associatedValues if a third differs.
 const HB3_TYPES: Record<number, number> = { 4: 0x8000, 5: 3, 6: 0x8000 };
@@ -1045,6 +1050,43 @@ const TRANSFORMS: Record<string, (v: unknown, input: Row, param?: Param) => unkn
         : v;
     } catch {
       return v;
+    }
+  },
+  /**
+   * `asDeviceZonePot`, normalized: the host's pots (`[{points: [{x, y}]}]`, 0–1) as the device's `ZoneInfo`, each
+   * point ×1000 rounded up from .5 and at most 1000, only 4- or 6-point pots of the first's length, each rect's bounds
+   * in `points`; nothing sent where the bundle throws.
+   */
+  zoneInfo: (v) => {
+    try {
+      const polygens: { points: { x: number; y: number }[] }[] = [];
+      for (const pot of v as { points: Row[] }[]) {
+        const points = pot.points.map((p) => ({ x: up(p.x), y: up(p.y) }));
+        if (
+          (points.length === 4 || points.length === 6) &&
+          (!polygens.length || polygens[0]!.points.length === points.length)
+        )
+          polygens.push({ points });
+      }
+      const bound = (ps: { x: number; y: number }[]) => ({
+        LeftPointX: Math.min(...ps.map((p) => p.x)),
+        LeftPointY: Math.min(...ps.map((p) => p.y)),
+        RightPointX: Math.max(...ps.map((p) => p.x)),
+        RightPointY: Math.max(...ps.map((p) => p.y)),
+      });
+      const n = polygens.length;
+      const points = polygens.filter((p) => p.points.length === 4).map((p) => bound(p.points));
+      return {
+        account: "$userId",
+        DetSensitivity: 0,
+        MoveDetStatus: n ? 1 : 0,
+        Normalized: 0,
+        zonecount: n,
+        polygens,
+        points,
+      };
+    } catch {
+      return undefined;
     }
   },
   /** `device_response_timeout_schedule` (6440, `decodeBase64StringToJSON`: `{}` for no JSON): its `schedules` as JSON when they `loop`, else the whole. */
