@@ -125,17 +125,17 @@ export interface RtcCommandCounter {
 }
 
 /**
- * A command's `XZYH` frame, its JSON text as the body (no NUL) and header byte 12 = `channel`. With `seal` and a body
- * of 1 to 0x200000 bytes it is AES-128-GCM under the first 16 bytes of the key: byte 10 `0x0a`, byte 13 1, body
- * {@link gcmSeal} under the counter, which counts on.
+ * A command's `XZYH` frame, its body (JSON text without NUL, or the native body) and header byte 12 = `channel`. With
+ * `seal` and a body of 1 to 0x200000 bytes it is AES-128-GCM under the first 16 bytes of the key: byte 10 `0x0a`, byte
+ * 13 1, body {@link gcmSeal} under the counter, which counts on.
  */
 export function commandFrame(
   cmd: number,
-  json: string,
+  body: string | Buffer,
   channel: number,
   seal?: { key: Buffer; counter: RtcCommandCounter },
 ): Buffer {
-  const text = Buffer.from(json);
+  const text = Buffer.from(body);
   return seal && text.length >= 1 && text.length <= 0x200000
     ? xzyh(cmd, gcmSeal(seal.key, text, seal.counter.word++), channel, GCM_VERSION, 1)
     : xzyh(cmd, text, channel, 1, 0);
@@ -208,16 +208,16 @@ export class RtcDataChannel extends EventEmitter<RtcDataChannelEvents> {
   }
 
   /**
-   * Send a 1350 or 1700 command on the data channel, the app's route for all but its RTCP-bound live commands, as
+   * Send a command on the data channel, the app's route for all but its RTCP-bound live commands, as
    * {@link commandFrame} (sealed with {@link cmdGcm}); resolves with the reply body, rejects after 20 s (35 s for a
    * 1350 whose `cmd` is 6236).
    */
-  command(cmd: 1350 | 1700, json: string, channel = 0): Promise<Buffer> {
+  command(cmd: number, body: string | Buffer, channel = 0): Promise<Buffer> {
     if (!this.connected) return Promise.reject(new Error("rtc data channel not connected"));
-    const frame = commandFrame(cmd, json, channel, this.seal);
+    const frame = commandFrame(cmd, body, channel, this.seal);
     for (let o = 0; o < frame.length; o += CHUNK)
       this.kcps[0]!.send(wrtcLink(CMD, frame.subarray(o, o + CHUNK), this.opts.multi));
-    const long = cmd === 1350 && jsonCmd(json) === 6236;
+    const long = cmd === 1350 && jsonCmd(String(body)) === 6236;
     return new Promise((resolve, reject) => {
       const p: Pending = {
         cmd,

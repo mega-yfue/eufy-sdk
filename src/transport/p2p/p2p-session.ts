@@ -66,6 +66,7 @@ import {
   readNullTerminatedString,
 } from "./codec.js";
 import { commandName, CommandType } from "./commands.js";
+import { setPayloadJson } from "./write-commands.js";
 import { traceLiveStart, type LiveTrace } from "./live-trace.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { CMD_DATABASE, CMD_DATABASE_IMAGE, DB_QUERY, DB_TABLE_TIMEOUT_MS, fullTableQuery } from "./database-wire.js";
@@ -1679,13 +1680,7 @@ export class P2PSession extends EventEmitter {
     if (table) inner.table = table;
     if (opts.query) inner.payload = opts.query;
     inner.transaction = `${Date.now()}`;
-    const value = JSON.stringify({
-      account_id: opts.accountId ?? "",
-      cmd: CMD_DATABASE,
-      mChannel: channel,
-      mValue3: 0,
-      payload: inner,
-    });
+    const value = setPayloadJson(CMD_DATABASE, inner, { accountId: opts.accountId, channel });
     this.logger.debug(`[p2p] ${this.cfg.stationSn} queryDatabase ${table} ch=${channel}`);
     this.sendDatabasePayload(value, channel);
   }
@@ -1852,19 +1847,7 @@ export class P2PSession extends EventEmitter {
     if (!this.connectAddress) throw new Error("not connected");
     const channel = opts.channel ?? 0;
     const keyed = opts.key !== undefined;
-    // CMD_SET_PAYLOAD wrapper (reversed from the v6 serializer): inner `cmd` = subCmd,
-    // plus mChannel + mValue3:0; the payload object carries any params ({} when none).
-    // No `transaction` field in the SET_PAYLOAD value. `rawValue` overrides for testing.
-    const inner: Record<string, unknown> = opts.rawValue ?? {
-      ...(keyed ? { key: opts.key } : {}),
-      account_id: opts.accountId ?? "",
-      cmd: subCmd,
-      mChannel: channel,
-      mValue3: opts.mValue3 ?? 0,
-      ...(opts.omitPayload ? {} : opts.unzip ? (payload as object) : { payload }),
-    };
-    // A `"$userId"` the bundle's parser put in the params (`encrypt_key`) is the account id, as the envelope's.
-    const json = JSON.stringify(inner, (_, v) => (v === "$userId" ? (opts.accountId ?? "") : v));
+    const json = opts.rawValue ? JSON.stringify(opts.rawValue) : setPayloadJson(subCmd, payload, { ...opts, channel });
     const value = keyed ? json.replace(/=/g, "\\u003d") : json;
     const cmd = opts.wrapCmd ?? CMD_SET_PAYLOAD;
     const streamId = this.headerCounter(opts.counter);

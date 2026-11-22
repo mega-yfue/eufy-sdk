@@ -75,3 +75,31 @@ export function buildStringBody(channel: number, name: string, accountId: string
   writeAccountIdField(body, 5 + 128, accountId); // account_id field (128B)
   return body;
 }
+
+/**
+ * The `SET_PAYLOAD` (1350) JSON the app sends: `{key?, account_id, cmd, mChannel, mValue3, payload}`, mValue3 0 unless
+ * given, `payload` omitted with `omitPayload` or spread at the top level with `unzip`. A `"$userId"` in the params
+ * (`encrypt_key`) is written as the account id.
+ */
+export function setPayloadJson(
+  cmd: number,
+  payload: unknown,
+  opts: {
+    accountId?: string;
+    channel?: number;
+    mValue3?: number;
+    key?: string;
+    omitPayload?: boolean;
+    unzip?: boolean;
+  },
+): string {
+  const inner = {
+    ...(opts.key !== undefined ? { key: opts.key } : {}),
+    account_id: opts.accountId ?? "",
+    cmd,
+    mChannel: opts.channel ?? 0,
+    mValue3: opts.mValue3 ?? 0,
+    ...(opts.omitPayload ? {} : opts.unzip ? (payload as object) : { payload }),
+  };
+  return JSON.stringify(inner, (_, v) => (v === "$userId" ? (opts.accountId ?? "") : v));
+}
