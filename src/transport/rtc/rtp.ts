@@ -1,14 +1,45 @@
 /**
  * The station's media as the vendor app's native RTC client receives it: SRTP and SRTCP (RFC 3711,
  * AES_CM_128_HMAC_SHA1_80, key derivation rate 0) multiplexed on one transport, keyed by the SDES line of the offer
- * the app builds for the station, and H.264 (RFC 6184) / H.265 (RFC 7798) RTP depacketised to Annex B.
+ * the app builds for the station, H.264 (RFC 6184) / H.265 (RFC 7798) RTP depacketised to Annex B, and the media
+ * AES-GCM layer above it.
  */
-import { createCipheriv, createHmac, timingSafeEqual } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHmac, timingSafeEqual } from "node:crypto";
 
 /** The `inline:` master key ‖ salt of the `a=crypto:1 AES_CM_128_HMAC_SHA1_80` line in both offer m-sections. */
 export const RTC_SRTP_KEY = Buffer.from("FvLcvU2P3ZWmQxgPAgcDu7Zl9vftYElFOjEzhWs5", "base64");
 const TAG = 10;
 const START_CODE = Buffer.from([0, 0, 0, 1]);
+const START3 = START_CODE.subarray(1);
+
+/**
+ * One media unit opened with the call's media key and iv strings: AES-128-GCM under the key string's first 16 bytes,
+ * the iv string as the nonce, no AAD, the tag the unit's last 16 bytes; bytes before `clear` are not encrypted. The
+ * plaintext unit (16 bytes shorter), `undefined` when it does not open. An audio payload is encrypted whole, a
+ * parameter-set NAL from its third byte, a key frame from its IDR NAL header + 2.
+ */
+export function mediaOpen(key: string, iv: string, unit: Buffer, clear: number): Buffer | undefined {
+  try {
+    const d = createDecipheriv("aes-128-gcm", Buffer.from(key, "latin1").subarray(0, 16), Buffer.from(iv, "latin1"));
+    d.setAuthTag(unit.subarray(unit.length - 16));
+    return Buffer.concat([unit.subarray(0, clear), d.update(unit.subarray(clear, unit.length - 16)), d.final()]);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The offset of an Annex-B unit's IDR NAL header, -1 without one: the first header after a `00 00 01` of type 5
+ * (H.264, headers from offset 1023 on not searched) or 19 (H.265).
+ */
+export function idrAt(unit: Buffer, codec: "h264" | "h265"): number {
+  for (let at = unit.indexOf(START3); at >= 0; at = unit.indexOf(START3, at + 4)) {
+    const h = at + 3;
+    if (codec === "h264" ? (unit[h]! & 0x1f) === 5 : ((unit[h]! >> 1) & 0x3f) === 19) return h;
+    if (codec === "h264" && h >= 0x3ff) break;
+  }
+  return -1;
+}
 
 /** AES counter mode from IV = salt·2¹⁶ ⊕ SSRC·2⁶⁴ ⊕ index·2¹⁶ over `data`. */
 export function aesCm(key: Buffer, salt: Buffer, ssrc: number, index: number, data: Buffer): Buffer {
@@ -108,9 +139,11 @@ export class RtpDepacketizer {
   private lastSeq = -1;
   private broken = false;
 
+  /** `single`, when given, maps each single-NAL packet's payload before it joins the unit. */
   constructor(
     private readonly codec: "h264" | "h265",
     private readonly onUnit: (unit: Buffer, timestamp: number) => void,
+    private readonly single?: (nal: Buffer) => Buffer,
   ) {}
 
   push(packet: Buffer): void {
@@ -135,7 +168,7 @@ export class RtpDepacketizer {
     const [ap, fu, hdr] = h265 ? [48, 49, 2] : [24, 28, 1];
     const type = h265 ? (p[0]! >> 1) & 0x3f : p[0]! & 0x1f;
     if (type < ap && (h265 || type > 0)) {
-      this.nals.push(Buffer.from(p));
+      this.nals.push(Buffer.from(this.single?.(p) ?? p));
     } else if (type === ap) {
       let o = hdr;
       while (o + 2 <= p.length) {
