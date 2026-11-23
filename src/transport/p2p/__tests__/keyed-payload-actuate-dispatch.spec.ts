@@ -111,7 +111,7 @@ const SEQ_REFUSED = -151;
 /**
  * A router on a fake session whose device answers each send from `script` — a function of the send and its
  * index, so a device can keep a sequence mark. The sequence starts at a known number so every `seq_num` is
- * predictable. `nickName` puts a display name on the device record's member.
+ * predictable. `nickName` puts a display name on the device record's member, which the app never sends.
  */
 function harness(script: (sent: Sent, index: number) => Answer[], opts: { nickName?: string } = {}) {
   const session = connectedSession(false) as FakeSession;
@@ -162,7 +162,7 @@ describe("P2PCommandRouter.sendKeyedPayloadActuate (keyed-payload-actuate comman
     vi.useRealTimers();
   });
 
-  it("sends the sealed fields as a keyed SET_PAYLOAD envelope on the device channel, and settles on the echo", async () => {
+  it("sends the sealed fields as a keyed SET_PAYLOAD envelope on the device channel, in the account's name, and settles on the echo", async () => {
     const { sent, actuate, lastSequence } = harness(() => accepted, { nickName: "Front Door Admin" });
     await actuate(true);
 
@@ -174,13 +174,13 @@ describe("P2PCommandRouter.sendKeyedPayloadActuate (keyed-payload-actuate comman
       shortUserId: "0003",
       slOperation: 1,
       userId: ACCOUNT_ID,
-      userName: "Front Door Admin",
+      userName: "account-name",
       seq_num: FIRST_SEQ,
     });
     expect(lastSequence()).toBe(FIRST_SEQ);
   });
 
-  it("releases with slOperation 0, and names the acting member by the account name when the record has no nick_name", async () => {
+  it("releases with slOperation 0", async () => {
     const { sent, actuate } = harness(() => accepted);
     await actuate(false);
     expect(sent[0]!.inner).toMatchObject({ slOperation: 0, userName: "account-name" });
