@@ -18,8 +18,8 @@ import { EufyMega, FileSessionStore, LoginStatus, type EufyMegaOptions } from ".
 
 /**
  * Construct a client and drive login to completion, returning the authenticated client. `overrides`
- * are merged over the env-based defaults so an example can pass tuning knobs (e.g. `p2pIdleMs`,
- * `cacheTtlMs`) without repeating the login boilerplate.
+ * are merged over the env-based defaults so an example can pass tuning knobs (e.g. `p2pIdleMs`)
+ * without repeating the login boilerplate.
  */
 export async function loginClient(overrides: Partial<EufyMegaOptions> = {}): Promise<EufyMega> {
   const eufy = new EufyMega({

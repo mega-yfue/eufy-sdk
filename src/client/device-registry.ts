@@ -2,12 +2,12 @@
  * DeviceRegistry — the device list/record/capability-resolution collaborator behind {@link EufyMega}.
  *
  * The facade owns orchestration + event fan-out; this owns the resolution logic: fetching + merging
- * the (house-scoped, quirky) device list, overlaying a fresh param list per device, and resolving which
- * capability set a P2P frame's (station, channel) belongs to (a hot-path cache). Isolated here so the
+ * the (house-scoped, quirky) device list and resolving which capability set a P2P frame's (station,
+ * channel) belongs to (a hot-path cache). Isolated here so the
  * tricky bits are unit-testable with a fake `mega` — the facade stays pure wiring. It never names a
  * capability or a wire; it maps records to the model's `resolveDevice`/`inspectParams`.
  */
-import { MegaApiError, MegaHttpClient, OWNER_ONLY_CODE, SessionExpiredError } from "../transport/http/mega-client.js";
+import { MegaHttpClient, SessionExpiredError } from "../transport/http/mega-client.js";
 import { noopLogger, type Logger } from "../core/logger.js";
 import {
   resolvedStationSn,
@@ -198,18 +198,17 @@ export interface DeviceRegistryDeps {
   mega: MegaHttpClient;
   /** Surface a non-fatal fetch error (a house/body query that failed) without aborting the merge. */
   onError: (e: unknown) => void;
-  /** Diagnostics sink for facts that are NOT errors — see the owner-gated overlay note on {@link DeviceRegistry.record}. */
+  /** Diagnostics sink for facts that are NOT errors (an optional source that is unavailable). */
   logger?: Logger;
   /** Sees the devices each successful {@link DeviceRegistry.getDevices} fetched, before any kept from an earlier list. */
   onListFetched?: (devices: EufyDevice[]) => void;
 }
 
 /**
- * How long a fetched device list is reused for a per-device read that needs a fresher one.
+ * How long a fetched device list is reused by {@link DeviceRegistry.refreshedList}.
  *
- * The list is account-wide (`get_house_list` plus one `get_devs_list` per house), so a caller resolving a
- * fleet must not trigger one fetch per device. Short enough that a read-through refresh still observes a change
- * (the default staleness window is longer than this), long enough that resolving a whole fleet costs one list.
+ * The list is account-wide (`get_house_list` plus one `get_devs_list` per house), so a convergence wait polling
+ * it, or a fleet resolved on a cold cache, must not trigger one fetch per iteration or per device.
  */
 const LIST_REUSE_MS = 5_000;
 
@@ -230,18 +229,10 @@ export class DeviceRegistry {
   /** {@link stationChannels} of {@link channelMapFor}, the roster it was computed over. */
   private channelMap = new Map<string, StationChannel>();
   private channelMapFor?: EufyDevice[];
-  /**
-   * Serials whose per-device param overlay has been refused. The call is owner-gated, so on a shared or
-   * member account it fails for the whole life of the client — retrying it every refresh spends a request
-   * to learn the same thing, and the answer is reported once rather than on every read.
-   */
-  private readonly overlayRefused = new Set<string>();
   /** One in-flight device-list fetch shared by every caller that wants a fresher list. See {@link refreshedList}. */
   private listInFlight?: Promise<EufyDevice[]>;
-  /** When the device list was last fetched, so a burst of per-device reads shares one. See {@link refreshedList}. */
+  /** When {@link getDevices} last resolved, so a burst of {@link refreshedList} callers shares one list. */
   private listFetchedAtMs = 0;
-  /** Whether the owner-gated refusal has been reported. It is one fact about the account, so it is said once. */
-  private overlayRefusalReported = false;
   /** Per-serial capability cache for {@link capabilitiesForDevice}; `null` = negative hit. */
   private readonly deviceCapsCache = new Map<string, ReadonlySet<Capability> | null>();
   /** Per-serial cloud data points of an AIoT robot, joined beneath the params in {@link record} — see {@link loadCloudDps}. */
@@ -371,6 +362,7 @@ export class DeviceRegistry {
     await this.loadCloudDps(seen);
     await this.loadThings(seen);
     this.lastRefreshPartial = partial;
+    this.listFetchedAtMs = Date.now();
     this.onListFetched?.([...seen.values()]);
     if (partial) for (const prev of this.devices) if (!seen.has(prev.sn)) seen.set(prev.sn, prev);
     this.devices = [...seen.values()];
@@ -549,58 +541,22 @@ export class DeviceRegistry {
   }
 
   /**
-   * Resolve a serial to a {@link DeviceRecord} with current params: starts from the device-list params, then
-   * overlays a fresh `get_device_param_list` when that call is available to this account. An AIoT robot's
-   * cloud data points ({@link loadCloudDps}) sit beneath both, filling only ids neither carries.
+   * Resolve a serial to a {@link DeviceRecord} with current params: the device-list params, with an AIoT
+   * robot's cloud data points ({@link loadCloudDps}) beneath them, filling only ids the list does not carry.
    *
-   * The overlay is **owner-gated** — a shared or member account is refused it for every device, permanently,
-   * which {@link OWNER_ONLY_CODE} identifies — so when it is unavailable the device list is the source
-   * instead. Any OTHER failure is treated as transient: it falls back for that call but is retried next
-   * time, because latching on a timeout would cost an entitled account its freshest source of params.
-   *
-   * A dead session is the exception: it is not a statement about the overlay's availability, and the fallback
-   * runs over the same session, so it propagates rather than degrading to the params this call already held.
-   * Serving those as current would report an expired token as a device that simply has not changed.
-   *
-   * The refusal is **logged, never surfaced as an error**. It is a normal property of a shared or member
-   * account, not a fault: nothing failed that the SDK did not immediately handle, and the account holder
-   * cannot grant themselves ownership.
-   *
-   * The list is account-wide, so a re-fetch is NOT per device: resolving a fleet calls this once per device,
-   * and each one re-fetching would multiply one burst into N. {@link refreshedList} reuses a list younger
-   * than {@link LIST_REUSE_MS} and coalesces concurrent fetches, which keeps resolving N devices at the cost
-   * of one list while still letting a later refresh see a new value. That list is not owner-gated and carries the same
-   * `{param_type, param_value, update_time}`, which makes it the fallback the overlay's own contract names.
+   * Reads the cached list, as the app does: it re-fetches the list on home resume, cold start and after its
+   * own account changes, never on a device read. Only a serial the cache doesn't hold (a cold start) fetches,
+   * through {@link refreshedList}; a dead session propagates. The host's {@link getDevices}, the poll and the
+   * realtime paths are what move the params after that.
    *
    * Shared by {@link EufyMega.getDevice} / {@link EufyMega.inspectDevice} / `commandContext`.
    */
   async record(sn: string): Promise<DeviceRecord> {
-    if (!this.devices.length || this.overlayRefused.has(sn)) await this.refreshedList(sn);
-    let dev = this.devices.find((d) => d.sn === sn);
+    const dev = this.devices.find((d) => d.sn === sn) ?? (await this.refreshedList(sn));
     if (!dev) throw new Error(`device ${sn} not found (have: ${this.devices.map((d) => d.sn).join(", ")})`);
 
     const params: Record<number, string> = { ...this.cloudDps.get(sn), ...(dev.params ?? {}) };
     const paramUpdatedAt: Record<number, number> = { ...(dev.paramUpdatedAt ?? {}) };
-    if (!this.overlayRefused.has(sn)) {
-      try {
-        const live = await this.mega.getDeviceParamList<{ params?: RawParam[] }>(sn);
-        mergeParams(live.params, params, paramUpdatedAt);
-      } catch (error) {
-        if (error instanceof SessionExpiredError) throw error;
-        if (error instanceof MegaApiError && error.code === OWNER_ONLY_CODE) {
-          this.overlayRefused.add(sn);
-          if (!this.overlayRefusalReported) {
-            this.overlayRefusalReported = true;
-            this.logger.debug(
-              "[registry] per-device params are owner-gated for this account — reading params from the device list instead",
-            );
-          }
-        }
-        dev = (await this.refreshedList(sn)) ?? dev;
-        Object.assign(params, dev.params ?? {});
-        Object.assign(paramUpdatedAt, dev.paramUpdatedAt ?? {});
-      }
-    }
 
     const raw = dev.raw as Record<string, unknown> | undefined;
     const deviceType = typeof raw?.["device_type"] === "number" ? (raw["device_type"] as number) : undefined;
@@ -638,14 +594,9 @@ export class DeviceRegistry {
    */
   async refreshedList(sn: string): Promise<EufyDevice | undefined> {
     if (Date.now() - this.listFetchedAtMs < LIST_REUSE_MS) return this.devices.find((d) => d.sn === sn);
-    this.listInFlight ??= this.getDevices()
-      .then((devices) => {
-        this.listFetchedAtMs = Date.now();
-        return devices;
-      })
-      .finally(() => {
-        this.listInFlight = undefined;
-      });
+    this.listInFlight ??= this.getDevices().finally(() => {
+      this.listInFlight = undefined;
+    });
     try {
       return (await this.listInFlight).find((d) => d.sn === sn);
     } catch (e) {

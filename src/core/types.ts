@@ -75,8 +75,8 @@ export interface EufyDevice {
    * labels them for troubleshooting.
    *
    * **Not a realtime source.** These are refreshed server-side on the device's own cloud heartbeat,
-   * which is slow: the freshest param on an active device runs minutes old, and the per-device `get_device_param_list` call returns the same staleness as the bulk list
-   * (so fetching harder does not make them fresher). They are a coarse state snapshot plus liveness
+   * which is slow: the freshest param on an active device runs minutes old, so fetching harder
+   * does not make them fresher. They are a coarse state snapshot plus liveness
    * evidence ({@link paramUpdatedAt}); realtime state arrives over push / P2P / MQTT.
    */
   params?: Record<number, string>;

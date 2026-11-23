@@ -81,7 +81,7 @@ function buildDictSnippet(model: string, unknown: ParamInspection[]): string {
 
 /**
  * Inspect a cloud device record and produce the enrichment report. `rec.params` should be the
- * device's reported `param_type → value` map (e.g. from the device list / get_device_param_list).
+ * device's reported `param_type → value` map (e.g. from the device list).
  */
 export function inspectParams(rec: CloudRecord, sn?: string): DeviceInspection {
   const resolved = resolveDevice(rec);

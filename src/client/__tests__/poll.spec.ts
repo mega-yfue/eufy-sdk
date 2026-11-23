@@ -114,9 +114,8 @@ describe("cloud-param poll loop", () => {
   /**
    * The poll's fresh values must reach the live `Device`, not only the registry's record.
    *
-   * Nothing else on this path catches the device up: the read-through freshness policy fires on a READ
-   * of a stale value and hands that read the stale one, so a value nothing happened to read stayed
-   * behind for as long as nobody asked — measured at 11 minutes across poll boundaries.
+   * Nothing else on this path catches the device up: reads never fetch, so a value the poll left in the
+   * registry alone would stay behind on the held `Device` indefinitely.
    */
   it("lands the poll's fresh params on a Device a caller is holding", async () => {
     const eufy = makeClient();

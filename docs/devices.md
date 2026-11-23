@@ -15,11 +15,11 @@ dev.camera?.()?.on(); // → fluent typed action (see Fluent actions below)
 Read and control a device through its **fluent capability accessors** — `dev.<cap>()?.…` — for both
 reads (typed getters) and writes (action methods). That's the whole surface a host needs.
 
-Reads are cheap and never wake the device: they return in-memory state kept fresh by realtime, with a
-read-through cache refreshing stale values in the background — so polling a `Device` is safe. Reuse the
+Reads are cheap and never wake the device: they return in-memory state kept fresh by realtime and the
+poll — so polling a `Device` is safe. Reuse the
 object from `getDevice(sn)` rather than re-fetching each read: it stays current, and its capability set
 widens in place if the device later reports evidence for more. See
-[Connectivity & battery → Read-through cache](/connectivity).
+[Connectivity & battery → Cached reads](/connectivity).
 
 ## Fluent, typed actions
 

@@ -98,12 +98,6 @@ export interface EufyMegaOptions extends MegaClientConfig {
    */
   autoRealtime?: boolean;
   /**
-   * Read-through cache freshness window in ms (default 15000). A `getProperty`/`getProperties` read of
-   * a value older than this schedules ONE coalesced background refresh and returns the last-known value
-   * immediately; realtime (push/P2P) updates keep values fresh so a live device rarely refetches.
-   */
-  cacheTtlMs?: number;
-  /**
    * How long {@link EufyMega.getDevice} waits (ms, default `4000`) for a device whose state exists ONLY
    * on its realtime wire to make its first report, before resolving it.
    *

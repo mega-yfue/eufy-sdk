@@ -116,13 +116,6 @@ export class MegaApiError extends Error {
 }
 
 /**
- * `get_device_param_list` refuses a shared or member account: only the device's owner may read it. The
- * refusal is permanent for the life of that account's session, so a retry cannot change it — the
- * device-list params carry the same `{param_type, param_value, update_time}` and are not owner-gated.
- */
-export const OWNER_ONLY_CODE = 20004;
-
-/**
  * Thrown when a persisted/expired session is rejected (401). Re-login to recover.
  *
  * It carries the rate the client has already worked out for replacing a rejected token, because the
@@ -960,22 +953,6 @@ export class MegaHttpClient {
   async getPnBySn(deviceSn: string): Promise<string> {
     const res = await this.post<{ pn?: unknown }>("things", "/app/things/get_pn_by_sn", { device_sn: deviceSn });
     return typeof res?.pn === "string" ? res.pn : "";
-  }
-
-  /**
-   * Fetch the **live param list** from the mega `devicemanage` service. Body keys off a
-   * `device_sns` ARRAY (a bare `device_sn` 400s with "type mismatch"). Each returned entry is
-   * `{ param_type, param_value, update_time }` — VALUES ONLY, no name/meaning (the param→meaning
-   * mapping is hardcoded in the app, never returned by the API).
-   *
-   * NOTE: this endpoint is **owner-gated** — a shared/member account gets {@link OWNER_ONLY_CODE}
-   * (`"Only the owner can change settings"`), permanently. For those accounts use the `get_devs_list`
-   * params instead, which also carry `{param_type, param_value, update_time}` and are not owner-gated.
-   */
-  getDeviceParamList<T = unknown>(deviceSn: string): Promise<T> {
-    return this.post<T>("devicemanage", "/app/devicemanage/get_device_param_list", {
-      device_sns: [deviceSn],
-    });
   }
 
   /**

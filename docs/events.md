@@ -62,9 +62,8 @@ eufy.on("propertyChanged", ({ deviceSn, property, value }) => {
 - **Echoes are announced too.** The SDK cannot tell a change it caused from one made in the app, and
   guessing would lose a real external change in exchange for one redundant re-read.
 - **Latency is the transport's.** Seconds for a property a device reports over its realtime wire. For one
-  that only ever arrives as a cloud param — which is most of them — it is whichever comes first of the
-  poll (`pollMs` at construction, or `setPollInterval(ms)` at runtime; default 10 minutes) and the
-  read-through cache's own background re-read, which fires when you read a value older than `cacheTtlMs`.
+  that only ever arrives as a cloud param — which is most of them — it is the
+  poll (`pollMs` at construction, or `setPollInterval(ms)` at runtime; default 10 minutes).
 
 **Nothing is filtered out for being uninteresting.** Which of a device's truths you act on is yours to
 decide, so every schema property that moves is announced — including the chatty ones. A sensor's own
