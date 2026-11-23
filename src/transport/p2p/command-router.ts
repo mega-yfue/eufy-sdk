@@ -35,7 +35,7 @@ import {
 import { buildKeyedActuatePayload, keyedPayloadReportCode, keyedPayloadSeqMark } from "./keyed-payload.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { assertNever, isStationSerial } from "../../core/util.js";
-import { memberAccountId } from "../../core/member.js";
+import { adminUserIdOf, memberAccountId } from "../../core/member.js";
 import { setTimeout as sleep } from "node:timers/promises";
 import { CONNECT_TIMEOUT_MS, P2PSession, STATION_CHANNEL, type P2PFrame } from "./p2p-session.js";
 import { buildDirectBinaryBody, buildStringBody } from "./write-commands.js";
@@ -230,7 +230,10 @@ interface ResolvedSession {
   session: P2PSession;
   parentSn: string;
   channel: number;
+  /** The envelope account id esiotkit's `p2pRequest` sends: the target record's stated `admin_user_id`, else the user's. */
   accountId: string;
+  /** The one the legacy `ZmediaUtil` senders send: `AccountDelegate.m(station)`, the station's {@link memberAccountId}. */
+  zmediaAccountId: string;
   homeBaseAttached: boolean;
 }
 
@@ -822,7 +825,15 @@ export class P2PCommandRouter {
    * sealed by the session, sent once, resolving once sent ({@link sendAnswered}).
    */
   async rebootStation(sn: string): Promise<void> {
-    return this.sendStationScalar(sn, P2P_ENVELOPE.RESTART_HUB, 0, 255);
+    // `ZmediaUtil.rebootHUB` is the app's only sender: its account id is `AccountDelegate.m(station)`.
+    await this.sendAnswered(
+      sn,
+      P2P_ENVELOPE.RESTART_HUB,
+      ({ session, zmediaAccountId }) =>
+        session.sendBytes(buildDirectBinaryBody(0, zmediaAccountId), 255, P2P_ENVELOPE.RESTART_HUB),
+      undefined,
+      true,
+    );
   }
 
   /**
@@ -939,7 +950,15 @@ export class P2PCommandRouter {
     station: RecordingStation,
     opts: RecordingDownloadOpts,
   ): Promise<{ recording: Promise<RecordingDownload>; drained: Promise<void> }> {
-    const { session, parentSn, channel, accountId } = await this.resolveSession(sn, { signal: opts.signal });
+    // `MediaP2PSendManager.d` quotes `MediaAccountInfo.userId`, `AccountDelegate.m(station)` (DefaultDownloadStrategy).
+    const {
+      session,
+      parentSn,
+      channel,
+      zmediaAccountId: accountId,
+    } = await this.resolveSession(sn, {
+      signal: opts.signal,
+    });
     const path = station.path(channel, opts.recording);
     if (!path) throw new RecordingDownloadError("invalid-recording", `no recording named ${opts.recording}`);
     const eccKey = station.sealed ? await this.cipherKeyFor(opts.cipherId, accountId, parentSn, 8) : undefined;
@@ -1333,7 +1352,8 @@ export class P2PCommandRouter {
     subCmd: number,
     opts: { timeoutMs?: number; payload?: Record<string, unknown> } = {},
   ): Promise<Record<string, unknown>> {
-    const { session, channel, accountId } = await this.resolveSession(sn);
+    // Its callers' app senders are legacy: `BaseEmitter.e` (6237) and `ESLAnkerP2PService.q` (1955).
+    const { session, channel, zmediaAccountId: accountId } = await this.resolveSession(sn);
     const timeoutMs = opts.timeoutMs ?? 15000;
     return await new Promise<Record<string, unknown>>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -1507,7 +1527,9 @@ export class P2PCommandRouter {
 
   /**
    * Resolve a device serial to its P2P session + routing params: the HomeBase/parent session for an
-   * attached camera or the device's own, its `device_channel`, and the admin account id. Opens the
+   * attached camera or the device's own, its `device_channel`, and the account id each of the app's two senders
+   * puts on the envelope (bundle frames, live view and talkback ride esiotkit's; the ESL lock, recording download,
+   * station restart and quick-response/lock-status queries the legacy `ZmediaUtil` one). Opens the
    * station's P2P session on demand if needed and waits for it to connect, then holds it warm briefly
    * (a command keepalive, so a burst of commands / a follow-up read reuses it instead of paying a fresh
    * handshake — a no-op for a wired/persistent station).
@@ -1555,8 +1577,9 @@ export class P2PCommandRouter {
     const station = parentSn === sn ? dev : this.recordFor(parentSn);
     const stationAdminId = (station?.raw as any)?.member?.admin_user_id;
     const stationModel = station?.model;
-    // `ZmediaUtil` quotes `AccountDelegate.m(mHubSn)`, the station's member read by `AnkerAccountManager.u`.
-    const accountId = memberAccountId(station?.raw, this.deps.mega.auth?.userId);
+    const own = this.deps.mega.auth?.userId;
+    const accountId = adminUserIdOf(dev.raw) ?? own ?? "";
+    const zmediaAccountId = memberAccountId(station?.raw, own);
 
     this.traceOnStation(session, {
       phase: "station-resolved",
@@ -1572,7 +1595,7 @@ export class P2PCommandRouter {
     });
 
     await this.awaitConnected(session, parentSn, opts.signal);
-    return { session, parentSn, channel, accountId, homeBaseAttached };
+    return { session, parentSn, channel, accountId, zmediaAccountId, homeBaseAttached };
   }
 
   /**
@@ -1714,7 +1737,7 @@ export class P2PCommandRouter {
    * on the lock's device channel. No session key is waited for — the envelope seals its own per-command
    * key for the device's public key (fetched from the cloud, cached per serial), so it goes as soon as
    * the session is up. The acting name is the intent's account name, the app's `AccountDelegate.i()`; the envelope's
-   * account id is the resolved one (`AccountDelegate.m`).
+   * account id the `ZmediaUtil` one (`AccountDelegate.m`).
    *
    * It goes once at the next {@link keyedSeq}, as the app's `ESLAnkerP2PService.q` sends it, and
    * {@link awaitKeyedReply} settles it on the replies: a non-zero code, a sequence refusal included, throws and
@@ -1724,7 +1747,7 @@ export class P2PCommandRouter {
   private sendKeyedPayloadActuate(sn: string, cmd: Ff09Identity): Promise<void> {
     return this.serializeAnswered(sn, async () => {
       const devicePublicKey = await this.deps.mega.getDevicePublicKey(sn);
-      const { session, channel, accountId } = await this.resolveSession(sn);
+      const { session, channel, zmediaAccountId: accountId } = await this.resolveSession(sn);
       const { key, payload } = buildKeyedActuatePayload(cmd, devicePublicKey, cmd.username, {
         seqNum: this.keyedSeq++,
       });
@@ -1930,18 +1953,16 @@ export class P2PCommandRouter {
    * `seq_num`, the descriptor's `cmd` as `apiCommand`, and the frame's key time.
    */
   private async lockParams(sn: string, lock: NonNullable<Extract<Command, { kind: "set-payload" }>["lock"]>) {
-    const { parentSn } = await this.resolveSession(sn);
-    // The esiotkit lock path keys with the lock's own `member.admin_user_id` as stated, not `AnkerAccountManager`'s:
-    // the v4 station key (`generateStationAesKey`) with `""` without one, the v2 frame's `A2` (the bundle's `user_id`)
-    // with the user's own id.
-    const admin: string | undefined = (this.recordFor(sn)?.raw as any)?.member?.admin_user_id;
+    // The esiotkit lock path keys with the lock's stated `admin_user_id`: the v4 station key (`generateStationAesKey`)
+    // with `""` without one, the v2 frame's `A2` (the bundle's `user_id`) with the resolved account id.
+    const { parentSn, accountId } = await this.resolveSession(sn);
     if (lock.version === 4) {
       // `createPayloadForZhixingStationBle`: the lock's counter + 1, stored under the station (the lock's never moves).
       const seqNum = (this.lockSeq.get(sn) ?? Math.trunc(Date.now() / 1000)) + 1;
       this.lockSeq.set(parentSn, seqNum);
       return {
         payload: sealStationPayload({
-          adminUserId: admin ?? "",
+          adminUserId: adminUserIdOf(this.recordFor(sn)?.raw) ?? "",
           stationSn: parentSn,
           lockCmd: lock.bleCommand,
           lockPayload: lock.payload,
@@ -1952,7 +1973,7 @@ export class P2PCommandRouter {
     const frame = buildFf09TlvFrame({
       cmdCode: lock.cmdCode,
       fields: lock.fields,
-      adminUserId: admin ?? this.deps.mega.auth?.userId ?? "",
+      adminUserId: accountId,
       deviceSn: sn,
       encrypt: lock.encrypt,
       subVersion: lock.subVersion,
@@ -1994,13 +2015,21 @@ export class P2PCommandRouter {
     (this.deps.logger ?? noopLogger).debug(
       `[p2p] ${parentSn} door-lock pass-through ${cmd.engage ? "lock" : "unlock"} ${sn} ch=${channel}`,
     );
-    await this.sendSetPayloadEnvelope(
+    await this.sendAnswered(
       sn,
-      CommandType.CMD_DOORLOCK_DATA_PASS_THROUGH,
-      { payload: blob },
-      channel,
-      0,
+      P2P_ENVELOPE.SET_PAYLOAD,
+      ({ session, zmediaAccountId }) =>
+        session.sendSetPayload(
+          CommandType.CMD_DOORLOCK_DATA_PASS_THROUGH,
+          { payload: blob },
+          {
+            accountId: zmediaAccountId,
+            channel,
+            mValue3: 0,
+          },
+        ),
       resolved,
+      true,
     );
   }
 
