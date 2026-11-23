@@ -269,9 +269,7 @@ function zeroPadToBlock(data: Buffer, blocksize = 16): Buffer {
  */
 export function buildFf09Frame(input: Ff09FrameInput): Ff09Frame {
   const { engage, adminUserId, username, shortUserId, deviceSn, omitUserFields } = input;
-  if (!adminUserId) throw new Error("ff09: adminUserId (member.admin_user_id) is required");
   if (!deviceSn) throw new Error("ff09: deviceSn is required (AES IV)");
-  if (adminUserId.length < 12) throw new Error(`ff09: adminUserId too short (${adminUserId.length} < 12)`);
   // The IV is `deviceSn` zero-padded into a fixed 16-byte buffer via Buffer.copy(), which silently
   // truncates a longer source rather than erroring — every real serial observed is exactly 16 chars,
   // but a longer one would produce a frame with the wrong IV that the lock just rejects, with nothing
@@ -330,12 +328,16 @@ function assembleFf09Frame(
     encrypt: true,
   },
 ): Ff09Frame {
-  // key = admin_user_id[-12:] ‖ uint32_BE(keyTime); iv = deviceSn zero-padded to 16.
+  // key = admin_user_id[-12:] ‖ uint32_BE(keyTime); iv = deviceSn zero-padded to 16. The app derives the key for
+  // every frame but uses it only to seal: no admin id fails a sealed frame alone, a short one fails any frame.
+  if (!adminUserId && header.encrypt) throw new Error("ff09: adminUserId (member.admin_user_id) is required");
+  if (adminUserId && adminUserId.length < 12)
+    throw new Error(`ff09: adminUserId too short (${adminUserId.length} < 12)`);
   const key = Buffer.concat([Buffer.from(adminUserId.slice(-12), "ascii"), u32be(keyTime)]);
   const iv = Buffer.alloc(16);
   Buffer.from(deviceSn, "ascii").copy(iv);
-  const cipher = createCipheriv("aes-128-cbc", key, iv);
-  const ct = header.encrypt ? Buffer.concat([cipher.update(plain), cipher.final()]) : plain;
+  const cipher = header.encrypt ? createCipheriv("aes-128-cbc", key, iv) : undefined;
+  const ct = cipher ? Buffer.concat([cipher.update(plain), cipher.final()]) : plain;
 
   // Outer ff09 frame: header ‖ ct, then a trailing XOR-of-all-preceding checksum byte.
   const opcode = (header.encrypt ? 0x4000 : 0) | commandCode;
@@ -351,13 +353,16 @@ function assembleFf09Frame(
 
 /**
  * An `ff09` frame from tagged TLV fields a settings bundle builds, for a lock reached over MQTT: `A1` the
- * time and `A2` the admin user id first, then `fields`, sealed when `encrypt` (the descriptor's
+ * time and `A2` the user id first, then `fields`, sealed when `encrypt` (the descriptor's
  * `needEncrypt`) with the frame header's `subVersion` and `functionType`. `apiCommand` is the MQTT
  * channel's `TRANSFER_PAYLOAD`.
  */
 export function buildFf09TlvFrame(input: {
   cmdCode: number;
   fields: readonly { tag: number; value: Buffer }[];
+  /** The frame's `A2`. */
+  userId: string;
+  /** The key's owner: the record's `member.admin_user_id`, `""` without one. */
   adminUserId: string;
   deviceSn: string;
   encrypt: boolean;
@@ -366,15 +371,10 @@ export function buildFf09TlvFrame(input: {
   unixTime?: number;
   nonce?: number;
 }): Ff09Frame {
-  const { unixTime, keyTime, seqNum } = resolveFf09Identity(
-    input.adminUserId,
-    input.deviceSn,
-    input.unixTime,
-    input.nonce,
-  );
+  const { unixTime, keyTime, seqNum } = resolveFf09Identity(input.deviceSn, input.unixTime, input.nonce);
   const fields = [
     { tag: 0xa1, value: u32le(unixTime) },
-    { tag: 0xa2, value: Buffer.from(input.adminUserId, "ascii") },
+    { tag: 0xa2, value: Buffer.from(input.userId, "ascii") },
     ...input.fields,
   ];
   for (const f of fields)
@@ -398,15 +398,12 @@ export function buildFf09TlvFrame(input: {
  * shortUserId fields (the settings frames don't carry them at all).
  */
 function resolveFf09Identity(
-  adminUserId: string,
   deviceSn: string,
   unixTimeIn?: number,
   nonceIn?: number,
   seqNumIn?: number,
 ): { unixTime: number; keyTime: number; seqNum: number } {
-  if (!adminUserId) throw new Error("ff09: adminUserId (member.admin_user_id) is required");
   if (!deviceSn) throw new Error("ff09: deviceSn is required (AES IV)");
-  if (adminUserId.length < 12) throw new Error(`ff09: adminUserId too short (${adminUserId.length} < 12)`);
   // See buildFf09Frame's doc for why this fails loud instead of silently truncating.
   if (deviceSn.length > 16) throw new Error(`ff09: deviceSn too long for the 16-byte IV (${deviceSn.length} > 16)`);
 
@@ -437,13 +434,7 @@ export interface Ff09QueryFrameInput {
  */
 export function buildFf09QueryFrame(input: Ff09QueryFrameInput): Ff09Frame {
   const { adminUserId, deviceSn } = input;
-  const { unixTime, keyTime, seqNum } = resolveFf09Identity(
-    adminUserId,
-    deviceSn,
-    input.unixTime,
-    input.nonce,
-    input.seqNum,
-  );
+  const { unixTime, keyTime, seqNum } = resolveFf09Identity(deviceSn, input.unixTime, input.nonce, input.seqNum);
   const plain = zeroPadToBlock(writeTlv([u32le(unixTime), Buffer.from(adminUserId, "ascii")]));
   return assembleFf09Frame(
     LOCK_COMMAND_CODE.GET_SETTINGS,
@@ -490,13 +481,7 @@ export interface Ff09SettingsFrameInput {
  */
 export function buildFf09SettingsFrame(input: Ff09SettingsFrameInput): Ff09Frame {
   const { adminUserId, deviceSn, autoLockEnabled, autoLockDelaySeconds, a7, a8 } = input;
-  const { unixTime, keyTime, seqNum } = resolveFf09Identity(
-    adminUserId,
-    deviceSn,
-    input.unixTime,
-    input.nonce,
-    input.seqNum,
-  );
+  const { unixTime, keyTime, seqNum } = resolveFf09Identity(deviceSn, input.unixTime, input.nonce, input.seqNum);
   const tlvFields = [
     u32le(unixTime),
     Buffer.from(adminUserId, "ascii"),
@@ -579,13 +564,7 @@ export interface Ff09SettingToggleFrameInput {
  */
 export function buildFf09SettingToggleFrame(input: Ff09SettingToggleFrameInput): Ff09Frame {
   const { adminUserId, deviceSn, settingId, value } = input;
-  const { unixTime, keyTime, seqNum } = resolveFf09Identity(
-    adminUserId,
-    deviceSn,
-    input.unixTime,
-    input.nonce,
-    input.seqNum,
-  );
+  const { unixTime, keyTime, seqNum } = resolveFf09Identity(deviceSn, input.unixTime, input.nonce, input.seqNum);
   const plain = zeroPadToBlock(
     writeTlv([
       u32le(unixTime),

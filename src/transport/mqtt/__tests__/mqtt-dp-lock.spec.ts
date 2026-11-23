@@ -12,12 +12,12 @@ import type { EufyDevice } from "../../../core/types.js";
 const SN = "T8531Q0000000000";
 const ADMIN = "0000000000000000000000000000000000000000";
 
-function lockRouter(member?: { admin_user_id: string }) {
+function lockRouter(member: { admin_user_id: string } | null = { admin_user_id: ADMIN }, accountId = ADMIN) {
   const dev = {
     sn: SN,
     category: "eufy_security",
     model: "T8531",
-    raw: { device_new_pn: "T8531", member },
+    raw: { device_new_pn: "T8531", member: member ?? undefined },
   } as unknown as EufyDevice;
   const acks: Record<string, unknown>[] = [];
   const mqtt = Object.assign(new EventEmitter(), { id: "client-1", publish: vi.fn(async () => {}) });
@@ -27,7 +27,7 @@ function lockRouter(member?: { admin_user_id: string }) {
     ensureDevices: async () => {},
     onCommandAck: (info) => acks.push(info),
     onError: () => {},
-    resolveAccountId: () => ADMIN,
+    resolveAccountId: () => accountId,
     securityTransport: async () => mqtt as any,
   });
   return { router, mqtt, acks };
@@ -90,6 +90,21 @@ describe("a bundle mqtt-dp write to a lock", () => {
     expect(mqtt.publish).toHaveBeenCalledTimes(3);
   });
 
+  it("refuses a sealed write to a record without a member: the app has no key to seal it with", async () => {
+    const { router, mqtt } = lockRouter(null);
+    await expect(router.dispatchCommand(SN, { ...write, encrypt: true })).rejects.toThrow(/adminUserId/);
+    expect(mqtt.publish).not.toHaveBeenCalled();
+  });
+
+  it("sends an unsealed write with an empty A2 where the member states no admin, as the app", async () => {
+    const { router, mqtt } = lockRouter({ admin_user_id: "" }, "");
+    const p = router.dispatchCommand(SN, { ...write, encrypt: false, retryCount: 0 });
+    await vi.advanceTimersByTimeAsync(10_000);
+    await p;
+    const { frame } = published(mqtt);
+    expect(frame.subarray(15, 17)).toEqual(Buffer.from([0xa2, 0]));
+  });
+
   it("reports acked only once a reply with head.cmd = mqttCmdCode - 1 comes", async () => {
     const { router, mqtt, acks } = lockRouter();
     const send = async (replyCmd: number) => {
@@ -110,7 +125,7 @@ describe("an MQTT lock write's envelope account id", () => {
   const OWNER = "1111111111111111111111111111111111111111";
   it.each([
     ["the record's admin_user_id", { admin_user_id: OWNER }, OWNER],
-    ["empty on a record stating none, the frame keeping the user's id", undefined, ""],
+    ["empty on a record stating none, the frame keeping the user's id", null, ""],
   ])("is %s", async (_name, member, expected) => {
     const { router, mqtt } = lockRouter(member);
     const dp = { kind: "mqtt-dp", mqttCmdCode: 9, cmdCode: 0x23, fields: [], encrypt: false, retryCount: 0 } as const;
