@@ -1957,13 +1957,14 @@ export class P2PCommandRouter {
     // The esiotkit lock path keys with the lock's stated `admin_user_id`: the v4 station key (`generateStationAesKey`)
     // with `""` without one, the v2 frame's `A2` (the bundle's `user_id`) with the resolved account id.
     const { parentSn, accountId } = await this.resolveSession(sn);
+    const adminUserId = adminUserIdOf(this.recordFor(sn)?.raw) ?? "";
     if (lock.version === 4) {
       // `createPayloadForZhixingStationBle`: the lock's counter + 1, stored under the station (the lock's never moves).
       const seqNum = (this.lockSeq.get(sn) ?? Math.trunc(Date.now() / 1000)) + 1;
       this.lockSeq.set(parentSn, seqNum);
       return {
         payload: sealStationPayload({
-          adminUserId: adminUserIdOf(this.recordFor(sn)?.raw) ?? "",
+          adminUserId,
           stationSn: parentSn,
           lockCmd: lock.bleCommand,
           lockPayload: lock.payload,
@@ -1974,7 +1975,8 @@ export class P2PCommandRouter {
     const frame = buildFf09TlvFrame({
       cmdCode: lock.cmdCode,
       fields: lock.fields,
-      adminUserId: accountId,
+      userId: accountId,
+      adminUserId,
       deviceSn: sn,
       encrypt: lock.encrypt,
       subVersion: lock.subVersion,

@@ -649,17 +649,14 @@ export class MqttCommandRouter {
 
   /**
    * The `a2` account id an `eufy_life` DP frame embeds — the owning member's `admin_user_id` (or the
-   * session user id), resolved by the injected {@link MqttRouterDeps.resolveAccountId}. Throws if the
-   * resolver isn't wired or yields an empty id: the frame's `a2` opener is a required field, and a
-   * fire-and-forget write with an empty account id would look like success while doing nothing.
+   * session user id), resolved by the injected {@link MqttRouterDeps.resolveAccountId}; `""` goes out as the app
+   * sends it. Throws if the resolver isn't wired.
    */
   private requireAccountId(dev: EufyDevice): string {
     if (!this.deps.resolveAccountId) {
       throw new Error(`eufy_life DP for ${dev.sn}: resolveAccountId dependency not wired`);
     }
-    const id = this.deps.resolveAccountId(dev);
-    if (!id) throw new Error(`eufy_life DP for ${dev.sn}: no account id resolved (the frame's a2 field is required)`);
-    return id;
+    return this.deps.resolveAccountId(dev);
   }
 
   /**
@@ -698,11 +695,11 @@ export class MqttCommandRouter {
    */
   private async dispatchLockDp(sn: string, cmd: Extract<Command, { kind: "mqtt-dp" }>): Promise<void> {
     const dev = await this.pnDeviceFor(sn);
-    const adminUserId = this.requireAccountId(dev);
     const frame = buildFf09TlvFrame({
       cmdCode: cmd.cmdCode,
       fields: cmd.fields,
-      adminUserId,
+      userId: this.requireAccountId(dev),
+      adminUserId: adminUserIdOf(dev.raw) ?? "",
       deviceSn: sn,
       encrypt: cmd.encrypt ?? true,
       subVersion: cmd.subVersion ?? 3,
