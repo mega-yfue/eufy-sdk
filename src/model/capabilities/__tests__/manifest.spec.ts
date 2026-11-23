@@ -136,8 +136,10 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
       channel: 16,
       codec: "sensor",
       deviceType: 123,
+      model: "T90R0",
       capabilities: new Set(["siren"]),
       paramIds: new Set([61008, 1825]),
+      things: alarm("T90R0", ["0"]),
     });
     const unverified = describeSiren({
       channel: 0,
@@ -152,6 +154,7 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
     expect(homeBase.actions.map((action) => action.name)).toEqual([
       "setAlarmVolume",
       "setAlarmTone",
+      "test",
       "trigger",
       "stop",
     ]);

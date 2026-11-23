@@ -22,15 +22,8 @@ export const SIREN_PARAM = {
   NOT_DISTURB: 1828,
 } as const;
 
-/**
- * The siren's **write-only command ids**. Momentary actions install only when their family-specific
- * reported evidence and topology gates hold.
- */
+/** The HomeBase alarm-output **write-only command ids**, installed on reported evidence. */
 export const SIREN_CMD = {
-  /** Sound the siren briefly as a test (app `APP_CMD_SIREN_SENSOR_ALARM_TEST`). */
-  ALARM_TEST: 1826,
-  /** Manually stop a sounding alarm (app `APP_CMD_SIREN_SENSOR_MANUAL_STOP_ALARM`). */
-  MANUAL_STOP: 1871,
   /** HomeBase alarm volume percentage (app `CMD_SET_HUB_SPK_VOLUME`). */
   HUB_SPK_VOLUME: 1235,
   /** HomeBase alarm-tone selection (app `APP_CMD_HUB_ALARM_TONE`). */
@@ -91,25 +84,44 @@ function isSensorCodec(ctx: AvailabilityContext): boolean {
   return ctx.codec === "sensor";
 }
 
-/** Whether a sensor-codec device reports the combined standalone siren evidence. */
-function isEvidencedStandaloneSiren(ctx: CommandContext): boolean {
-  return isSensorCodec(ctx) && hasStandaloneSirenEvidence(ctx);
+/**
+ * `set_alarm_type` written with `payload` as the product's settings bundle sends it, the frame the one it answered
+ * `key` with; `undefined` where the description lists no `set_alarm_type` or the bundle frames none.
+ */
+function alarmWrite(payload: string, ctx: CommandContext, key = payload): Command | undefined {
+  return ctx.things?.properties.set_alarm_type ? thingWrite("set_alarm_type", payload, ctx, key) : undefined;
 }
 
 /**
- * The live view's alarm (`AlarmActionHandler`): `set_alarm_type` written with Gson's `AlarmModel(open, type)`, the
- * `AlarmType` sound only (0) on a camera, HomeBase sound (3) on a station, as the product's settings bundle sends it.
- * `undefined` where the description lists no `set_alarm_type`, the bundle frames none, or on a sensor-codec siren,
- * which has no live view.
+ * The live view's alarm (`AlarmActionHandler`): Gson's `AlarmModel(open, type)`, the `AlarmType` sound only (0) on a
+ * camera, HomeBase sound (3) on a station. None on a sensor-codec siren, which has no live view.
  */
 function liveAlarm(open: boolean, ctx: CommandContext): Command | undefined {
-  if (isSensorCodec(ctx) || !ctx.things?.properties.set_alarm_type) return undefined;
-  return thingWrite("set_alarm_type", JSON.stringify({ open, type: isStationSerial(ctx.serial ?? "") ? 3 : 0 }), ctx);
+  if (isSensorCodec(ctx)) return undefined;
+  return alarmWrite(JSON.stringify({ open, type: isStationSerial(ctx.serial ?? "") ? 3 : 0 }), ctx);
 }
 
-/** The stop: a standalone siren's manual stop, else the live view's alarm closed. */
+/** The hubs the app's `isHBDevice` counts by serial, less its `isHB3` (T8030), which plays no preview. */
+const PREVIEW_HUBS = ["T8010", "T8002", "T8001", "T8025", "T9000", "T8N00", "T7000", "T8040"];
+
+/**
+ * The app's alarm test. A sensor siren's settings test (`AlarmVolumeSettingScreen`, `IndoorSensorTestScreen`, the
+ * add-device test) sounds `{open: true, forTest: true}`. A HomeBase other than a HomeBase 3 (`AudioSettingsScreen`'s
+ * volume preview) sounds 2 s of its type-0 alarm in the account's name. No other family has one.
+ */
+function testAlarm(ctx: CommandContext): Command | undefined {
+  if (isSensorCodec(ctx)) return alarmWrite('{"open":true,"forTest":true}', ctx);
+  if (!PREVIEW_HUBS.some((p) => ctx.serial?.startsWith(p))) return undefined;
+  const preview = { type: 0, time: 2, open: true, nick_name: ctx.accountName };
+  return alarmWrite(JSON.stringify(preview), ctx, JSON.stringify({ ...preview, nick_name: "$input.nick_name" }));
+}
+
+/**
+ * The stop: a sensor siren's ringing stop (`IndoorStopAlarmIndicator`), the unquoted text the app sends, else the
+ * live view's alarm closed.
+ */
 function stopAlarm(ctx: CommandContext): Command | undefined {
-  return isEvidencedStandaloneSiren(ctx) ? sirenPayload(SIREN_CMD.MANUAL_STOP, {}, ctx) : liveAlarm(false, ctx);
+  return isSensorCodec(ctx) ? alarmWrite("{open:false,forTest:false}", ctx) : liveAlarm(false, ctx);
 }
 
 /**
@@ -121,9 +133,9 @@ function sirenPayload(cmd: number, body: Record<string, number>, ctx: CommandCon
 }
 
 /**
- * Every audible alarm-output feature, declared once. Standalone sirens expose observed state,
- * configuration, test, and stop; evidenced HomeBases expose alarm configuration; a device whose description
- * lists `set_alarm_type` exposes the live view's trigger/stop.
+ * Every audible alarm-output feature, declared once. Standalone sirens expose observed state and
+ * configuration; evidenced HomeBases expose alarm configuration; a device whose description lists
+ * `set_alarm_type` exposes the app's test, trigger and stop where its bundle frames them.
  *
  * Exported but NOT published: each entry states its wire id and its gate,
  * which the reference site does not carry.
@@ -217,12 +229,14 @@ export const SIREN_MEMBERS = {
     },
   },
 
-  /** Sound a standalone siren briefly using its dedicated installation-test wire. */
-  test: {
-    action: (ctx) => sirenPayload(SIREN_CMD.ALARM_TEST, {}, ctx),
-    available: isEvidencedStandaloneSiren,
-    description: "Sound the siren briefly as a test.",
-  },
+  /** The app's alarm test: a sensor siren's settings test, a HomeBase's 2 s volume preview. */
+  test: method(
+    ({ ctx, sink }) =>
+      () =>
+        sink.dispatch(testAlarm(ctx)!),
+    "Sound the alarm briefly as the app's settings test does.",
+    (ctx) => testAlarm(ctx) !== undefined,
+  ),
   /** Sound the alarm as the live view does: the bundle's `time_out` (30 s), no duration of the host's. */
   trigger: method(
     ({ ctx, sink }) =>
@@ -231,7 +245,7 @@ export const SIREN_MEMBERS = {
     "Sound the alarm as the app's live view does; it stops itself after the device's time-out.",
     (ctx) => liveAlarm(true, ctx) !== undefined,
   ),
-  /** Stop a sounding alarm through its own wire. */
+  /** Stop a sounding alarm as the app does. */
   stop: method(
     ({ ctx, sink }) =>
       () =>
