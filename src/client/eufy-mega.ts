@@ -69,7 +69,7 @@ import { StoredImageCache } from "../transport/stored-image-cache.js";
 import type { PushEvent, RawPushMessage } from "../transport/push/types.js";
 import { type AvailabilityObservation, type EufyDevice, type RealtimeTransport } from "../core/types.js";
 import { Timer } from "../core/util.js";
-import { memberAccountId } from "../core/member.js";
+import { adminUserIdOf, memberAccountId } from "../core/member.js";
 import {
   Device,
   resolveDevice,
@@ -113,13 +113,6 @@ type SemanticEventRefresh = Pick<CommandObservation, "param" | "property" | "res
   expected?: CommandObservation["expected"];
   observed?: CommandObservation["observed"];
 };
-
-/** The `member.admin_user_id` a raw device record states, as the app's esiotkit MQTT path reads it (no `memberAccountId` rule). */
-function adminUserIdFrom(raw: unknown): string | undefined {
-  const member = ((raw ?? {}) as Record<string, unknown>).member as Record<string, unknown> | undefined;
-  const id = member?.admin_user_id;
-  return typeof id === "string" && id ? id : undefined;
-}
 
 /** A parent that isn't the device itself means HomeBase-attached. */
 const homeBaseAttached = (raw: Record<string, any>, sn: string): boolean => !!raw.parent_sn && raw.parent_sn !== sn;
@@ -460,7 +453,7 @@ export class EufyMega extends EventEmitter {
       onError: (e) => this.reportError(e),
       // The `a2` account id an `eufy_life` DP frame embeds — the owning member's `admin_user_id`,
       // falling back to the logged-in account's user id (the confirmed script path does the same).
-      resolveAccountId: (dev) => adminUserIdFrom(dev.raw) ?? this.mega.auth?.userId ?? "",
+      resolveAccountId: (dev) => adminUserIdOf(dev.raw) ?? this.mega.auth?.userId ?? "",
       // Fetch + parse a gallery effect from the HTTP catalogue into the serializable spec. The catalogue
       // lives in the http layer (transport/http/light-catalog); the mqtt router owns the frame bytes.
       resolvePreset: (presetId) => resolveLightEffectHttp(this.mega, presetId),
@@ -2365,8 +2358,9 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * The station a database read goes to, the account id it is quoted ({@link memberAccountId}) and its RTC route,
-   * if any. Throws, prefixed with `op`, on a serial the device list does not carry and signed out.
+   * The station a database read goes to, the account id it is quoted and its RTC route, if any. The account id is
+   * esiotkit's `p2pRequest` one (its `QueryTableKt` reads): the station's stated `admin_user_id`, else the signed-in
+   * user's. Throws, prefixed with `op`, on a serial the device list does not carry and signed out.
    */
   private async stationReadTarget(
     op: string,
@@ -2376,7 +2370,7 @@ export class EufyMega extends EventEmitter {
     const station = this.p2p.stationKeyOf(stationSn);
     const found = this.stationOf(station);
     if (!found.station) throw new Error(`${op}: ${station} is not in the device list`);
-    const accountId = memberAccountId(found.raw, this.mega.auth?.userId);
+    const accountId = adminUserIdOf(found.raw) ?? this.mega.auth?.userId;
     if (!accountId) throw new Error(`${op}: no account id for ${station}, login() first`);
     return { station, accountId, route: this.rtcRouteFor(station, { cmd: 1350, sub: 1306, channel: 255 }) };
   }
