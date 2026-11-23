@@ -326,6 +326,62 @@ describe("RtcCommandRouter on the native layers", () => {
     router.close();
   });
 
+  it("sends talkback audio only once start_intercom is written, as the app enables its mic on its success", async () => {
+    const { router, agent, data } = layers();
+    data.connected = false;
+    const talkStart = { cmd: 1005, body: "native", payload: {}, layout: "u32-ch" } as const;
+    const talkStop = { cmd: 1006, body: "native", payload: {}, layout: "u32-ch" } as const;
+    const route = { ...ROUTE, version: 4000, live: { ...NVR_LIVE!, talkStart, talkStop } };
+    const opening = router.mediaProviderFor(route).talkback!();
+    await vi.waitFor(() => expect(agent.write).toHaveBeenCalled());
+    const idr = Buffer.alloc(22);
+    idr.writeUInt32BE(0x80e30001);
+    idr.writeUInt32BE(9000, 4);
+    idr[12] = 0x65;
+    idr.writeBigUInt64LE(BigInt(Date.now()), 13);
+    idr[21] = 3;
+    agent.emit("data", idr);
+    const talk = await opening;
+    const audio = () => agent.write.mock.calls.filter(([p]) => ((p as Buffer)[1]! & 0x7f) === 111);
+    talk.write(Buffer.from("before the start"));
+    await new Promise((r) => setTimeout(r, 100));
+    expect([data.command.mock.calls.length, audio().length]).toEqual([0, 0]);
+    data.connected = true;
+    await vi.waitFor(() => expect(data.command).toHaveBeenCalledWith(1005, u32(3), 3, 0));
+    talk.write(Buffer.from("after the start"));
+    await vi.waitFor(() => expect(audio()).toHaveLength(1));
+    expect((audio()[0]![0] as Buffer).subarray(12)).toEqual(Buffer.from("after the start"));
+    await talk.stop();
+    router.close();
+  });
+
+  it("a failed start_intercom sends no stop_intercom until the talkback is stopped, as the app's player sits in Failed", async () => {
+    const { router, agent, data, priv1 } = layers();
+    priv1.mockImplementationOnce(() => {
+      throw new Error("no data channel");
+    });
+    const talkStart = { cmd: 1005, body: "native", payload: {}, layout: "u32-ch" } as const;
+    const talkStop = { cmd: 1006, body: "native", payload: {}, layout: "u32-ch" } as const;
+    const route = { ...ROUTE, version: 4000, live: { ...NVR_LIVE!, talkStart, talkStop } };
+    const opening = router.mediaProviderFor(route).talkback!();
+    await vi.waitFor(() => expect(agent.write).toHaveBeenCalled());
+    const idr = Buffer.alloc(22);
+    idr.writeUInt32BE(0x80e30001);
+    idr.writeUInt32BE(9000, 4);
+    idr[12] = 0x65;
+    idr.writeBigUInt64LE(BigInt(Date.now()), 13);
+    idr[21] = 3;
+    agent.emit("data", idr);
+    const talk = await opening;
+    const failed = new Promise<Error>((r) => talk.on("error", r));
+    expect((await failed).message).toContain("did not take start_intercom");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(data.command).not.toHaveBeenCalled();
+    await talk.stop();
+    await vi.waitFor(() => expect(data.command).toHaveBeenCalledWith(1006, u32(3), 3, 0));
+    router.close();
+  });
+
   it("refuses a live view without the start JSON", async () => {
     const { router } = layers();
     await expect(router.mediaProviderFor({ ...ROUTE, live: undefined }).live()).rejects.toThrow("no RTC start frame");

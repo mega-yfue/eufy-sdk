@@ -156,14 +156,14 @@ export class Anke {
 
 /**
  * A live command as the app's RTC sender frames it: its id, body, header channel and header byte 14; `send` when the
- * sender routes it over the data channel instead, where the app checks no answer.
+ * sender routes it over the data channel instead, where the app checks no answer: `true` once written.
  */
 export interface RtcLiveCommand {
   cmd: number;
   body: Buffer;
   channel: number;
   flag: number;
-  send?: () => void;
+  send?: () => Promise<boolean>;
 }
 
 export interface RtcPmLiveOptions {
@@ -191,7 +191,7 @@ export interface RtcPmLiveOptions {
  * bytes before it, a u64 LE ms timestamp no further than 100 years ahead of the clock, go with it. A key frame of 17
  * bytes or more with its IDR NAL header past offset 0 is then opened from that header + 2, and dropped when it does
  * not open. After a drop, units wait for the next key frame. Audio (payload type 111) carries the same trailer and,
- * with `gcm`, is opened whole; a payload that does not open is dropped.
+ * with `gcm`, is opened whole; a payload whose tag fails goes on deciphered all the same, as the app inserts it.
  */
 export class RtcPmLiveStream extends EventEmitter implements LiveStreamHandle {
   private readonly anke: Anke;
@@ -279,7 +279,7 @@ export class RtcPmLiveStream extends EventEmitter implements LiveStreamHandle {
    * success.
    */
   async command(c: RtcLiveCommand): Promise<boolean> {
-    if (c.send) return (c.send(), true);
+    if (c.send) return c.send();
     this.anke.send(commandFrame(c.cmd, c.body, c.channel, this.seal, c.flag));
     for (let i = 0; i < 10 && !this.closed; i++) {
       const r = this.anke.result(c.cmd);
@@ -337,7 +337,7 @@ export class RtcPmLiveStream extends EventEmitter implements LiveStreamHandle {
 
   private onAudio(payload: Buffer | undefined): void {
     const data = payload && this.untrail(payload);
-    const plain = data && (this.opts.gcm ? mediaOpen(this.opts.call.key, this.opts.call.iv, data, 0) : data);
+    const plain = data && (this.opts.gcm ? mediaOpen(this.opts.call.key, this.opts.call.iv, data, 0, true) : data);
     if (plain) this.emit("audio", { codec: "opus", data: plain });
   }
 

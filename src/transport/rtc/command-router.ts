@@ -297,9 +297,12 @@ export class RtcCommandRouter {
 
   /**
    * Talk to a camera as the app's RTC player does, inside its live view: once the view shows video, `start_intercom`
-   * goes out and one 20 ms Opus packet per write follows on the view's PM call ({@link RtcPmLiveStream.sendAudio}),
-   * paced by {@link Talkback}; `stop_intercom` closes it. The view is held while talking and ends the talkback with
-   * it. One talkback per station: its PM call carries one audio track.
+   * goes out, and once it succeeds (its `ANKE` answer, or its write on the data channel) one 20 ms Opus packet per
+   * write follows on the view's PM call ({@link RtcPmLiveStream.sendAudio}), paced by {@link Talkback}; audio before
+   * that is dropped, as the app's mic track stays off. A failed start is reported as `error` and leaves the talkback
+   * open and silent, as the app's player sits in its Failed state: `stop_intercom` goes out only when it is stopped or
+   * its view ends, as the app's `stopTalk` / `release` send it from any state but Idle. The view is held while talking
+   * and ends the talkback with it. One talkback per station: its PM call carries one audio track.
    */
   private async openTalkback(
     route: RtcLiveRoute,
@@ -310,13 +313,21 @@ export class RtcCommandRouter {
     const { talkStart, talkStop } = route.live!;
     const pm = () => this.lives.get(sn)?.stream;
     let consumer: Consumer | undefined;
-    const talk = new Talkback(
+    let speaking = false;
+    const talk: Talkback = new Talkback(
       {
         sendFrame: (frame) => {
           const st = this.stations.get(sn);
-          if (st) void pm()?.command(this.liveCommand(route, st, frame, 0, true));
+          const sent = st && pm()?.command(this.liveCommand(route, st, frame, 0, true));
+          if (frame !== talkStart) return;
+          void (sent ?? Promise.resolve(false)).then((ok) => {
+            if (ok) return void (speaking = true);
+            const e = new Error(`talkback: ${route.cameraSn} did not take start_intercom`);
+            if (talk.listenerCount("error")) talk.emit("error", e);
+            else this.deps.logger?.warn(e.message);
+          });
         },
-        sendAudioFrame: (_channel, packet) => pm()?.sendAudio(packet),
+        sendAudioFrame: (_channel, packet) => speaking && pm()?.sendAudio(packet),
       },
       {
         channel: route.channel,
@@ -590,11 +601,16 @@ export class RtcCommandRouter {
     const t822x = /^T822[34]/.test(sn);
     const above = t822x && cmdGcm(sn, route.version) && (cmd === 1700 || cmd === 1004);
     const rtcp = cmd === 1350 || above || (!talk && !t822x);
-    const write = (d: RtcDataChannel) => d.command(cmd, body, header, flag);
-    const send = () =>
-      void (st.data?.connected ? write(st.data) : this.dataChannel(route).then(write)).catch((e: unknown) =>
-        this.deps.logger?.warn(`[rtc] ${sn} live ${cmd} over the data channel: ${String(e)}`),
-      );
+    const send = async () => {
+      try {
+        const d = st.data?.connected ? st.data : await this.dataChannel(route);
+        void d.command(cmd, body, header, flag).catch(() => undefined);
+        return true;
+      } catch (e) {
+        this.deps.logger?.warn(`[rtc] ${sn} live ${cmd} over the data channel: ${String(e)}`);
+        return false;
+      }
+    };
     return { cmd, body, channel: header, flag, ...(!rtcp && { send }) };
   }
 
