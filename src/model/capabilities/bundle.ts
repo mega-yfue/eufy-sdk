@@ -46,6 +46,8 @@ export interface BundleFrame extends SessionFrame {
   seal?: string;
   unzipParams?: boolean;
   session?: Readonly<Record<string, string>>;
+  /** An `rtcLive` frame's `rtc_type`: fixed (absent 0), or 1 from version `from` of the device's or parent's firmware. */
+  rtcSendRoute?: number | { from: string; of: "own" | "parent" };
   dp?: number;
   value?: unknown;
   /** A data point's value per value of the input `key` (the bundle's own table, `fanToString[speed]`). */
@@ -254,29 +256,37 @@ export function liveFrames(
  * is its own station), and its talkback with: `start_intercom` / `stop_intercom` take no player input, so they are
  * {@link liveFrames}' own. The start is the page `MediaLiveActivityViewModel.startPlay` opens: with `lenses` (a sensor
  * list) the portrait lens page `Stitch_T_B_2X2`, else the single-camera page; above the parent's firmware 4.2.0.0
- * (`parent`), a product's `<topology>>4.2.0.0` frames, as {@link liveFrames}. `undefined` for a product the bundles
- * give no RTC view.
+ * (`parent`), a product's `<topology>>4.2.0.0` frames, as {@link liveFrames}. Each frame's `rtcSendRoute` is resolved
+ * against the device's own firmware (`own`) or the parent's, as its parser's `compareVersions(version, from) < 0 ? 0 :
+ * 1` reads it, a version the record lacks "". `undefined` for a product the bundles give no RTC view.
  */
 export function rtcLiveFrames(
   model: string,
   parentSn: string,
-  { lenses = false, parent = "" }: { lenses?: boolean; parent?: string } = {},
-): Omit<LiveFrames, "ability"> | undefined {
+  { lenses = false, own = "", parent = "" }: { lenses?: boolean; own?: string; parent?: string } = {},
+): (Record<"start" | "stop", RtcLiveFrame> & Partial<Record<"talkStart" | "talkStop", RtcLiveFrame>>) | undefined {
   const byTopology = memberOf(BUNDLE_WIRES.rtcLive, model);
   const topology = topologyOf(parentSn);
-  const entry =
-    (newerThan(parent, "4.2.0.0") ? memberOf(byTopology, `${topology}>4.2.0.0`) : undefined) ??
-    memberOf(byTopology, topology);
-  const frames = BUNDLE_WIRES.frames ?? [];
+  // A `>4.2.0.0` entry holds only the frames that differ there.
+  const base = memberOf(byTopology, topology);
+  const entry = base && { ...base, ...(newerThan(parent, "4.2.0.0") && memberOf(byTopology, `${topology}>4.2.0.0`)) };
+  const frame = (i: number): RtcLiveFrame => {
+    const { rtcSendRoute: r, ...f } = BUNDLE_WIRES.frames![i]!;
+    const at = typeof r === "object" ? (newerThan(r.from, r.of === "own" ? own : parent) ? 0 : 1) : r;
+    return at === undefined ? f : { ...f, rtcSendRoute: at };
+  };
   const { talkStart, talkStop } = liveFrames(model, parentSn, [], parent || undefined) ?? {};
   return (
     entry && {
-      start: frames[lenses && entry.startTB !== undefined ? entry.startTB : entry.start]!,
-      stop: frames[entry.stop]!,
+      start: frame(lenses && entry.startTB !== undefined ? entry.startTB : entry.start),
+      stop: frame(entry.stop),
       ...(talkStart && talkStop && { talkStart, talkStop }),
     }
   );
 }
+
+/** A live frame with the `rtc_type` its bundle parser gave it (`rtcSendRoute`, absent 0). */
+type RtcLiveFrame = SessionFrame & { rtcSendRoute?: number };
 
 /** A read of a hex-encoded data point, its map keyed by the base64 the SDK holds the point in. */
 const base64Keys = (read: BundleRead): BundleRead => ({

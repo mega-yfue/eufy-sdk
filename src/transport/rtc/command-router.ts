@@ -24,7 +24,6 @@ import { setTimeout as sleep } from "node:timers/promises";
 import {
   LiveSnapshotUnavailableError,
   type Command,
-  type LiveFrames,
   type TalkbackHandle,
   type AacEncoder,
   type MediaProvider,
@@ -75,6 +74,9 @@ export interface RtcRoute {
   sdkVersion?: string;
 }
 
+/** A live frame with the `rtc_type` its bundle parser gave it (`rtcSendRoute`, absent 0). */
+export type RtcLiveFrame = SessionFrame & { rtcSendRoute?: number };
+
 /** The camera a live view is for, on its station's route. */
 export interface RtcLiveRoute extends RtcRoute {
   cameraSn: string;
@@ -84,7 +86,7 @@ export interface RtcLiveRoute extends RtcRoute {
    * The bundle frames the app's RTC player starts and stops the view with, without which the view is refused, and its
    * talkback with, without which there is no talkback.
    */
-  live?: Omit<LiveFrames, "ability">;
+  live?: Record<"start" | "stop", RtcLiveFrame> & Partial<Record<"talkStart" | "talkStop", RtcLiveFrame>>;
   /** The camera's lens ids (its param 9240 sensor list, in order) when it has any: its view is the lens page. */
   sensors?: readonly number[];
 }
@@ -324,7 +326,7 @@ export class RtcCommandRouter {
       {
         sendFrame: (frame) => {
           const st = this.stations.get(sn);
-          const sent = st && pm()?.command(this.liveCommand(route, st, frame, 0, true));
+          const sent = st && pm()?.command(this.liveCommand(route, st, frame, 0));
           if (frame !== talkStart) return;
           void (sent ?? Promise.resolve(false)).then((ok) => {
             if (ok) return void (speaking = true);
@@ -554,7 +556,7 @@ export class RtcCommandRouter {
   private pmStream(
     route: RtcLiveRoute,
     st: Station,
-    live: Pick<LiveFrames, "start" | "stop">,
+    live: Record<"start" | "stop", RtcLiveFrame>,
     entryType: number,
   ): RtcPmLiveStream {
     const call = st.signal.call(RtcCallType.PM);
@@ -576,25 +578,21 @@ export class RtcCommandRouter {
   }
 
   /**
-   * A live frame as the app's RTC sender frames it ({@link renderFrame}), its page the one `LiveParamHelper.getLiveParams`
-   * builds: `$chnList` one `{cameraType: 0, chn, index, sensor}` per lens (index 0 for lens 0, else 1) on the lens page,
+   * A live frame as the app's RTC sender frames it ({@link renderFrame}), its page the one
+   * `LiveParamHelper.getLiveParams` builds: `$chnList` one `{cameraType: 0, chn, index, sensor}` per lens (index 0 for lens 0, else 1) on the lens page,
    * else the single-camera page's one `{cameraType: 0, chn, index: 0, sensor: 0}` (camera id `CameraFixed`), and
    * `$cameraType` 0; `$msgId` the next `getNextMsgId` of the player's parent (1 to 255, then 1 again): the station, or
-   * the camera itself on a lens page (a sensor device's parent), `$entryType` the view's. Header byte 14 is the station's event-stream flag for a `1700` of inner `1000`, moved on
-   * per use as `rtc_get_stream_flag` does (10 when `(flag + 5) & 0xff < 15`, else up one), else 0.
+   * the camera itself on a lens page (a sensor device's parent), `$entryType` the view's. Header byte 14 is the
+   * station's event-stream flag for a `1700` of inner `1000`, moved on per use as `rtc_get_stream_flag` does (10 when
+   * `(flag + 5) & 0xff < 15`, else up one), else 0.
    *
-   * It goes over `ANKE` or the data channel as the app's RTC sender routes it: `rtc_type` is the bundle's
-   * `rtcSendRoute`, 1 on the live frames except a T8223/T8224's below its {@link cmdGcm} floor, 0 (absent) on the
-   * talkback frames; a `1350` (`mValue` 1003/1004 on these stations) and, above that floor, a T8223/T8224's `1700` or
-   * `1004` (`is_livecmd_support_media_rtcp`, `is_rtcp_solo`) go `ANKE` whatever it is.
+   * It goes over `ANKE` or the data channel as the app's RTC sender (`cmd_sender_send_command`) routes it on the
+   * station's context, `rtc_type` the frame's `rtcSendRoute` (absent 0): a `1350` when it is 1, or with inner 1003 or
+   * 1004 on an `is_specific_device_model` station; a `1700` of inner 1000 to 1002 when it is 1 or the station is
+   * `is_livecmd_support_media_rtcp` (a T8223, T8224 or T8030 above its {@link cmdGcm} floor); a `1004` when it is 1 or
+   * the station is `is_rtcp_solo` (a T8223/T8224 by its key mode, the same floor); anything else over the data channel.
    */
-  private liveCommand(
-    route: RtcLiveRoute,
-    st: Station,
-    frame: SessionFrame,
-    entryType: number,
-    talk = false,
-  ): RtcLiveCommand {
+  private liveCommand(route: RtcLiveRoute, st: Station, frame: RtcLiveFrame, entryType: number): RtcLiveCommand {
     const sn = route.stationSn;
     const parent = route.sensors ? route.cameraSn : sn;
     const { cmd, body, header } = renderFrame(frame, route.channel, this.accountId(route), {
@@ -607,9 +605,17 @@ export class RtcCommandRouter {
     const bump = cmd === 1700 && frame.subCmd === 1000;
     if (bump) st.flag = ((st.flag + 5) & 0xff) < 15 ? 10 : st.flag + 1;
     const flag = bump ? st.flag : 0;
-    const t822x = /^T822[34]/.test(sn);
-    const above = t822x && cmdGcm(sn, route.version) && (cmd === 1700 || cmd === 1004);
-    const rtcp = cmd === 1350 || above || (!talk && !t822x);
+    // ponytail: the native's 900-byte RTCP ceiling is not checked; every live frame is far below it.
+    const type = frame.rtcSendRoute === 1;
+    const floor = /^T(8223|8224|8030)/.test(sn) && cmdGcm(sn, route.version);
+    const solo = /^T(8180|8172|8215|8170|86C1|8174|8L60|8217|8404)/.test(sn) || (floor && !sn.startsWith("T8030"));
+    const inner = frame.subCmd ?? (frame.payload as { cmd?: number } | undefined)?.cmd;
+    const rtcp =
+      cmd === 1350
+        ? type || ((inner === 1003 || inner === 1004) && (solo || /^T(8030|8N00|9000|7000|8040)/.test(sn)))
+        : cmd === 1700
+          ? inner !== undefined && inner >= 1000 && inner <= 1002 && (type || floor)
+          : cmd === 1004 && (type || solo);
     const send = async () => {
       try {
         const d = st.data?.connected ? st.data : await this.dataChannel(route);

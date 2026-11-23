@@ -39,6 +39,7 @@ const NVR_LIVE: RtcLiveRoute["live"] = {
     payload: { channel: "$channel", transaction: "$now" },
     subCmd: 1004,
     mValue3: 0,
+    rtcSendRoute: 1,
   },
 };
 const SOLO_LIVE: RtcLiveRoute["live"] = {
@@ -48,8 +49,9 @@ const SOLO_LIVE: RtcLiveRoute["live"] = {
     payload: { cmd: 1000, mChannel: "$channel", account_id: "$userId", streamtype: 2, extValue: 1000 },
     subCmd: 1000,
     counter: "bump",
+    rtcSendRoute: 1,
   },
-  stop: { cmd: 1004, body: "native", payload: {}, layout: "u32-ch" },
+  stop: { cmd: 1004, body: "native", payload: {}, layout: "u32-ch", rtcSendRoute: 1 },
 };
 
 /** Synthetic throughout: no serial, did or license off a device, no network. */
@@ -299,20 +301,43 @@ describe("RtcCommandRouter on the native layers", () => {
 
   it("sends an old T8223's 1700 start and 1004 stop over the data channel, from 3.3.7.6 over ANKE", async () => {
     const sn = "T8223P0000000000";
-    const route = { ...ROUTE, stationSn: sn, cameraSn: sn, attached: false, channel: 0, live: SOLO_LIVE };
+    // The bundle's routes: the start always 0, the stop 1 from 3.3.7.6 on.
+    const live = (stop: number) => ({
+      start: { ...SOLO_LIVE!.start, rtcSendRoute: 0 },
+      stop: { ...SOLO_LIVE!.stop, rtcSendRoute: stop },
+    });
+    const route = { ...ROUTE, stationSn: sn, cameraSn: sn, attached: false, channel: 0 };
     const old = layers();
-    const consumer = await old.router.mediaProviderFor({ ...route, version: 3375 }).live();
+    const consumer = await old.router.mediaProviderFor({ ...route, version: 3375, live: live(0) }).live();
     await vi.waitFor(() => expect(old.data.command).toHaveBeenCalledWith(1700, expect.any(Buffer), 0, 10));
     consumer.stop();
     old.router.close();
     expect(old.data.command).toHaveBeenLastCalledWith(1004, Buffer.alloc(4), 0, 0);
     expect(old.agent.write).not.toHaveBeenCalled();
     const fresh = layers();
-    const live = await fresh.router.mediaProviderFor({ ...route, version: 3376 }).live();
+    const view = await fresh.router.mediaProviderFor({ ...route, version: 3376, live: live(1) }).live();
     expect(sent(fresh.agent, 0)).toMatchObject({ cmd: 1700, flag: 10 });
     expect(fresh.data.command).not.toHaveBeenCalled();
-    live.stop();
+    view.stop();
     fresh.router.close();
+  });
+
+  it("routes a T8030 child's live frames on the station's context: 1700 over ANKE above 3742, its route-0 stop on the data channel", async () => {
+    const hub = "T8030P0000000000";
+    const live = { start: { ...SOLO_LIVE!.start, rtcSendRoute: 0 }, stop: { ...SOLO_LIVE!.stop, rtcSendRoute: 0 } };
+    const route = { ...ROUTE, stationSn: hub, cameraSn: "T8223P0000000001", channel: 2, live };
+    const old = layers();
+    const consumer = await old.router.mediaProviderFor({ ...route, version: 3742 }).live();
+    await vi.waitFor(() => expect(old.data.command).toHaveBeenCalledWith(1700, expect.any(Buffer), 2, 10));
+    consumer.stop();
+    old.router.close();
+    expect(old.data.command).toHaveBeenLastCalledWith(1004, u32(2), 2, 0);
+    const fresh = layers();
+    const view = await fresh.router.mediaProviderFor({ ...route, version: 3743 }).live();
+    expect(sent(fresh.agent, 0)).toMatchObject({ cmd: 1700, flag: 10 });
+    view.stop();
+    fresh.router.close();
+    expect(fresh.agent.write).toHaveBeenCalledOnce();
   });
 
   it("talks inside a T9000 camera's view: 1005/1006 over the data channel, Opus as plain RTP on the PM call", async () => {
