@@ -58,7 +58,7 @@ Worth knowing:
 T8E00, T8P00, T8P10, T8162, T8410 and T8214 cameras attached to a T8N00 support `live()`,
 `openReadable()` and `snapshotLive()`. `live()` delivers H.265 video and Opus audio;
 `openReadable()` provides video, and `snapshotLive()` captures a fresh still.
-Recording and talkback are not implemented for this route.
+Recording is not implemented for this route; talkback takes Opus.
 
 ## 1. Event stream (low-level)
 
@@ -430,15 +430,17 @@ partial recording.
 present only on a camera that reported a speaker, so guard it like the other optional media methods
 (the snippets below assert it once with `!` rather than repeating the guard on each line).
 
-The handle says which codec the speaker plays: `talk.codec`. It is `aac-eld` on a T8410C that
-sends `aac-eld`, and `aac-lc` on every other camera, including another model that sends
-`aac-eld`, whose speaker codec is not evidenced.
+The handle says which codec the speaker plays: `talk.codec`. It is `opus` on a station the app reaches
+over its RTC client, else `aac-eld` on a T8410C that sends `aac-eld`, and `aac-lc` on every other camera,
+including another model that sends `aac-eld`, whose speaker codec is not evidenced.
 
 - `aac-lc`: **AAC-LC, 16 kHz, mono, in ADTS frames**, through `write()` / `writable()`. Chunk
   boundaries don't matter; frames are recovered from the stream.
 - `aac-eld`: one raw AAC-ELD access unit with LD-SBR (16 kHz, mono, 512 samples) per `write()`, or
   per write to `writable()`, which is object-mode for this codec. A T8410C that sends `aac-eld`
   does not play `aac-lc`.
+- `opus`: one 20 ms Opus packet (48 kHz) per `write()` or object-mode `writable()` write. It rides the
+  camera's live view, which it opens and holds, and starts once that view shows video.
 
 An `aac-lc` stream at another rate or channel count is rejected with an `error` rather than
 resampled (it would play at the wrong pitch and speed, or not at all). An `aac-eld` unit longer

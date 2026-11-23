@@ -25,7 +25,8 @@ import {
   LiveSnapshotUnavailableError,
   type Command,
   type LiveFrames,
-  type LiveStreamHandle,
+  type TalkbackHandle,
+  type AacEncoder,
   type MediaProvider,
   type SessionFrame,
   type SharedSourceHints,
@@ -42,7 +43,8 @@ import {
   fullTableQuery,
 } from "../p2p/database-wire.js";
 import { openReadableFromConsumer } from "../p2p/readable-egress.js";
-import { SharedLiveSource, attachUnlessAborted } from "../p2p/shared-live-source.js";
+import { SharedLiveSource, attachUnlessAborted, type Consumer } from "../p2p/shared-live-source.js";
+import { Talkback } from "../p2p/talkback.js";
 import { buildDirectBinaryBody, renderFrame, setPayloadJson } from "../p2p/write-commands.js";
 import { RtcCallType } from "./call.js";
 import { cmdGcm, kcpMulti, priv1, type RtcCommandCounter, type RtcDataChannel } from "./data-channel.js";
@@ -76,8 +78,11 @@ export interface RtcLiveRoute extends RtcRoute {
   cameraSn: string;
   /** The camera's `device_channel` on the station. */
   channel: number;
-  /** The bundle frames the app's RTC player starts and stops the view with; without them the view is refused. */
-  live?: Pick<LiveFrames, "start" | "stop">;
+  /**
+   * The bundle frames the app's RTC player starts and stops the view with, without which the view is refused, and its
+   * talkback with, without which there is no talkback.
+   */
+  live?: Omit<LiveFrames, "ability">;
 }
 
 export interface RtcCommandRouterDeps {
@@ -144,7 +149,8 @@ const u32s = (...v: number[]) => Buffer.from(new Uint32Array(v.map((x) => x >>> 
 
 export class RtcCommandRouter {
   private readonly stations = new Map<string, Station>();
-  private readonly lives = new Map<string, { cameraSn: string; source: SharedLiveSource }>();
+  private readonly lives = new Map<string, { cameraSn: string; source: SharedLiveSource; stream?: RtcPmLiveStream }>();
+  private readonly talking = new Set<string>();
   /** The app's `RtcLivePlayerBridge.msgIdMap`: the last live `msg_id` per station, process-wide. */
   private readonly msgIds = new Map<string, number>();
   private lastTransaction = 0;
@@ -273,7 +279,68 @@ export class RtcCommandRouter {
       record: async () => {
         throw new Error(`record is not available for ${route.cameraSn} over RTC`);
       },
+      ...(route.live?.talkStart && { talkback: (opts) => this.openTalkback(route, opts ?? {}) }),
     };
+  }
+
+  /**
+   * Talk to a camera as the app's RTC player does, inside its live view: once the view shows video, `start_intercom`
+   * goes out and one 20 ms Opus packet per write follows on the view's PM call ({@link RtcPmLiveStream.sendAudio}),
+   * paced by {@link Talkback}; `stop_intercom` closes it. The view is held while talking and ends the talkback with
+   * it. One talkback per station: its PM call carries one audio track.
+   */
+  private async openTalkback(
+    route: RtcLiveRoute,
+    opts: SharedSourceHints & { encoder?: AacEncoder },
+  ): Promise<TalkbackHandle> {
+    const sn = route.stationSn;
+    if (this.talking.has(sn)) throw new Error(`talkback: ${sn} is already talking; stop it before starting another`);
+    const { talkStart, talkStop } = route.live!;
+    const pm = () => this.lives.get(sn)?.stream;
+    let consumer: Consumer | undefined;
+    const talk = new Talkback(
+      {
+        sendFrame: (frame) => {
+          const st = this.stations.get(sn);
+          if (st) void pm()?.command(this.liveCommand(route, st, frame, 0, true));
+        },
+        sendAudioFrame: (_channel, packet) => pm()?.sendAudio(packet),
+      },
+      {
+        channel: route.channel,
+        start: talkStart!,
+        stop: talkStop!,
+        encoder: opts.encoder,
+        releaseMedia: () => consumer?.stop(),
+        logger: this.deps.logger,
+      },
+    );
+    this.talking.add(sn);
+    talk.on("stop", () => this.talking.delete(sn));
+    try {
+      consumer = await this.withLiveSource(route, opts, (source) => source.attach());
+      await new Promise<void>((resolve, reject) => {
+        const settle = (e?: Error) => {
+          consumer!.off("video", onVideo).off("error", settle).off("stop", onStop);
+          if (e) reject(e);
+          else resolve();
+        };
+        const onVideo = () => settle();
+        const onStop = () => settle(new Error(`talkback: ${route.cameraSn}'s live view stopped`));
+        consumer!.on("video", onVideo).on("error", settle).on("stop", onStop);
+      });
+      consumer.on("stop", () => void talk.stop());
+      consumer.on(
+        "error",
+        (e) => void (talk.listenerCount("error") ? talk.emit("error", e) : this.deps.logger?.warn(e.message)),
+      );
+      consumer.on("budget", (notice) => talk.emit("budget", notice));
+      return talk.start("opus");
+    } catch (e) {
+      this.talking.delete(sn);
+      consumer?.stop();
+      throw e;
+    }
   }
 
   /** Tear every station down (logout / shutdown), each live source first so its stop still goes out. */
@@ -435,7 +502,7 @@ export class RtcCommandRouter {
     let entry = this.lives.get(sn);
     if (!entry) {
       const source: SharedLiveSource = new SharedLiveSource({
-        makeStream: () => this.pmStream(route, st, live, opts.entryType ?? 0),
+        makeStream: () => (entry!.stream = this.pmStream(route, st, live, opts.entryType ?? 0)),
         label: `${sn}#${route.channel}`,
         logger: this.deps.logger,
         powered: opts.powered,
@@ -462,7 +529,7 @@ export class RtcCommandRouter {
     st: Station,
     live: Pick<LiveFrames, "start" | "stop">,
     entryType: number,
-  ): LiveStreamHandle {
+  ): RtcPmLiveStream {
     const call = st.signal.call(RtcCallType.PM);
     const agent = (this.deps.layers?.pmIce ?? pmIce)(st.signal, call);
     const stream = new RtcPmLiveStream(agent, {
@@ -487,11 +554,18 @@ export class RtcCommandRouter {
    * `$entryType` the view's. Header byte 14 is the station's event-stream flag for a `1700` of inner `1000`, moved on
    * per use as `rtc_get_stream_flag` does (10 when `(flag + 5) & 0xff < 15`, else up one), else 0.
    *
-   * A T8223/T8224's `1700` start and `1004` stop go over the data channel below the firmware its bundle routes them
-   * RTCP from (`rtcSendRoute` 0, and neither `is_livecmd_support_media_rtcp` nor `is_rtcp_solo` holds): the
-   * {@link cmdGcm} floors. Every `1350` goes RTCP, as the sender does for `mValue` 1003/1004 on these stations.
+   * It goes over `ANKE` or the data channel as the app's RTC sender routes it: `rtc_type` is the bundle's
+   * `rtcSendRoute`, 1 on the live frames except a T8223/T8224's below its {@link cmdGcm} floor, 0 (absent) on the
+   * talkback frames; a `1350` (`mValue` 1003/1004 on these stations) and, above that floor, a T8223/T8224's `1700` or
+   * `1004` (`is_livecmd_support_media_rtcp`, `is_rtcp_solo`) go `ANKE` whatever it is.
    */
-  private liveCommand(route: RtcLiveRoute, st: Station, frame: SessionFrame, entryType: number): RtcLiveCommand {
+  private liveCommand(
+    route: RtcLiveRoute,
+    st: Station,
+    frame: SessionFrame,
+    entryType: number,
+    talk = false,
+  ): RtcLiveCommand {
     const sn = route.stationSn;
     const { cmd, body, header } = renderFrame(frame, route.channel, this.accountId(route), {
       $mChannel: () => route.channel,
@@ -501,13 +575,15 @@ export class RtcCommandRouter {
     const bump = cmd === 1700 && frame.subCmd === 1000;
     if (bump) st.flag = ((st.flag + 5) & 0xff) < 15 ? 10 : st.flag + 1;
     const flag = bump ? st.flag : 0;
-    const overData = /^T822[34]/.test(sn) && cmd !== 1350 && !cmdGcm(sn, route.version);
+    const t822x = /^T822[34]/.test(sn);
+    const above = t822x && cmdGcm(sn, route.version) && (cmd === 1700 || cmd === 1004);
+    const rtcp = cmd === 1350 || above || (!talk && !t822x);
     const write = (d: RtcDataChannel) => d.command(cmd, body, header, flag);
     const send = () =>
       void (st.data?.connected ? write(st.data) : this.dataChannel(route).then(write)).catch((e: unknown) =>
         this.deps.logger?.warn(`[rtc] ${sn} live ${cmd} over the data channel: ${String(e)}`),
       );
-    return { cmd, body, channel: header, flag, ...(overData && { send }) };
+    return { cmd, body, channel: header, flag, ...(!rtcp && { send }) };
   }
 
   private drop(sn: string): void {

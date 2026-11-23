@@ -248,12 +248,20 @@ export function liveFrames(
 
 /**
  * The frames the app's RTC player starts and stops `model`'s live view with under `parentSn` (its own serial when it
- * is its own station), the player's single-camera page; `undefined` for a product the bundles give none.
+ * is its own station), the player's single-camera page, and its talkback with: `start_intercom` / `stop_intercom`
+ * take no player input, so they are {@link liveFrames}' own. `undefined` for a product the bundles give no RTC view.
  */
-export function rtcLiveFrames(model: string, parentSn: string): Pick<LiveFrames, "start" | "stop"> | undefined {
+export function rtcLiveFrames(model: string, parentSn: string): Omit<LiveFrames, "ability"> | undefined {
   const entry = memberOf(memberOf(BUNDLE_WIRES.rtcLive, model), topologyOf(parentSn));
   const frames = BUNDLE_WIRES.frames ?? [];
-  return entry && { start: frames[entry.start]!, stop: frames[entry.stop]! };
+  const { talkStart, talkStop } = liveFrames(model, parentSn, []) ?? {};
+  return (
+    entry && {
+      start: frames[entry.start]!,
+      stop: frames[entry.stop]!,
+      ...(talkStart && talkStop && { talkStart, talkStop }),
+    }
+  );
 }
 
 /** A read of a hex-encoded data point, its map keyed by the base64 the SDK holds the point in. */

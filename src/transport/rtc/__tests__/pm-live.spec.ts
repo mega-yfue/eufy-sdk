@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import { createCipheriv, createDecipheriv, createHmac } from "node:crypto";
+import { createCipheriv, createDecipheriv } from "node:crypto";
 import type { LiveVideoFrame } from "../../../core/contracts.js";
 import type { RtcCallSdp } from "../call.js";
 import type { IceAgent } from "../ice.js";
 import { Anke, RtcPmLiveStream, ankeChecksum, ankeFrame } from "../pm-live.js";
-import { RTC_SRTP_KEY, aesCm, mediaOpen, srtpKey } from "../rtp.js";
+import { mediaOpen } from "../rtp.js";
 
 const CALL: RtcCallSdp = {
   ufrag: "abcd",
@@ -23,7 +23,6 @@ const command =
   () => ({ cmd, body: Buffer.from(json), channel: CHANNEL, flag });
 const [START, STOP] = [command(START_JSON), command(STOP_JSON)];
 const SSRC = 0x0a0b0c0d;
-const [M, S] = [RTC_SRTP_KEY.subarray(0, 16), RTC_SRTP_KEY.subarray(16)];
 
 /** The station's GCM: key = first 16 chars, nonce = the iv string, no AAD, tag appended. */
 function seal(unit: Buffer, clear: number): Buffer {
@@ -32,38 +31,24 @@ function seal(unit: Buffer, clear: number): Buffer {
   return Buffer.concat([unit.subarray(0, clear), ct, c.getAuthTag()]);
 }
 
-function srtp(seq: number, payload: Buffer, marker: boolean, pt = 99): Buffer {
+/** A station RTP packet: plain, as the app's SRTP session passes it. */
+function rtpPacket(seq: number, payload: Buffer, marker: boolean, pt = 99): Buffer {
   const h = Buffer.alloc(12);
   h[0] = 0x80;
   h[1] = (marker ? 0x80 : 0) | pt;
   h.writeUInt16BE(seq, 2);
   h.writeUInt32BE(9000, 4);
   h.writeUInt32BE(SSRC, 8);
-  const body = Buffer.concat([h, aesCm(srtpKey(M, S, 0, 16), srtpKey(M, S, 2, 14), SSRC, seq, payload)]);
-  const tag = createHmac("sha1", srtpKey(M, S, 1, 20))
-    .update(body)
-    .update(Buffer.alloc(4))
-    .digest();
-  return Buffer.concat([body, tag.subarray(0, 10)]);
+  return Buffer.concat([h, payload]);
 }
 
-/** A station SRTCP APP `AZWC` packet around an ANKE frame, index `i`. */
-function srtcpApp(frame: Buffer, i = 1): Buffer {
+/** A station RTCP APP `AZWC` packet around an ANKE frame, plain. */
+function rtcpApp(frame: Buffer): Buffer {
   const pad = Buffer.alloc((4 - (frame.length % 4)) % 4);
   const h = Buffer.from([0x9e, 204, 0, 0, 0, 0, 0, 0, 0x41, 0x5a, 0x57, 0x43]);
   h.writeUInt16BE((12 + frame.length + pad.length) / 4 - 1, 2);
   h.writeUInt32BE(SSRC, 4);
-  const rest = aesCm(srtpKey(M, S, 3, 16), srtpKey(M, S, 5, 14), SSRC, i, Buffer.concat([h.subarray(8), frame, pad]));
-  const e = Buffer.alloc(4);
-  e.writeUInt32BE((0x80000000 | i) >>> 0);
-  const body = Buffer.concat([h.subarray(0, 8), rest, e]);
-  return Buffer.concat([
-    body,
-    createHmac("sha1", srtpKey(M, S, 4, 20))
-      .update(body)
-      .digest()
-      .subarray(0, 10),
-  ]);
+  return Buffer.concat([h, frame, pad]);
 }
 
 const xzyhReply = (result: number, cmd = 1350) => {
@@ -158,9 +143,9 @@ describe("RtcPmLiveStream", () => {
     const sealed = seal(unit, 4 + sps.length + 4 + pps.length + 4 + 2);
     const idrPart = sealed.subarray(4 + sps.length + 4 + pps.length + 4);
     return [
-      srtp(seq, seal(sps, 2), false),
-      srtp(seq + 1, seal(pps, 2), false),
-      srtp(seq + 2, Buffer.concat([idrPart, trailer()]), true),
+      rtpPacket(seq, seal(sps, 2), false),
+      rtpPacket(seq + 1, seal(pps, 2), false),
+      rtpPacket(seq + 2, Buffer.concat([idrPart, trailer()]), true),
     ];
   }
 
@@ -200,7 +185,7 @@ describe("RtcPmLiveStream", () => {
     expect(Buffer.concat([d.update(body.subarray(32)), d.final()]).toString()).toBe(START_JSON);
   });
 
-  it("emits the decrypted key frame from a station SRTP stream, parameter sets opened from byte 2", () => {
+  it("emits the decrypted key frame from a station RTP stream, parameter sets opened from byte 2", () => {
     const { agent, s, frames } = stream();
     s.start();
     for (const p of keyframe(100)) agent.emit("data", p);
@@ -215,7 +200,7 @@ describe("RtcPmLiveStream", () => {
     const p = (seq: number, ch: number) => {
       const t = trailer();
       t[8] = ch;
-      return srtp(seq, Buffer.concat([Buffer.from([0x41, 0x9a, 1, 2]), t]), true);
+      return rtpPacket(seq, Buffer.concat([Buffer.from([0x41, 0x9a, 1, 2]), t]), true);
     };
     agent.emit("data", p(1, CHANNEL + 1));
     agent.emit("data", p(2, CHANNEL));
@@ -230,16 +215,30 @@ describe("RtcPmLiveStream", () => {
     const opus = Buffer.from("an opus packet");
     const other = trailer();
     other[8] = CHANNEL + 1;
-    agent.emit("data", srtp(1, Buffer.concat([seal(opus, 0), trailer()]), true, 111));
-    agent.emit("data", srtp(2, Buffer.concat([seal(opus, 0), other]), true, 111));
+    agent.emit("data", rtpPacket(1, Buffer.concat([seal(opus, 0), trailer()]), true, 111));
+    agent.emit("data", rtpPacket(2, Buffer.concat([seal(opus, 0), other]), true, 111));
     expect(audio).toEqual([{ codec: "opus", data: opus }]);
+  });
+
+  it("sends talkback Opus as plain RTP 111 under the call's audio SSRC, sealed whole, 960 ticks apart", () => {
+    const { agent, s } = stream();
+    const opus = Buffer.from("an opus packet");
+    s.sendAudio(opus);
+    s.sendAudio(opus);
+    const [a, b] = agent.write.mock.calls.map(([p]) => p);
+    expect([a![1], b![1], a!.readUInt32BE(8)]).toEqual([0x80 | 111, 111, CALL.audio]);
+    expect([
+      (b!.readUInt16BE(2) - a!.readUInt16BE(2)) & 0xffff,
+      (b!.readUInt32BE(4) - a!.readUInt32BE(4)) >>> 0,
+    ]).toEqual([1, 960]);
+    expect(mediaOpen(CALL.key, CALL.iv, a!.subarray(12), 0)).toEqual(opus);
   });
 
   it("succeeds on the station's 1350 reply, and on a first video unit", async () => {
     const a = stream();
     a.s.start();
     a.agent.emit("connected");
-    a.agent.emit("data", srtcpApp(ankeFrame(0, 1, xzyhReply(1))));
+    a.agent.emit("data", rtcpApp(ankeFrame(0, 1, xzyhReply(1))));
     await vi.advanceTimersByTimeAsync(12_000);
     expect(a.errors).toEqual([]);
     expect(a.agent.write.mock.calls.some(([p]) => frameOf(p)[8] === 2)).toBe(true);
@@ -266,7 +265,7 @@ describe("RtcPmLiveStream", () => {
     s.start();
     agent.emit("connected");
     expect(frameOf(agent.write.mock.calls[0]![0])[20 + 14]).toBe(10);
-    agent.emit("data", srtcpApp(ankeFrame(0, 1, xzyhReply(0, 1700))));
+    agent.emit("data", rtcpApp(ankeFrame(0, 1, xzyhReply(0, 1700))));
     await vi.advanceTimersByTimeAsync(1_100);
     expect(errors.map((e) => e.message)).toEqual(["rtc pm live: start not answered"]);
   });
@@ -275,7 +274,7 @@ describe("RtcPmLiveStream", () => {
     const { agent, s, errors } = stream();
     s.start();
     agent.emit("connected");
-    agent.emit("data", srtcpApp(ankeFrame(0, 1, xzyhReply(0))));
+    agent.emit("data", rtcpApp(ankeFrame(0, 1, xzyhReply(0))));
     await vi.advanceTimersByTimeAsync(1_100);
     expect(errors).toHaveLength(1);
   });

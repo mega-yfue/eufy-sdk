@@ -142,6 +142,7 @@ describe("native RTC routing off is_connect_webrtc", () => {
     internals.rtcMediaFor(CAMERA);
     expect(media.mock.calls[0]![0]).toMatchObject({ cameraSn: CAMERA, channel: 3, live: rtcLiveFrames("T8425", hub) });
     expect(rtcLiveFrames("T8425", hub)?.start).toMatchObject({ cmd: 1350, payload: { cmd: 1003 } });
+    expect(rtcLiveFrames("T8425", hub)).toMatchObject({ talkStart: { cmd: 1005 }, talkStop: { cmd: 1006 } });
     camera.model = "T8010";
     internals.rtcMediaFor(CAMERA);
     expect(media.mock.calls[1]![0].live).toBeUndefined();

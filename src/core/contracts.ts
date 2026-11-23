@@ -723,8 +723,11 @@ export interface ReceivedVideoFrame {
  */
 export type AudioCodec = "aac-lc" | "aac-eld" | "g711a" | "opus";
 
-/** The codec a camera's speaker plays: `aac-eld` on a camera whose speaker plays it, `aac-lc` otherwise. */
-export type TalkbackCodec = Extract<AudioCodec, "aac-lc" | "aac-eld">;
+/**
+ * The codec a camera's speaker plays: `opus` over RTC, else `aac-eld` on a camera whose speaker plays it, `aac-lc`
+ * otherwise.
+ */
+export type TalkbackCodec = Extract<AudioCodec, "aac-lc" | "aac-eld" | "opus">;
 
 /**
  * One audio access unit, carrying the codec the station declared for it.
@@ -1104,11 +1107,13 @@ export interface AacEncoder {
  *    little-endian mono PCM at 16 kHz instead.
  *  - **`aac-eld`:** one raw AAC-ELD access unit with LD-SBR (16 kHz, mono, 512 samples) per `write`, or per
  *    object-mode `writable()` write. No encoder applies.
+ *  - **`opus`:** one 20 ms Opus packet (RFC 7587, 48 kHz) per `write` or object-mode `writable()` write. No encoder
+ *    applies.
  *
  * An `aac-lc` stream at another rate or channel count is rejected rather than resampled. An `aac-eld` unit longer
  * than the device accepts is refused with an `error`.
  *
- * Frames are **paced** at their own playback rate (64 ms for `aac-lc`, 32 ms for `aac-eld`) rather than flushed as
+ * Frames are **paced** at their own playback rate (64 ms for `aac-lc`, 32 ms for `aac-eld`, 20 ms for `opus`) rather than flushed as
  * fast as they arrive, so feeding a file plays it at speed instead of overrunning the device. A live source keeps
  * the queue near-empty and is unaffected.
  *
@@ -1122,14 +1127,14 @@ export interface AacEncoder {
  */
 export interface TalkbackHandle {
   /**
-   * The codec this camera's speaker plays: `aac-eld` on a camera whose speaker plays it and whose stream on the same
-   * media session carries `aac-eld`, `aac-lc` otherwise, including when that stream carries no audio. It decides
-   * what {@link write} and {@link writable} take.
+   * The codec this camera's speaker plays: `opus` over RTC; else `aac-eld` on a camera whose speaker plays it and
+   * whose stream on the same media session carries `aac-eld`, `aac-lc` otherwise, including when that stream carries
+   * no audio. It decides what {@link write} and {@link writable} take.
    */
   readonly codec: TalkbackCodec;
   /**
-   * Queue audio: ADTS frames or PCM for `aac-lc`, one access unit per call for `aac-eld`. Partial ADTS frames are
-   * held.
+   * Queue audio: ADTS frames or PCM for `aac-lc`, one access unit per call for `aac-eld`, one packet per call for
+   * `opus`. Partial ADTS frames are held.
    */
   write(chunk: Buffer): void;
   /**
