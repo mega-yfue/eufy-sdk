@@ -3,7 +3,7 @@
  * `CMD_DOORLOCK_DATA_PASS_THROUGH` set-payload.
  *
  * The blob is base64 of AES-128-CBC (PKCS#7 over a zero-padded plaintext) under a key derived from the
- * station owner's 40-character admin id and the 16-character station serial, with the station serial as the
+ * lock member's 40-character admin id and the 16-character station serial, with the station serial as the
  * IV. The plaintext is JSON `{channel, lock_cmd, lock_payload, seq_num}` with `channel` always 0: the lock's
  * channel on its station rides only the P2P envelope (`mChannel` and the frame header). For lock/unlock
  * `lock_cmd` is 8 and `lock_payload` is base64 of the on/off TLV {@link encodeLockOnOff}.
@@ -48,7 +48,7 @@ export function encodeLockOnOff(
 }
 
 /**
- * The AES-128 lock key from the station owner's admin id (40 characters) and the station serial (16). Any other
+ * The AES-128 lock key from the lock member's admin id (40 characters) and the station serial (16). Any other
  * length throws: a shorter input indexes past its end and still yields a key, just one the lock silently ignores.
  */
 export function lockKey(adminUserId: string, stationSn: string): Buffer {
@@ -68,9 +68,9 @@ export function lockKey(adminUserId: string, stationSn: string): Buffer {
 
 export interface DoorlockPassThroughInput {
   engage: boolean;
-  /** The station owner's admin user id. */
+  /** The lock member's admin user id. */
   adminUserId: string;
-  /** The station owner's short user id. */
+  /** The lock member's short user id. */
   shortUserId: number;
   /** The acting account's name. */
   nickname: string;

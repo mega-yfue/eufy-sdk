@@ -453,13 +453,13 @@ export type Command =
     /**
      * `keyed-payload-actuate` — a `SET_PAYLOAD` envelope whose inner JSON is sealed with a fresh AES key
      * that the envelope itself carries, wrapped for the device's own public key. P2P-only; the router
-     * resolves the device key and the member display name from the device record.
+     * resolves the device key.
      */
     | ({ kind: "keyed-payload-actuate" } & Ff09Identity)
     /**
      * `doorlock-pass-through-actuate` — a lock/unlock the device's station relays to the lock it is paired to,
-     * sealed under a key derived from the station owner and the station serial. P2P-only; the router resolves
-     * the station, its owner identity and the lock's channel from the device records.
+     * sealed under a key derived from the lock's member and the station serial. P2P-only; the router resolves
+     * the station, its owner's account id and the lock's channel from the device records.
      */
     | ({ kind: "doorlock-pass-through-actuate" } & Ff09Identity)
     | { kind: "ff09-autolock"; adminUserId: string; deviceSn: string; enabled: boolean; delaySeconds?: number }
