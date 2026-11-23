@@ -198,7 +198,10 @@ describe("TuyaClient et=3 reply decryption", () => {
         return sealFor(reqId, null, { success: true, result: { token: "T", publicKey: n, exponent: e } });
       }
       if (a === "smartlife.m.user.uid.password.login.reg") {
-        return sealFor(reqId, null, { success: true, result: { sid: "sid-1", uid: "uid-1", ecode: "EC-xyz" } });
+        return sealFor(reqId, null, {
+          success: true,
+          result: { sid: "sid-1", uid: "uid-1", ecode: "EC-xyz", phoneCode: "33" },
+        });
       }
       // A post-login session call must decrypt with the captured ecode, not the null variant.
       return sealFor(reqId, "EC-xyz", { success: true, result: { "8": 50 } });
@@ -207,6 +210,7 @@ describe("TuyaClient et=3 reply decryption", () => {
     const res = await c.login("12345", "44");
     expect(res).toEqual({ sid: "sid-1", uid: "uid-1" });
     expect(c.getSession().ecode).toBe("EC-xyz");
+    expect(c.getSession().phoneCode).toBe("33");
 
     const dps = await c.getDeviceDps<Record<string, unknown>>("dev-1");
     expect(dps.result).toEqual({ "8": 50 });

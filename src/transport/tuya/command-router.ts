@@ -12,7 +12,7 @@
  * decorrelation invariant. Sibling tuya/* imports are same-layer (transport).
  */
 import type { Command } from "../../core/contracts.js";
-import { resolveCountryCode } from "./account.js";
+import { resolveCountryCode, tuyaUsername } from "./account.js";
 import { HmacSigner } from "./sign.js";
 import { TuyaClient } from "./client.js";
 import type { TuyaHttpPost } from "./request.js";
@@ -121,6 +121,64 @@ export class TuyaCommandRouter {
     if (!res.success || !res.result) return null;
     const dps = parseTuyaDpEvent(res.result);
     return dps ? (dps as unknown as Record<string, unknown>) : null;
+  }
+
+  /**
+   * One Tuya sharing call as the app's ThingHomeSdk device-share API makes it (`thing.m.sharing.*`, sent as
+   * `smartlife.m.sharing.*`), logged in first. A failed reply throws its error code, except `handled`, which
+   * the app counts as done.
+   */
+  private async sharing<T>(a: string, v: string, data: object, handled?: string): Promise<T | undefined> {
+    await this.ensureLoggedIn();
+    const res = await this.client!.call<T>({ a: `smartlife.m.sharing.${a}`, v, postData: JSON.stringify(data) });
+    const code = res.errorCode ?? res.errorMsg;
+    if (!res.success && code !== handled) throw new Error(`tuya sharing.${a} failed: ${code ?? "unknown"}`);
+    return res.result;
+  }
+
+  /**
+   * The owner's Tuya-side share of an `eufy_home_tuya` device (`sharing.invite {resId, resType: 1, userAccount,
+   * countryCode}`): `userAccount` is the invitee's Tuya username, `countryCode` this account's own `phoneCode`.
+   * Answers the share id the app puts in the invite's `extension`.
+   */
+  async inviteShare(devId: string, inviteeUserId: string): Promise<string> {
+    await this.ensureLoggedIn();
+    const { phoneCode } = this.client!.getSession();
+    const id = await this.sharing<number>("invite", "1.0", {
+      resId: devId,
+      resType: 1,
+      userAccount: tuyaUsername(inviteeUserId),
+      countryCode: phoneCode ?? this.dialCode,
+    });
+    return String(id);
+  }
+
+  /**
+   * The invitee's Tuya-side accept (`sharing.accept {id}`), `id` the invite's `extension` read as an integer;
+   * one that is not refuses before sending, as the app does. An already handled invite counts as accepted.
+   */
+  async acceptShare(extension = ""): Promise<void> {
+    const id = /^[+-]?\d+$/.test(extension) ? Number(extension) : -1;
+    if (id < 0) throw new Error("tuya shareId not found");
+    await this.sharing("accept", "1.0", { id }, "SHARING_INVITE_HANDLED");
+  }
+
+  /**
+   * The owner's Tuya-side removal: the device's members (`sharing.device.member.list {devId}`), and when one's
+   * `username` is the receiver's Tuya username, `sharing.device.remove {relationId, devId}` on its `id`. No such
+   * member is nothing to remove.
+   */
+  async removeShare(devId: string, receiverUserId: string): Promise<void> {
+    const members = await this.sharing<Array<{ id: number; username?: string }>>("device.member.list", "1.0", {
+      devId,
+    });
+    const member = members?.find((m) => m.username === tuyaUsername(receiverUserId));
+    if (member) await this.sharing("device.remove", "3.0", { relationId: member.id, devId });
+  }
+
+  /** The receiver's Tuya-side leave (`sharing.sharer.remove.res {resId, resType: "device"}`). */
+  async leaveShare(devId: string): Promise<void> {
+    await this.sharing("sharer.remove.res", "3.0", { resId: devId, resType: "device" });
   }
 
   /**
