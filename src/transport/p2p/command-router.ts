@@ -1968,8 +1968,8 @@ export class P2PCommandRouter {
    * `payload` the sealed blob from {@link buildDoorlockPassThrough} keyed to that station and the
    * lock's member, as the app's `ESLStationP2PService.r` does. Sent once: the blob carries its own sequence number,
    * the clock in seconds + 1 as the app sends it. The key's admin id and the TLV's short user id are the lock's
-   * member (`ESLStationAesManager.a(AnkerAccountManager.e(lockSn), stationSn)`, `OnOffRequestPayload.shortUserId`),
-   * which the intent carries; only the envelope's account id is the station's (`AccountDelegate.m(stationSn)`). The
+   * member (`ESLStationAesManager.a(AnkerAccountManager.e(lockSn), stationSn)`, read here off the lock's record, and
+   * `OnOffRequestPayload.shortUserId`, which the intent carries); only the envelope's account id is the station's (`AccountDelegate.m(stationSn)`). The
    * `short_user_id` is hex, as on the `ff09` path, and anything but four hex digits throws rather than writing the
    * wrong user. The name is the intent's account name, the app's `AccountDelegate.i()`. Sealed by the session like
    * every command.
@@ -1984,7 +1984,7 @@ export class P2PCommandRouter {
     }
     const blob = buildDoorlockPassThrough({
       engage: cmd.engage,
-      adminUserId: cmd.adminUserId,
+      adminUserId: memberAccountId(this.recordFor(sn)?.raw, this.deps.mega.auth?.userId),
       shortUserId: Number.parseInt(cmd.shortUserId, 16),
       nickname: cmd.username,
       stationSn: parentSn,

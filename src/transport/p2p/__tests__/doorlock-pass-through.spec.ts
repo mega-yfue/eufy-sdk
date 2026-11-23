@@ -56,7 +56,7 @@ describe("the door-lock pass-through blob", () => {
 });
 
 describe("a door-lock pass-through actuation", () => {
-  const makeRouter = (hasKey: boolean) => {
+  const makeRouter = (hasKey: boolean, lockMember: string = ME) => {
     const session = connectedSession(hasKey) as FakeP2PSession & { sendSetPayload: ReturnType<typeof vi.fn> };
     session.sendSetPayload = vi.fn(() => true);
     const lock = {
@@ -65,7 +65,7 @@ describe("a door-lock pass-through actuation", () => {
       stationSn: STATION_SN,
       channel: 42,
       p2pDid: P2P_DID,
-      raw: { device_channel: 42, parent_sn: STATION_SN, member: { admin_user_id: ADMIN } },
+      raw: { device_channel: 42, parent_sn: STATION_SN, member: { admin_user_id: ADMIN, member_user_id: lockMember } },
     };
     const station = {
       sn: STATION_SN,
@@ -123,6 +123,17 @@ describe("a door-lock pass-through actuation", () => {
     expect(tlv.subarray(13).toString("hex")).toBe(
       Buffer.concat([Buffer.from([0xa4, 7]), Buffer.from("someone")]).toString("hex"),
     );
+  });
+
+  it("keys a lock shared through someone else's membership with the user's own id, as AnkerAccountManager.e gives it", async () => {
+    const { router, session } = makeRouter(true, "someone-else");
+
+    await router.dispatchCommand(LOCK_SN, lockCmd);
+
+    const decipher = createDecipheriv("aes-128-cbc", lockKey(ME, STATION_SN), serialIv(STATION_SN));
+    const sealed = Buffer.from(session.sendSetPayload.mock.calls[0]![1].payload, "base64");
+    const plain = Buffer.concat([decipher.update(sealed), decipher.final()]).toString("utf-8");
+    expect(JSON.parse(plain.replace(/\0+$/, ""))).toMatchObject({ lock_cmd: 8 });
   });
 
   const userField = (payload: { payload: string }): string => {
