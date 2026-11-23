@@ -72,7 +72,7 @@ export interface DoorlockPassThroughInput {
   adminUserId: string;
   /** The station owner's short user id. */
   shortUserId: number;
-  /** The station owner's nickname. */
+  /** The acting account's name. */
   nickname: string;
   /** The serial of the station the lock is paired to. */
   stationSn: string;

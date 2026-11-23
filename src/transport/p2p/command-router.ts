@@ -1711,9 +1711,7 @@ export class P2PCommandRouter {
    * {@link buildKeyedActuatePayload}, sent as a keyed envelope through {@link P2PSession.sendSetPayload}
    * on the lock's device channel. No session key is waited for — the envelope seals its own per-command
    * key for the device's public key (fetched from the cloud, cached per serial), so it goes as soon as
-   * the session is up. The device shows the acting member by display name, which lives on the device
-   * record's `member` rather than in the intent, so it is read here and falls back to the account name
-   * the intent carries.
+   * the session is up. The acting name is the intent's account name, the app's `AccountDelegate.i()`.
    *
    * It goes once at the next {@link keyedSeq}, as the app's `ESLAnkerP2PService.q` sends it, and
    * {@link awaitKeyedReply} settles it on the replies: a non-zero code, a sequence refusal included, throws and
@@ -1722,12 +1720,11 @@ export class P2PCommandRouter {
    */
   private sendKeyedPayloadActuate(sn: string, cmd: Ff09Identity): Promise<void> {
     return this.serializeAnswered(sn, async () => {
-      const dev = await this.deviceFor(sn);
-      const member = ((dev.raw ?? {}) as Record<string, unknown>).member as Record<string, unknown> | undefined;
-      const userName = typeof member?.nick_name === "string" && member.nick_name ? member.nick_name : cmd.username;
       const devicePublicKey = await this.deps.mega.getDevicePublicKey(sn);
       const { session, channel } = await this.resolveSession(sn);
-      const { key, payload } = buildKeyedActuatePayload(cmd, devicePublicKey, userName, { seqNum: this.keyedSeq++ });
+      const { key, payload } = buildKeyedActuatePayload(cmd, devicePublicKey, cmd.username, {
+        seqNum: this.keyedSeq++,
+      });
       const code = await this.awaitKeyedReply(sn, session, channel, cmd.engage, () =>
         session.sendAcknowledged(() => {
           session.sendSetPayload(CommandType.P2P_ON_OFF_LOCK, payload, { accountId: cmd.adminUserId, channel, key });
@@ -1966,7 +1963,8 @@ export class P2PCommandRouter {
    * member record. Sent once: the blob carries its own sequence number, the clock in seconds + 1 as the app
    * sends it. The key is the station owner's, so it reads the station's member record rather than the lock's
    * `accountId` from `resolveSession`. Its `short_user_id` is hex, as on the `ff09` path, and anything
-   * but four hex digits throws rather than writing the wrong user. Sealed by the session like every command.
+   * but four hex digits throws rather than writing the wrong user. The name is the intent's account name, the app's
+   * `AccountDelegate.i()`. Sealed by the session like every command.
    */
   private async sendDoorlockPassThrough(sn: string, cmd: Ff09Identity): Promise<void> {
     const resolved = await this.resolveSession(sn);
@@ -1983,12 +1981,11 @@ export class P2PCommandRouter {
       );
     }
     const shortUserId = Number.parseInt(shortUserIdHex, 16);
-    const nickname = typeof member.nick_name === "string" ? member.nick_name : cmd.username;
     const blob = buildDoorlockPassThrough({
       engage: cmd.engage,
       adminUserId,
       shortUserId,
-      nickname,
+      nickname: cmd.username,
       stationSn: parentSn,
       seqNum: Math.trunc(Date.now() / 1000) + 1,
     });

@@ -71,7 +71,7 @@ describe("a door-lock pass-through actuation", () => {
       stationSn: STATION_SN,
       channel: 0,
       p2pDid: P2P_DID,
-      raw: { member: { admin_user_id: ADMIN, short_user_id: shortUserId, nick_name: "someone" } },
+      raw: { member: { admin_user_id: ADMIN, short_user_id: shortUserId, nick_name: "member-nick" } },
     };
     const deps: P2PRouterDeps = {
       mega: {} as P2PRouterDeps["mega"],
@@ -112,7 +112,12 @@ describe("a door-lock pass-through actuation", () => {
     const plain = Buffer.concat([decipher.update(Buffer.from(payload.payload, "base64")), decipher.final()]);
     const inner = JSON.parse(plain.toString("utf-8").replace(/\0+$/, ""));
     expect(inner).toMatchObject({ channel: 0, lock_cmd: 8 });
-    expect(Buffer.from(inner.lock_payload, "base64").subarray(0, 7).toString("hex")).toBe("a1020004a20101");
+    const tlv = Buffer.from(inner.lock_payload, "base64");
+    expect(tlv.subarray(0, 7).toString("hex")).toBe("a1020004a20101");
+    // The A4 name is the account's (the app's AccountDelegate.i()), not the station member's nick_name.
+    expect(tlv.subarray(13).toString("hex")).toBe(
+      Buffer.concat([Buffer.from([0xa4, 7]), Buffer.from("someone")]).toString("hex"),
+    );
   });
 
   const userField = (payload: { payload: string }): string => {
