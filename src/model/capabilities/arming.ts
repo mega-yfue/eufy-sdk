@@ -86,7 +86,7 @@ export const ARMING_CMD = {
    * was captured on holds a level-2 key and seals it level-2, while an own-session camera that never
    * negotiates one carries the same envelope level-1. See `armingCommand`.
    *
-   * A T8410C and a T8410 take the mode as a direct frame instead of this envelope; see
+   * A T8410C, a T8410 and a T8442 take the mode as a direct frame instead of this envelope; see
    * {@link DIRECT_ARMING_MODELS} and {@link BROADCAST_ARMING_MODELS}.
    */
   SET_ARMING: 1224,
@@ -170,8 +170,14 @@ const DIRECT_ARMING_MODELS: ReadonlySet<string> = new Set(["T8410C"]);
  * camera's own 1103 report moved from 0 to 63 and the readback converged. custom1 (3), custom2 (4), custom3 (5)
  * and off (6) were each sent as this frame live on a T8410 by 2026-11-05 and confirmed applied, so all nine
  * modes in {@link ARMING_MODE_WIRE} are written.
+ *
+ * A standalone T8442 behaves the same: its session is level-1, the `1350` envelope is sent and param 1224
+ * keeps the old mode, and the vendor app keeps showing it. Home (1) and Away (0) were each sent as this frame
+ * live on 2026-11-24, on a level-1 session: each was confirmed applied by an `armingModeChanged` push from
+ * the camera, by param 1224 converging within the readback window, and by the vendor app showing the new
+ * mode. The other seven modes are not yet confirmed on a T8442.
  */
-const BROADCAST_ARMING_MODELS: ReadonlySet<string> = new Set(["T8410"]);
+const BROADCAST_ARMING_MODELS: ReadonlySet<string> = new Set(["T8410", "T8442"]);
 
 /** The standalone cameras whose own flags are read live: the two above plus the three that stay read only. */
 const STANDALONE_READ_MODELS: ReadonlySet<string> = new Set([...STANDALONE_ACTION_MODELS, "T8400", "T8442", "T8410"]);
