@@ -588,7 +588,7 @@ session idle-detaches so a battery device sleeps — see [Connectivity & battery
   enablement write is now confirmed by bounded readback on whichever param the device actually reports: the
   value converges on its own (measured 2–6s on both wire families) and `cameraEnabledChanged` fires once when
   it lands. A change made anywhere else — the vendor app, another client, a physical switch — arrives as
-  `propertyChanged` on whichever inbound path saw it, including the read-through re-read, so a long-lived
+  `propertyChanged` on whichever inbound path saw it, so a long-lived
   client is no longer left polling for one.
 - **A pull on a camera reading `enabled === false` is refused.** `live()`, `snapshotLive()`, `record()`,
   `openReadable()` and `recordFragments()` answer `CameraDisabledError` rather than a stream that can only

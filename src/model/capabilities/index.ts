@@ -753,8 +753,7 @@ export interface DeviceEventMap {
    * "this moved, re-read it". No wire id travels with it: several ids resolve to one property, which is
    * the point.
    *
-   * Announced from the cloud poll, from a realtime report, and from the read-through cache's own
-   * background re-read, for a change with any cause — the SDK cannot tell its own write's echo from a
+   * Announced from the cloud poll and from a realtime report, for a change with any cause — the SDK cannot tell its own write's echo from a
    * change made in the vendor app, and suppressing on a guess would lose a real external change in
    * exchange for one redundant re-read. Not announced on first sight of a device (that is discovery, not
    * a transition), nor inside a write's own confirmation (already reported through that command's
@@ -769,8 +768,7 @@ export interface DeviceEventMap {
    *
    * Latency is the inbound path's: seconds for a property a device reports over realtime. For one that
    * only ever arrives as a cloud param — which is most of them — it is whichever comes first of the poll
-   * (`EufyMegaOptions.pollMs`, `EufyMega.setPollInterval`) and the cache's re-read
-   * (`EufyMegaOptions.cacheTtlMs`), both the caller's to choose.
+   * (`EufyMegaOptions.pollMs`, `EufyMega.setPollInterval`), the caller's to choose.
    */
   propertyChanged: SemanticEventBase & PropertyChange & { deviceSn: string };
   /** Battery alert — `state` discriminates low / hot / full. */

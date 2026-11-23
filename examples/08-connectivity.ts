@@ -18,7 +18,6 @@ async function main(): Promise<void> {
   // All optional; each line names what its value does.
   const eufy = await loginClient({
     p2pIdleMs: 5 * 60_000, // battery station idle window before detach
-    cacheTtlMs: 15_000, // freshness window for cached reads
     // Pre-warm ships OFF (`prewarmEvents: []`): it opens a session nobody asked for, and the only
     // station it can actually open is a standalone battery camera. Opt in per event, and weigh each
     // against how often it fires on your fleet — a detection can be as frequent as raw motion.

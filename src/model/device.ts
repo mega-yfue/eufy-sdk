@@ -202,17 +202,6 @@ export class Device {
   private bindCtx?: CommandContext;
   /** The raw value of every param applied, by param id, as the device reported it. */
   private readonly raw = new Map<number, string>();
-
-  /**
-   * Read-through freshness policy (injected by the facade via {@link setFreshnessPolicy}; the model
-   * stays transport-free — it only calls the supplied `refresh`). Default: caching OFF
-   * (`staleAfterMs = Infinity`), so a bare model object never triggers a fetch and existing behaviour
-   * is unchanged until the client wires a policy.
-   */
-  private staleAfterMs = Infinity;
-  private refresher?: () => Promise<void>;
-  /** Guards against firing more than one background refresh at a time (coalesces rapid stale reads). */
-  private refreshInFlight = false;
   /**
    * Host-supplied diagnostics sink. Defaults to {@link noopLogger} (silent) so a bare model object
    * stays quiet; the facade passes its own `logger` through {@link fromRecord}. Used to WARN when a
@@ -369,19 +358,6 @@ export class Device {
   }
 
   /**
-   * Wire a read-through freshness policy. When a cached property is older than `staleAfterMs`, a
-   * `getProperty`/`getProperties` read schedules ONE coalesced background `refresh()` (the facade
-   * supplies it, choosing the cheapest live transport) and returns the last-known value immediately —
-   * reads never block. Push / P2P realtime updates refresh `ts` themselves via {@link applyParams}, so
-   * a device kept fresh by realtime never re-fetches (a fresh entry is never stale). Keeps `model/`
-   * transport-free: the device only calls the injected callback.
-   */
-  setFreshnessPolicy(policy: { staleAfterMs: number; refresh: () => Promise<void> }): void {
-    this.staleAfterMs = policy.staleAfterMs;
-    this.refresher = policy.refresh;
-  }
-
-  /**
    * Low-level property read by name — the untyped escape hatch. The typed fluent capability getters
    * (`dev.battery()?.level`, `dev.contact()?.open`) answer the value already narrowed to its declared
    * type where the property is exposed by a capability; this answers the loose `PropertyValue.value`
@@ -390,46 +366,16 @@ export class Device {
    * observed.
    */
   getProperty(name: string): PropertyValue | undefined {
-    const v = this.state.get(name);
-    if (v && Date.now() - v.ts > this.staleAfterMs) this.scheduleRefresh();
-    return v;
+    return this.state.get(name);
   }
 
   /**
    * Snapshot of all current property values (named + unknown passthrough) — the untyped bulk read, for
    * diagnostics / discovery. The typed fluent capability getters (`dev.battery()?.level`, …) answer one
-   * specific known property; this loose map answers every observed value at once. Under a freshness
-   * policy, schedules a background refresh when the OLDEST observed value is stale (one fetch covers
-   * every param) and returns the current snapshot immediately.
+   * specific known property; this loose map answers every observed value at once.
    */
   getProperties(): Record<string, PropertyValue> {
-    if (this.refresher && !this.refreshInFlight) {
-      let oldest: number | undefined;
-      for (const v of this.state.values()) oldest = oldest === undefined ? v.ts : Math.min(oldest, v.ts);
-      if (oldest !== undefined && Date.now() - oldest > this.staleAfterMs) this.scheduleRefresh();
-    }
     return Object.fromEntries(this.state);
-  }
-
-  /**
-   * Fire the injected background refresh at most once at a time (coalescing rapid stale reads). The
-   * refresh calls {@link applyParams}, which updates each value's `ts` — so subsequent reads see fresh
-   * entries and stop re-triggering until the next staleness window. Fire-and-forget; never throws to
-   * the reader (a failed refresh just leaves the last-known value in place).
-   */
-  private scheduleRefresh(): void {
-    if (!this.refresher || this.refreshInFlight) return;
-    this.refreshInFlight = true;
-    try {
-      void this.refresher().finally(() => {
-        this.refreshInFlight = false;
-      });
-    } catch {
-      // A refresher that throws SYNCHRONOUSLY (violating its `Promise<void>` contract) would otherwise
-      // leave `refreshInFlight` stuck true — bricking every future refresh — and propagate to the
-      // reader. Reset the flag and swallow it so a read never throws and refresh self-heals next time.
-      this.refreshInFlight = false;
-    }
   }
 
   /**

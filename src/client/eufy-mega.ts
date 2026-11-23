@@ -680,9 +680,8 @@ export class EufyMega extends EventEmitter {
    * {@link getDevice} sees it) AND into any `Device` already handed out (so a caller holding one sees
    * the new value without re-fetching). Announces every property whose value moved, then `deviceState`.
    *
-   * Both writes matter: the registry alone would leave an existing `Device` stale until its freshness
-   * window expired, and that refresh re-reads the CLOUD record — which for a realtime-only line does
-   * not carry this state at all.
+   * Both writes matter: the registry alone would leave an existing `Device` stale, and the poll that would
+   * otherwise move it reads the CLOUD record — which for a realtime-only line does not carry this state at all.
    *
    * This is three of the four inbound paths the security line has, and the ONLY one the clean and life
    * lines have — a robot's cloud record carries none of its data points — so it is what brings those
@@ -1552,8 +1551,7 @@ export class EufyMega extends EventEmitter {
   /**
    * Inspect one device by serial: resolve its codec/capabilities, cross-reference every reported
    * `param_type` against the param dictionary, and emit a paste-ready `registry.ts` row plus
-   * dictionary snippets for anything unknown. Loads the device list if needed; prefers
-   * the live `get_device_param_list` for freshest params, falling back to the device-list params.
+   * dictionary snippets for anything unknown, from the device-list params.
    */
   async inspectDevice(sn: string): Promise<DeviceInspection> {
     return this.registry.inspectDevice(sn);
@@ -1586,19 +1584,7 @@ export class EufyMega extends EventEmitter {
    * Build a live {@link Device} model object for one serial: the resolved codec/capabilities with
    * its current param values applied (named via the param dictionary; unknown ids kept as
    * `unknown_<pt>`). This is the device primitive — `dev.getProperties()`, `dev.has(cap)`, etc.
-   * Prefers fresh `get_device_param_list`, falls back to the device-list params.
-   * Under auto-realtime the returned Device is wired with a read-through freshness cache (see
-   * {@link Device.setFreshnessPolicy}), so repeat reads are served from cache instead of re-fetching,
-   * and realtime updates keep values fresh.
-   *
-   * That refresh ANNOUNCES what it lands, like the other two inbound paths. Under frequent reads it
-   * fires every `cacheTtlMs` where the poll fires every ten minutes, so it is where most fresh cloud values
-   * arrive — and each announcing path is edge-triggered on the same live state, so whichever sees a change
-   * first announces it and the others stay silent. Its timing says only when a caller happened to read; the
-   * value is the news. It applies what the device volunteered over realtime on top of the cloud half, which
-   * the registry keeps apart, so it can neither revert nor announce a revert of a report already landed.
-   * Nothing awaits that refresh, so its failure is reported like the other background paths' — a dead
-   * token as `sessionExpired`, anything else as `error` — and the read keeps its last-known value.
+   * Params come from the cached device list; realtime reports and the poll keep them current afterwards.
    *
    * The `Device` returned is held WEAKLY: it is what the inbound paths announce against, so a caller that
    * wants property changes for a serial keeps its own reference. Dropping it stops the announcements, not
@@ -1626,19 +1612,6 @@ export class EufyMega extends EventEmitter {
       rawDpCodec,
     );
     this.boundParamIds.set(sn, ctx.paramIds);
-    if (this.opts.autoRealtime !== false) {
-      dev.setFreshnessPolicy({
-        staleAfterMs: this.opts.cacheTtlMs ?? 15_000,
-        refresh: async () => {
-          try {
-            const fresh = await this.registry.record(sn);
-            this.applyAndAnnounce(dev, { ...fresh.params, ...fresh.dpParams });
-          } catch (e) {
-            this.reportError(e);
-          }
-        },
-      });
-    }
     return dev;
   }
 
@@ -1898,9 +1871,7 @@ export class EufyMega extends EventEmitter {
    * else derived from them is emitted.
    *
    * Ordered that way because live state is the map every capability getter reads: a listener reading a
-   * getter inside a poll event handler has to see the value that event is about. The read-through
-   * freshness policy cannot stand in for this — it fires on a READ of a stale value and hands that read
-   * the stale one, so a value nothing happens to read is never refreshed by it.
+   * getter inside a poll event handler has to see the value that event is about.
    *
    * The CHANGES, not the whole post-change map {@link ParamChange} also carries. That map is there so an
    * event decode can read sibling params; applying it would revert every id a realtime report made
@@ -2526,8 +2497,7 @@ export class EufyMega extends EventEmitter {
    * command variant (channel, codec, deviceType, model, reported param/DP ids) plus the RESOLVED
    * capability set that gates command building.
    *
-   * Resolves from the same fresh `DeviceRegistry.record` (`get_device_param_list` overlay +
-   * category) and `resolveDevice` that {@link getDevice} uses, so the capability set here is byte-for-byte
+   * Resolves from the same `DeviceRegistry.record` (device-list params + category) and `resolveDevice` that {@link getDevice} uses, so the capability set here is byte-for-byte
    * what `device.has(cap)` / `buildActions` saw — a command is never rejected for a capability the
    * device model advertises.
    *
