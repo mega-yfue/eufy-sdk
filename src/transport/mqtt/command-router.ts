@@ -84,6 +84,12 @@ export interface Ff09Trans {
   payload: Ff09TransferPayload;
 }
 
+/** The envelope's `account_id`, as esiotkit's `doPublish` sets it: the record's `member.admin_user_id`, else `""`. */
+function publishAccountId(dev: EufyDevice): string {
+  const id = (dev.raw as { member?: { admin_user_id?: unknown } } | undefined)?.member?.admin_user_id;
+  return typeof id === "string" ? id : "";
+}
+
 /**
  * Wrap a built ff09 frame in the MQTT `trans` envelope as the app's MQTT channel builds it: `cmd` and the
  * payload's `apiCommand` both `TRANSFER_PAYLOAD` (1940), `account_id` empty, `mValue3`/`mChannel` 0.
@@ -664,18 +670,12 @@ export class MqttCommandRouter {
    * the CONFIRMED light-write path. Fire-and-forget: the DP wire carries no delivery ack the SDK
    * has captured, so there's nothing to wait on here (unlike the ff09 paths above).
    */
-  private async publishDpFrame(
-    dev: EufyDevice,
-    sn: string,
-    accountId: string,
-    mqttCmdCode: number,
-    frame: Buffer,
-  ): Promise<void> {
+  private async publishDpFrame(dev: EufyDevice, sn: string, mqttCmdCode: number, frame: Buffer): Promise<void> {
     if (!this.deps.publishSecure) {
       throw new Error(`eufy_life DP for ${sn}: publishSecure dependency not wired`);
     }
     await this.deps.publishSecure(dev, secureTopic(await this.withPn(dev), "req"), (clientId) =>
-      buildDpEnvelope({ clientId, accountId, deviceSn: sn, mqttCmdCode, frame }),
+      buildDpEnvelope({ clientId, accountId: publishAccountId(dev), deviceSn: sn, mqttCmdCode, frame }),
     );
   }
 
@@ -689,7 +689,7 @@ export class MqttCommandRouter {
     if (dev.category !== "eufy_life") return this.dispatchLockDp(sn, cmd);
     const accountId = this.requireAccountId(dev);
     const frame = buildDpFrame(cmd.cmdCode, accountId, cmd.fields);
-    await this.publishDpFrame(dev, sn, accountId, cmd.mqttCmdCode, frame);
+    await this.publishDpFrame(dev, sn, cmd.mqttCmdCode, frame);
     this.deps.onCommandAck({ sn, kind: "mqtt-dp", cmdCode: cmd.cmdCode, acked: true });
   }
 
@@ -716,7 +716,13 @@ export class MqttCommandRouter {
       mqtt,
       ff09MqttTopic(dev.model, sn),
       () =>
-        buildFf09MqttEnvelope({ trans, clientId: mqtt.id, accountId: adminUserId, deviceSn: sn, cmd: cmd.mqttCmdCode }),
+        buildFf09MqttEnvelope({
+          trans,
+          clientId: mqtt.id,
+          accountId: publishAccountId(dev),
+          deviceSn: sn,
+          cmd: cmd.mqttCmdCode,
+        }),
       (m) => (MqttCommandRouter.isReply(m, sn, cmd.mqttCmdCode) ? true : undefined),
       (cmd.timeoutS ?? 5) * 1000,
       cmd.retryCount,
@@ -732,7 +738,6 @@ export class MqttCommandRouter {
    */
   private async dispatchMqttJson(sn: string, cmd: Extract<Command, { kind: "mqtt-json" }>): Promise<void> {
     const dev = await this.pnDeviceFor(sn);
-    const adminUserId = this.requireAccountId(dev);
     const mqtt = await this.securityMqtt();
     const trans: MqttJsonTrans = { cmd: cmd.cmd, account_id: "", payload: cmd.payload, mValue3: 0, mChannel: 0 };
     const topic = ff09MqttTopic(dev.model, sn);
@@ -740,7 +745,7 @@ export class MqttCommandRouter {
       buildFf09MqttEnvelope({
         trans,
         clientId: mqtt.id,
-        accountId: adminUserId,
+        accountId: publishAccountId(dev),
         deviceSn: sn,
         cmd: cmd.mqttCmdCode,
         needAck: cmd.needAck,
@@ -768,7 +773,7 @@ export class MqttCommandRouter {
     const accountId = this.requireAccountId(dev);
     const fields = dpColorFields(cmd);
     const frame = buildDpFrame(cmd.cmdCode, accountId, fields);
-    await this.publishDpFrame(dev, sn, accountId, cmd.mqttCmdCode, frame);
+    await this.publishDpFrame(dev, sn, cmd.mqttCmdCode, frame);
     this.deps.onCommandAck({ sn, kind: "mqtt-dp-color", cmdCode: cmd.cmdCode, acked: true });
   }
 
@@ -809,10 +814,10 @@ export class MqttCommandRouter {
     const accountId = this.requireAccountId(dev);
     const spec = await this.deps.resolvePreset(cmd.presetId);
     const effectFrame = buildDpFrame(cmd.cmdCode, accountId, dpPresetFields(spec));
-    await this.publishDpFrame(dev, sn, accountId, cmd.mqttCmdCode, effectFrame);
+    await this.publishDpFrame(dev, sn, cmd.mqttCmdCode, effectFrame);
     if (typeof spec.brightness === "number") {
       const brightFrame = buildDpFrame(cmd.companionCmdCode, accountId, dpLevelFields(spec.brightness));
-      await this.publishDpFrame(dev, sn, accountId, cmd.mqttCmdCode, brightFrame);
+      await this.publishDpFrame(dev, sn, cmd.mqttCmdCode, brightFrame);
     }
     this.deps.onCommandAck({ sn, kind: "mqtt-dp-preset", presetId: cmd.presetId, acked: true });
   }

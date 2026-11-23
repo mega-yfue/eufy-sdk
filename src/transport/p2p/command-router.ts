@@ -1931,16 +1931,17 @@ export class P2PCommandRouter {
    */
   private async lockParams(sn: string, lock: NonNullable<Extract<Command, { kind: "set-payload" }>["lock"]>) {
     const { parentSn } = await this.resolveSession(sn);
-    // The esiotkit lock path keys with the lock's own `member.admin_user_id` as stated, not `AnkerAccountManager`'s.
-    const accountId: string =
-      (this.recordFor(sn)?.raw as any)?.member?.admin_user_id ?? this.deps.mega.auth?.userId ?? "";
+    // The esiotkit lock path keys with the lock's own `member.admin_user_id` as stated, not `AnkerAccountManager`'s:
+    // the v4 station key (`generateStationAesKey`) with `""` without one, the v2 frame's `A2` (the bundle's `user_id`)
+    // with the user's own id.
+    const admin: string | undefined = (this.recordFor(sn)?.raw as any)?.member?.admin_user_id;
     if (lock.version === 4) {
       // `createPayloadForZhixingStationBle`: the lock's counter + 1, stored under the station (the lock's never moves).
       const seqNum = (this.lockSeq.get(sn) ?? Math.trunc(Date.now() / 1000)) + 1;
       this.lockSeq.set(parentSn, seqNum);
       return {
         payload: sealStationPayload({
-          adminUserId: accountId,
+          adminUserId: admin ?? "",
           stationSn: parentSn,
           lockCmd: lock.bleCommand,
           lockPayload: lock.payload,
@@ -1951,7 +1952,7 @@ export class P2PCommandRouter {
     const frame = buildFf09TlvFrame({
       cmdCode: lock.cmdCode,
       fields: lock.fields,
-      adminUserId: accountId,
+      adminUserId: admin ?? this.deps.mega.auth?.userId ?? "",
       deviceSn: sn,
       encrypt: lock.encrypt,
       subVersion: lock.subVersion,
