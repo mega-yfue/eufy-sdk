@@ -14,6 +14,8 @@
  * whose header byte 10 is `0x0a` is AES-128-GCM, `tag(16) ‖ iv(12) ‖ ciphertext` under the channel key, and is dropped
  * when it does not open.
  *
+ * Once the station is heard, the channel is watched as the app's channel manager does ({@link RtcDataChannel.watch}).
+ *
  * KCP runs as the app's thread does, every 1 ms: update each conv, then take one message from each. Conv 1 is
  * `nodelay(1, 2, 2, 1)`, windows 512, MTU 1200, minimum RTO 2; the Multi conv 3 `nodelay(1, 1, 2, 1)`, windows 2048,
  * MTU 1200, minimum RTO 1.
@@ -31,6 +33,8 @@ const CMD = 1;
 const NOTIFY = 3;
 const GCM_VERSION = 0x0a;
 const PROBE = Buffer.from([0xef, 0xbe, 0, 0]);
+/** The KCP detect heartbeat: an `XZYH` header of id 1139, every other byte 0, no body. */
+const HEARTBEAT = Buffer.from("XZYH\x73\x04" + "\0".repeat(10), "latin1");
 /** The app's per-model firmware gate for the command AES-GCM; any other model always encrypts. */
 const CMD_GCM: Record<string, (v: number) => boolean> = {
   T9000: (v) => v > 4099,
@@ -177,6 +181,13 @@ export class RtcDataChannel extends EventEmitter<RtcDataChannelEvents> {
   private readonly key: Buffer;
   private readonly seal?: { key: Buffer; counter: RtcCommandCounter };
   private readonly timer: NodeJS.Timeout;
+  private detecting?: NodeJS.Timeout;
+  private watching?: NodeJS.Timeout;
+  /** Seconds of the last KCP input, of the last ack progress, of the watchdog's last stamp; ms of the last heartbeat. */
+  private rxAt = 0;
+  private ackAt = 0;
+  private watchAt = 0;
+  private beatAt = 0;
 
   /**
    * `out` sends one datagram on the ICE pair. `key` is the PRIV1 call's `sdp_info` key, whose first 16 bytes key the
@@ -203,8 +214,12 @@ export class RtcDataChannel extends EventEmitter<RtcDataChannelEvents> {
   /** One datagram from the ICE pair. */
   input(d: Buffer): void {
     if (d.length === 4 && d.readUInt16LE(0) === 0xbeef) return;
-    if (!this.opts.multi || d.length <= 32) return void this.kcps[0]!.input(d);
-    this.kcps[d.readUInt32LE(0) === 3 && this.kcps[1] ? 1 : 0]!.input(d.subarray(32));
+    const multi = this.opts.multi && d.length > 32;
+    const k = this.kcps[multi && d.readUInt32LE(0) === 3 && this.kcps[1] ? 1 : 0]!;
+    const una = k.sndUna;
+    k.input(multi ? d.subarray(32) : d);
+    this.rxAt = seconds();
+    if (k.sndUna !== una) this.ackAt = this.rxAt;
   }
 
   /**
@@ -229,10 +244,47 @@ export class RtcDataChannel extends EventEmitter<RtcDataChannelEvents> {
     });
   }
 
+  /**
+   * The app's KCP detect (`detect_send_kcpdata`), run from ICE connected: the {@link HEARTBEAT} as a command element
+   * every second, at most 8 times, until the station's first message; none by the eighth second closes the channel,
+   * as `file_agent_disconnected` uninitialises the app's file agent.
+   */
+  detect(): void {
+    let sent = 0;
+    const beat = () => {
+      if (sent === 8) return this.close();
+      this.kcps[0]!.send(wrtcLink(CMD, HEARTBEAT, this.opts.multi));
+      sent++;
+      this.detecting = setTimeout(beat, 1000);
+    };
+    beat();
+  }
+
   close(): void {
     clearInterval(this.timer);
+    clearInterval(this.watching);
+    clearTimeout(this.detecting);
     for (const p of [...this.pending]) this.settle(p, new Error("rtc data channel closed"));
     this.emit("close");
+  }
+
+  /**
+   * The app's channel manager on a connected PRIV1 (`WebrtcApp_Event_HandleChannelState`, every pass of its 200 ms
+   * loop): 11 s or more after its stamp, a KCP input or an ack progress within the last 10 s stamps it again, neither
+   * hangs the channel up; then, 501 ms or more after the last, the {@link HEARTBEAT} goes out, the first one stamping.
+   */
+  private watch(): void {
+    const now = Date.now();
+    const s = seconds();
+    if (this.watchAt && s - this.watchAt >= 11) {
+      const fresh = (at: number) => at > 0 && s - at <= 10;
+      if (!fresh(this.rxAt) && !fresh(this.ackAt)) return this.close();
+      this.watchAt = s;
+    }
+    if (now - this.beatAt < 501) return;
+    this.beatAt = now;
+    this.watchAt ||= s;
+    this.kcps[0]!.send(wrtcLink(CMD, HEARTBEAT, this.opts.multi));
   }
 
   private settle(p: Pending, result: Buffer | Error): void {
@@ -246,6 +298,8 @@ export class RtcDataChannel extends EventEmitter<RtcDataChannelEvents> {
     const msg = readLinkMessage(m, this.opts.multi);
     if (!msg) return;
     this.connected = true;
+    clearTimeout(this.detecting);
+    this.watching ??= setInterval(() => this.watch(), 200);
     const stream = this.streams.get(msg.type);
     if (!stream) return void this.emit("link", msg.type, msg.data);
     let buf = Buffer.concat([stream, msg.data]);
@@ -272,6 +326,8 @@ export class RtcDataChannel extends EventEmitter<RtcDataChannelEvents> {
   }
 }
 
+const seconds = () => Math.floor(Date.now() / 1000);
+
 function prefix(conv: number): Buffer {
   const p = Buffer.alloc(32);
   p.writeUInt32LE(conv, 0);
@@ -297,16 +353,17 @@ const RESEND: [type: string, ms: number, below: number, after: number][] = [
 /**
  * Place a PRIV1 call and run its data channel as the app does. `flag` is the call's `sdp_info` byte 2 (3 with the
  * Multi KCP type of {@link kcpMulti}, else 0); `version` the firmware with its dots removed; `counter` the device's
- * command counter. The call's 100 or 200 `turn` is the TURN server (port 3478 when it has none); on the 200 the libjuice agent ({@link IceAgent} `juice`) gathers with the
+ * command counter; `answered` runs on the call's 200. The call's 100 or 200 `turn` is the TURN server (port 3478 when it has none); on the 200 the libjuice agent ({@link IceAgent} `juice`) gathers with the
  * call's own ufrag and pwd on both sides. Each local candidate of slot `n − 1` (n < 9) goes out as INFO
  * `{"file_candidate", "file_candidate_num"}` and again until the station acks it, every 300 ms (host, 1000 ms after 8
  * sends), 500 ms (srflx, 1500 ms after 6) or 800 ms (relay, 2000 ms after 4), doubled from the fifth resend; once
  * gathering is done the local description goes out once as INFO `{"sdp"}`. A station candidate is added once per slot
- * number. ICE connected opens the channel and sends the KCP transport probe `EF BE 00 00` five times 1 ms apart.
+ * number. ICE connected opens the channel, sends the KCP transport probe `EF BE 00 00` five times 1 ms apart and runs
+ * {@link RtcDataChannel.detect}.
  */
 export function priv1(
   signal: RtcSignalClient,
-  opts: { sn: string; version: number; flag: number; counter?: RtcCommandCounter },
+  opts: { sn: string; version: number; flag: number; counter?: RtcCommandCounter; answered?: () => void },
 ): RtcDataChannel {
   const call = signal.call(RtcCallType.PRIV1, opts.flag);
   const agent = new IceAgent(call.ufrag, call.pwd, true);
@@ -326,6 +383,7 @@ export function priv1(
   };
   const onAnswer = (uuid: string) => {
     if (!mine(uuid)) return;
+    opts.answered?.();
     void agent.start(call.ufrag, call.pwd).then(() => {
       const sdp = `a=ice-ufrag:${call.ufrag}\r\na=ice-pwd:${call.pwd}\r\n${lines.map((l) => `${l}\r\n`).join("")}`;
       signal.info(uuid, { sdp: `${sdp}a=end-of-candidates\r\na=ice-options:ice2\r\n` });
@@ -355,6 +413,7 @@ export function priv1(
   agent.on("data", (d) => channel.input(d));
   agent.once("connected", () => {
     channel.connected = true;
+    channel.detect();
     for (let i = 0; i < 5; i++)
       timers.set(
         `probe${i}`,

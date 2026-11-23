@@ -230,7 +230,7 @@ describe("priv1", () => {
       const a = decodeStun(m)?.attrs;
       if (a?.has(Attr.CONTROLLING)) roles.add(a.has(Attr.USE_CANDIDATE) ? "nominate" : "check");
     });
-    peer.on("data", (d) => checks.push(d));
+    peer.on("data", (d) => void (d.length === 4 && checks.push(d)));
     peer.on("candidate", (c) => station(4, { file_candidate: c, file_candidate_num: 0 }));
     peer.addRemoteCandidate(String(cand.file_candidate));
     await peer.start(ufrag!, pwd!);

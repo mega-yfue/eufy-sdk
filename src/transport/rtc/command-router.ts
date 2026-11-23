@@ -6,10 +6,12 @@
  * PM call of its own ({@link pmIce}, {@link RtcPmLiveStream}). Both seal under the station's one
  * {@link RtcCommandCounter}.
  *
- * Commands go as the app's RTC sender frames them ({@link RtcCommandRouter.dispatchCommand}). A command waits for the data channel in 20 ms steps, as the app's
- * `getRtcFileChannelConnectedStatus` wait does, and settles on its reply, which is not an observation of the
- * resulting state. A wait that runs out drops the data channel (or, before login, the station), so the next command
- * starts over.
+ * Commands go as the app's RTC sender frames them ({@link RtcCommandRouter.dispatchCommand}). A command waits for the
+ * data channel in 20 ms steps, as the app's `getRtcFileChannelConnectedStatus` wait does, and settles on its reply,
+ * which is not an observation of the resulting state. A wait that runs out drops the data channel (or, before login,
+ * the station); a data channel that closes (its KCP detect or watchdog failing, {@link RtcDataChannel.detect}) is
+ * dropped too, and the next command places a fresh PRIV1 call, as the app's request wait re-calls a disconnected file
+ * channel, after the app's backoff from the third failure on.
  *
  * The station's database: a `1350` with inner `1306` (CMD_DATABASE) answers a table and inner `1308`
  * (CMD_DATABASE_IMAGE) a stored image, each as the station's notify under that command id, matched by its content
@@ -17,6 +19,7 @@
  *
  * The station serves one live view at a time: a second camera is refused while the first one's view has consumers.
  */
+import { randomInt } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   LiveSnapshotUnavailableError,
@@ -96,6 +99,9 @@ interface Station {
   ready: Promise<void>;
   counter: RtcCommandCounter;
   data?: RtcDataChannel;
+  /** The app's PRIV1 `call_fail_count` and `scall_sleep` end (ms): see {@link RtcCommandRouter.dataChannel}. */
+  fails: number;
+  sleepUntil: number;
 }
 
 class StationStreamBusyError extends Error {
@@ -301,35 +307,55 @@ export class RtcCommandRouter {
       signal.once("failure", () => reject(new Error(`rtc: ${sn} refused the signalling login`)));
     });
     ready.catch(() => undefined);
-    const st: Station = { signal, ready, counter: { word: 0x01020304 } };
+    const st: Station = { signal, ready, counter: { word: 0x01020304 }, fails: 0, sleepUntil: 0 };
     this.stations.set(sn, st);
     signal.start().catch((e: unknown) => this.deps.onError?.(e instanceof Error ? e : new Error(String(e))));
     return st;
   }
 
-  /** The station's connected data channel, its PRIV1 call placed once the signalling is logged in. */
+  /**
+   * The station's connected data channel, its PRIV1 call placed once the signalling is logged in. A channel that
+   * closes counts a failure, which the station's answer to a PRIV1 call clears; from the third failure on, the next
+   * call waits as the app's `scall_sleep` does: 20 s, then 50 s, then 100 s, each plus 0 to 9 s.
+   */
   private async dataChannel(route: RtcRoute, signal?: AbortSignal): Promise<RtcDataChannel> {
     const sn = route.stationSn;
     const st = this.station(route);
     const deadline = AbortSignal.any([AbortSignal.timeout(CONNECT_TIMEOUT_MS), ...(signal ? [signal] : [])]);
+    let loggedIn = false;
     try {
       await abortable(st.ready, deadline);
+      loggedIn = true;
       const flag = kcpMulti(sn, route.sdkVersion) ? 3 : 0;
-      const data = (st.data ??= (this.deps.layers?.priv1 ?? priv1)(st.signal, {
-        sn,
-        version: route.version,
-        flag,
-        counter: st.counter,
-      }));
+      if (!st.data) await sleep(Math.max(0, st.sleepUntil - Date.now()), undefined, { signal: deadline });
+      let data = st.data;
+      if (!data) {
+        const placed =
+          (data =
+          st.data =
+            (this.deps.layers?.priv1 ?? priv1)(st.signal, {
+              sn,
+              version: route.version,
+              flag,
+              counter: st.counter,
+              answered: () => (st.fails = 0),
+            }));
+        placed.once("close", () => {
+          if (st.data === placed) st.data = undefined;
+          const n = st.fails++;
+          if (n >= 2) st.sleepUntil = Date.now() + 1000 * (randomInt(10) + (n === 2 ? 20 : n === 3 ? 50 : 100));
+        });
+      }
       while (!data.connected) await sleep(20, undefined, { signal: deadline });
       return data;
     } catch (e) {
       if (signal?.aborted) throw signal.reason;
-      const stage = st.data ? "data channel did not connect" : "signalling did not log in";
-      if (st.data) {
+      const stage = loggedIn ? "data channel did not connect" : "signalling did not log in";
+      if (!loggedIn) this.drop(sn);
+      else if (st.data) {
         st.data.close();
         st.data = undefined;
-      } else this.drop(sn);
+      }
       throw new Error(`rtc: ${sn} ${stage} within ${CONNECT_TIMEOUT_MS} ms`, { cause: e });
     }
   }
