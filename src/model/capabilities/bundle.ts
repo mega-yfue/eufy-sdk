@@ -924,7 +924,12 @@ export function thingWrite(identifier: string, value: string, ctx: CommandContex
   if (javaOverridden(identifier, ctx)) return undefined;
   // A `{paramType, param}` lock settings write (JSON): its frame is the paramType's, its marks the param's fields.
   const struct = structOf(value);
-  const frame = frameFor(bundleEntry(identifier, ctx)?.write, struct ? String(struct.paramType) : value);
+  const write = bundleEntry(identifier, ctx)?.write;
+  // A frame an input field's value picks (`*sensor_id=1`: the second lens's command), else the value's.
+  const frame =
+    Object.entries(parse(value) ?? {})
+      .map(([k, v]) => memberOf(write, `*${k}=${v}`))
+      .find(Boolean) ?? frameFor(write, struct ? String(struct.paramType) : value);
   const typed =
     struct ??
     (ctx.things?.properties[identifier]?.type === "bool"
@@ -1167,6 +1172,19 @@ const TRANSFORMS: Record<string, (v: unknown, input: Row, param?: Param, td?: Td
     try {
       return {
         polygens: (v as { points: Row[] }[]).map((p) => ({ points: p.points.map(devicePot(td.normalized === 1, td)) })),
+      };
+    } catch {
+      return undefined;
+    }
+  },
+  /** `asPrivacyZonePot`, sensor 1: each `privacyZoneList` entry `{index, pots}` as `{index, points}`, its pots' points in one list. */
+  ipcPrivacyList: (v, _, __, td = VIDEO) => {
+    try {
+      return {
+        polygens: (v as { index: unknown; pots: { points: Row[] }[] }[]).map(({ index, pots }) => ({
+          index,
+          points: pots.flatMap((p) => p.points.map(devicePot(td.normalized === 1, td))),
+        })),
       };
     } catch {
       return undefined;
