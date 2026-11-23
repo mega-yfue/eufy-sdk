@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSocket, type Socket } from "node:dgram";
 import { constants, generateKeyPairSync, privateDecrypt } from "node:crypto";
 import {
@@ -61,15 +61,16 @@ describe("RtcSignalClient", () => {
   let server: Socket;
   let client: RtcSignalClient;
   afterEach(() => {
+    vi.useRealTimers();
     client.close();
     server.close();
   });
 
   /** A fake signalling server: DISCOVER → self, reg → 401, reg2 → checks did:lic, then 200 or a second 401. */
-  async function fakeServer(rejectReg2: boolean) {
+  async function fakeServer(rejectReg2: boolean, dropRegs = 0) {
     const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 1024 });
     const modulus = Buffer.from((publicKey.export({ format: "jwk" }) as { n: string }).n, "base64url").toString("hex");
-    const seen: { auth?: string; wrapped: boolean[] } = { wrapped: [] };
+    const seen: { auth?: string; wrapped: boolean[]; regs: number[] } = { wrapped: [], regs: [] };
     server = createSocket("udp4");
     const reply = (rx: RtcPacket, status: number, kind: number, body: Buffer, to: { port: number }) => {
       const h = Buffer.from(rx.header);
@@ -85,6 +86,7 @@ describe("RtcSignalClient", () => {
       if (rx.header.readUInt16LE(4) === 9)
         return reply(rx, 200, 2, Buffer.from(JSON.stringify({ server_addr: "self", timestamp: 0, saddrs: [] })), from);
       if (rx.header.readUInt16LE(4) !== 1) return;
+      if (rx.header[41] === 0 && seen.regs.push(from.port) <= dropRegs) return;
       if (rx.header[41] === 0) return reply(rx, 401, 3, rtcEncrypt(Buffer.from(modulus), RTC_DEFAULT_KEY, TS), from);
       expect(rx.header[41]).toBe(4);
       expect(rx.header.readUInt32LE(8)).toBe(TS);
@@ -163,12 +165,34 @@ describe("RtcSignalClient", () => {
     expect(Math.abs(t.authTimestamp - Date.now() / 1000)).toBeLessThan(2);
   });
 
-  it("a second 401 in a row is a login failure", async () => {
+  it("a second 401 in a row resets at once: a bare reg from a reopened socket", async () => {
     const seen = await fakeServer(true);
-    const failure = new Promise<void>((r) => client.once("failure", r));
     await client.start();
-    await failure;
+    await vi.waitFor(() => expect(seen.regs).toHaveLength(2));
     expect(seen.auth).toBe(`${DID}:${LIC}`);
+    expect(seen.regs[1]).not.toBe(seen.regs[0]);
     expect(client.contactId).toBe("");
+  });
+
+  it("retries an unanswered login every 9 s, first on its socket, then reset, until a 200", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const seen = await fakeServer(false, 2);
+    const until = async (f: () => boolean) => {
+      while (!f()) await new Promise((r) => setImmediate(r));
+    };
+    let contact = "";
+    client.once("login", (c) => (contact = c));
+    await client.start();
+    await until(() => seen.regs.length === 1);
+    await vi.advanceTimersByTimeAsync(8_999);
+    expect(seen.regs).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await until(() => seen.regs.length === 2);
+    expect(seen.regs[1]).toBe(seen.regs[0]);
+    await vi.advanceTimersByTimeAsync(9_000);
+    await until(() => contact !== "");
+    expect(seen.regs[2]).not.toBe(seen.regs[0]);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(seen.regs).toHaveLength(3);
   });
 });

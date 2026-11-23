@@ -8,8 +8,8 @@
  *
  * Commands go as the app's RTC sender frames them ({@link RtcCommandRouter.dispatchCommand}). A command waits for the
  * data channel in 20 ms steps, as the app's `getRtcFileChannelConnectedStatus` wait does, and settles on its reply,
- * which is not an observation of the resulting state. A wait that runs out drops the data channel (or, before login,
- * the station); a data channel that closes (its KCP detect or watchdog failing, {@link RtcDataChannel.detect}) is
+ * which is not an observation of the resulting state. A wait that runs out drops the data channel (before login, the
+ * station's client keeps retrying as the app's does); a data channel that closes (its KCP detect or watchdog failing, {@link RtcDataChannel.detect}) is
  * dropped too, and the next command places a fresh PRIV1 call, as the app's request wait re-calls a disconnected file
  * channel, after the app's backoff from the third failure on.
  *
@@ -399,11 +399,7 @@ export class RtcCommandRouter {
       token: this.deps.tokens?.get(sn),
     });
     signal.on("token", (t) => this.deps.tokens?.set(sn, t));
-    const ready = new Promise<void>((resolve, reject) => {
-      signal.once("login", () => resolve());
-      signal.once("failure", () => reject(new Error(`rtc: ${sn} refused the signalling login`)));
-    });
-    ready.catch(() => undefined);
+    const ready = new Promise<void>((resolve) => signal.once("login", () => resolve()));
     const st: Station = { signal, ready, counter: { word: 0x01020304 }, flag: 0, fails: 0, sleepUntil: 0 };
     this.stations.set(sn, st);
     signal.start().catch((e: unknown) => this.deps.onError?.(e instanceof Error ? e : new Error(String(e))));
@@ -448,8 +444,7 @@ export class RtcCommandRouter {
     } catch (e) {
       if (signal?.aborted) throw signal.reason;
       const stage = loggedIn ? "data channel did not connect" : "signalling did not log in";
-      if (!loggedIn) this.drop(sn);
-      else if (st.data) {
+      if (loggedIn && st.data) {
         st.data.close();
         st.data = undefined;
       }

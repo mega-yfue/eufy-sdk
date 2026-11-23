@@ -12,7 +12,7 @@
  * 3. 401 with body kind 3 = default-key AES of the server's RSA modulus as 256 hex chars. The client draws a
  *    16-char `[0-9a-zA-Z]` session key and answers reg2: the 401's header echoed as a request with a new seq,
  *    body kind 4 = RSA(session key) ‖ u16 N ‖ AES(`did:lic`) under the session key and the 401's ts. A second 401
- *    without a reg between is a login failure.
+ *    without a reg between is a login failure, which resets the client at once (below).
  * 4. 200 with body kind 6 = the NUL-terminated contact_id; header byte 44 is echoed in later regs.
  *
  * Quick login: with a station's cached {@link RtcToken} no older than 23 h, the client starts registered on the cached
@@ -25,8 +25,10 @@
  * (`WebrtcApp_Check_Token_UpdateTime` → `ClientTokenRefresh`).
  *
  * The app's work protocol (2, header byte 15 of reg) starts no login timer: reg goes out once per settled
- * DISCOVER, and nothing resends it. A request the server leaves unanswered for 5 s is not resent either: the app's
- * timeout scan has no caller.
+ * DISCOVER. Until a 200 logs it in, the app's login check (`WebrtcApp_Event_CheckChannelState`) retries every 9 s:
+ * first a bare reg, then each time a reset that hangs up every call, reopens the signalling socket and sends a bare
+ * reg (`rtc_retry_login` → `ClientRetryLogin`), never within 8 s of the last retry or token refresh. A request the
+ * server leaves unanswered for 5 s is not resent otherwise: the app's timeout scan has no caller.
  *
  * 5. CALL (kind 2, header byte 15 = 2, byte 18 = 1, byte 44 = the process-wide call counter from 1) on a UDP socket
  *    of its own per call type, body kind 7 = {@link callBody} of the session uuid and the contact_id, attach = the
@@ -113,6 +115,9 @@ const TOKEN_TTL_S = 82_800;
 /** `WebrtcApp_Check_Token_UpdateTime`: refresh a login this old, at most once per 21 s. */
 const TOKEN_REFRESH_S = 43_200;
 const TOKEN_CHECK_S = 21;
+/** The app's login check period while logged out, and `rtc_retry_login`'s gate shared with the token refresh. */
+const RETRY_LOGIN_MS = 9_000;
+const RETRY_GATE_S = 8;
 
 interface RtcCall {
   type: number;
@@ -133,8 +138,6 @@ export interface RtcSignalEvents {
   login: [contactId: string];
   /** The first 200 after a key exchange: the login to cache. */
   token: [token: RtcToken];
-  /** A second 401 in a row. */
-  failure: [];
   /** The station's first 100 (or a 200 without one): its `turn` object. */
   trying: [uuid: string, turn: unknown];
   /** The station's 200, once per session. */
@@ -155,7 +158,7 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
   host: string;
   contactId = "";
   sessionKey = "";
-  private readonly socket: Socket = createSocket("udp4");
+  private socket = this.signalSocket();
   private readonly route = randomInt(256);
   private seq = 0;
   private discovered = false;
@@ -165,13 +168,14 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
   private discoverTimer?: NodeJS.Timeout;
   private authTimestamp = 0;
   private tokenCheck = 0;
+  private retried = 0;
+  private retryTimer?: NodeJS.Timeout;
   private readonly calls = new Map<string, RtcCall>();
   private readonly callSockets = new Map<number, Socket>();
 
   constructor(private readonly opts: RtcSignalOptions) {
     super();
     this.host = opts.host;
-    this.socket.on("message", (msg) => this.onDatagram(msg));
   }
 
   /** Bind and start discovering. */
@@ -185,10 +189,12 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
     }
     this.discover();
     this.discoverTimer = setInterval(() => this.discovered || this.discover(), DISCOVER_INTERVAL_MS);
+    this.retryTimer = setTimeout(() => this.retryLogin(false), RETRY_LOGIN_MS);
   }
 
   close(): void {
     clearInterval(this.discoverTimer);
+    clearTimeout(this.retryTimer);
     for (const uuid of this.calls.keys()) this.hangup(uuid);
     this.socket.close();
   }
@@ -251,7 +257,38 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
     if (!up(RtcCallType.PRIV1) || !up(RtcCallType.PM) || now < this.authTimestamp + TOKEN_REFRESH_S) return;
     if (now - this.tokenCheck < TOKEN_CHECK_S) return;
     this.tokenCheck = now;
+    if (this.gate()) this.login(true);
+  }
+
+  /** `rtc_retry_login` and `rtc_token_refresh_login`: at most one in 8 s. */
+  private gate(): boolean {
+    const now = Date.now() / 1000;
+    if (now <= this.retried + RETRY_GATE_S) return false;
+    this.retried = now;
+    return true;
+  }
+
+  /** The app's login check while logged out: a bare reg, after a `reset` that hangs every call up and reopens the socket. */
+  private retryLogin(reset: boolean): void {
+    clearTimeout(this.retryTimer);
+    this.retryTimer = setTimeout(() => this.retryLogin(true), RETRY_LOGIN_MS);
+    if (reset)
+      for (const uuid of [...this.calls.keys()]) {
+        this.hangup(uuid);
+        this.emit("hangup", uuid);
+      }
+    if (!this.gate()) return;
+    this.registered = false;
+    this.contactId = "";
+    if (reset) {
+      this.socket.close();
+      this.socket = this.signalSocket();
+    }
     this.login(true);
+  }
+
+  private signalSocket(): Socket {
+    return createSocket("udp4").on("message", (msg) => this.onDatagram(msg));
   }
 
   /** End a call: a PRIV1 or PM hang-up sends nothing, the session and its socket close. */
@@ -430,11 +467,7 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
   private onLogin(header: Buffer, body: Buffer): void {
     const status = header.readUInt16LE(16);
     if (status === 401 && header[41] === RtcBody.PUBKEY && body.length && this.opts.did && this.opts.lic) {
-      if (++this.unauthorized >= 2) {
-        this.registered = false;
-        this.emit("failure");
-        return;
-      }
+      if (++this.unauthorized >= 2) return this.retryLogin(true);
       this.registered = false;
       this.contactId = "";
       const ts = header.readUInt32LE(8);
@@ -452,6 +485,7 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
       if (body.length && header[41] === RtcBody.KEEP_ALIVE) this.contactId = readNullTerminatedString(body, "latin1");
       if (this.registered) return;
       this.registered = true;
+      clearTimeout(this.retryTimer);
       this.emit("login", this.contactId);
       this.authTimestamp = Math.floor(Date.now() / 1000);
       const { sessionKey: aes, contactId, host: addr, authTimestamp } = this;
