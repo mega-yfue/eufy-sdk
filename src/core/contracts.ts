@@ -280,54 +280,6 @@ export class LiveStreamStartError extends Error {
 }
 
 /**
- * What the observation a write declared was still waiting for when its deadline passed, carried by
- * {@link StateConvergenceError}.
- */
-export interface StateConvergenceFailure {
-  sn: string;
-  /** The decoded property the observation names, which is what a caller reads. */
-  property: string;
-  param: number;
-  /** The RAW param value the write asked the device to report. */
-  expected: boolean | number | string;
-  /** What the param actually read when the deadline passed, absent where the device reported none at all. */
-  observed?: boolean | number | string;
-  timeoutMs: number;
-}
-
-/**
- * Thrown when a write's declared observation never converges, so the SDK cannot say the write landed.
- *
- * A command is acknowledged when the transport has carried it, which is delivery and not convergence, and
- * the observation a member declares is what decides the second question. Where that observation times out
- * the write was accepted by the wire and never applied by the device — a battery camera can
- * acknowledge a power write and ignore it — so this is a distinct outcome from a transport fault and
- * carries the attribution that names which member on which device is unconfirmed.
- */
-export class StateConvergenceError extends Error {
-  readonly sn: string;
-  readonly property: string;
-  readonly param: number;
-  readonly expected: boolean | number | string;
-  readonly observed?: boolean | number | string;
-  readonly timeoutMs: number;
-
-  constructor(failure: StateConvergenceFailure) {
-    super(
-      `device ${failure.sn} did not report ${failure.property} as ${String(failure.expected)} within ` +
-        `${failure.timeoutMs}ms (param ${failure.param} read ${String(failure.observed)})`,
-    );
-    this.name = "StateConvergenceError";
-    this.sn = failure.sn;
-    this.property = failure.property;
-    this.param = failure.param;
-    this.expected = failure.expected;
-    this.observed = failure.observed;
-    this.timeoutMs = failure.timeoutMs;
-  }
-}
-
-/**
  * The identity fields an actuation frame is built from — for `ff09`, the AES key/IV inputs
  * (`adminUserId`/`deviceSn`) plus the frame's own direction bit and user-attribution fields
  * (`A3`/`A4`/`A5`); for the keyed-payload envelope, the same five fields, sealed into its inner JSON.
@@ -343,24 +295,9 @@ export interface Ff09Identity {
   deviceSn: string;
 }
 
-/** @internal */
+/** @internal The semantic event a write announces once the device answered it with success. */
 export interface CommandObservation {
   event: string;
-  /** The RAW param value the device must report before this write counts as landed. */
-  expected: boolean | number | string;
-  /**
-   * The DECODED property value to expect once that raw value has been applied, where it differs from the raw
-   * one. Absent when the two coincide.
-   *
-   * They diverge whenever the property's decode is not the identity: a disable-bit param reports `0` for a
-   * property that reads `true`, so checking the decoded value against the raw expectation would reject a write
-   * that had in fact landed. Stating both is what lets each check compare like with like.
-   */
-  observed?: boolean | number | string;
-  param: number;
-  property: string;
-  resetStandaloneSession?: boolean;
-  timeoutMs: number;
 }
 
 const COMMAND_OBSERVATION = Symbol("command-observation");
@@ -406,6 +343,8 @@ export type Command =
         unzip?: true;
         /** Header byte 14: the session's counter bumped, or as it stands, as the app writes it for 1025. */
         counter?: "bump" | "current";
+        /** How long the device's answer is awaited, never resent, where the app bounds the request itself. */
+        answerMs?: number;
         /**
          * A lock setting over its station (v2): the transport builds the params as the app's `handleV2Payload`,
          * `{lock_payload, seq_num, apiCommand, time}`, the `ff09` frame of these fields for the lock.
@@ -432,6 +371,8 @@ export type Command =
         cmd: number;
         value: number;
         channel: number;
+        /** How long the device's answer is awaited, never resent, where the app bounds the request itself. */
+        answerMs?: number;
       }
     /**
      * The app's native string body (`[u32 0][u8 channel][value][account_id]`) on the station channel 255,

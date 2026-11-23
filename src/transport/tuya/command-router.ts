@@ -189,9 +189,9 @@ export class TuyaCommandRouter {
    *
    * ⚠️ `dp.publish` is unverified — see {@link TuyaCommandRouterConfig.allowUnverified}. By default
    * this throws. Pass `allowUnverified: true` in the router config only after a live capture
-   * confirms the full round-trip, then remove the gate.
+   * confirms the full round-trip, then remove the gate. Answers the reply envelope's `success`.
    */
-  async dispatchCommand(sn: string, cmd: Command): Promise<void> {
+  async dispatchCommand(sn: string, cmd: Command): Promise<boolean> {
     if (cmd.kind !== "aiot-dp") {
       throw new Error(`TuyaCommandRouter received an unroutable command (${cmd.kind}) — only aiot-dp belongs here`);
     }
@@ -203,11 +203,12 @@ export class TuyaCommandRouter {
           "Ensure getDevices() was called; it registers every eufy_home_tuya device under its Tuya id or its serial.",
       );
     }
-    await this.client!.publishDps(
+    const reply = await this.client!.publishDps(
       ids.devId,
       ids.gwId,
       { [cmd.dp]: cmd.value },
       { allowUnverified: this.allowUnverified },
     );
+    return reply.success === true;
   }
 }

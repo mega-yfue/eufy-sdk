@@ -121,6 +121,17 @@ describe("RtcCommandRouter on the native layers", () => {
     router.close();
   });
 
+  /** The app counts an RTC write done when its frame is written; it waits for no reply. */
+  it("answers a write done once its frame is written, without the station's reply", async () => {
+    const { router, data } = layers();
+    data.command.mockReturnValue(new Promise(() => {}));
+    await expect(router.dispatchCommand(ROUTE, { kind: "set-param", param: 1035, value: 1, channel: 3 })).resolves.toBe(
+      true,
+    );
+    expect(data.command).toHaveBeenCalledOnce();
+    router.close();
+  });
+
   it("frames the native kinds as the app's RTC sender groups their ids", async () => {
     const { router, data } = layers();
     const account = Buffer.alloc(128);

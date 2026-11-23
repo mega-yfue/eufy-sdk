@@ -585,9 +585,8 @@ session idle-detaches so a battery device sleeps — see [Connectivity & battery
   has been off recorded no events and so banked no thumbnail.
 - **`cam.enabled` is trustworthy, and the SDK acts on it.** A write used to leave the reported value frozen —
   `setEnabled(true)` succeeded, the camera streamed, and the reading stayed `false` indefinitely. An
-  enablement write is now confirmed by bounded readback on whichever param the device actually reports: the
-  value converges on its own (measured 2–6s on both wire families) and `cameraEnabledChanged` fires once when
-  it lands. A change made anywhere else — the vendor app, another client, a physical switch — arrives as
+  enablement write the camera answers with success now lands on whichever param the device actually reports,
+  and `cameraEnabledChanged` fires once. A change made anywhere else — the vendor app, another client, a physical switch — arrives as
   `propertyChanged` on whichever inbound path saw it, so a long-lived
   client is no longer left polling for one.
 - **A pull on a camera reading `enabled === false` is refused.** `live()`, `snapshotLive()`, `record()`,

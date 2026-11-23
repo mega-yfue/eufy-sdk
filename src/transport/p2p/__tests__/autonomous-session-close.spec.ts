@@ -77,32 +77,6 @@ describe("a station's session closing without a caller", () => {
     expect(closedStations, "an open with no matching close makes the pair useless").toEqual([STATION]);
   });
 
-  it("drops them when a deferred reset falls due instead, which fires inside the linger window", async () => {
-    const { manager, sources, talkbacks, closedStations } = routerFor();
-    manager.register(STATION, fakeSession());
-    const { dispose } = seedRiders(sources, talkbacks);
-
-    manager.retain(STATION);
-    const reset = manager.resetWhenUnused(STATION);
-    manager.release(STATION);
-    await reset;
-
-    expect(dispose).toHaveBeenCalled();
-    expect(closedStations).toEqual([STATION]);
-  });
-
-  it("drops them when a reset finds only expiring holds left, which its caller never cleans up after", async () => {
-    const { manager, sources, talkbacks, closedStations } = routerFor();
-    manager.register(STATION, fakeSession());
-    const { dispose } = seedRiders(sources, talkbacks);
-
-    manager.bumpCommand(STATION);
-    await manager.resetWhenUnused(STATION);
-
-    expect(dispose, "a source lingering with no viewer survives over the dead session otherwise").toHaveBeenCalled();
-    expect(closedStations).toEqual([STATION]);
-  });
-
   it("says nothing about a station that never opened, so a close is never reported without an open", async () => {
     const { manager, sources, talkbacks, closedStations } = routerFor();
     seedRiders(sources, talkbacks);

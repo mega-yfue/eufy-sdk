@@ -23,13 +23,8 @@ describe("P2P int-plus-string command dispatch", () => {
   it("injects account identity and preserves the bound camera channel", async () => {
     const { router, session } = setup();
 
-    await router.dispatchCommand(DEVICE_SN, {
-      kind: "p2p-int-string",
-      cmd: 1202,
-      value: 10,
-      valueSub: 1,
-      channel: 1,
-    });
+    const command = { kind: "p2p-int-string", cmd: 1202, value: 10, valueSub: 1, channel: 1 } as const;
+    await onFakeTime(() => router.dispatchCommand(DEVICE_SN, command).catch(() => undefined));
 
     expect(session.sendIntStringCommand).toHaveBeenCalledWith(1202, 10, 1, ACCOUNT_ID, 1);
   });
@@ -60,7 +55,8 @@ describe("P2P int-plus-string command dispatch", () => {
   it("sends a member's stated empty admin id as is, as the app does", async () => {
     const { router, session } = setup("");
 
-    await router.dispatchCommand(DEVICE_SN, { kind: "p2p-int-string", cmd: 1202, value: 10, valueSub: 1, channel: 1 });
+    const command = { kind: "p2p-int-string", cmd: 1202, value: 10, valueSub: 1, channel: 1 } as const;
+    await onFakeTime(() => router.dispatchCommand(DEVICE_SN, command).catch(() => undefined));
 
     expect(session.sendIntStringCommand).toHaveBeenCalledWith(1202, 10, 1, "", 1);
   });

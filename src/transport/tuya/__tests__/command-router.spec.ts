@@ -53,7 +53,7 @@ describe("TuyaCommandRouter", () => {
     // the login was retried rather than the rejected promise reused.
     const secondErr = await router.dispatchCommand("sn-1", cmd).catch((err: Error) => err.message);
     // second dispatch must not re-throw the stale TRANSIENT_FAILURE (it either succeeds or fails differently)
-    expect(secondErr ?? "").not.toMatch(/TRANSIENT_FAILURE/);
+    expect(String(secondErr)).not.toMatch(/TRANSIENT_FAILURE/);
   });
 
   describe("fetchDps", () => {

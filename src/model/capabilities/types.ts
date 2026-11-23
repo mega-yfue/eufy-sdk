@@ -113,10 +113,6 @@ export type InboundSignal =
       dpParams?: Record<number, string>;
     };
 
-interface EventRefresh {
-  member: string;
-}
-
 /**
  * A **declarative** inbound-event mapping — the dual of {@link DetectionSpec} for events. A
  * capability lists which push `eventType`s / poll `paramType`s belong to it and the semantic event
@@ -130,8 +126,6 @@ export interface EventMapping {
   match: number | [number, number];
   /** The semantic SDK event name to emit (e.g. `"motion"`, `"doorbellPress"`, `"lockState"`). */
   emit: string;
-  /** @internal Refresh one reflected member before emitting a valueless transition. */
-  refresh?: EventRefresh;
   /**
    * Static fields folded into the emitted event payload — lets several ids emit the same event
    * name with a discriminator (e.g. battery pushes 6/7/11 all → `batteryAlert` with
@@ -480,8 +474,8 @@ export interface CapabilityModule {
    */
   events?: EventMapping[];
   /**
-   * Semantic event names this capability emits from {@link decodeEvent}, which the flat {@link events}
-   * table cannot express — a frame the module parses itself has no id to list there.
+   * Semantic event names this capability emits from {@link decodeEvent} or a state change, which the flat
+   * {@link events} table cannot express — a frame the module parses itself has no id to list there.
    *
    * Declared so the published manifest can state what a capability emits without a caller subscribing
    * blind: the manifest's event list is this union'd with the table's own `emit` names. A capability

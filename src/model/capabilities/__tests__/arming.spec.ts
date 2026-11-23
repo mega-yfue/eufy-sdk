@@ -7,7 +7,7 @@ import {
   ArmingMode,
   type ArmingActions,
 } from "../arming.js";
-import { buildActions, buildCommand } from "../index.js";
+import { buildActions, buildCommand, decodeState } from "../index.js";
 import { bind } from "./bind.js";
 import type { CommandContext } from "../types.js";
 import type { MemberDeps } from "../members.js";
@@ -56,6 +56,7 @@ describe("arming capability module", () => {
           payload: { mode_type: modeType, user_name: "someone+tag" },
           channel: 0,
           mValue3: 0,
+          answerMs: 6000,
         },
       ]);
     });
@@ -67,6 +68,7 @@ describe("arming capability module", () => {
         payload: { mode_type: 0, user_name: "someone+tag" },
         channel: 0,
         mValue3: 0,
+        answerMs: 6000,
       });
     });
 
@@ -107,6 +109,7 @@ describe("arming capability module", () => {
           payload: { mode_type: wire, user_name: "someone+tag" },
           channel: 0,
           mValue3: 0,
+          answerMs: 6000,
         },
       ]);
       expect(buildCommand("armingMode", name, ctx)).toMatchObject({ payload: { mode_type: wire } });
@@ -146,6 +149,7 @@ describe("arming capability module", () => {
           payload: { mode_type: 1, user_name: "someone+tag" },
           channel: 0,
           mValue3: 0,
+          answerMs: 6000,
         },
       ]);
     });
@@ -178,7 +182,7 @@ describe("arming capability module", () => {
     ])("%s on a T8410C → p2p-station-scalar cmd 1224, value %i, channel 0", async (mode, value) => {
       const { acts, sent } = bind<ArmingActions>("arming", t8410c);
       await acts.setMode(mode);
-      expect(sent).toEqual([{ kind: "p2p-station-scalar", cmd: 1224, value, channel: 0 }]);
+      expect(sent).toEqual([{ kind: "p2p-station-scalar", cmd: 1224, value, channel: 0, answerMs: 6000 }]);
     });
 
     it("buildCommand gives a T8410C the same direct frame", () => {
@@ -187,6 +191,7 @@ describe("arming capability module", () => {
         cmd: 1224,
         value: 0,
         channel: 0,
+        answerMs: 6000,
       });
     });
   });
@@ -212,7 +217,7 @@ describe("arming capability module", () => {
     ])("%s on a T8410 → p2p-station-scalar cmd 1224, value %i, channel 255, auto seal", async (mode, value) => {
       const { acts, sent } = bind<ArmingActions>("arming", t8410);
       await acts.setMode(mode);
-      expect(sent).toEqual([{ kind: "p2p-station-scalar", cmd: 1224, value, channel: 255 }]);
+      expect(sent).toEqual([{ kind: "p2p-station-scalar", cmd: 1224, value, channel: 255, answerMs: 6000 }]);
     });
   });
 
@@ -475,5 +480,14 @@ describe("arming capability module", () => {
       await acts.setDeviceNotification!(AlarmDelayMode.home, 17, false);
       expect(sent[1]).toMatchObject({ data: { devices: [{ action: 0x01000009 }, {}, { action: 0x01000000 }] } });
     });
+  });
+
+  /** The station's guard-mode notify carries two int32; the app lands the first on 1224. */
+  it("lands the station's 1151 notify on the guard-mode param", () => {
+    const data = Buffer.alloc(8);
+    data.writeInt32LE(63, 0);
+    data.writeInt32LE(1, 4);
+    const signal = { source: "p2p-frame", stationSn: "T8010P0000000000", commandId: 1151, channel: 255, data } as const;
+    expect(decodeState(signal, new Set(["arming"]), true)).toEqual([{ params: { 1224: "63" } }]);
   });
 });

@@ -430,17 +430,6 @@ export class P2PCommandRouter {
   }
 
   /**
-   * Reset only a standalone device's session; an attached device must not close its shared HomeBase.
-   */
-  async resetStandaloneSession(sn: string): Promise<void> {
-    const device = this.recordFor(sn);
-    if (!device) return;
-    const station = stationOf(device);
-    if (station !== sn) return;
-    await this.manager.resetWhenUnused(station);
-  }
-
-  /**
    * Open (or reuse) the P2P session for a station **on demand**, coalescing concurrent cold opens via
    * the {@link SessionManager}. A command / stream / pre-warm opens only the station it targets; idle
    * battery stations auto-close. The station's own record carries the P2P creds — a serial with no
@@ -775,17 +764,19 @@ export class P2PCommandRouter {
             true,
             cmd.unzip,
             cmd.counter,
+            cmd.answerMs,
           )) === true
         );
       case "p2p-station-scalar":
-        await this.sendStationScalar(sn, cmd.cmd, cmd.value, cmd.channel);
-        return false;
+        return (await this.sendStationScalar(sn, cmd.cmd, cmd.value, cmd.channel, cmd.answerMs)) === true;
       case "p2p-int-string":
-        await this.sendIntString(sn, cmd.cmd, cmd.value, cmd.valueSub, cmd.channel, cmd.form);
-        return false;
+        return (await this.sendIntString(sn, cmd.cmd, cmd.value, cmd.valueSub, cmd.channel, cmd.form)) === true;
       case "p2p-string":
-        await this.sendNativeBody(sn, cmd.cmd, 255, (accountId) => buildStringBody(cmd.channel, cmd.value, accountId));
-        return false;
+        return (
+          (await this.sendNativeBody(sn, cmd.cmd, 255, (accountId) =>
+            buildStringBody(cmd.channel, cmd.value, accountId),
+          )) === true
+        );
       case "ff09-actuate":
         await this.sendFf09Actuate(sn, cmd);
         return false;
@@ -1627,35 +1618,37 @@ export class P2PCommandRouter {
   /**
    * **Station-scoped scalar** (`p2p-station-scalar` intent): the 132-byte channel-less body
    * ({@link buildDirectBinaryBody} with no `channel`) on an EXPLICIT channel, sealed by the session. The
-   * HomeBase's own controls ride the station broadcast channel 255 (alarm/speaker volume 1235).
+   * HomeBase's own controls ride the station broadcast channel 255 (alarm/speaker volume 1235). Settled on the
+   * device's answer ({@link sendAnswered}), awaited `answerMs` without a resend where the intent states it.
    */
-  private async sendStationScalar(sn: string, outerCmd: number, value: number, channel: number): Promise<void> {
-    await this.sendAnswered(
+  private sendStationScalar(
+    sn: string,
+    outerCmd: number,
+    value: number,
+    channel: number,
+    answerMs?: number,
+  ): Promise<boolean | void> {
+    return this.sendAnswered(
       sn,
       outerCmd,
       ({ session, accountId }) => session.sendBytes(buildDirectBinaryBody(value, accountId), channel, outerCmd),
       undefined,
-      true,
+      false,
+      answerMs,
     );
   }
 
   /**
    * A native body (the string body {@link buildStringBody}, the bare int pair) on header `channel`, sealed by the
-   * session and sent as every unread control here is ({@link sendAnswered}). `body` gets the account id.
+   * session and settled on the device's answer ({@link sendAnswered}). `body` gets the account id.
    */
-  private async sendNativeBody(
+  private sendNativeBody(
     sn: string,
     cmd: number,
     channel: number,
     body: (accountId: string) => Buffer,
-  ): Promise<void> {
-    await this.sendAnswered(
-      sn,
-      cmd,
-      ({ session, accountId }) => session.sendBytes(body(accountId), channel, cmd),
-      undefined,
-      true,
-    );
+  ): Promise<boolean | void> {
+    return this.sendAnswered(sn, cmd, ({ session, accountId }) => session.sendBytes(body(accountId), channel, cmd));
   }
 
   private async sendIntString(
@@ -1665,7 +1658,7 @@ export class P2PCommandRouter {
     valueSub: number,
     channel: number,
     form?: "int-pair",
-  ): Promise<void> {
+  ): Promise<boolean | void> {
     if (form === "int-pair") {
       const pair = Buffer.alloc(8);
       pair.writeUInt32LE(valueSub >>> 0, 0);
@@ -1673,12 +1666,11 @@ export class P2PCommandRouter {
       return this.sendNativeBody(sn, commandType, channel, () => pair);
     }
     const resolved = await this.resolveSession(sn);
-    await this.sendAnswered(
+    return this.sendAnswered(
       sn,
       commandType,
       ({ session, accountId }) => session.sendIntStringCommand(commandType, value, valueSub, accountId, channel),
       resolved,
-      true,
     );
   }
 
@@ -1710,7 +1702,7 @@ export class P2PCommandRouter {
    * the intent's `channel` (resolveSession supplies only the session + account_id), sealed by the session. `resolved`
    * lets a caller that already resolved the session skip a re-resolve. It goes once through {@link sendAnswered},
    * which holds the device's slot until the `SET_PAYLOAD` answer; `answered` settles the call on that answer,
-   * otherwise it resolves once sent.
+   * otherwise it resolves once sent. `answerMs` bounds that answer without a resend.
    */
   private sendSetPayloadEnvelope(
     sn: string,
@@ -1722,6 +1714,7 @@ export class P2PCommandRouter {
     answered = false,
     unzip = false,
     counter?: "bump" | "current",
+    answerMs?: number,
   ): Promise<boolean | void> {
     return this.sendAnswered(
       sn,
@@ -1729,6 +1722,7 @@ export class P2PCommandRouter {
       ({ session, accountId }) => session.sendSetPayload(cmd, payload, { accountId, channel, mValue3, unzip, counter }),
       resolved,
       !answered,
+      answerMs,
     );
   }
 
@@ -1792,7 +1786,8 @@ export class P2PCommandRouter {
    * is not the answer.
    *
    * `unread` resolves once the command is sent, the slot still held until the answer or the deadline; its
-   * refusal or timeout is logged at debug only.
+   * refusal or timeout is logged at debug only. `answerMs` replaces the deadline and drops the resend, as the
+   * app bounds a request it times itself.
    *
    * The answer names the channel and command id and nothing else, so an answer arriving after its command
    * timed out settles the next one under the same pair. The device answers a sequence once, however many
@@ -1811,8 +1806,10 @@ export class P2PCommandRouter {
     send: (r: ResolvedSession) => boolean | void,
     resolved?: ResolvedSession,
     unread = false,
+    answerMs?: number,
   ): Promise<boolean | void> {
-    const { timeoutMs, retries, retryWindowMs, retryCodes } = WRITE_ANSWER;
+    const { timeoutMs, retries, retryWindowMs, retryCodes } =
+      answerMs === undefined ? WRITE_ANSWER : { ...WRITE_ANSWER, timeoutMs: answerMs, retries: 0 };
     let dispatched!: () => void;
     const sent = new Promise<void>((resolve) => (dispatched = resolve));
     const answered = this.serializeAnswered(sn, async () => {

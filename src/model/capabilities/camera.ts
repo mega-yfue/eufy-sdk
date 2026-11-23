@@ -196,16 +196,13 @@ function poweredOf(ctx: CommandContext): "wired" | "battery" {
  * first param its getter reads that the device reported, valued as the product's bundle reads it.
  * `undefined` where the device reported none.
  */
-function enablementReflection(
-  on: boolean,
-  ctx: CommandContext,
-): { param: number; expected: string; observed: boolean } | undefined {
+function enablementReflection(on: boolean, ctx: CommandContext): { param: number; expected: string } | undefined {
   const m = CAMERA_MEMBERS.enabled;
   const read = [{ paramType: m.param, available: m.readAvailable }, ...m.readAliases].find(
     (r) => ctx.paramIds.has(r.paramType) && r.available(ctx),
   );
   const readback = read && thingReadback("camera_on_off", on ? "1" : "0", ctx, read.paramType);
-  return readback && { param: readback.param, expected: readback.raw, observed: on };
+  return readback && { param: readback.param, expected: readback.raw };
 }
 
 /**
@@ -251,7 +248,6 @@ export const CAMERA_MEMBERS = {
     observation: {
       event: "cameraEnabledChanged",
       reflects: (value, ctx) => enablementReflection(asBool(value), ctx),
-      timeoutMs: 20_000,
     },
     aliases: { on: true, off: false },
   },

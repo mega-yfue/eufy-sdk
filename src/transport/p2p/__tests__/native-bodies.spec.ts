@@ -13,7 +13,11 @@ describe("native bodies", () => {
 
   it("sends the string body on channel 255", async () => {
     const session = withSends(false);
-    await onFakeTime(() => routerWithSession(session).dispatchCommand(STATION_SN, rename));
+    await onFakeTime(() =>
+      routerWithSession(session)
+        .dispatchCommand(STATION_SN, rename)
+        .catch(() => undefined),
+    );
     expect(session.sendBytes).toHaveBeenCalledWith(buildStringBody(3, "Garden", ACCOUNT_ID), 255, 1217);
   });
 
@@ -30,7 +34,11 @@ describe("native bodies", () => {
       form: "int-pair",
     } as const;
     const session = withSends(false);
-    await onFakeTime(() => routerWithSession(session).dispatchCommand(STATION_SN, command));
+    await onFakeTime(() =>
+      routerWithSession(session)
+        .dispatchCommand(STATION_SN, command)
+        .catch(() => undefined),
+    );
     expect(session.sendBytes).toHaveBeenCalledWith(pair, 255, 1201);
     expect(session.sendIntStringCommand).not.toHaveBeenCalled();
   });

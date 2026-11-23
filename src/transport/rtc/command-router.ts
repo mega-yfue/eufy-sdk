@@ -176,12 +176,14 @@ export class RtcCommandRouter {
    * Send a command as the app's RTC sender frames it: `set-payload` as `1350` ({@link setPayloadJson}), `set-json` as
    * `1700` `{commandType, data}`, both on 255 for the station and the device's channel for an attached one; the native
    * kinds by their id's group in {@link NATIVE_GROUPS}. Refused: a kind or id the app's RTC sender does not frame, a
-   * lock-sealed payload, a payload with a header counter.
+   * lock-sealed payload, a payload with a header counter. Answers `true` once the frame is written, awaiting no
+   * reply, as the app counts an RTC write done.
    */
-  async dispatchCommand(route: RtcRoute, cmd: Command): Promise<void> {
+  async dispatchCommand(route: RtcRoute, cmd: Command): Promise<boolean> {
     const { id, body, channel } = this.frame(route, cmd);
     const data = await this.dataChannel(route);
-    await data.command(id, body, channel);
+    void data.command(id, body, channel).catch(() => undefined);
+    return true;
   }
 
   private frame(route: RtcRoute, cmd: Command): { id: number; body: string | Buffer; channel: number } {

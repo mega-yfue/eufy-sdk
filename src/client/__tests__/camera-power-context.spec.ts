@@ -64,6 +64,5 @@ describe("camera power context", () => {
       }),
     );
     expect(refresh).not.toHaveBeenCalled();
-    expect(internal.commandRefreshes.size).toBe(0);
   });
 });

@@ -367,28 +367,6 @@ export type EufyMegaEventMap = {
    */
   commandAck: [info: { sn: string; kind: string; acked: boolean; getAcked?: boolean }];
   /**
-   * A write was acknowledged and its declared observation then never converged, so the device never
-   * reported the state the write asked for.
-   *
-   * This is the answer to the question `dispatch` deliberately does not wait for. A command resolves once the
-   * transport has carried it, and the observation a member declares decides separately whether the device
-   * applied it; where that observation times out, the wire accepted the write and the device ignored it — a
-   * battery camera can acknowledge a power write and never act on it. It is reported here rather than
-   * on `error` because it is an outcome and not a fault, for the same reason `commandAck` has its own
-   * channel. `observed` is what the param read when the deadline passed, absent where the
-   * device reported none at all.
-   */
-  commandUnconfirmed: [
-    info: {
-      sn: string;
-      property: string;
-      param: number;
-      expected: boolean | number | string;
-      observed?: boolean | number | string;
-      timeoutMs: number;
-    },
-  ];
-  /**
    * The cloud session was kicked or invalidated — another client logged into the same account, or the
    * token expired. The SDK has already cleared the persisted session, so recovery is a fresh `login()`
    * (which usually needs 2FA). Distinct from `error`: a session error is emitted ONLY here, not also

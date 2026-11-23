@@ -268,7 +268,7 @@ describe("MqttCommandRouter.dispatchCommand (ff09-autolock)", () => {
     };
     const p = router.dispatchCommand(SN, cmd);
     await vi.advanceTimersByTimeAsync(10_000);
-    await expect(p).resolves.toBeUndefined();
+    await expect(p).resolves.toBe(false);
     expect(acks).toEqual([{ sn: SN, kind: "ff09-autolock", getAcked: true, acked: false }]);
   });
 });

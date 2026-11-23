@@ -17,7 +17,6 @@ const HOMEBASE = "T8000P0000000002";
 
 function routerFor(sn: string) {
   const closed: string[] = [];
-  const resetWhenUnused: string[] = [];
   const opened: string[] = [];
   const router = new P2PCommandRouter({
     liveFramesFor: () => LIVE_FRAMES,
@@ -48,11 +47,10 @@ function routerFor(sn: string) {
   };
   const manager = (router as unknown as { manager: Record<string, unknown> }).manager;
   manager.close = async (station: string) => void closed.push(station);
-  manager.resetWhenUnused = async (station: string) => void resetWhenUnused.push(station);
   manager.retain = () => {};
   manager.release = () => {};
 
-  return { router, closed, resetWhenUnused, opened };
+  return { router, closed, opened };
 }
 
 /** Drive the source's own start-failure path, as a warm-up timeout does. */
@@ -103,7 +101,7 @@ describe("recovering a camera whose live start failed", () => {
     for (const sn of [STANDALONE, ATTACHED]) {
       vi.useFakeTimers();
       try {
-        const { router, closed, resetWhenUnused } = routerFor(sn);
+        const { router, closed } = routerFor(sn);
         const source = await router.sharedLiveSourceFor(sn);
         source.attach().on("error", () => {});
 
@@ -111,7 +109,6 @@ describe("recovering a camera whose live start failed", () => {
 
         expect(source.state).toBe("stopped");
         expect(closed).toEqual([]);
-        expect(resetWhenUnused).toEqual([]);
         await vi.runAllTimersAsync();
         expect(await router.sharedLiveSourceFor(sn)).not.toBe(source);
       } finally {

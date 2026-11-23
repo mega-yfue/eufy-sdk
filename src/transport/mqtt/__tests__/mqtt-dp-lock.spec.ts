@@ -118,6 +118,21 @@ describe("a bundle mqtt-dp write to a lock", () => {
     await send(10);
     expect(acks.map((a) => a.acked)).toEqual([false, true]);
   });
+
+  /** The app's raw MQTT response: a reply is a failure on `cmd_status` 4 to 9, a success otherwise. */
+  it("answers done on a reply that is not a failure, and not on a failure or a timeout", async () => {
+    const { router, mqtt } = lockRouter();
+    const send = async (head?: Record<string, number>) => {
+      const p = router.dispatchCommand(SN, { ...write, retryCount: 0 });
+      await vi.advanceTimersByTimeAsync(0);
+      if (head) mqtt.emit("message", { topic: `cmd/eufy_security/T8531/${SN}/res`, raw: { head } });
+      await vi.advanceTimersByTimeAsync(10_000);
+      return p;
+    };
+    expect(await send({ cmd: 8, cmd_status: 3 })).toBe(true);
+    expect(await send({ cmd: 8, cmd_status: 5 })).toBe(false);
+    expect(await send()).toBe(false);
+  });
 });
 
 /** esiotkit's `doPublish`: the envelope's `account_id` is the record's `member.admin_user_id`, else `""`. */

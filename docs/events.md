@@ -134,23 +134,6 @@ carries each event, and how P2P opens on demand, is covered in [Realtime transpo
 Low-level escape hatches remain (`message`, `p2p`, `pushRaw`, connect/disconnect lifecycle, `error`)
 for when you want the raw frame.
 
-A write the device accepted on the wire and then never applied surfaces as its own
-**`commandUnconfirmed`** event, not on `error`. Every setter resolves once the transport has carried the
-command — that is delivery, not convergence — and the observation a member declares decides separately
-whether the device did what it was told. Where that observation times out, this event names the device, the
-property, what was asked for and what the param actually read, so a host can tell its user the camera
-ignored the request instead of believing it landed:
-
-```ts
-eufy.on("commandUnconfirmed", ({ sn, property, expected, observed }) => {
-  console.warn(`${sn} still reports ${property}=${observed}, not ${expected}`);
-});
-```
-
-It is an outcome rather than a fault, which is why it does not reach `error`: nothing went wrong in this
-library, and the same write may still land later on a battery device that was asleep. A camera whose power
-write is acknowledged and simply ignored is the case this exists for.
-
 A kicked or expired cloud session — another client logged into the account, or the token lapsed —
 surfaces as its own **`sessionExpired`** event, not on `error`. The SDK has already cleared the
 persisted session by the time it fires; listen for it to re-drive `login()` (usually a fresh 2FA).

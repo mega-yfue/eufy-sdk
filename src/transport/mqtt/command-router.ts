@@ -310,31 +310,29 @@ export class MqttCommandRouter {
    * Route a transport-neutral {@link Command} to the secure-MQTT wire — the MQTT half of the command
    * sink. The `ff09-actuate`/`ff09-autolock` (a lock/garage without a P2P endpoint, or a standalone video lock)
    * and `mqtt-dp`/`mqtt-dp-color`/`mqtt-dp-preset` (`eufy_life` lights) kinds reach here (the facade fans everything else to the P2P router); any
-   * other kind is a routing bug, so fail loud rather than resolve as a silent success.
+   * other kind is a routing bug, so fail loud rather than resolve as a silent success. Answers `true` where the app
+   * counts the write done: an answer that is not a failure ({@link MqttCommandRouter.answer}), or a publish that asks
+   * no ack; `false` for a timeout, a failure, or a publish whose ack is not read.
    */
-  async dispatchCommand(sn: string, cmd: Command): Promise<void> {
+  async dispatchCommand(sn: string, cmd: Command): Promise<boolean> {
     switch (cmd.kind) {
       case "ff09-actuate":
-        await this.dispatchFf09Actuate(sn, cmd);
-        return;
+        return this.dispatchFf09Actuate(sn, cmd);
       case "ff09-autolock":
-        await this.dispatchFf09Autolock(sn, cmd);
-        return;
+        return this.dispatchFf09Autolock(sn, cmd);
       case "mqtt-dp":
-        await this.dispatchMqttDp(sn, cmd);
-        return;
+        return this.dispatchMqttDp(sn, cmd);
       case "mqtt-json":
-        await this.dispatchMqttJson(sn, cmd);
-        return;
+        return this.dispatchMqttJson(sn, cmd);
       case "mqtt-dp-preset":
         await this.dispatchDpPreset(sn, cmd);
-        return;
+        return false;
       case "mqtt-dp-color":
         await this.dispatchDpColor(sn, cmd);
-        return;
+        return false;
       case "aiot-dp":
         await this.dispatchAiotDp(sn, cmd);
-        return;
+        return false;
       default:
         // An ff09-* command reaches here for a device with no P2P endpoint or a standalone video lock.
         // `ff09-setting-toggle` (Rain Mode) has no MQTT form, so one reaching here is a routing bug; fail
@@ -434,6 +432,16 @@ export class MqttCommandRouter {
   }
 
   /**
+   * `sn`'s answer to `mqttCmdCode` as the app's raw MQTT response reads it: `true` for success, `false` for a
+   * `head.cmd_status` from 4 to 9 (a failure), `undefined` for a message that is not the answer.
+   */
+  private static answer(m: { topic?: string; raw?: unknown }, sn: string, mqttCmdCode: number): boolean | undefined {
+    if (!MqttCommandRouter.isReply(m, sn, mqttCmdCode)) return undefined;
+    const status = (m.raw as { head?: { cmd_status?: unknown } }).head?.cmd_status;
+    return !(typeof status === "number" && status >= 4 && status <= 9);
+  }
+
+  /**
    * Shared "arm a listener, resolve on the first matching message, else time out" scaffold —
    * {@link dispatchFf09Actuate}'s ack wait and {@link dispatchFf09Autolock}'s GET-reply/SET-ack waits
    * are all one instance of this pattern (differing only in `match`), so it's factored here instead of
@@ -478,15 +486,14 @@ export class MqttCommandRouter {
    * why {@link FF09_ACK_TIMEOUT_MS} is one fixed, short window shared by every ff09 device regardless of
    * its actuator's physical speed: it's timing a network round-trip, not a door. (There is currently no
    * signal at all for actuation completion — that would need a different source, e.g. the device's own
-   * state push — so this method stays fire-and-forget: it resolves either way, never throws on a missing
-   * ack, and reports what it knows via the `commandAck` event rather than the return value, so a future
-   * richer per-device state model doesn't have to fight this method's `Promise<void>` contract.)
+   * state push — so this method never throws on a missing ack: it reports the delivery via the `commandAck`
+   * event and answers whether the device answered with success.)
    *
    * Subscribes to the reply topic BEFORE publishing and waits for the actual message event (or the
    * timeout) rather than a blind sleep, so a reply arriving anywhere in that window is never missed —
    * unlike a fixed-sleep-then-teardown, where a late reply arrives after the subscription is already gone.
    */
-  private async dispatchFf09Actuate(sn: string, cmd: Extract<Command, { kind: "ff09-actuate" }>): Promise<void> {
+  private async dispatchFf09Actuate(sn: string, cmd: Extract<Command, { kind: "ff09-actuate" }>): Promise<boolean> {
     const dev = await this.pnDeviceFor(sn);
     const trans = this.sequenced(
       sn,
@@ -500,14 +507,14 @@ export class MqttCommandRouter {
     );
 
     const mqtt = await this.securityMqtt();
-    const acked =
-      (await this.request(
-        mqtt,
-        ff09MqttTopic(dev.model, sn),
-        () => buildFf09MqttEnvelope({ trans, clientId: mqtt.id, accountId: cmd.adminUserId, deviceSn: sn }),
-        (m) => (MqttCommandRouter.isReply(m, sn, 9) ? true : undefined),
-        MqttCommandRouter.FF09_ACK_TIMEOUT_MS,
-      )) ?? false;
+    const reply = await this.request(
+      mqtt,
+      ff09MqttTopic(dev.model, sn),
+      () => buildFf09MqttEnvelope({ trans, clientId: mqtt.id, accountId: cmd.adminUserId, deviceSn: sn }),
+      (m) => MqttCommandRouter.answer(m, sn, 9),
+      MqttCommandRouter.FF09_ACK_TIMEOUT_MS,
+    );
+    const acked = reply !== undefined;
     this.deps.onCommandAck({ sn, kind: "ff09-actuate", acked });
     if (!acked) {
       this.logger.debug(
@@ -516,6 +523,7 @@ export class MqttCommandRouter {
           `delivery-to-device; unclear whether the device ever saw it`,
       );
     }
+    return reply === true;
   }
 
   /**
@@ -543,7 +551,7 @@ export class MqttCommandRouter {
    *     telemetry-only (the call resolves either way; `setAcked` only affects a debug log line), so left
    *     as-is rather than adding keyTime correlation this ack doesn't otherwise need.
    */
-  private async dispatchFf09Autolock(sn: string, cmd: Extract<Command, { kind: "ff09-autolock" }>): Promise<void> {
+  private async dispatchFf09Autolock(sn: string, cmd: Extract<Command, { kind: "ff09-autolock" }>): Promise<boolean> {
     const dev = await this.pnDeviceFor(sn);
 
     const mqtt = await this.securityMqtt();
@@ -567,14 +575,14 @@ export class MqttCommandRouter {
         }),
       ),
     );
-    const setAcked =
-      (await this.request(
-        mqtt,
-        topic,
-        () => buildFf09MqttEnvelope({ trans: setTrans, clientId: mqtt.id, accountId: cmd.adminUserId, deviceSn: sn }),
-        (m) => (MqttCommandRouter.isReply(m, sn, 9) ? true : undefined),
-        MqttCommandRouter.FF09_ACK_TIMEOUT_MS,
-      )) ?? false;
+    const setReply = await this.request(
+      mqtt,
+      topic,
+      () => buildFf09MqttEnvelope({ trans: setTrans, clientId: mqtt.id, accountId: cmd.adminUserId, deviceSn: sn }),
+      (m) => MqttCommandRouter.answer(m, sn, 9),
+      MqttCommandRouter.FF09_ACK_TIMEOUT_MS,
+    );
+    const setAcked = setReply !== undefined;
     this.deps.onCommandAck({ sn, kind: "ff09-autolock", getAcked: true, acked: setAcked });
     if (!setAcked) {
       this.logger.debug(
@@ -582,6 +590,7 @@ export class MqttCommandRouter {
           `${MqttCommandRouter.FF09_ACK_TIMEOUT_MS}ms — broker accepted the publish, device receipt unclear`,
       );
     }
+    return setReply === true;
   }
 
   /**
@@ -679,13 +688,14 @@ export class MqttCommandRouter {
    * supplies the opaque `mqttCmdCode`/`cmdCode` + already-tagged scalar `fields`; this builds the frame
    * ({@link buildDpFrame} prepends the `a1` timestamp + `a2` account id) and publishes it.
    */
-  private async dispatchMqttDp(sn: string, cmd: Extract<Command, { kind: "mqtt-dp" }>): Promise<void> {
+  private async dispatchMqttDp(sn: string, cmd: Extract<Command, { kind: "mqtt-dp" }>): Promise<boolean> {
     const dev = await this.pnDeviceFor(sn);
     if (dev.category !== "eufy_life") return this.dispatchLockDp(sn, cmd);
     const accountId = this.requireAccountId(dev);
     const frame = buildDpFrame(cmd.cmdCode, accountId, cmd.fields);
     await this.publishDpFrame(dev, sn, cmd.mqttCmdCode, frame);
     this.deps.onCommandAck({ sn, kind: "mqtt-dp", cmdCode: cmd.cmdCode, acked: true });
+    return false;
   }
 
   /**
@@ -693,7 +703,7 @@ export class MqttCommandRouter {
    * in an `ff09` frame sealed with the lock key (unless the descriptor says otherwise), in the lock `trans`
    * envelope under `head.cmd = mqttCmdCode`, on the device's `eufy_security` topic.
    */
-  private async dispatchLockDp(sn: string, cmd: Extract<Command, { kind: "mqtt-dp" }>): Promise<void> {
+  private async dispatchLockDp(sn: string, cmd: Extract<Command, { kind: "mqtt-dp" }>): Promise<boolean> {
     const dev = await this.pnDeviceFor(sn);
     const frame = buildFf09TlvFrame({
       cmdCode: cmd.cmdCode,
@@ -718,11 +728,12 @@ export class MqttCommandRouter {
           deviceSn: sn,
           cmd: cmd.mqttCmdCode,
         }),
-      (m) => (MqttCommandRouter.isReply(m, sn, cmd.mqttCmdCode) ? true : undefined),
+      (m) => MqttCommandRouter.answer(m, sn, cmd.mqttCmdCode),
       (cmd.timeoutS ?? 5) * 1000,
       cmd.retryCount,
     );
-    this.deps.onCommandAck({ sn, kind: "mqtt-dp", cmdCode: cmd.cmdCode, acked: reply ?? false });
+    this.deps.onCommandAck({ sn, kind: "mqtt-dp", cmdCode: cmd.cmdCode, acked: reply !== undefined });
+    return reply === true;
   }
 
   /**
@@ -731,7 +742,7 @@ export class MqttCommandRouter {
    * device's `eufy_security` topic; no `ff09`, no seal. A reply is waited for (and the request sent again) when the
    * descriptor asks an ack.
    */
-  private async dispatchMqttJson(sn: string, cmd: Extract<Command, { kind: "mqtt-json" }>): Promise<void> {
+  private async dispatchMqttJson(sn: string, cmd: Extract<Command, { kind: "mqtt-json" }>): Promise<boolean> {
     const dev = await this.pnDeviceFor(sn);
     const mqtt = await this.securityMqtt();
     const trans: MqttJsonTrans = { cmd: cmd.cmd, account_id: "", payload: cmd.payload, mValue3: 0, mChannel: 0 };
@@ -749,17 +760,18 @@ export class MqttCommandRouter {
     if (cmd.needAck === false) {
       await mqtt.publish(topic, envelope(), { qos: 1 });
       this.deps.onCommandAck({ sn, kind: "mqtt-json", cmd: cmd.cmd, acked: true });
-      return;
+      return true;
     }
     const reply = await this.request(
       mqtt,
       topic,
       envelope,
-      (m) => (MqttCommandRouter.isReply(m, sn, cmd.mqttCmdCode) ? true : undefined),
+      (m) => MqttCommandRouter.answer(m, sn, cmd.mqttCmdCode),
       (cmd.timeoutS ?? 5) * 1000,
       cmd.retryCount,
     );
-    this.deps.onCommandAck({ sn, kind: "mqtt-json", cmd: cmd.cmd, acked: reply ?? false });
+    this.deps.onCommandAck({ sn, kind: "mqtt-json", cmd: cmd.cmd, acked: reply !== undefined });
+    return reply === true;
   }
 
   /** Serialize and publish one semantic RGB DP action without changing configured brightness. */

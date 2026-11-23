@@ -77,6 +77,8 @@ export const ARMING_CMD = {
    * {@link DIRECT_ARMING_MODELS} and {@link BROADCAST_ARMING_MODELS}.
    */
   SET_ARMING: 1224,
+  /** The station's guard-mode notify: its first int32 is the mode it now holds, which the app lands on 1224. */
+  ALARM_MODE: 1151,
   /**
    * One guard mode's per-device action table (app `CMD_SET_ALL_ACTION`), which carries the alarm delays
    * and each device's actions in that mode. A **bare
@@ -185,7 +187,7 @@ function actionTable(read: CapabilityStateReader, mode: DeviceNotificationMode):
  * **The names and integers are the V6 app's own** (`SecurityGuardConstants`, mirrored by `GuardConstant`),
  * so the mapping is APK ground truth rather than a borrowed label. Every value is accepted on
  * {@link ARMING_CMD.SET_ARMING} and answered by MODE_SWITCH; the client emits `armingModeChanged` only once
- * its bounded readback has CONVERGED on the mode asked for, so an ignored write produces silence.
+ * 1224 moves, so a refused, unanswered or repeated write produces silence.
  */
 const ARMING_MODE_WIRE: Record<ArmingMode, number> = {
   away: 0,
@@ -221,22 +223,28 @@ function armingModeOf(v: boolean | number | string): ArmingMode | undefined {
   return (Object.values(ArmingMode) as ArmingMode[]).find((m) => ARMING_MODE_WIRE[m] === wire);
 }
 
+/** How long the app waits for the station's answer to a guard-mode write, per device and never resent. */
+const ARMING_ANSWER_MS = 6_000;
+
 /**
  * Build the {@link ARMING_CMD.SET_ARMING} write intent, or throw if the context has no account
- * identity. `user_name` is `ctx.accountName`, the account's nick name the app writes there.
+ * identity. `user_name` is `ctx.accountName`, the account's nick name the app writes there. The answer is
+ * awaited {@link ARMING_ANSWER_MS}.
  */
 function armingCommand(mode: ArmingMode, ctx: CommandContext): Command {
   if (!ctx.accountName) {
     throw new Error(`arming: missing account identity (user_name) [${describeDevice(ctx)}]`);
   }
   const model = ctx.model ?? "";
+  const value = ARMING_MODE_WIRE[mode];
   if (BROADCAST_ARMING_MODELS.has(model)) {
-    return setStationScalar(ARMING_CMD.SET_ARMING, ARMING_MODE_WIRE[mode], STATION_CHANNEL);
+    return setStationScalar(ARMING_CMD.SET_ARMING, value, STATION_CHANNEL, ARMING_ANSWER_MS);
   }
   if (DIRECT_ARMING_MODELS.has(model)) {
-    return setStationScalar(ARMING_CMD.SET_ARMING, ARMING_MODE_WIRE[mode], ctx.channel);
+    return setStationScalar(ARMING_CMD.SET_ARMING, value, ctx.channel, ARMING_ANSWER_MS);
   }
-  return setPayload(ARMING_CMD.SET_ARMING, { mode_type: ARMING_MODE_WIRE[mode], user_name: ctx.accountName }, ctx, 0);
+  const payload = { mode_type: value, user_name: ctx.accountName };
+  return setPayload(ARMING_CMD.SET_ARMING, payload, ctx, 0, undefined, ARMING_ANSWER_MS);
 }
 
 /**
@@ -376,10 +384,8 @@ export const ARMING_MEMBERS = {
    * The setter takes either vocabulary — see `armingModeOf` — because the getter answers the wire integer,
    * and a value a caller just read has to be one it can write back.
    *
-   * MODE_SWITCH carries no value. On a standalone camera, authoritative
-   * readback requires a bounded cloud-list refresh, and that its P2P session must be reset after
-   * convergence before a following mode write; an attached device must never reset its shared HomeBase.
-   * A standalone T8423's level-1 session is kept open instead.
+   * A write the station answers with success lands the mode on 1224, as the app applies the mode locally once
+   * the answer arrives, and announces `armingModeChanged` where the mode moved.
    */
   mode: {
     param: ARMING_CMD.SET_ARMING,
@@ -394,8 +400,6 @@ export const ARMING_MEMBERS = {
     observation: {
       event: "armingModeChanged",
       reflects: (value) => ({ param: ARMING_CMD.SET_ARMING, expected: ARMING_MODE_WIRE[armingModeOf(value)!] }),
-      resetStandaloneSession: true,
-      timeoutMs: 20_000,
     },
     write: (v, ctx) => {
       const mode = armingModeOf(v);
@@ -513,24 +517,19 @@ export const ARMING: CapabilityModule = {
   // arming surface as part of its baseline.
   detection: { evidenceParams: [ARMING_CMD.SET_ARMING], codecs: ["station"] },
   ownedByStation: true,
+  emits: ["armingModeChanged"],
   /**
-   * Station-scoped push events. The hub reports a guard-mode switch and the alarm lifecycle on the
-   * generic `CusPushEvent` channel, so these ids are shared with other families and resolve by
-   * capability (see the barrel's event index).
+   * Station-scoped push events. The hub reports the alarm lifecycle on the generic `CusPushEvent`
+   * channel, so these ids are shared with other families and resolve by capability (see the barrel's
+   * event index).
    *
    * The alarm ids carry a `phase` so one event name covers the whole lifecycle: the countdown push a
    * static `"delayed"`, the alarm push a `"triggered"` or `"stopped"` read from its alarm type (see
-   * {@link decodeAlarmPhase}). The mode-switch push is known to identify WHICH mode and
-   * what triggered the change, but neither field's wire shape is known, so this emits the bare
-   * transition and refreshes the `mode` read rather than trusting a decoded field.
+   * {@link decodeAlarmPhase}). The mode-switch push changes no state in the app, which only refreshes its
+   * view from what it holds; `armingModeChanged` announces 1224 moving, on a write's answer or on the
+   * station's {@link ARMING_CMD.ALARM_MODE} notify.
    */
   events: [
-    {
-      source: "push",
-      match: CusPushEvent.MODE_SWITCH,
-      emit: "armingModeChanged",
-      refresh: { member: "mode" },
-    },
     {
       source: "push",
       match: CusPushEvent.ALARM,
@@ -540,4 +539,10 @@ export const ARMING: CapabilityModule = {
     },
     { source: "push", match: CusPushEvent.ALARM_DELAY, emit: "alarm", payload: { phase: "delayed" } },
   ],
+  /** The station's {@link ARMING_CMD.ALARM_MODE} notify, landed on 1224 as the app does. */
+  decodeState(signal) {
+    if (signal.source !== "p2p-frame" || signal.commandId !== ARMING_CMD.ALARM_MODE) return null;
+    if (!signal.data || signal.data.length < 4) return null;
+    return { params: { [ARMING_CMD.SET_ARMING]: String(signal.data.readInt32LE(0)) } };
+  },
 };
