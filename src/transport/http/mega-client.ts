@@ -391,7 +391,7 @@ export class MegaHttpClient {
   private rejectedTokenPending = false;
   /** The last thing description of each product fetched, persisted with the session — see {@link getThingsList}. */
   private things: unknown[];
-  /** The RTC signalling login of each station, persisted with the session — see {@link rtcToken}. */
+  /** The RTC signalling cache of each station, persisted with the session — see {@link rtcToken}. */
   private readonly rtcTokens: Record<string, RtcToken>;
 
   constructor(cfg: MegaClientConfig) {
@@ -1514,12 +1514,12 @@ export class MegaHttpClient {
     });
   }
 
-  /** A station's cached RTC signalling login, the app's `sp_webrtc[<sn>]`. */
+  /** A station's cached RTC signalling login and server list, the app's `sp_webrtc[<sn>]` and `sp_webrtc_servers[<sn>]`. */
   rtcToken(sn: string): RtcToken | undefined {
     return this.rtcTokens[sn];
   }
 
-  /** Cache a station's RTC signalling login (the app's `onWebrtcToken`) with the session. */
+  /** Cache a station's RTC signalling login and server list (`onWebrtcToken`, `onWebrtcServerInfo`) with the session. */
   saveRtcToken(sn: string, token: RtcToken): void {
     this.rtcTokens[sn] = token;
     this.persist();

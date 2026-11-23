@@ -67,6 +67,8 @@ export interface RtcRoute {
   did: string;
   lic: string;
   host: string;
+  /** Its first host-name `signaling_servers` entry. */
+  domain?: string;
   /** The station's `main_sw_version` with its dots removed. */
   version: number;
   /** The station's `webrtc_sdk_version`. */
@@ -90,7 +92,7 @@ export interface RtcCommandRouterDeps {
   userId: () => string | undefined;
   /** This install's stable id, the app's `app_id`. */
   appId: string;
-  /** Each station's cached signalling login (the app's `sp_webrtc`), read for a quick login and written on a new one. */
+  /** Each station's signalling cache (the app's `sp_webrtc` and `sp_webrtc_servers`), read at start and written on a change. */
   tokens?: { get(sn: string): RtcToken | undefined; set(sn: string, token: RtcToken): void };
   logger?: Logger;
   onError?: (e: Error) => void;
@@ -394,6 +396,7 @@ export class RtcCommandRouter {
       did,
       lic,
       host,
+      domain: route.domain,
       userId,
       appId: this.deps.appId,
       token: this.deps.tokens?.get(sn),

@@ -15,10 +15,22 @@
  *    without a reg between is a login failure, which resets the client at once (below).
  * 4. 200 with body kind 6 = the NUL-terminated contact_id; header byte 44 is echoed in later regs.
  *
- * Quick login: with a station's cached {@link RtcToken} no older than 23 h, the client starts registered on the cached
- * server, session key and contact_id, and sends neither DISCOVER nor reg (the app's work protocol 2 path of
+ * Quick login: with a station's cached {@link RtcToken} no older than 23 h, the client starts registered with the
+ * cached session key and contact_id, and sends neither DISCOVER nor reg (the app's work protocol 2 path of
  * `Webrtc_SignalInit` and `rtc_signal_network`); a re-discover flag still sends one DISCOVER. Every first 200 after
  * a key exchange hands out a new token (`onWebrtcToken`).
+ *
+ * Servers (`rtc_server_manager`): records per (type DNS 0 / DISCOVER 1, protocol UDP 0 / TCP 1), keyed by ip. At start
+ * the token's cached list (entries of another signalling domain dropped) is imported, then the cached login's addr
+ * is added as DISCOVER UDP and TCP and the device record's host as DNS UDP. The first DISCOVER goes to the best DNS
+ * UDP record, a quick login to the best DISCOVER UDP one. A DISCOVER reply's `server_addr` equal to the login
+ * address is added silently; another one, with no call up, is added and the client switches to the best DISCOVER UDP
+ * record (new socket); `saddrs` (16 at most) are added after. A CALL with none up goes to the best DISCOVER UDP record
+ * (the login address when there is none); the client's server becomes that one. Best = {@link score}, highest, ties to
+ * the lowest ip in byte order (`generic_map` keys compared with `strncmp`, walked in order).
+ * The client's server copy keeps stats: every answer to a DISCOVER, reg, CALL (first send) or INFO of ours stamps
+ * last use and folds its round trip into the average over every answer since the last switch. Each added record and,
+ * for DISCOVER, reg and CALL answers, the stamped copy goes into the token's list (`onWebrtcServerInfo`).
  *
  * Token refresh: when a PRIV1 or PM call connects while both are connected, a login 12 h old or more (and no check in
  * the last 21 s) sends a bare reg, so the 401 / reg2 / 200 exchange draws a new session key and token
@@ -95,6 +107,8 @@ export interface RtcSignalOptions {
   did: string;
   lic: string;
   host: string;
+  /** The first host-name `signaling_servers` entry (`domain_server`): cached servers of another one are dropped. */
+  domain?: string;
   port?: number;
   userId?: string;
   appId?: string;
@@ -102,12 +116,26 @@ export interface RtcSignalOptions {
   token?: RtcToken;
 }
 
-/** A station's signalling login as the app caches it: session key, contact_id, server address, UTC seconds of the 200. */
+/**
+ * A station's signalling cache as the app keeps it: the login (`sp_webrtc`: session key, contact_id, server address,
+ * UTC seconds of the 200; empty before the first) and the server list (`sp_webrtc_servers`).
+ */
 export interface RtcToken {
   aes: string;
   contactId: string;
   addr: string;
   authTimestamp: number;
+  servers?: RtcServer[];
+}
+
+/** A signalling server record (`RTCServerInfo`): type 0 DNS, 1 DISCOVER; protocol 0 UDP, 1 TCP; last use ms; mean rtt ms. */
+export interface RtcServer {
+  domain: string;
+  type: number;
+  ip: string;
+  protocol: number;
+  lastUsed: number;
+  avgRtt: number;
 }
 
 /** How long the app takes a cached login: `auth_timestamp` + 82800 s (`rtc_signal_set_quick_login_info`). */
@@ -136,7 +164,7 @@ interface RtcCall {
 export interface RtcSignalEvents {
   /** Registered: a quick login at start, or the first 200 after a key exchange. */
   login: [contactId: string];
-  /** The first 200 after a key exchange: the login to cache. */
+  /** The cache changed: the first 200 after a key exchange, or the server list. */
   token: [token: RtcToken];
   /** The station's first 100 (or a 200 without one): its `turn` object. */
   trying: [uuid: string, turn: unknown];
@@ -156,6 +184,21 @@ export interface RtcSignalEvents {
 export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
   /** The server the client speaks to; DISCOVER may switch it. */
   host: string;
+  /** The server calls go to, while one is up. */
+  private callHost = "";
+  /** The client's server (`endpoint+56`); a reset reopens the socket to it. */
+  private endpoint!: RtcServer;
+  /** The timeout manager's copy of the server, its stats, and its answer count. */
+  private tm!: { s: RtcServer; n: number };
+  /** The login address (`m_addr`). */
+  private mAddr: string;
+  /** The server records, keyed `type protocol ip`. */
+  private readonly map = new Map<string, RtcServer>();
+  /** Send time (ms) of each request awaiting its answer, keyed kind << 8 | seq. */
+  private readonly sent = new Map<number, number>();
+  private readonly cache: RtcToken;
+  /** The cached list as imported: {@link start} hands it out only when the start's adds changed it. */
+  private readonly imported: RtcServer[];
   contactId = "";
   sessionKey = "";
   private socket = this.signalSocket();
@@ -173,20 +216,30 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
   private readonly calls = new Map<string, RtcCall>();
   private readonly callSockets = new Map<number, Socket>();
 
+  /** `Webrtc_SignalInit`: import the cached servers, add the cached login's and the device record's, pick the server. */
   constructor(private readonly opts: RtcSignalOptions) {
     super();
-    this.host = opts.host;
+    this.host = this.mAddr = opts.host;
+    const t = opts.token;
+    const domain = this.domain.toLowerCase();
+    const servers = (t?.servers ?? []).filter((s) => !domain || s.domain.toLowerCase() === domain);
+    this.cache = { aes: "", contactId: "", addr: "", authTimestamp: 0, ...t, servers };
+    this.imported = servers;
+    for (const s of servers) this.map.set(this.slot(s.type, s.protocol, s.ip), { ...s, domain: this.domain });
+    if (t?.aes && t.contactId && t.addr && t.authTimestamp) [0, 1].forEach((p) => this.add(1, p, t.addr));
+    this.add(0, 0, opts.host);
+    if (t?.aes && t.contactId && t.addr && t.authTimestamp + TOKEN_TTL_S >= Date.now() / 1000) {
+      [this.sessionKey, this.contactId, this.authTimestamp] = [t.aes, t.contactId, t.authTimestamp];
+      this.discovered = this.registered = true;
+    }
+    this.use(this.choose(this.registered ? 1 : 0)!);
   }
 
-  /** Bind and start discovering. */
+  /** Bind, hand out the server list if the start changed it, and log in quickly or start discovering. */
   async start(): Promise<void> {
     await new Promise<void>((resolve) => this.socket.bind(0, resolve));
-    const t = this.opts.token;
-    if (t?.aes && t.contactId && t.addr && t.authTimestamp + TOKEN_TTL_S >= Date.now() / 1000) {
-      [this.host, this.sessionKey, this.contactId, this.authTimestamp] = [t.addr, t.aes, t.contactId, t.authTimestamp];
-      this.discovered = this.registered = true;
-      return void this.emit("login", this.contactId);
-    }
+    if (this.cache.servers !== this.imported) this.emit("token", { ...this.cache });
+    if (this.registered) return void this.emit("login", this.contactId);
     this.discover();
     this.discoverTimer = setInterval(() => this.discovered || this.discover(), DISCOVER_INTERVAL_MS);
     this.retryTimer = setTimeout(() => this.retryLogin(false), RETRY_LOGIN_MS);
@@ -203,6 +256,11 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
   call(type: number, flag = 1): { uuid: string } & RtcCallSdp {
     const { sn, did, lic, userId = "", appId = "" } = this.opts;
     const uuid = callUuid(type, sn, appId, did, lic);
+    const s = this.calls.size
+      ? this.endpoint
+      : (this.choose(1) ?? (this.add(1, 0, this.mAddr, false), this.choose(1)!));
+    if (s.ip !== this.endpoint.ip) [this.endpoint, this.tm.s] = [s, { ...s }];
+    this.callHost = s.ip;
     const header = this.request(RtcKind.CALL, 2, callCount++ & 0xff);
     header[18] = 1;
     const ts = header.readUInt32LE(8);
@@ -226,6 +284,7 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
     const packet = rtcPacket(header, RtcBody.CALL, callBody(uuid, this.contactId, attach));
     const c: RtcCall = { type, packet, start: Math.floor(Date.now() / 1000), session: true, candidates: new Set() };
     this.calls.set(uuid, c);
+    this.track(header);
     this.repeatCall(c, Date.now());
     return { uuid, ...sdp };
   }
@@ -240,6 +299,7 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
     const header = this.request(RtcKind.INFO, 0, flag);
     header[18] = 1;
     const attach = rtcEncrypt(Buffer.from(JSON.stringify(json)), this.sessionKey, header.readUInt32LE(8));
+    this.track(header);
     this.send(rtcPacket(header, RtcBody.CALL, callBody(uuid, this.contactId, attach)), this.callSocket(c.type));
   }
 
@@ -280,10 +340,7 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
     if (!this.gate()) return;
     this.registered = false;
     this.contactId = "";
-    if (reset) {
-      this.socket.close();
-      this.socket = this.signalSocket();
-    }
+    if (reset) this.reset(this.endpoint);
     this.login(true);
   }
 
@@ -320,7 +377,96 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
   }
 
   private send(packet: Buffer, socket = this.socket): void {
-    socket.send(wrapRtcPacket(packet), this.opts.port ?? RTC_SIGNAL_PORT, this.host);
+    socket.send(
+      wrapRtcPacket(packet),
+      this.opts.port ?? RTC_SIGNAL_PORT,
+      socket === this.socket ? this.host : this.callHost,
+    );
+  }
+
+  private get domain(): string {
+    return this.opts.domain ?? "";
+  }
+
+  private key(type: number, protocol: number, ip: string): string {
+    return `${type} ${protocol} ${ip}`;
+  }
+
+  /** The key a record of that type, protocol and ip lands on: one the ip prefixes (`strncmp` over its length), or its own. */
+  private slot(type: number, protocol: number, ip: string): string {
+    const key = this.key(type, protocol, ip);
+    return [...this.map.keys()].find((k) => k.startsWith(key)) ?? key;
+  }
+
+  /** `rtc_server_manager_add`: a new record unless its key is taken; `emit` stores it as `rtc_signal_add_server` does. */
+  private add(type: number, protocol: number, ip: string, emit = true): void {
+    const key = this.slot(type, protocol, ip);
+    if (this.map.has(key)) return;
+    const s: RtcServer = { domain: this.domain, type, ip, protocol, lastUsed: 0, avgRtt: 0 };
+    this.map.set(key, s);
+    if (emit) this.store(s);
+  }
+
+  /** `rtc_server_manager_choose` over the UDP records of `type`: the first highest {@link score} in key order. */
+  private choose(type: number): RtcServer | undefined {
+    let best: RtcServer | undefined;
+    let top = -1;
+    for (const [k, s] of [...this.map].sort(([a], [b]) => (a < b ? -1 : 1))) {
+      const v = score(s, Date.now());
+      if (k.startsWith(this.key(type, 0, "")) && v > top) [best, top] = [s, v];
+    }
+    return best;
+  }
+
+  /** The client's server becomes `s`, with a fresh timeout manager (`EndpointInitNetwork`). */
+  private use(s: RtcServer): void {
+    [this.endpoint, this.host, this.tm] = [s, s.ip, { s: { ...s }, n: 0 }];
+    this.sent.clear();
+  }
+
+  /** `EndpointResetCommonNetwork`: a new socket to `s`. */
+  private reset(s: RtcServer): void {
+    this.use(s);
+    this.socket.close();
+    this.socket = this.signalSocket();
+  }
+
+  /** `signal_timeout_manager_send_req`: await the answer to this request. */
+  private track(header: Buffer): void {
+    this.sent.set((header.readUInt16LE(4) << 8) | header[42]!, Date.now());
+  }
+
+  /**
+   * `signal_timeout_manager_recv_resp`: an answer to a tracked request stamps the server copy (u32 running mean over
+   * the manager's answers); a DISCOVER, reg or CALL answer stores the copy.
+   */
+  private answered(kind: number, seq: number): void {
+    const at = this.sent.get((kind << 8) | seq);
+    if (at === undefined) return;
+    this.sent.delete((kind << 8) | seq);
+    const now = Date.now();
+    const s = this.tm.s;
+    s.avgRtt = Math.floor(((this.tm.n * s.avgRtt + ((now - at) >>> 0)) >>> 0) / ++this.tm.n);
+    s.lastUsed = now;
+    if (kind === RtcKind.REG || kind === RtcKind.CALL || kind === RtcKind.DISCOVER) this.store({ ...s });
+  }
+
+  /**
+   * `RTCSdkClient.onWebrtcServerInfo` with one record: it replaces the entry of its type, ip and protocol at the head;
+   * over 8 of its type and protocol, the last entry of its type with the highest mean rtt goes.
+   */
+  private store(s: RtcServer): void {
+    const list = [
+      s,
+      ...this.cache.servers!.filter((o) => o.type !== s.type || o.ip !== s.ip || o.protocol !== s.protocol),
+    ];
+    if (list.filter((o) => o.type === s.type && o.protocol === s.protocol).length > 8) {
+      let drop = -1;
+      list.forEach((o, i) => o.type === s.type && o.avgRtt >= (list[drop]?.avgRtt ?? 0) && (drop = i));
+      if (drop >= 0) list.splice(drop, 1);
+    }
+    this.cache.servers = list;
+    this.emit("token", { ...this.cache });
   }
 
   private request(kind: number, extra = 0, b44 = 0) {
@@ -328,12 +474,15 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
   }
 
   private discover(): void {
-    this.send(rtcPacket(this.request(RtcKind.DISCOVER)));
+    const header = this.request(RtcKind.DISCOVER);
+    this.track(header);
+    this.send(rtcPacket(header));
   }
 
   /** reg; `refresh` sends it bare whatever the login state, as `ClientTokenRefresh` does. */
   private login(refresh = false): void {
     const header = this.request(RtcKind.REG, WORK_PROTOCOL, this.b44);
+    this.track(header);
     if (!refresh && this.registered && this.contactId) {
       const contact = Buffer.alloc(32);
       contact.write(this.contactId, "latin1");
@@ -351,6 +500,7 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
     const p = parseRtcDatagram(msg);
     if (!p) return;
     const kind = p.header.readUInt16LE(4);
+    if (p.header[14]) this.answered(kind, p.header[42]!);
     if (kind !== RtcKind.DISCOVER && p.header[19]! & 0x01) {
       this.discovered = false;
       this.discover();
@@ -457,11 +607,23 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
       return;
     }
     if (header[41] !== RtcBody.JSON) return;
-    const addr = jsonObject(readNullTerminatedString(body))?.server_addr;
-    if (typeof addr !== "string" || addr.length < 2) return;
-    if (addr !== "self") this.host = addr;
-    this.discovered = true;
-    this.login();
+    const o = jsonObject(readNullTerminatedString(body));
+    const addr = o?.server_addr;
+    if (typeof addr === "string" && addr.length >= 2) {
+      if (addr === "self" || addr === this.mAddr) {
+        if (addr === this.mAddr) [1, 0].forEach((p) => this.add(1, p, addr, false));
+        this.discovered = true;
+      } else if (!this.calls.size) {
+        [1, 0].forEach((p) => this.add(1, p, addr));
+        const s = this.choose(1)!;
+        this.reset(s);
+        this.mAddr = s.ip.slice(0, 31);
+        this.discovered = true;
+      }
+      this.login();
+    }
+    const saddrs = Array.isArray(o?.saddrs) ? (o.saddrs as unknown[]).slice(0, 16) : [];
+    for (const a of saddrs) if (typeof a === "string" && a) [1, 0].forEach((p) => this.add(1, p, a));
   }
 
   private onLogin(header: Buffer, body: Buffer): void {
@@ -489,9 +651,34 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
       this.emit("login", this.contactId);
       this.authTimestamp = Math.floor(Date.now() / 1000);
       const { sessionKey: aes, contactId, host: addr, authTimestamp } = this;
-      this.emit("token", { aes, contactId, addr, authTimestamp });
+      Object.assign(this.cache, { aes, contactId, addr, authTimestamp });
+      this.emit("token", { ...this.cache });
     }
   }
+}
+
+/** `_rtc_server_compare`'s rtt term below 101 ms: 20 under 11 ms, one less per step. */
+const RTT_STEPS = [11, 21, 31, 41, 51, 101].map((below, i) => [below, 20 - i] as const);
+
+/**
+ * `_rtc_server_compare` in f32: 100 for the never-written last failure, half the seconds/10 since last use (both capped at
+ * 100, a stamp ahead of now counts as 100), a quarter of the rtt term plus 20 for the never-written retransmissions.
+ */
+function score(s: RtcServer, now: number): number {
+  const f = Math.fround;
+  const idle = now - s.lastUsed;
+  const b = idle < 0 ? 100 : Math.min(f(f(idle) / 10_000), 100);
+  const x = s.avgRtt;
+  const rtt =
+    RTT_STEPS.find(([below]) => x < below)?.[1] ??
+    (x <= 150
+      ? f(((x - 100) * -3) / 50 + 15)
+      : x <= 200
+        ? f((2 * (x - 150)) / -50 + 12)
+        : x > 500
+          ? 0
+          : f(((x - 200) * -5) / 300 + 10));
+  return f(100 + 0.5 * b + 0.25 * f(rtt + 20));
 }
 
 function u16(n: number): Buffer {
