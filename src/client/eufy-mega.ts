@@ -1280,13 +1280,6 @@ export class EufyMega extends EventEmitter {
     return { target, station, stationSn, raw, deviceType };
   }
 
-  /** The vendor DeviceType of the station a device hangs off; `undefined` for a station itself. */
-  private stationDeviceTypeOf(sn: string): number | undefined {
-    const st = this.stationOf(sn);
-    if (!st.station || st.stationSn === sn) return undefined;
-    return st.deviceType;
-  }
-
   /**
    * Combine explicit P2P media with the optional passive push-thumbnail provider.
    *
@@ -2615,7 +2608,6 @@ export class EufyMega extends EventEmitter {
       hasP2p: P2PCommandRouter.claimsDevice(dev),
       // A station that isn't the device itself means HomeBase-attached (outdoor mode makes it its own).
       homeBaseAttached: rec.parentSn !== undefined,
-      stationDeviceType: this.stationDeviceTypeOf(sn),
       dpCatalog,
     };
   }

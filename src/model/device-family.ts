@@ -129,8 +129,6 @@ export const isOutdoorPanTilt = (ctx: FamilyContext): boolean => has(OUTDOOR_PT_
 export const isFloodLight = (ctx: FamilyContext): boolean => has(FLOODLIGHT_TYPES, ctx.deviceType);
 /** HomeBase-family hub (has a speaker/alarm) — a station EXCLUDING the NVRs, per `HOMEBASE_TYPES`. */
 export const isHomeBase = (ctx: FamilyContext): boolean => has(HOMEBASE_TYPES, ctx.deviceType);
-/** HomeBase S1 Pro (`STATION_9000`). */
-export const isStation9000 = (ctx: FamilyContext): boolean => ctx.deviceType === DeviceType.STATION_9000;
 /** Gets `doorbell` but has run no doorbell write: the C30/C31 and the video locks T85V0/T85M0. */
 export const isUntriedDoorbell = (ctx: FamilyContext): boolean =>
   ["T8223", "T8224", "T85V0", "T85M0"].includes(ctx.model ?? "");

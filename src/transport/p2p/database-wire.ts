@@ -2,7 +2,7 @@
  * Database wire — the ids and the whole-table query a station's on-station table and stored-image
  * reads are built from.
  *
- * A HomeBase answers them over its P2P session and a T9000 over its portal control channel, with the
+ * A HomeBase answers them over its P2P session and a T9000 over its RTC data channel, with the
  * same inner payloads, so both transports build their reads from this one module. The barrel does not
  * re-export it: these are wire ids, not part of the package surface.
  *

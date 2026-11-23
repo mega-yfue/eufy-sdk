@@ -1,9 +1,7 @@
-import { DeviceType } from "../device-types.js";
-import { coerceEnumValue, enumLabels } from "../../core/util.js";
-import { HOMEBASE_TYPES, isHomeBase, isStation9000 } from "../device-family.js";
-import { hasReportedEasSwitch } from "./camera.js";
+import { coerceEnumValue, enumLabels, isStationSerial } from "../../core/util.js";
+import { HOMEBASE_TYPES, isHomeBase } from "../device-family.js";
 import { setPayload, setStationScalar } from "./access.js";
-import { bundled } from "./bundle.js";
+import { bundled, thingWrite } from "./bundle.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
 import type { AvailabilityContext, CapabilityModule, CommandContext } from "./types.js";
 import type { Command } from "../../core/contracts.js";
@@ -33,17 +31,13 @@ export const SIREN_CMD = {
   ALARM_TEST: 1826,
   /** Manually stop a sounding alarm (app `APP_CMD_SIREN_SENSOR_MANUAL_STOP_ALARM`). */
   MANUAL_STOP: 1871,
-  /** Station-family HomeBase (T8010, T8030) duration alarm (app `SET_TONE_FILE`). */
-  HOMEBASE_TONE: 1201,
   /** HomeBase alarm volume percentage (app `CMD_SET_HUB_SPK_VOLUME`). */
   HUB_SPK_VOLUME: 1235,
   /** HomeBase alarm-tone selection (app `APP_CMD_HUB_ALARM_TONE`). */
   HUB_ALARM_TONE: 1281,
-  /** Attached-camera duration alarm (app `SET_DEVS_TONE_FILE`). */
-  CAMERA_TONE: 1202,
 } as const;
 
-/** The station broadcast channel used by the station-family HomeBase alarm command. */
+/** The station broadcast channel the HomeBase alarm volume rides. */
 const STATION_CHANNEL = 255;
 
 /**
@@ -72,43 +66,6 @@ export type SirenActions = Surface<typeof SIREN_MEMBERS>;
 
 /** Reported HomeBase alarm params that prove the alarm-output configuration surface. */
 const HUB_ALARM_EVIDENCE = [SIREN_CMD.HUB_ALARM_TONE, 1282] as const;
-
-/** Whether this bound device uses the station-family manual HomeBase alarm wire (T8010 and T8030). */
-function isStationAlarmOutput(ctx: CommandContext): boolean {
-  return ctx.deviceType === DeviceType.STATION || ctx.deviceType === DeviceType.HB3;
-}
-
-/** Whether a station-family HomeBase also reports an alarm-output configuration parameter. */
-function isEvidencedStationAlarm(ctx: CommandContext): boolean {
-  return isStationAlarmOutput(ctx) && HUB_ALARM_EVIDENCE.some((param) => ctx.paramIds.has(param));
-}
-
-/**
- * The camera models the portal's `1350` alarm form applies to behind a HomeBase S1 Pro (T9000). Any other
- * model there gets no alarm members.
- */
-const S1_PRO_ALARM_MODELS: ReadonlySet<string> = new Set([
-  "T8134",
-  "T814X",
-  "T8214",
-  "T8790",
-  "T8122",
-  "T8113-Z",
-  "T8400",
-]);
-
-/**
- * Whether an attached camera reports the EAS slot that carries its own manual alarm output and, behind a
- * HomeBase S1 Pro, is a model in {@link S1_PRO_ALARM_MODELS}.
- */
-function isEvidencedAttachedCamera(ctx: CommandContext): boolean {
-  return (
-    ctx.codec === "camera" &&
-    ctx.homeBaseAttached === true &&
-    hasReportedEasSwitch(ctx) &&
-    (!isStation9000({ deviceType: ctx.stationDeviceType }) || S1_PRO_ALARM_MODELS.has(ctx.model ?? ""))
-  );
-}
 
 /** Whether a model-side record or bound context reports a specific parameter. */
 function reportsParam(
@@ -139,84 +96,20 @@ function isEvidencedStandaloneSiren(ctx: CommandContext): boolean {
   return isSensorCodec(ctx) && hasStandaloneSirenEvidence(ctx);
 }
 
-/** Build the station-family HomeBase duration command, requiring the acting username carried by the wire. */
-function homeBaseAlarm(seconds: number, ctx: CommandContext): Command {
-  if (!ctx.accountName) throw new Error("station-family HomeBase alarm output requires the acting account name");
-  return setPayload(
-    SIREN_CMD.HOMEBASE_TONE,
-    { time_out: seconds, user_name: ctx.accountName },
-    ctx,
-    0,
-    STATION_CHANNEL,
-  );
-}
-
-/** The manual-alarm `type` the portal sends to a camera behind a HomeBase S1 Pro. */
-const PORTAL_MANUAL_ALARM_TYPE = 10;
-
 /**
- * Build the attached-camera duration command for its own bound device channel. Behind a HomeBase S1
- * Pro (`STATION_9000`) it is the portal's `1350` SET_PAYLOAD form, `{time_out, type, channel,
- * username}` with the acting account name; behind any other HomeBase it is the app's int-plus-string
- * form.
+ * The live view's alarm (`AlarmActionHandler`): `set_alarm_type` written with Gson's `AlarmModel(open, type)`, the
+ * `AlarmType` sound only (0) on a camera, HomeBase sound (3) on a station, as the product's settings bundle sends it.
+ * `undefined` where the description lists no `set_alarm_type`, the bundle frames none, or on a sensor-codec siren,
+ * which has no live view.
  */
-function cameraAlarm(seconds: number, ctx: CommandContext): Command {
-  if (isStation9000({ deviceType: ctx.stationDeviceType })) {
-    if (!ctx.accountName) throw new Error("a camera alarm behind a HomeBase S1 Pro requires the acting account name");
-    return setPayload(
-      SIREN_CMD.CAMERA_TONE,
-      {
-        time_out: seconds,
-        type: PORTAL_MANUAL_ALARM_TYPE,
-        channel: ctx.channel,
-        username: ctx.accountName,
-      },
-      ctx,
-    );
-  }
-  return {
-    kind: "p2p-int-string",
-    cmd: SIREN_CMD.CAMERA_TONE,
-    value: seconds,
-    valueSub: ctx.channel,
-    channel: ctx.channel,
-  };
+function liveAlarm(open: boolean, ctx: CommandContext): Command | undefined {
+  if (isSensorCodec(ctx) || !ctx.things?.properties.set_alarm_type) return undefined;
+  return thingWrite("set_alarm_type", JSON.stringify({ open, type: isStationSerial(ctx.serial ?? "") ? 3 : 0 }), ctx);
 }
 
-/** Alarm-output protocol families admitted by runtime evidence. */
-type AlarmOutputFamily = "homebase" | "camera" | "standalone";
-
-/** Classify only the alarm-output families whose runtime evidence admits a command. */
-function alarmOutputFamily(ctx: CommandContext): AlarmOutputFamily | undefined {
-  if (isEvidencedStationAlarm(ctx)) return "homebase";
-  if (isEvidencedAttachedCamera(ctx)) return "camera";
-  if (isEvidencedStandaloneSiren(ctx)) return "standalone";
-  return undefined;
-}
-
-/** Build the exact duration command for a verified manually triggered alarm-output family. */
-function triggerAlarm(seconds: number, ctx: CommandContext): Command {
-  const family = alarmOutputFamily(ctx);
-  if (family === "homebase") return homeBaseAlarm(seconds, ctx);
-  if (family === "camera") return cameraAlarm(seconds, ctx);
-  throw new Error("manual alarm trigger has no verified wire for this device family");
-}
-
-/** Build the verified stop command without sharing wire forms across alarm-output families. */
-function stopAlarm(ctx: CommandContext): Command {
-  const family = alarmOutputFamily(ctx);
-  if (family === "homebase") return homeBaseAlarm(0, ctx);
-  if (family === "camera") return cameraAlarm(0, ctx);
-  if (family === "standalone") return sirenPayload(SIREN_CMD.MANUAL_STOP, {}, ctx);
-  throw new Error("manual alarm stop has no verified wire for this device family");
-}
-
-/** Reject malformed durations before a fire-and-forget alarm command reaches hardware. */
-function validateTriggerDuration(seconds: number): number {
-  if (!Number.isSafeInteger(seconds) || seconds <= 0) {
-    throw new Error(`trigger duration ${String(seconds)} is not a positive safe whole-number duration in seconds`);
-  }
-  return seconds;
+/** The stop: a standalone siren's manual stop, else the live view's alarm closed. */
+function stopAlarm(ctx: CommandContext): Command | undefined {
+  return isEvidencedStandaloneSiren(ctx) ? sirenPayload(SIREN_CMD.MANUAL_STOP, {}, ctx) : liveAlarm(false, ctx);
 }
 
 /**
@@ -229,8 +122,8 @@ function sirenPayload(cmd: number, body: Record<string, number>, ctx: CommandCon
 
 /**
  * Every audible alarm-output feature, declared once. Standalone sirens expose observed state,
- * configuration, test, and stop; evidenced HomeBases expose alarm configuration plus trigger/stop;
- * verified attached cameras expose trigger/stop only.
+ * configuration, test, and stop; evidenced HomeBases expose alarm configuration; a device whose description
+ * lists `set_alarm_type` exposes the live view's trigger/stop.
  *
  * Exported but NOT published: each entry states its wire id and its gate,
  * which the reference site does not carry.
@@ -330,25 +223,21 @@ export const SIREN_MEMBERS = {
     available: isEvidencedStandaloneSiren,
     description: "Sound the siren briefly as a test.",
   },
-  /** Trigger a verified station-family HomeBase or evidenced attached-camera alarm for a bounded duration. */
-  trigger: {
-    ...method(
-      ({ ctx, sink }) =>
-        async (seconds: number) => {
-          await sink.dispatch(triggerAlarm(validateTriggerDuration(seconds), ctx));
-        },
-      "Trigger the alarm for a positive whole-number duration in seconds.",
-      (ctx) => isEvidencedStationAlarm(ctx) || isEvidencedAttachedCamera(ctx),
-    ),
-    args: [{ name: "seconds", kind: "seconds", min: 1, description: "A positive whole-number duration." }],
-  },
-  /** Stop a verified alarm-output family through its own wire contract. */
+  /** Sound the alarm as the live view does: the bundle's `time_out` (30 s), no duration of the host's. */
+  trigger: method(
+    ({ ctx, sink }) =>
+      () =>
+        sink.dispatch(liveAlarm(true, ctx)!),
+    "Sound the alarm as the app's live view does; it stops itself after the device's time-out.",
+    (ctx) => liveAlarm(true, ctx) !== undefined,
+  ),
+  /** Stop a sounding alarm through its own wire. */
   stop: method(
     ({ ctx, sink }) =>
       () =>
-        sink.dispatch(stopAlarm(ctx)),
+        sink.dispatch(stopAlarm(ctx)!),
     "Manually stop a sounding alarm.",
-    (ctx) => alarmOutputFamily(ctx) !== undefined,
+    (ctx) => stopAlarm(ctx) !== undefined,
   ),
 } as const satisfies Members;
 
@@ -361,14 +250,14 @@ export const SIREN: CapabilityModule = {
   description: "Audible alarm output with evidence-bounded state, configuration, test, trigger, and stop members.",
   members: SIREN_MEMBERS,
   properties: propertiesOf(SIREN_MEMBERS),
-  /** Detection uses reported evidence and topology; no model string or device type admits a wire. */
+  /** Detection uses reported evidence and the description; no model string or device type admits a wire. */
   detection: {
     detect: (record, codec) => {
       const homeBase = record.deviceType !== undefined && HOMEBASE_TYPES.has(record.deviceType);
       const homeBaseAlarm = homeBase && HUB_ALARM_EVIDENCE.some((param) => Object.hasOwn(record.params ?? {}, param));
-      const attachedCameraAlarm = codec === "camera" && !!record.parentSn && hasReportedEasSwitch(record);
+      const liveViewAlarm = codec !== "sensor" && !!record.things?.properties.set_alarm_type;
       const standaloneSiren = codec === "sensor" && hasStandaloneSirenEvidence(record);
-      return homeBaseAlarm || attachedCameraAlarm || standaloneSiren;
+      return homeBaseAlarm || liveViewAlarm || standaloneSiren;
     },
   },
 };
