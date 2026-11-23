@@ -74,17 +74,26 @@ function openLid(ctx: CommandContext, sink: CommandSink): Promise<void> {
 
 /**
  * The actuation intent, or a refusal naming what is missing. Identity is a genuine precondition — the
- * frame carries the member fields — and a generated "not a valid value" message would misreport it.
+ * frame carries the member fields — and a generated "not a valid value" message would misreport it. Only the
+ * `ff09` frame needs an admin id (its key is built from it); the video lock's and the keyed payload's `userId`
+ * is left out on a member stating none, as the app's Gson does, and the pass-through keys with the user's own id.
  */
 function actuate(engage: boolean, ctx: CommandContext, sink: CommandSink): Promise<void> {
-  if (!ctx.adminUserId || !ctx.shortUserId || (isVideoSmartLock(ctx) && !ctx.accountName)) {
+  const kind = isVideoSmartLock(ctx)
+    ? undefined
+    : isClassicWifiLock(ctx)
+      ? "keyed-payload-actuate"
+      : isBluetoothLock(ctx)
+        ? "doorlock-pass-through-actuate"
+        : "ff09-actuate";
+  if (!ctx.shortUserId || (!kind && !ctx.accountName) || (kind === "ff09-actuate" && !ctx.adminUserId)) {
     return Promise.reject(
       new Error(
-        `lock: missing member identity (admin_user_id/short_user_id, and user name on video locks) [${describeDevice(ctx)}]`,
+        `lock: missing member identity (short_user_id, user name on video locks, admin_user_id on ff09 locks) [${describeDevice(ctx)}]`,
       ),
     );
   }
-  if (isVideoSmartLock(ctx)) {
+  if (!kind) {
     return sink.dispatch({
       kind: "set-payload",
       cmd: VIDEO_LOCK_CMD.ACTUATE,
@@ -98,18 +107,15 @@ function actuate(engage: boolean, ctx: CommandContext, sink: CommandSink): Promi
       },
     });
   }
-  return sink.dispatch({
-    kind: isClassicWifiLock(ctx)
-      ? "keyed-payload-actuate"
-      : isBluetoothLock(ctx)
-        ? "doorlock-pass-through-actuate"
-        : "ff09-actuate",
+  const identity = {
     engage,
-    adminUserId: ctx.adminUserId,
     username: ctx.accountName ?? "",
     shortUserId: ctx.shortUserId,
     deviceSn: ctx.serial ?? "",
-  });
+  };
+  if (kind === "doorlock-pass-through-actuate") return sink.dispatch({ kind, ...identity });
+  if (kind === "keyed-payload-actuate") return sink.dispatch({ kind, adminUserId: ctx.adminUserId, ...identity });
+  return sink.dispatch({ kind, adminUserId: ctx.adminUserId!, ...identity });
 }
 
 /** The compact single-setting write (`ff09-setting-toggle`), or a refusal naming the missing identity. */

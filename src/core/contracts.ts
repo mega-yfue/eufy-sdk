@@ -453,15 +453,16 @@ export type Command =
     /**
      * `keyed-payload-actuate` — a `SET_PAYLOAD` envelope whose inner JSON is sealed with a fresh AES key
      * that the envelope itself carries, wrapped for the device's own public key. P2P-only; the router
-     * resolves the device key.
+     * resolves the device key. `adminUserId` is the inner `userId`, left out as the app's Gson does on a member
+     * stating none.
      */
-    | ({ kind: "keyed-payload-actuate" } & Ff09Identity)
+    | ({ kind: "keyed-payload-actuate" } & Omit<Ff09Identity, "adminUserId"> & { adminUserId?: string })
     /**
      * `doorlock-pass-through-actuate` — a lock/unlock the device's station relays to the lock it is paired to,
      * sealed under a key derived from the lock's member and the station serial. P2P-only; the router resolves
-     * the station, its owner's account id and the lock's channel from the device records.
+     * the station, its owner's account id, the key's member and the lock's channel from the device records.
      */
-    | ({ kind: "doorlock-pass-through-actuate" } & Ff09Identity)
+    | ({ kind: "doorlock-pass-through-actuate" } & Omit<Ff09Identity, "adminUserId">)
     | { kind: "ff09-autolock"; adminUserId: string; deviceSn: string; enabled: boolean; delaySeconds?: number }
     | { kind: "ff09-setting-toggle"; adminUserId: string; deviceSn: string; settingId: number; value: boolean }
     // `mqtt-dp` — an `eufy_life` secure-MQTT "DP" TLV write (smart lights + kin). The capability supplies

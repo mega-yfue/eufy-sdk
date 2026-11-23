@@ -56,6 +56,11 @@ describe("native video lock", () => {
       expect(sent).toEqual([]);
     },
   );
+  it("leaves userId out on a member stating no admin id, as the app's Gson does", async () => {
+    const { acts, sent } = bind<LockActions>("lock", { ...ctx, adminUserId: undefined });
+    await acts.lock!();
+    expect(JSON.stringify(sent[0])).not.toContain("userId");
+  });
   it("refuses missing accountName before sending", async () => {
     const { acts, sent } = bind<LockActions>("lock", { ...ctx, accountName: undefined });
     await expect(acts.lock!()).rejects.toThrow(/missing member identity/);
