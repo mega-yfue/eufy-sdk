@@ -11,16 +11,19 @@ const START3 = START_CODE.subarray(1);
 /**
  * One media unit opened with the call's media key and iv strings: AES-128-GCM under the key string's first 16 bytes,
  * the iv string as the nonce, no AAD, the tag the unit's last 16 bytes; bytes before `clear` are not encrypted. The
- * plaintext unit (16 bytes shorter), `undefined` when it does not open. An audio payload is encrypted whole, a
- * parameter-set NAL from its third byte, a key frame from its IDR NAL header + 2.
+ * plaintext unit (16 bytes shorter), `undefined` when its tag fails, unless `keep`: then the bytes deciphered all the
+ * same, as the app's audio receiver inserts them. An audio payload is encrypted whole, a parameter-set NAL from its
+ * third byte, a key frame from its IDR NAL header + 2.
  */
-export function mediaOpen(key: string, iv: string, unit: Buffer, clear: number): Buffer | undefined {
+export function mediaOpen(key: string, iv: string, unit: Buffer, clear: number, keep = false): Buffer | undefined {
+  const d = createDecipheriv("aes-128-gcm", ...gcmKey(key, iv));
+  const plain = Buffer.concat([unit.subarray(0, clear), d.update(unit.subarray(clear, unit.length - 16))]);
   try {
-    const d = createDecipheriv("aes-128-gcm", ...gcmKey(key, iv));
     d.setAuthTag(unit.subarray(unit.length - 16));
-    return Buffer.concat([unit.subarray(0, clear), d.update(unit.subarray(clear, unit.length - 16)), d.final()]);
+    d.final();
+    return plain;
   } catch {
-    return undefined;
+    return keep ? plain : undefined;
   }
 }
 
