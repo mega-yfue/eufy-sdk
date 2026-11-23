@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { decryptBody, encryptBody } from "../../../core/crypto.js";
 import { MegaHttpClient } from "../mega-client.js";
 
 const SN = "T8410P0000000000";
@@ -213,6 +214,116 @@ describe("MegaHttpClient sharing calls", () => {
       transaction: expect.stringMatching(/^transaction_\d+$/),
       house_id: "house-0",
       ...cat,
+    });
+  });
+
+  describe("Home-category devices (v1/share/active on the Home host)", () => {
+    const KEY = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+    afterEach(() => vi.unstubAllGlobals());
+
+    function home(replies: Array<{ res_code: number; data?: unknown }>) {
+      const { mega, post } = client();
+      vi.spyOn(mega, "ensureSessionKey").mockResolvedValue({
+        keyIdent: "ident-0",
+        shareKey: KEY,
+        clientPublicKeyHex: "",
+        clientPrivateKeyHex: "",
+        createdAt: 0,
+      });
+      const fetchMock = vi.fn(async () => new Response(JSON.stringify(replies.shift() ?? { res_code: 1 })));
+      vi.stubGlobal("fetch", fetchMock);
+      const call = (n: number) => {
+        const [url, init] = fetchMock.mock.calls[n] as unknown as [string, RequestInit];
+        const body = init.body ? JSON.parse(decryptBody(init.body as string, KEY).toString()) : undefined;
+        return { url, method: init.method, category: (init.headers as Record<string, string>).category, body };
+      };
+      return { mega, post, fetchMock, call };
+    }
+
+    it("invites a Home device through user/info then its own device_invite, before the rest", async () => {
+      const { mega, post, call } = home([
+        { res_code: 1, data: encryptBody(JSON.stringify({ user_info: { id: "u-0" } }), KEY) },
+      ]);
+      post.mockResolvedValue({ email_sent: true });
+      const sent = await mega.inviteShare("g@example.invalid", "G", [
+        { device_sn: "T2080P0000000000", category: "eufy_home", member_type: 0 },
+        { device_sn: "PET0", category: "eufy_pet", member_type: 1 },
+      ]);
+      expect(sent).toEqual({ emailSent: true });
+      expect(call(0)).toEqual({
+        url: "https://api.eufylife.com/v1/user/info/g%40example.invalid",
+        method: "GET",
+        category: "Home",
+        body: undefined,
+      });
+      expect(post.mock.calls[0]![2]).toEqual({
+        email: "g@example.invalid",
+        nick_name: "g@example.invalid",
+        invites: [
+          {
+            category: "eufy_home",
+            sub_sns: "",
+            member_type: 1,
+            device_sn: "T2080P0000000000",
+            device_name: "",
+            permissions: 0,
+            extension: "",
+            subData: [{ device_sn: "T2080P0000000000", checked: true, device_name: "" }],
+          },
+        ],
+      });
+      expect((post.mock.calls[1]![2] as { invites: unknown[] }).invites).toHaveLength(1);
+    });
+
+    it("refuses an invitee the Home host does not know, and a Tuya-side share", async () => {
+      const { mega, post } = home([{ res_code: 1, data: {} }]);
+      await expect(
+        mega.inviteShare("g@example.invalid", "G", [{ device_sn: "T2080P0", category: "eufy_home", member_type: 0 }]),
+      ).rejects.toThrow(/no eufy account/);
+      await expect(
+        mega.inviteShare("g@example.invalid", "G", [
+          { device_sn: "T2080P0", category: "eufy_home_tuya", member_type: 0 },
+        ]),
+      ).rejects.toThrow(/Tuya/);
+      expect(post).not.toHaveBeenCalled();
+    });
+
+    it("accepts Home invitations on the Home host and confirms only the rest", async () => {
+      const { mega, post, call } = home([]);
+      const homeRef = { ...ref, device_sn: "T2080P0000000000", category: "eufy_home" };
+      await mega.confirmShareInvites([homeRef]);
+      expect(call(0)).toEqual({
+        url: "https://api.eufylife.com/v1/share/active/accept_invitation",
+        method: "POST",
+        category: "Home",
+        body: { device_id: "T2080P0000000000", owner: "owner-0", category: "eufy_home" },
+      });
+      expect(post).not.toHaveBeenCalled();
+      await mega.confirmShareInvites([homeRef, ref]);
+      expect(post).toHaveBeenLastCalledWith("devicerelation", "/app/devicerelation/confirm_invite", { invites: [ref] });
+    });
+
+    it("lists, removes and leaves Home shares, and rejects a res_code other than 1", async () => {
+      const { mega, call } = home([
+        { res_code: 1, data: { share_list: [] } },
+        { res_code: 1 },
+        { res_code: 1 },
+        { res_code: 0 },
+      ]);
+      expect(await mega.getHomeDeviceShares("T2080P0")).toEqual({ share_list: [] });
+      expect(call(0)).toMatchObject({
+        url: "https://api.eufylife.com/v1/share/active/single_device_share/T2080P0",
+        method: "GET",
+      });
+      await mega.removeHomeDeviceShare("T2080P0", "m-0");
+      expect(call(1)).toMatchObject({
+        url: "https://api.eufylife.com/v1/share/active/owner_remove_share",
+        method: "DELETE",
+        body: { device_id: "T2080P0", receiver: "m-0" },
+      });
+      await mega.leaveHomeDeviceShare("T2080P0", "owner-0");
+      expect(call(2)).toMatchObject({ method: "DELETE", body: { device_id: "T2080P0", owner: "owner-0" } });
+      await expect(mega.leaveHomeDeviceShare("T2080P0", "owner-0")).rejects.toThrow(/receiver_remove_share failed/);
     });
   });
 });
