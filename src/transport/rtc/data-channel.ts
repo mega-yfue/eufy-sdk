@@ -415,6 +415,7 @@ export function priv1(
   agent.on("data", (d) => channel.input(d));
   agent.once("connected", () => {
     channel.connected = true;
+    signal.connected(call.uuid);
     channel.detect();
     for (let i = 0; i < 5; i++)
       timers.set(

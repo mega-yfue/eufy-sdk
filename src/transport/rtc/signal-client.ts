@@ -20,6 +20,10 @@
  * `Webrtc_SignalInit` and `rtc_signal_network`); a re-discover flag still sends one DISCOVER. Every first 200 after
  * a key exchange hands out a new token (`onWebrtcToken`).
  *
+ * Token refresh: when a PRIV1 or PM call connects while both are connected, a login 12 h old or more (and no check in
+ * the last 21 s) sends a bare reg, so the 401 / reg2 / 200 exchange draws a new session key and token
+ * (`WebrtcApp_Check_Token_UpdateTime` → `ClientTokenRefresh`).
+ *
  * The app's work protocol (2, header byte 15 of reg) starts no login timer: reg goes out once per settled
  * DISCOVER, and nothing resends it. A request the server leaves unanswered for 5 s is not resent either: the app's
  * timeout scan has no caller.
@@ -106,6 +110,9 @@ export interface RtcToken {
 
 /** How long the app takes a cached login: `auth_timestamp` + 82800 s (`rtc_signal_set_quick_login_info`). */
 const TOKEN_TTL_S = 82_800;
+/** `WebrtcApp_Check_Token_UpdateTime`: refresh a login this old, at most once per 21 s. */
+const TOKEN_REFRESH_S = 43_200;
+const TOKEN_CHECK_S = 21;
 
 interface RtcCall {
   type: number;
@@ -117,6 +124,7 @@ interface RtcCall {
   trying?: boolean;
   acked?: boolean;
   sdp?: boolean;
+  up?: boolean;
   candidates: Set<string>;
 }
 
@@ -155,6 +163,8 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
   private unauthorized = 0;
   private b44 = 0;
   private discoverTimer?: NodeJS.Timeout;
+  private authTimestamp = 0;
+  private tokenCheck = 0;
   private readonly calls = new Map<string, RtcCall>();
   private readonly callSockets = new Map<number, Socket>();
 
@@ -169,7 +179,7 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
     await new Promise<void>((resolve) => this.socket.bind(0, resolve));
     const t = this.opts.token;
     if (t?.aes && t.contactId && t.addr && t.authTimestamp + TOKEN_TTL_S >= Date.now() / 1000) {
-      [this.host, this.sessionKey, this.contactId] = [t.addr, t.aes, t.contactId];
+      [this.host, this.sessionKey, this.contactId, this.authTimestamp] = [t.addr, t.aes, t.contactId, t.authTimestamp];
       this.discovered = this.registered = true;
       return void this.emit("login", this.contactId);
     }
@@ -227,9 +237,21 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
     this.send(rtcPacket(header, RtcBody.CALL, callBody(uuid, this.contactId, attach)), this.callSocket(c.type));
   }
 
-  /** The call's ICE reached the app's state 2 (connected): its CALL repeat ends. */
+  /**
+   * The call's ICE reached the app's state 2 (connected): a PM call's CALL repeat ends. With a PRIV1 and a PM call
+   * both connected, a login {@link TOKEN_REFRESH_S} old is refreshed.
+   */
   connected(uuid: string): void {
-    clearTimeout(this.calls.get(uuid)?.timer);
+    const c = this.calls.get(uuid);
+    if (!c) return;
+    c.up = true;
+    if (c.type === RtcCallType.PM) clearTimeout(c.timer);
+    const now = Date.now() / 1000;
+    const up = (type: number) => [...this.calls.values()].some((x) => x.up && x.type === type);
+    if (!up(RtcCallType.PRIV1) || !up(RtcCallType.PM) || now < this.authTimestamp + TOKEN_REFRESH_S) return;
+    if (now - this.tokenCheck < TOKEN_CHECK_S) return;
+    this.tokenCheck = now;
+    this.login(true);
   }
 
   /** End a call: a PRIV1 or PM hang-up sends nothing, the session and its socket close. */
@@ -272,9 +294,10 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
     this.send(rtcPacket(this.request(RtcKind.DISCOVER)));
   }
 
-  private login(): void {
+  /** reg; `refresh` sends it bare whatever the login state, as `ClientTokenRefresh` does. */
+  private login(refresh = false): void {
     const header = this.request(RtcKind.REG, WORK_PROTOCOL, this.b44);
-    if (this.registered && this.contactId) {
+    if (!refresh && this.registered && this.contactId) {
       const contact = Buffer.alloc(32);
       contact.write(this.contactId, "latin1");
       const auth = rtcEncrypt(this.didLic(), this.sessionKey, header.readUInt32LE(8));
@@ -430,8 +453,9 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
       if (this.registered) return;
       this.registered = true;
       this.emit("login", this.contactId);
-      const { sessionKey: aes, contactId, host: addr } = this;
-      this.emit("token", { aes, contactId, addr, authTimestamp: Math.floor(Date.now() / 1000) });
+      this.authTimestamp = Math.floor(Date.now() / 1000);
+      const { sessionKey: aes, contactId, host: addr, authTimestamp } = this;
+      this.emit("token", { aes, contactId, addr, authTimestamp });
     }
   }
 }

@@ -84,6 +84,7 @@ describe("RtcSignalClient", () => {
       const rx = parseRtcDatagram(msg)!;
       if (rx.header.readUInt16LE(4) === 9)
         return reply(rx, 200, 2, Buffer.from(JSON.stringify({ server_addr: "self", timestamp: 0, saddrs: [] })), from);
+      if (rx.header.readUInt16LE(4) !== 1) return;
       if (rx.header[41] === 0) return reply(rx, 401, 3, rtcEncrypt(Buffer.from(modulus), RTC_DEFAULT_KEY, TS), from);
       expect(rx.header[41]).toBe(4);
       expect(rx.header.readUInt32LE(8)).toBe(TS);
@@ -131,6 +132,35 @@ describe("RtcSignalClient", () => {
     await client.start();
     await again;
     expect(seen.wrapped.length).toBe(sent + 3);
+  });
+
+  it("refreshes a 12 h old login once a PRIV1 and a PM call are both connected", async () => {
+    const seen = await fakeServer(false);
+    client.close();
+    const port = server.address().port;
+    const tokenAt = (age: number) => ({
+      aes: "0123456789abcdef",
+      contactId: "c0ffee00c0ffee00",
+      addr: "127.0.0.1",
+      authTimestamp: Math.floor(Date.now() / 1000) - age,
+    });
+    const connectBoth = async (age: number) => {
+      client = new RtcSignalClient({ sn: SN, did: DID, lic: LIC, host: "127.0.0.1", port, token: tokenAt(age) });
+      await client.start();
+      const [priv1, pm] = [client.call(5), client.call(6)];
+      client.connected(priv1.uuid);
+      expect(seen.auth).toBeUndefined();
+      client.connected(pm.uuid);
+    };
+    await connectBoth(43_100);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(seen.auth).toBeUndefined();
+    client.close();
+    await connectBoth(43_201);
+    const t = await new Promise<RtcToken>((r) => client.once("token", r));
+    expect(seen.auth).toBe(`${DID}:${LIC}`);
+    expect(t.aes).not.toBe("0123456789abcdef");
+    expect(Math.abs(t.authTimestamp - Date.now() / 1000)).toBeLessThan(2);
   });
 
   it("a second 401 in a row is a login failure", async () => {
