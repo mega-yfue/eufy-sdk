@@ -44,7 +44,10 @@ function layers() {
     close: vi.fn(),
   });
   const agent = Object.assign(new EventEmitter(), { connected: true, write: vi.fn(), close: vi.fn() });
-  const priv1 = vi.fn((_s: RtcSignalClient, _o: { counter?: RtcCommandCounter }) => data as unknown as RtcDataChannel);
+  const priv1 = vi.fn(
+    (_s: RtcSignalClient, _o: { counter?: RtcCommandCounter; answered?: () => void }) =>
+      data as unknown as RtcDataChannel,
+  );
   const pmIce = vi.fn(() => agent as unknown as IceAgent);
   const router = new RtcCommandRouter({
     userId: () => "synthetic-user",
@@ -114,6 +117,38 @@ describe("RtcCommandRouter on the native layers", () => {
     ] as const)
       await expect(router.dispatchCommand(ROUTE, cmd)).rejects.toThrow("not framed by the app's RTC sender");
     expect(priv1).not.toHaveBeenCalled();
+    router.close();
+  });
+
+  it("places a fresh PRIV1 call once the data channel closes", async () => {
+    const { router, data, priv1 } = layers();
+    const cmd = { kind: "set-json", param: 1400, data: {}, channel: 3 } as const;
+    await router.dispatchCommand(ROUTE, cmd);
+    data.emit("close");
+    await router.dispatchCommand(ROUTE, cmd);
+    expect(priv1).toHaveBeenCalledTimes(2);
+    router.close();
+  });
+
+  it("re-calls a closed data channel at once twice, then after the app's 20 s backoff unless the station answered", async () => {
+    const { router, data, priv1 } = layers();
+    const cmd = { kind: "set-json", param: 1400, data: {}, channel: 3 } as const;
+    const fail = async () => (await router.dispatchCommand(ROUTE, cmd), data.emit("close"));
+    await fail();
+    await fail();
+    priv1.mock.calls[1]![1].answered!();
+    await fail();
+    await fail();
+    await fail();
+    expect(priv1).toHaveBeenCalledTimes(5);
+    router.dispatchCommand(ROUTE, cmd).catch(() => undefined);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(priv1).toHaveBeenCalledTimes(5);
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now + 30_000);
+    await router.dispatchCommand(ROUTE, cmd);
+    expect(priv1).toHaveBeenCalledTimes(6);
+    vi.restoreAllMocks();
     router.close();
   });
 

@@ -1,6 +1,6 @@
 import { createCipheriv, createDecipheriv } from "node:crypto";
 import { crc32 } from "node:zlib";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { RtcDataChannel, cmdGcm, kcpMulti, readLinkMessage, wrtcLink } from "../data-channel.js";
 import { mediaGcm } from "../pm-live.js";
 import { Kcp } from "../kcp.js";
@@ -134,6 +134,62 @@ describe("RtcDataChannel commands", () => {
     d.setAuthTag(body.subarray(0, 16));
     expect(Buffer.concat([d.update(body.subarray(32)), d.final()]).toString()).toBe('{"cmd":1103}');
     await expect(notified).resolves.toEqual([1700, Buffer.from("hello")]);
+  });
+
+  it("runs the KCP detect: the bare 1139 every second, closed when the station stays silent for 8 s", async () => {
+    vi.useFakeTimers();
+    try {
+      const beats: Buffer[] = [];
+      const silent = station(false, false, (d) => (beats.push(d), []));
+      const closed = vi.fn();
+      silent.channel.on("close", closed).detect();
+      await vi.advanceTimersByTimeAsync(7_990);
+      expect(closed).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(20);
+      expect(closed).toHaveBeenCalledOnce();
+      expect(beats).toHaveLength(8);
+      expect(beats[0]).toEqual(Buffer.from("XZYH\x73\x04" + "\0".repeat(10), "latin1"));
+
+      const heard = station(false, false, () => [stationMessage(1, frame(1139, Buffer.alloc(0)), false)]);
+      const kept = vi.fn();
+      heard.channel.on("close", kept).detect();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(kept).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("hangs a heard channel up when neither KCP input nor ack progress came for 10 s, as the app's manager does", async () => {
+    vi.useFakeTimers();
+    try {
+      const peer = new Kcp(1, (d) => dead.input(d));
+      peer.nodelay(1, 2, 2, 1);
+      const sent: Buffer[] = [];
+      const dead = new RtcDataChannel((d) => sent.push(d), { multi: false, key: KEY, gcm: false });
+      open.push(dead);
+      const closed = vi.fn();
+      dead.on("close", closed);
+      peer.send(stationMessage(1, frame(1139, Buffer.alloc(0)), false));
+      peer.update(Date.now());
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect([closed.mock.calls.length, sent.length > 0]).toEqual([0, true]);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(closed).toHaveBeenCalledOnce();
+
+      const beats: Buffer[] = [];
+      const alive = station(false, false, (d) =>
+        beats.push(d) === 1 ? [stationMessage(1, frame(1103, Buffer.alloc(0)), false)] : [],
+      );
+      const kept = vi.fn();
+      alive.channel.on("close", kept);
+      void alive.channel.command(1103, "{}");
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(kept).not.toHaveBeenCalled();
+      expect(beats.length).toBeGreaterThan(40);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("gates the command GCM by model and firmware as the app does", () => {
