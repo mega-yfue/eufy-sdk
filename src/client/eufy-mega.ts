@@ -1310,7 +1310,7 @@ export class EufyMega extends EventEmitter {
         try {
           return await media.snapshotLive(opts);
         } catch (error) {
-          if (!(error instanceof LiveSnapshotUnavailableError) || (opts?.view ?? 0) !== 0) throw error;
+          if (!(error instanceof LiveSnapshotUnavailableError)) throw error;
           const retained = await retainedStill().catch(() => undefined);
           const geometry = retained && jpegGeometry(retained);
           if (!retained || !geometry) throw error;

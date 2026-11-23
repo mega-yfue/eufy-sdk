@@ -911,15 +911,6 @@ export interface AbortableCall {
   signal?: AbortSignal;
 }
 
-/** NVR output size requested when a live pull starts. */
-export type MediaOutputResolution = "1080p";
-
-/** Select an optical view and output size; absence selects view 0 at the route's default output. */
-export interface MediaSourceSelection {
-  view?: number;
-  outputResolution?: MediaOutputResolution;
-}
-
 export interface SharedSourceHints {
   /**
    * Power source, a runtime device fact (`"battery"` incl. solar, or `"wired"`) — never a device-family
@@ -953,10 +944,6 @@ export interface SharedSourceHints {
  * because an unbound model has no live client (hence `?.` at the call site).
  */
 export interface MediaProvider {
-  /** Output sizes supported by this bound media route. Absence means no size selection. */
-  outputResolutions?: readonly MediaOutputResolution[];
-  /** Optical view identifiers supported by this bound media route. */
-  views?: readonly number[];
   /**
    * Return the latest validated push thumbnail retained in memory. This passive operation performs no
    * network, storage, P2P, live-media, or transcoding work at call time. It rejects with
@@ -985,8 +972,7 @@ export interface MediaProvider {
       collectMs?: number;
       skipKeyframes?: number;
     } & SharedSourceHints &
-      AbortableCall &
-      MediaSourceSelection,
+      AbortableCall,
   ): Promise<{
     jpeg: Buffer;
     width: number;
@@ -1014,9 +1000,7 @@ export interface MediaProvider {
    * stream?.stop(); // detach this consumer
    * ```
    */
-  live(
-    opts?: SharedSourceHints & AbortableCall & MediaSourceSelection & Record<string, unknown>,
-  ): Promise<LiveStreamConsumer>;
+  live(opts?: SharedSourceHints & AbortableCall & Record<string, unknown>): Promise<LiveStreamConsumer>;
   /**
    * Record `seconds` of video → an mp4/h264 buffer.
    *
@@ -1039,7 +1023,7 @@ export interface MediaProvider {
    * grace, the Readable ends.
    */
   openReadable?(
-    opts?: { objectMode?: boolean; arrivalTime?: boolean } & SharedSourceHints & AbortableCall & MediaSourceSelection,
+    opts?: { objectMode?: boolean; arrivalTime?: boolean } & SharedSourceHints & AbortableCall,
   ): Promise<import("node:stream").Readable>;
   /**
    * Continuously record the live feed as fragmented-MP4 (CMAF). The caller-owned

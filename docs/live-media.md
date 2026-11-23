@@ -60,24 +60,6 @@ T8E00, T8P00, T8P10, T8162, T8410 and T8214 cameras attached to a T8N00 support 
 `openReadable()` provides video, and `snapshotLive()` captures a fresh still.
 Recording and talkback are not implemented for this route.
 
-`cam.views?.()` reports the optical view identifiers supported by this route: `[0, 1]`
-for the dual-lens T8E00 S4 and `[0]` for every other camera. On the S4, view `0` is fixed
-and view `1` is movable. Omitting `view` selects `0`.
-
-```ts
-const views = cam?.views?.();
-const fixed = await cam?.live?.({ view: 0 });
-const movable = await cam?.live?.({ view: 1 });
-fixed?.stop();
-movable?.stop();
-```
-
-`live`, `openReadable` and `snapshotLive` accept the same `view` option. Different
-views own independent calls; repeated consumers of one view share its source.
-Stopping one view leaves the other running. An unsupported view rejects with
-`RangeError` before connecting. A secondary-view live snapshot failure propagates
-without substituting a stored thumbnail, whose optical view is unknown.
-
 ## 1. Event stream (low-level)
 
 The direct escape hatch — raw frames as they arrive.
@@ -639,23 +621,3 @@ So the APIs here do not claim negotiation or timing guarantees the device source
 fragment duration is a keyframe-bounded **minimum**, prebuffer is available only from an already-warm
 retained source, and fragmented recordings are caller-owned evented async iterables — which is how a
 caller extends a shared battery budget without control notices mixing into media output.
-
-### NVR output resolution
-
-`cam.outputResolutions?.()` reports the output sizes supported by the bound media route.
-The native NVR route reports `["1080p"]` for T8E00 and T8P00 cameras. An omitted selection preserves the default
-output; it does not promise a particular maximum resolution.
-
-```ts
-if (cam.live && cam.outputResolutions?.().includes("1080p")) {
-  const stream = await cam.live({ view: 0, outputResolution: "1080p" });
-  stream.stop();
-}
-```
-
-The NVR start request carries `stitch_resolution: {width: 1920, height: 1080}`.
-This selects the NVR's output geometry, not a separately identified camera substream,
-and does not change persistent live-view or recording-quality settings.
-`openReadable()` and `snapshotLive()` accept the same selection. A route that does not
-advertise it refuses the request before opening media. Consumers with different output
-selections use separate sources, including while an earlier source is warm.
