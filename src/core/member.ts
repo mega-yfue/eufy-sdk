@@ -1,7 +1,11 @@
-/** The `member.admin_user_id` a raw device record states, as esiotkit's `FamilyMember.adminUserId` reads it. @internal */
+/**
+ * The `member.admin_user_id` a raw device record states, as esiotkit's `FamilyMember.adminUserId` reads it: `""`
+ * on a member stating none (its default), `undefined` without a member, the one case its `?:` fallbacks take. @internal
+ */
 export function adminUserIdOf(raw: unknown): string | undefined {
-  const id = (raw as { member?: Record<string, unknown> } | undefined)?.member?.admin_user_id;
-  return typeof id === "string" && id ? id : undefined;
+  const member = (raw as { member?: Record<string, unknown> } | undefined)?.member;
+  if (!member) return undefined;
+  return typeof member.admin_user_id === "string" ? member.admin_user_id : "";
 }
 
 /**

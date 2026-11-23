@@ -22,6 +22,7 @@ import { randomBytes } from "node:crypto";
 import type { EufyDevice } from "../../core/types.js";
 import type { Command, AutoLockSnapshot } from "../../core/contracts.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
+import { adminUserIdOf } from "../../core/member.js";
 import type { MegaHttpClient } from "../http/mega-client.js";
 import {
   buildFf09Frame,
@@ -85,10 +86,7 @@ export interface Ff09Trans {
 }
 
 /** The envelope's `account_id`, as esiotkit's `doPublish` sets it: the record's `member.admin_user_id`, else `""`. */
-function publishAccountId(dev: EufyDevice): string {
-  const id = (dev.raw as { member?: { admin_user_id?: unknown } } | undefined)?.member?.admin_user_id;
-  return typeof id === "string" ? id : "";
-}
+const publishAccountId = (dev: EufyDevice): string => adminUserIdOf(dev.raw) ?? "";
 
 /**
  * Wrap a built ff09 frame in the MQTT `trans` envelope as the app's MQTT channel builds it: `cmd` and the

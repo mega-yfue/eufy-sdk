@@ -33,7 +33,7 @@ describe("buildDirectBinaryBody", () => {
     expect(b.subarray(8).toString("ascii")).toBe("x".repeat(128));
   });
 
-  it("throws on an empty account_id (would send an all-zero field the HomeBase rejects)", () => {
-    expect(() => buildDirectBinaryBody(1, "", 4)).toThrow(/account_id/);
+  it("sends an empty account_id as the all-zero field, as the app does", () => {
+    expect(buildDirectBinaryBody(1, "", 4).subarray(8).equals(Buffer.alloc(128))).toBe(true);
   });
 });

@@ -2371,7 +2371,7 @@ export class EufyMega extends EventEmitter {
     const found = this.stationOf(station);
     if (!found.station) throw new Error(`${op}: ${station} is not in the device list`);
     const accountId = adminUserIdOf(found.raw) ?? this.mega.auth?.userId;
-    if (!accountId) throw new Error(`${op}: no account id for ${station}, login() first`);
+    if (accountId === undefined) throw new Error(`${op}: no account id for ${station}, login() first`);
     return { station, accountId, route: this.rtcRouteFor(station, { cmd: 1350, sub: 1306, channel: 255 }) };
   }
 

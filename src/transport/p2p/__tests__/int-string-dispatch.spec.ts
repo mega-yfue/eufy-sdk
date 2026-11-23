@@ -57,19 +57,12 @@ describe("P2P int-plus-string command dispatch", () => {
     expect(session.sendBytes).toHaveBeenCalledWith(pair, 1, 1013);
   });
 
-  it("rejects missing account identity without sending", async () => {
+  it("sends a member's stated empty admin id as is, as the app does", async () => {
     const { router, session } = setup("");
 
-    await expect(
-      router.dispatchCommand(DEVICE_SN, {
-        kind: "p2p-int-string",
-        cmd: 1202,
-        value: 10,
-        valueSub: 1,
-        channel: 1,
-      }),
-    ).rejects.toThrow(/requires an account id/);
-    expect(session.sendIntStringCommand).not.toHaveBeenCalled();
+    await router.dispatchCommand(DEVICE_SN, { kind: "p2p-int-string", cmd: 1202, value: 10, valueSub: 1, channel: 1 });
+
+    expect(session.sendIntStringCommand).toHaveBeenCalledWith(1202, 10, 1, "", 1);
   });
 
   it("rejects session resolution failure without sending", async () => {

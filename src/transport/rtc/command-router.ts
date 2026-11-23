@@ -382,8 +382,8 @@ export class RtcCommandRouter {
   }
 
   private accountId(route: RtcRoute): string {
-    const id = route.adminUserId || this.deps.userId();
-    if (!id) throw new Error(`rtc: not logged in, cannot drive ${route.stationSn}`);
+    const id = route.adminUserId ?? this.deps.userId();
+    if (id === undefined) throw new Error(`rtc: not logged in, cannot drive ${route.stationSn}`);
     return id;
   }
 
@@ -601,6 +601,8 @@ export class RtcCommandRouter {
       $cameraType: () => 0,
       $msgId: () => this.msgIds.set(parent, ((this.msgIds.get(parent) ?? 0) % 255) + 1).get(parent),
       $entryType: () => entryType,
+      // `RtcLivePlayerBridge` starts with the camera's stated admin, else `""`; the envelope keeps esiotkit's.
+      $userId: () => route.adminUserId ?? "",
     });
     const bump = cmd === 1700 && frame.subCmd === 1000;
     if (bump) st.flag = ((st.flag + 5) & 0xff) < 15 ? 10 : st.flag + 1;

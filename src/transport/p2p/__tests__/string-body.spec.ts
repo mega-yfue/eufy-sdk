@@ -12,10 +12,9 @@ describe("buildStringBody (SET_TIME_ZONE 1215, SET_HUB_NAME 1216, SET_DEVICE_NAM
     expect(body.subarray(133, 133 + acct.length).toString("ascii")).toBe(acct);
   });
 
-  it("truncates an over-long name and requires an account_id", () => {
+  it("truncates an over-long name", () => {
     const nameField = buildStringBody(0, "x".repeat(200), "a").subarray(5, 133).toString("ascii");
     expect(nameField.replace(/\0+$/, "").length).toBe(127);
-    expect(() => buildStringBody(0, "n", "")).toThrow(/account_id/);
   });
 
   it("encodes a non-ASCII name as UTF-8 (matching the app), not lossy ascii", () => {
