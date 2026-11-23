@@ -149,12 +149,16 @@ export class Anke {
   }
 }
 
-/** A live command as the app's RTC sender frames it: its id, body, header channel and header byte 14. */
+/**
+ * A live command as the app's RTC sender frames it: its id, body, header channel and header byte 14; `send` when the
+ * sender routes it over the data channel instead, where the app checks no answer.
+ */
 export interface RtcLiveCommand {
   cmd: number;
   body: Buffer;
   channel: number;
   flag: number;
+  send?: () => void;
 }
 
 export interface RtcPmLiveOptions {
@@ -247,6 +251,7 @@ export class RtcPmLiveStream extends EventEmitter implements LiveStreamHandle {
 
   /** Send a command over `ANKE` and check its answer as the app does (`setCmd2Rtcp`); `true` on success. */
   private async command(c: RtcLiveCommand): Promise<boolean> {
+    if (c.send) return (c.send(), true);
     this.anke.send(commandFrame(c.cmd, c.body, c.channel, this.seal, c.flag));
     for (let i = 0; i < 10 && !this.closed; i++) {
       const r = this.anke.result(c.cmd);

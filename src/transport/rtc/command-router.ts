@@ -486,6 +486,10 @@ export class RtcCommandRouter {
    * player's single-camera page, page index -1), `$msgId` the station's next `getNextMsgId` (1 to 255, then 1 again),
    * `$entryType` the view's. Header byte 14 is the station's event-stream flag for a `1700` of inner `1000`, moved on
    * per use as `rtc_get_stream_flag` does (10 when `(flag + 5) & 0xff < 15`, else up one), else 0.
+   *
+   * A T8223/T8224's `1700` start and `1004` stop go over the data channel below the firmware its bundle routes them
+   * RTCP from (`rtcSendRoute` 0, and neither `is_livecmd_support_media_rtcp` nor `is_rtcp_solo` holds): the
+   * {@link cmdGcm} floors. Every `1350` goes RTCP, as the sender does for `mValue` 1003/1004 on these stations.
    */
   private liveCommand(route: RtcLiveRoute, st: Station, frame: SessionFrame, entryType: number): RtcLiveCommand {
     const sn = route.stationSn;
@@ -496,7 +500,14 @@ export class RtcCommandRouter {
     });
     const bump = cmd === 1700 && frame.subCmd === 1000;
     if (bump) st.flag = ((st.flag + 5) & 0xff) < 15 ? 10 : st.flag + 1;
-    return { cmd, body, channel: header, flag: bump ? st.flag : 0 };
+    const flag = bump ? st.flag : 0;
+    const overData = /^T822[34]/.test(sn) && cmd !== 1350 && !cmdGcm(sn, route.version);
+    const write = (d: RtcDataChannel) => d.command(cmd, body, header, flag);
+    const send = () =>
+      void (st.data?.connected ? write(st.data) : this.dataChannel(route).then(write)).catch((e: unknown) =>
+        this.deps.logger?.warn(`[rtc] ${sn} live ${cmd} over the data channel: ${String(e)}`),
+      );
+    return { cmd, body, channel: header, flag, ...(overData && { send }) };
   }
 
   private drop(sn: string): void {

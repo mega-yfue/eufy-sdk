@@ -227,11 +227,11 @@ export class RtcDataChannel extends EventEmitter<RtcDataChannelEvents> {
   /**
    * Send a command on the data channel, the app's route for all but its RTCP-bound live commands, as
    * {@link commandFrame} (sealed with {@link cmdGcm}); resolves with the reply body, rejects after 20 s (35 s for a
-   * 1350 whose `cmd` is 6236).
+   * 1350 whose `cmd` is 6236). `flag` is header byte 14.
    */
-  command(cmd: number, body: string | Buffer, channel = 0): Promise<Buffer> {
+  command(cmd: number, body: string | Buffer, channel = 0, flag = 0): Promise<Buffer> {
     if (!this.connected) return Promise.reject(new Error("rtc data channel not connected"));
-    const frame = commandFrame(cmd, body, channel, this.seal);
+    const frame = commandFrame(cmd, body, channel, this.seal, flag);
     for (let o = 0; o < frame.length; o += CHUNK)
       this.kcps[0]!.send(wrtcLink(CMD, frame.subarray(o, o + CHUNK), this.opts.multi));
     const long = cmd === 1350 && jsonCmd(String(body)) === 6236;
