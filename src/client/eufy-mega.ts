@@ -26,7 +26,7 @@ import { decodeMapFrame } from "./map-channels.js";
 import { VacuumMapStore } from "../model/index.js";
 import { type P2PSession, type P2PFrame } from "../transport/p2p/p2p-session.js";
 import { P2PCommandRouter } from "../transport/p2p/command-router.js";
-import { RtcCommandRouter, RTC_REFUSED_COMMAND_KINDS, type RtcRoute } from "../transport/rtc/command-router.js";
+import { RtcCommandRouter, type RtcRoute } from "../transport/rtc/command-router.js";
 import { jpegGeometry } from "../transport/p2p/media.js";
 import type { PowerTier } from "../transport/p2p/session-manager.js";
 import { MqttCommandRouter } from "../transport/mqtt/command-router.js";
@@ -2553,8 +2553,6 @@ export class EufyMega extends EventEmitter {
       (resolved.codec === "vacuum" || resolved.codec === "mower") && rec.model
         ? await this.fetchDpCatalog(rec.model)
         : undefined;
-    const rtcRoute = this.rtcRouteFor(sn);
-    const refusedCommandKinds = rtcRoute ? RTC_REFUSED_COMMAND_KINDS : undefined;
     return {
       channel,
       timezone: recordString(parentRaw ?? {}, "time_zone"),
@@ -2588,7 +2586,6 @@ export class EufyMega extends EventEmitter {
       // A station that isn't the device itself means HomeBase-attached (outdoor mode makes it its own).
       homeBaseAttached: rec.parentSn !== undefined,
       stationDeviceType: this.stationDeviceTypeOf(sn),
-      refusedCommandKinds,
       dpCatalog,
     };
   }
