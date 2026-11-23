@@ -207,8 +207,8 @@ export interface DeviceRegistryDeps {
 /**
  * How long a fetched device list is reused by {@link DeviceRegistry.refreshedList}.
  *
- * The list is account-wide (`get_house_list` plus one `get_devs_list` per house), so a convergence wait polling
- * it, or a fleet resolved on a cold cache, must not trigger one fetch per iteration or per device.
+ * The list is account-wide (`get_house_list` plus one `get_devs_list` per house), so a fleet resolved on a cold
+ * cache must not trigger one fetch per device.
  */
 const LIST_REUSE_MS = 5_000;
 
@@ -582,10 +582,6 @@ export class DeviceRegistry {
    * cycle over N devices would multiply into N of those bursts — and every fetch clears the capability caches,
    * so they would stop working. One fetch serves every device that wants the same answer.
    *
-   * This is the ONLY way a caller in a loop should ask for a fresher list. A convergence wait that polls
-   * {@link getDevices} directly bypasses both the window and the coalescing, so one write whose param never
-   * lands spends a whole account-wide burst per iteration, and concurrent transitions multiply that again.
-   *
    * Only a fetch that RESOLVED opens the reuse window. {@link getDevices} tolerates a failing house/body
    * query as a partial and answers anyway, so an outage still holds the window on purpose — retrying per
    * device is how one outage becomes N bursts. What must not hold it is the one failure that rejects: a dead
@@ -662,6 +658,11 @@ export class DeviceRegistry {
     const reported = this.dpParams.get(sn);
     if (!reported) return;
     for (const paramType of paramTypes) delete reported[paramType];
+  }
+
+  /** One param's current value: the device's realtime report, else the cloud list's. */
+  paramOf(sn: string, paramType: number): string | undefined {
+    return this.dpParams.get(sn)?.[paramType] ?? this.devices.find((d) => d.sn === sn)?.params?.[paramType];
   }
 
   /** Whether this device has reported any realtime state yet. */

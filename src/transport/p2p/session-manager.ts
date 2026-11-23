@@ -16,9 +16,6 @@
  * counter hits zero the idle timer arms; a new retain cancels it. `wired` stations use an infinite
  * window (never auto-close); `battery` stations a short one.
  *
- * A hold is distinguished from an attached viewer only for {@link SessionManager.resetWhenUnused},
- * which may close through expiring holds but must wait for a real viewer.
- *
  * @module transport/p2p/session-manager
  */
 import { Timer } from "../../core/util.js";
@@ -63,7 +60,6 @@ interface SessionEntry {
   session?: P2PSession;
   retained: number;
   holdTimers: Set<ReturnType<typeof setTimeout>>;
-  reset?: PromiseWithResolvers<void>;
   idle: Timer;
   connecting?: Promise<P2PSession>;
 }
@@ -79,10 +75,9 @@ export interface SessionManagerOpts {
    */
   poweredFor?: (parentSn: string) => PowerTier;
   /**
-   * Called with the station of a session the manager closed on its OWN initiative — an elapsed idle window,
-   * or a deferred reset falling due.
+   * Called with the station of a session the manager closed on its OWN initiative — an elapsed idle window.
    *
-   * Those two are the only closes with no caller to follow up: everything riding the session is stale the
+   * That is the only close with no caller to follow up: everything riding the session is stale the
    * moment it goes, and only the owner knows what that is. A close a caller asked for is that caller's to
    * clean up after, which is why this does not fire for {@link SessionManager.close},
    * {@link SessionManager.closeAll}, or a superseded open.
@@ -196,9 +191,8 @@ export class SessionManager {
    * Release a reason; arm the idle-close when the last one goes.
    *
    * A release with nothing retained is REFUSED rather than clamped to zero. Such a release was never
-   * earned on this entry, and letting it proceed would either restart a battery station's idle window
-   * from scratch or complete a deferred reset a real viewer has not yet earned. Clamping to zero did
-   * both silently.
+   * earned on this entry, and letting it proceed would restart a battery station's idle window from
+   * scratch. Clamping to zero did that silently.
    */
   release(key: string): void {
     const e = this.entries.get(key);
@@ -208,10 +202,6 @@ export class SessionManager {
       return;
     }
     e.retained -= 1;
-    if (e.reset && e.retained <= e.holdTimers.size) {
-      void this.autoClose(key).catch((error) => this.logger.error(`[session ${key}] deferred reset failed`, error));
-      return;
-    }
     if (e.retained === 0) this.armIdle(key, e);
   }
 
@@ -278,11 +268,9 @@ export class SessionManager {
    * about a teardown it did not request, and so the only way anything riding the session — a lingering
    * live source, a talkback — gets dropped rather than handed out again over a dead connection.
    *
-   * It fires the moment the entry is discarded, BEFORE the socket teardown and before any deferred reset
-   * settles. That is deliberate on both counts: from the instant the entry is gone a fresh acquisition
-   * resolves a new session while a cached source still points at the old one, so announcing later leaves
-   * a window in which a viewer can attach to a stale source; and a caller awaiting a reset should find
-   * the station's riders already dropped when it resumes.
+   * It fires the moment the entry is discarded, BEFORE the socket teardown: from the instant the entry is
+   * gone a fresh acquisition resolves a new session while a cached source still points at the old one, so
+   * announcing later leaves a window in which a viewer can attach to a stale source.
    *
    * An entry that never carried a session is still torn down, but silently: a pre-warm whose open failed
    * leaves one behind, and announcing it would report a station closed that was never reported open.
@@ -291,61 +279,22 @@ export class SessionManager {
     const entry = this.discard(key);
     if (!entry) return;
     if (entry.session) this.opts.onAutoClose?.(key);
-    await this.closeEntry(entry);
+    await entry.session?.close();
   }
 
   /** Drop a station's entry + timer (called from the session's `close` handler). Idempotent. */
   remove(key: string): void {
-    const entry = this.discard(key);
-    if (entry) this.settleReset(entry);
+    this.discard(key);
   }
 
   /** Close one station now and discard its lifecycle entry. */
   async close(key: string): Promise<void> {
     const entry = this.discard(key);
-    if (entry) await this.closeEntry(entry);
+    if (entry) await entry.session?.close();
   }
 
   /**
-   * Reset once every viewer detaches, ignoring only expiring holds.
-   *
-   * Every caller that arrives while one is already pending gets the SAME promise: the outcome is a
-   * property of the station's teardown, not of who asked, so one deferred per entry is the whole
-   * mechanism — and it cannot grow with the number of callers.
-   *
-   * Both branches close through {@link autoClose}: the caller asked for a recycle, not for the station's
-   * live sources to be dropped, so it does not clean up after one — exactly like the idle path.
-   */
-  resetWhenUnused(key: string): Promise<void> {
-    const entry = this.entries.get(key);
-    if (!entry) return Promise.resolve();
-    if (entry.retained <= entry.holdTimers.size) return this.autoClose(key);
-    entry.reset ??= Promise.withResolvers<void>();
-    return entry.reset.promise;
-  }
-
-  /** Settle a discarded entry's reset callers with the same outcome as its session close. */
-  private settleReset(entry: SessionEntry, failure?: { error: unknown }): void {
-    const reset = entry.reset;
-    if (!reset) return;
-    entry.reset = undefined;
-    if (failure) reset.reject(failure.error);
-    else reset.resolve();
-  }
-
-  /** Close one discarded entry and settle only its own reset callers before preserving any failure. */
-  private async closeEntry(entry: SessionEntry): Promise<void> {
-    try {
-      await entry.session?.close();
-      this.settleReset(entry);
-    } catch (error) {
-      this.settleReset(entry, { error });
-      throw error;
-    }
-  }
-
-  /**
-   * Discard one lifecycle entry and return it for bounded close/reset completion.
+   * Discard one lifecycle entry and return it for its close.
    *
    * Every timer the entry owns dies with it — the idle window and any hold still counting down. A
    * discarded entry owns no live timer, which is what stops a deferred release from landing on whatever
@@ -368,7 +317,7 @@ export class SessionManager {
       const entry = this.discard(key);
       return entry ? [entry] : [];
     });
-    const results = await Promise.allSettled(entries.map((entry) => this.closeEntry(entry)));
+    const results = await Promise.allSettled(entries.map((entry) => entry.session?.close()));
     const failures = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, "multiple P2P sessions failed to close");

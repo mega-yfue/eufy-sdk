@@ -38,6 +38,7 @@ import {
   buildCommand as buildCapabilityCommand,
   decodeEvent as decodeCapabilityEvent,
   STATE_EVENT_FIELDS,
+  STATION_PARAM_EVENTS,
   decodeState as decodeCapabilityState,
   buildRealtimeInit,
   hasRealtimeReads,
@@ -53,9 +54,7 @@ import {
   commandObservation,
   commandReflection,
   LiveSnapshotUnavailableError,
-  StateConvergenceError,
   type Command,
-  type CommandObservation,
   type CommandSink,
   type Ff09SettingsReader,
   type MediaProvider,
@@ -109,11 +108,6 @@ export type {
   WaitForRealtimeOptions,
 } from "./types.js";
 
-type SemanticEventRefresh = Pick<CommandObservation, "param" | "property" | "resetStandaloneSession" | "timeoutMs"> & {
-  expected?: CommandObservation["expected"];
-  observed?: CommandObservation["observed"];
-};
-
 /** A parent that isn't the device itself means HomeBase-attached. */
 const homeBaseAttached = (raw: Record<string, any>, sn: string): boolean => !!raw.parent_sn && raw.parent_sn !== sn;
 
@@ -146,16 +140,6 @@ const DEFAULT_POLL_MS = 600_000;
 const DEFAULT_PREWARM_TIERS: readonly PowerTier[] = ["wired", "battery"];
 
 /**
- * How long a write waits for the session recycle it asked for before letting go of the wait.
- *
- * A recycle that nothing is holding completes in the time one session teardown takes, so this bound is
- * never reached in the ordinary case. It exists for the case where a viewer is attached: the recycle
- * then waits for that viewer to detach, which may be minutes or never, and the wait is what a following
- * write to the same member queues behind. Letting go does not cancel the recycle.
- */
-const SESSION_RECYCLE_WAIT_MS = 5_000;
-
-/**
  * Backoff bounds for bringing push up again after its startup attempt failed: the first retry waits the
  * minimum, each following one doubles, capped at the maximum — the same ten-minute ceiling the MCS
  * socket's own reconnect backs off to.
@@ -183,15 +167,6 @@ interface RealtimeGeneration {
 }
 
 class RealtimeStartupSupersededError extends Error {}
-
-/**
- * The convergence window closed while waiting on a dependency, rather than the dependency failing.
- *
- * Distinguishing the two is what lets {@link EufyMega.refreshEventState} answer a write that was never applied
- * with the member it was waiting for: without it the last poll's own deadline escapes first, and the caller is
- * told only that something timed out somewhere.
- */
-class RefreshWindowClosedError extends Error {}
 
 interface MutableRealtimePlaneReadiness {
   required: number;
@@ -296,10 +271,6 @@ export class EufyMega extends EventEmitter {
    * this map must never be what keeps one alive.
    */
   private readonly liveDevices = new Map<string, WeakRef<Device>>();
-  /** Serialized state-transition transactions keyed by device and reflected member. */
-  private readonly stateTransitions = new Map<string, Promise<unknown>>();
-  /** Local writes already awaiting the same semantic transition, counted per reflected member. */
-  private readonly commandRefreshes = new Map<string, { epoch: number; count: number }>();
   /**
    * The param ids each bound device's read getters were built from — the evidence the gate saw at bind
    * time. Compared against an incoming report to notice when one carries an id the getters do not cover
@@ -512,29 +483,6 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * Reports what became of a command already acknowledged to its caller.
-   *
-   * A write whose declared observation never converged is not a fault of this client, so it does not reach
-   * the generic error bus: it is the answer to a question `dispatch` deliberately does not wait for, and it
-   * gets its own channel for exactly the reason `commandAck` has one. Anything else that goes wrong after
-   * the acknowledgement is a genuine fault and is reported as one.
-   */
-  private reportUnacknowledged(e: unknown): void {
-    if (e instanceof StateConvergenceError) {
-      this.emit("commandUnconfirmed", {
-        sn: e.sn,
-        property: e.property,
-        param: e.param,
-        expected: e.expected,
-        observed: e.observed,
-        timeoutMs: e.timeoutMs,
-      });
-      return;
-    }
-    this.reportError(e);
-  }
-
-  /**
    * Route an internal error to the host, without being able to kill it.
    *
    * A {@link SessionExpiredError} — a kicked/expired token, the transport having already cleared the
@@ -670,9 +618,13 @@ export class EufyMega extends EventEmitter {
     if (store.apply(piece)) this.emit("map", { deviceSn, map: store.snapshot });
   }
 
-  private applyRealtimeReport(sn: string | undefined, states: readonly { params: Record<number, string> }[]): void {
+  private applyRealtimeReport(
+    sn: string | undefined,
+    states: readonly { params: Record<number, string> }[],
+    events?: Readonly<Record<number, string>>,
+  ): void {
     if (!states.length) return;
-    this.applyRealtimeState(sn, Object.assign({}, ...states.map((s) => s.params)));
+    this.applyRealtimeState(sn, Object.assign({}, ...states.map((s) => s.params)), events);
   }
 
   /**
@@ -693,9 +645,20 @@ export class EufyMega extends EventEmitter {
    * report fans out to one call per capability that decoded it, and the re-bind is a cloud round-trip:
    * advancing the set here is what stops the second call from firing a duplicate, and what stops a
    * failed re-bind from re-triggering on every subsequent report.
+   *
+   * `events` names the semantic event a param announces when this report moves its value, once per event.
    */
-  private applyRealtimeState(sn: string | undefined, params: Record<number, string>): void {
+  private applyRealtimeState(
+    sn: string | undefined,
+    params: Record<number, string>,
+    events?: Readonly<Record<number, string>>,
+  ): void {
     if (!sn) return;
+    const moved = new Set(
+      Object.entries(events ?? {})
+        .filter(([id]) => id in params && this.registry.paramOf(sn, Number(id)) !== params[Number(id)])
+        .map(([, event]) => event),
+    );
     const known = this.boundParamIds.get(sn);
     const reported = Object.keys(params).map(Number);
     const widens = known ? reported.some((id) => !known.has(id)) : false;
@@ -704,6 +667,7 @@ export class EufyMega extends EventEmitter {
     const device = this.liveDeviceToAnnounce(sn);
     if (device) this.applyAndAnnounce(device, params);
     this.emit("deviceState", this.deviceState(sn));
+    for (const event of moved) this.emitSemantic(event, { deviceSn: sn });
     if (widens) void this.rebindReads(sn);
   }
 
@@ -809,32 +773,7 @@ export class EufyMega extends EventEmitter {
    * and must still update what is known, or the next realtime signal carrying that same value would
    * read as a change and be announced a second time.
    */
-  private emitSemantic(
-    event: string,
-    payload: Record<string, unknown>,
-    opts: {
-      edge?: boolean;
-      refresh?: SemanticEventRefresh;
-    } = {},
-  ): void {
-    const refresh = opts.refresh;
-    const deviceSn = payload.deviceSn;
-    if (refresh && typeof deviceSn === "string") {
-      const key = this.eventRefreshKey(deviceSn, refresh);
-      const commandOwner = this.commandRefreshes.get(key);
-      if (commandOwner?.epoch === this.realtimeEpoch && commandOwner.count > 0) return;
-      const device = this.liveDevices.get(deviceSn)?.deref();
-      if (device) {
-        const emission = this.enqueueStateTransition(key, () => this.refreshEventState(deviceSn, refresh))
-          .then(async (refreshed) => {
-            if (!refreshed) return;
-            this.emitSemantic(event, payload, { edge: opts.edge });
-          })
-          .catch((error) => this.reportError(error));
-        void emission;
-        return;
-      }
-    }
+  private emitSemantic(event: string, payload: Record<string, unknown>, opts: { edge?: boolean } = {}): void {
     const repeat = this.noteState(event, payload);
     if (opts.edge && repeat) return;
     const emit = this.emit as (e: string, p: unknown) => boolean;
@@ -843,129 +782,8 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * Await one capability-declared reflected param before publishing its valueless transition event.
-   *
-   * The state already on hand is consulted BEFORE fetching, but only where the observation carries a concrete
-   * value to compare against: a device that reports the written param on its own session lands it through
-   * {@link applyRealtimeState} within seconds, and polling the account device list to learn what the device has
-   * already said costs a dozen requests to reach the same answer. Without an expectation, "converged" means
-   * only "differs from what was read before", which state already on hand can satisfy spuriously — and the
-   * caller that has no expectation is the push path, where the signal itself is the news that a re-read is owed.
-   *
-   * Only a write's observation throws at the deadline; a push with nothing moved answers `false`.
-   *
-   * The cloud half is asked for through {@link DeviceRegistry.refreshedList}, never by fetching the account
-   * list outright. The fetch is account-wide — one house list plus one device list per house — so a param that
-   * never converges would otherwise spend a whole burst of those every iteration of this loop, and concurrent
-   * transitions would multiply it by however many are in flight. The registry's reuse window and its
-   * single in-flight fetch collapse all of that to one list per window, shared across every waiter. The loop
-   * still turns on its own cadence: each pass re-reads what is known, so a value the device volunteers over
-   * its own session settles the wait between two cloud reads rather than after them.
-   */
-  private refreshEventState(sn: string, refresh: SemanticEventRefresh): Promise<boolean> {
-    const epoch = this.realtimeEpoch;
-    return (async (): Promise<boolean> => {
-      if (epoch !== this.realtimeEpoch) return false;
-      const initialDevice = this.liveDevices.get(sn)?.deref();
-      const before = initialDevice?.getProperty(refresh.property)?.value;
-      const rawBefore = this.registry.require(sn).params?.[refresh.param];
-      const deadline = Date.now() + refresh.timeoutMs;
-      /**
-       * Whether the state already on hand satisfies the observation, applying it to the live device when it
-       * does. Reads what is already known and fetches nothing, so a param the DEVICE volunteered over its own
-       * session settles the write for free.
-       *
-       * Lands and announces the observed param alone: the record is the cloud half, and the rest of it would
-       * revert ids the device has reported over realtime since.
-       */
-      const settled = (): boolean => {
-        const device = this.liveDevices.get(sn)?.deref();
-        const record = this.registry.require(sn);
-        const rawValue = record.params?.[refresh.param];
-        const converged =
-          refresh.expected === undefined
-            ? device
-              ? String(rawValue) !== String(before)
-              : rawValue !== rawBefore
-            : String(rawValue) === String(refresh.expected);
-        if (!converged) return false;
-        if (!device) return true;
-        this.applyAndAnnounce(device, rawValue === undefined ? {} : { [refresh.param]: String(rawValue) });
-        return this.matchesObservation(device.getProperty(refresh.property)?.value, refresh, before);
-      };
-      if (refresh.expected !== undefined && settled()) return true;
-      while (Date.now() < deadline) {
-        const remaining = deadline - Date.now();
-        try {
-          await this.beforeDeadline(this.registry.refreshedList(sn), remaining);
-        } catch (error) {
-          if (!(error instanceof RefreshWindowClosedError)) throw error;
-          break;
-        }
-        if (epoch !== this.realtimeEpoch) return false;
-        if (settled()) return true;
-        const delay = Math.min(500, deadline - Date.now());
-        if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
-        if (refresh.expected !== undefined && settled()) return true;
-      }
-      if (refresh.expected === undefined) return false;
-      throw new StateConvergenceError({
-        sn,
-        property: refresh.property,
-        param: refresh.param,
-        expected: refresh.expected,
-        observed: this.registry.require(sn).params?.[refresh.param],
-        timeoutMs: refresh.timeoutMs,
-      });
-    })();
-  }
-
-  /** Serialize one complete state-transition transaction behind its keyed predecessor. */
-  private enqueueStateTransition<T>(key: string, operation: () => Promise<T>): Promise<T> {
-    const predecessor = this.stateTransitions.get(key);
-    const current = (async (): Promise<T> => {
-      if (predecessor) {
-        try {
-          await predecessor;
-        } catch {}
-      }
-      return operation();
-    })();
-    const tracked = current.finally(() => {
-      if (this.stateTransitions.get(key) === tracked) this.stateTransitions.delete(key);
-    });
-    this.stateTransitions.set(key, tracked);
-    return tracked;
-  }
-
-  /**
-   * Recycle a standalone device's P2P session after a write that needs one, waiting only
-   * {@link SESSION_RECYCLE_WAIT_MS} for it.
-   *
-   * The recycle itself waits for every viewer to detach, so that a write does not drop a live stream.
-   * That wait is unbounded by design — a viewer may watch indefinitely — and it happens INSIDE the keyed
-   * transaction, so the next write to the same member queues behind it. Racing it decouples the two: the
-   * losing recycle stays pending and still runs when the station falls idle, it just stops gating an
-   * unrelated write.
-   *
-   * A failure reported before the bound propagates; one arriving after it survives only as the session
-   * manager's own log, since by then nothing is waiting to receive it.
-   */
-  private recycleStandaloneSession(sn: string): Promise<void> {
-    const releaseWrite = new Promise<void>((resolve) => void setTimeout(resolve, SESSION_RECYCLE_WAIT_MS).unref?.());
-    return Promise.race([
-      this.p2p.resetStandaloneSession(sn).finally(() => this.reopenWiredStation(sn)),
-      releaseWrite.then(() =>
-        this.opts.logger?.debug(
-          `[session ${sn}] recycle still waiting on an attached viewer — releasing the write that asked for it`,
-        ),
-      ),
-    ]);
-  }
-
-  /**
-   * Reopen a wired station's session while the generation that warmed it is current: after
-   * {@link recycleStandaloneSession} closed it, after it closed on its own, or after its warm-up failed.
+   * Reopen a wired station's session while the generation that warmed it is current: after it closed on its
+   * own, or after its warm-up failed.
    *
    * A wired station's session is the persistent one realtime start opened, so a station left without one
    * receives nothing until a command dials it again. The first reopen runs at once; one that fails is
@@ -992,47 +810,6 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * Whether the DECODED property now reads what the write asked for.
-   *
-   * Compared against {@link CommandObservation.observed} where the property's decode is not the identity, and
-   * against the raw expectation only where the two coincide. A disable-bit param reports `0` for a property
-   * that reads `true`, so comparing the decoded value against the raw expectation would reject a write that
-   * had landed — the value converged and the transition event never fired.
-   */
-  private matchesObservation(
-    value: unknown,
-    refresh: SemanticEventRefresh & { expected?: boolean | number | string; observed?: boolean | number | string },
-    before: unknown,
-  ): boolean {
-    const want = refresh.observed ?? refresh.expected;
-    return want === undefined ? value !== before : String(value) === String(want);
-  }
-
-  private eventRefreshKey(sn: string, refresh: Pick<CommandObservation, "param">): string {
-    return `${sn}:${refresh.param}`;
-  }
-
-  /** Limit waiting on an unabortable dependency operation to the remaining semantic-event refresh window. */
-  private beforeDeadline<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
-      const timeout = setTimeout(
-        () => reject(new RefreshWindowClosedError("refresh window closed")),
-        Math.max(0, timeoutMs),
-      );
-      operation.then(
-        (value) => {
-          clearTimeout(timeout);
-          resolve(value);
-        },
-        (error) => {
-          clearTimeout(timeout);
-          reject(error);
-        },
-      );
-    });
-  }
-
-  /**
    * Fan one inbound P2P frame out: raw escape hatch, device state, then semantic events.
    *
    * The frame is decoded against the capabilities of the device it came FROM, resolved from the
@@ -1044,7 +821,8 @@ export class EufyMega extends EventEmitter {
    * fans same-kind sensors out by channel, so the resolved serial is folded in; a payload's own
    * fields still win on conflict.
    *
-   * A station's camera-info table lands per channel, each channel's params on the device attached there.
+   * A station's camera-info table lands per channel, each channel's params on the device attached there. State a
+   * station-owned capability decodes lands on the station itself, whatever channel the frame names.
    *
    * Params the station volunteered land as device state first. They arrive in the cloud record's own
    * `param_type → value` shape, so no capability has to claim an id it does not own, and the reads
@@ -1068,11 +846,11 @@ export class EufyMega extends EventEmitter {
     for (const [channel, params] of Object.entries(f.channelParams ?? {}))
       this.applyRealtimeState(this.registry.serialForFrame(stationSn, Number(channel)), params);
     this.applyRealtimeReport(deviceSn, decodeCapabilityState(signal, caps));
+    const stationCaps = this.registry.capabilitiesForDevice(stationSn);
+    if (stationCaps)
+      this.applyRealtimeReport(stationSn, decodeCapabilityState(signal, stationCaps, true), STATION_PARAM_EVENTS);
     for (const ev of decodeCapabilityEvent(signal, caps))
-      this.emitSemantic(ev.event, deviceSn ? { deviceSn, ...ev.payload } : ev.payload, {
-        edge: true,
-        refresh: ev.refresh,
-      });
+      this.emitSemantic(ev.event, deviceSn ? { deviceSn, ...ev.payload } : ev.payload, { edge: true });
   }
 
   /**
@@ -1202,61 +980,11 @@ export class EufyMega extends EventEmitter {
    * know which, and this facade names no capability and builds no wire bytes itself. The `ff09-*` kinds
    * ride ONE shared frame over BOTH P2P and secure-MQTT, so they're routed by the device's topology
    * (`p2p_did` present → P2P, else MQTT); the chosen router re-resolves its own routing tail. Every
-   * other kind is P2P.
+   * other kind is P2P. Nothing re-reads the cloud to confirm a write ({@link routeAndReflect}).
    */
   private commandSinkFor(sn: string): CommandSink {
     return {
-      dispatch: async (cmd: Command) => {
-        const observation = commandObservation(cmd);
-        if (!observation) {
-          await this.routeAndReflect(sn, cmd);
-          return;
-        }
-        const key = this.eventRefreshKey(sn, observation);
-        const epoch = this.realtimeEpoch;
-        const owner = this.commandRefreshes.get(key);
-        const currentOwner = owner?.epoch === epoch ? owner : { epoch, count: 0 };
-        currentOwner.count += 1;
-        this.commandRefreshes.set(key, currentOwner);
-        let acknowledge!: () => void;
-        let reject!: (error: unknown) => void;
-        let acknowledged = false;
-        const acknowledgement = new Promise<void>((resolve, rejectPromise) => {
-          acknowledge = () => {
-            acknowledged = true;
-            resolve();
-          };
-          reject = rejectPromise;
-        });
-        const release = (): void => {
-          if (this.commandRefreshes.get(key) === currentOwner) {
-            currentOwner.count -= 1;
-            if (currentOwner.count === 0) this.commandRefreshes.delete(key);
-          }
-        };
-        const transaction = this.enqueueStateTransition(key, async () => {
-          try {
-            if (epoch !== this.realtimeEpoch) throw new Error("observed command superseded by disconnect");
-            await this.routeAndReflect(sn, cmd);
-            acknowledge();
-            const refreshed = await this.refreshEventState(sn, observation);
-            if (!refreshed || epoch !== this.realtimeEpoch) return;
-            this.emitSemantic(observation.event, { deviceSn: sn });
-            if (observation.resetStandaloneSession) await this.recycleStandaloneSession(sn);
-          } catch (error) {
-            if (!acknowledged) reject(error);
-            else this.reportUnacknowledged(error);
-          } finally {
-            release();
-          }
-        });
-        void transaction.catch((error) => {
-          if (!acknowledged) reject(error);
-          else this.reportUnacknowledged(error);
-          release();
-        });
-        return acknowledgement;
-      },
+      dispatch: async (cmd: Command) => void (await this.routeAndReflect(sn, cmd)),
     };
   }
 
@@ -1315,15 +1043,19 @@ export class EufyMega extends EventEmitter {
    * Route a command, then the `next` one it carries (a cloud call only once the device answered the command
    * with success, as the app calls `update_device_info` after a rename it saw succeed), and, when it did, land
    * the value it now holds under the param its member reads ({@link commandReflection}) through the realtime
-   * path, so the getter reads it and `propertyChanged` announces it as for any report. A write sent unread,
-   * refused or unanswered changes nothing here.
+   * path, so the getter reads it and `propertyChanged` announces it as for any report, and the event its
+   * {@link commandObservation} names announces the value only where it moved. A write sent unread,
+   * refused or unanswered changes nothing here. Answers whether the device answered with success.
    */
-  private async routeAndReflect(sn: string, cmd: Command): Promise<void> {
+  private async routeAndReflect(sn: string, cmd: Command): Promise<boolean> {
     const answered = await this.routeCommand(sn, cmd);
-    if (cmd.next && (cmd.next.kind !== "cloud-request" || answered === true)) await this.routeAndReflect(sn, cmd.next);
-    if (answered !== true) return;
+    if (cmd.next && (cmd.next.kind !== "cloud-request" || answered)) await this.routeAndReflect(sn, cmd.next);
+    if (!answered) return false;
     const reflected = commandReflection(cmd);
-    if (reflected) this.applyRealtimeState(sn, { [reflected.param]: reflected.raw });
+    const event = commandObservation(cmd)?.event;
+    if (reflected)
+      this.applyRealtimeState(sn, { [reflected.param]: reflected.raw }, event && { [reflected.param]: event });
+    return true;
   }
 
   /**
@@ -1342,7 +1074,7 @@ export class EufyMega extends EventEmitter {
    * {@link rtcRouteFor} route goes over RTC, an attached device's command refused unless its channel resolves
    * back to it on the station. Everything else is P2P.
    */
-  private routeCommand(sn: string, cmd: Command): Promise<boolean | void> {
+  private routeCommand(sn: string, cmd: Command): Promise<boolean> {
     if (
       cmd.kind === "ff09-actuate" ||
       cmd.kind === "ff09-autolock" ||
@@ -1856,7 +1588,7 @@ export class EufyMega extends EventEmitter {
       this.applyPolledParams(diff.params);
       for (const change of diff.params)
         for (const out of decodeCapabilityEvent({ source: "poll", ...change }, this.capsForEvent(change.deviceSn)))
-          this.emitSemantic(out.event, out.payload, { refresh: out.refresh });
+          this.emitSemantic(out.event, out.payload);
       for (const dev of diff.reported) this.emit("deviceState", this.stateOf(dev));
       for (const sn of new Set(diff.params.map((c) => c.deviceSn))) await this.widenCapabilities(sn);
       await this.syncMqttRoster();
@@ -2194,8 +1926,7 @@ export class EufyMega extends EventEmitter {
       const caps = m.deviceSn ? this.capsForEvent(m.deviceSn) : undefined;
       const reported = signal.dpParams ? [{ params: signal.dpParams }] : [];
       this.applyRealtimeReport(m.deviceSn, [...reported, ...decodeCapabilityState(signal, caps)]);
-      for (const out of decodeCapabilityEvent(signal, caps))
-        this.emitSemantic(out.event, out.payload, { edge: true, refresh: out.refresh });
+      for (const out of decodeCapabilityEvent(signal, caps)) this.emitSemantic(out.event, out.payload, { edge: true });
     });
     transport.on("error", (e) => this.reportError(e));
 
@@ -2653,7 +2384,7 @@ export class EufyMega extends EventEmitter {
         `[push] in: eventType=${ev.eventType} device=${caps ? "known" : ev.deviceSn ? "unknown" : "none"} events=${decoded.length}${repeat ? " (repeat)" : ""}`,
       );
       for (const out of decoded) {
-        this.emitSemantic(out.event, out.payload, { edge: true, refresh: out.refresh });
+        this.emitSemantic(out.event, out.payload, { edge: true });
         const dsn = (out.payload.deviceSn as string | undefined) ?? ev.deviceSn;
         if (dsn) this.prewarmForEvent(out.event, dsn);
       }
@@ -2727,8 +2458,6 @@ export class EufyMega extends EventEmitter {
    */
   async disconnect(): Promise<void> {
     this.realtimeEpoch++;
-    this.stateTransitions.clear();
-    this.commandRefreshes.clear();
     if (this.realtimeGeneration) {
       const generation = this.realtimeGeneration;
       generation.superseded = readinessSnapshot(generation.result ?? generation.readiness, "superseded");

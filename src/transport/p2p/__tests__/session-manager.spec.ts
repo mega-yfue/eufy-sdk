@@ -128,53 +128,6 @@ describe("SessionManager lifecycle", () => {
     await expect(mgr.acquire("ST", async () => fresh)).resolves.toBe(fresh);
   });
 
-  it("reset ignores command holds but waits for active session consumers", async () => {
-    const mgr = managerFor("battery");
-    const session = fakeSession();
-    await mgr.acquire("ST", async () => session);
-    mgr.retain("ST");
-    mgr.bumpCommand("ST");
-
-    const reset = mgr.resetWhenUnused("ST");
-    let resetFinished = false;
-    void reset.then(() => {
-      resetFinished = true;
-    });
-    expect(session.close).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(100);
-    expect(session.close).not.toHaveBeenCalled();
-    expect(resetFinished).toBe(false);
-
-    mgr.release("ST");
-    await reset;
-    expect(session.close).toHaveBeenCalledOnce();
-    expect(resetFinished).toBe(true);
-  });
-
-  it("hands every caller of a pending reset the same promise, so waiters cannot pile up", async () => {
-    const mgr = managerFor("battery");
-    mgr.register("ST", fakeSession());
-    mgr.retain("ST");
-
-    const first = mgr.resetWhenUnused("ST");
-    expect(mgr.resetWhenUnused("ST")).toBe(first);
-
-    mgr.release("ST");
-    await first;
-  });
-
-  it("reset closes immediately when only command holds remain", async () => {
-    const mgr = managerFor("battery");
-    const session = fakeSession();
-    await mgr.acquire("ST", async () => session);
-    mgr.bumpCommand("ST");
-
-    await mgr.resetWhenUnused("ST");
-
-    expect(session.close).toHaveBeenCalledOnce();
-    expect(mgr.get("ST") !== undefined).toBe(false);
-  });
-
   it("closeAll closes every live session and clears timers", async () => {
     const mgr = managerFor("wired");
     const a = fakeSession("a");
@@ -185,43 +138,6 @@ describe("SessionManager lifecycle", () => {
     expect(a.close).toHaveBeenCalledOnce();
     expect(b.close).toHaveBeenCalledOnce();
     expect(mgr.keys().length).toBe(0);
-  });
-
-  it("close rejects deferred reset waiters when session teardown fails", async () => {
-    const mgr = managerFor("wired");
-    const failure = new Error("close failed");
-    const session = fakeSession();
-    vi.mocked(session.close).mockRejectedValue(failure);
-    await mgr.acquire("ST", async () => session);
-    mgr.retain("ST");
-    const reset = mgr.resetWhenUnused("ST");
-
-    const resetResult = expect(reset).rejects.toBe(failure);
-    await expect(mgr.close("ST")).rejects.toBe(failure);
-
-    await resetResult;
-  });
-
-  it("closeAll settles each reset waiter and still reports teardown failure", async () => {
-    const mgr = managerFor("wired");
-    const failure = new Error("close failed");
-    const failed = fakeSession("failed");
-    const closed = fakeSession("closed");
-    vi.mocked(failed.close).mockRejectedValue(failure);
-    await mgr.acquire("A", async () => failed);
-    await mgr.acquire("B", async () => closed);
-    mgr.retain("A");
-    mgr.retain("B");
-    const failedReset = mgr.resetWhenUnused("A");
-    const closedReset = mgr.resetWhenUnused("B");
-
-    const failedResetResult = expect(failedReset).rejects.toBe(failure);
-    const closedResetResult = expect(closedReset).resolves.toBeUndefined();
-    await expect(mgr.closeAll()).rejects.toBe(failure);
-
-    await Promise.all([failedResetResult, closedResetResult]);
-    expect(failed.close).toHaveBeenCalledOnce();
-    expect(closed.close).toHaveBeenCalledOnce();
   });
 
   it("register makes a session live without arming any idle timer", async () => {
@@ -239,7 +155,7 @@ describe("SessionManager lifecycle", () => {
 
     mgr.bumpCommand("ST");
     mgr.bumpCommand("ST");
-    await mgr.resetWhenUnused("ST");
+    await mgr.close("ST");
     expect(mgr.get("ST") !== undefined).toBe(false);
 
     const second = fakeSession("second");

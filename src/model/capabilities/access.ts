@@ -53,18 +53,19 @@ export function setPayload(
   ctx: CommandContext,
   mValue3?: number,
   channel?: number,
+  answerMs?: number,
 ): Command {
   // `channel` overrides the envelope's mChannel (default = the device channel). Some commands send
   // mChannel 0 and carry the device channel INSIDE the payload instead (e.g. night vision 1277).
-  return { kind: "set-payload", cmd, payload, channel: channel ?? ctx.channel, mValue3 };
+  return { kind: "set-payload", cmd, payload, channel: channel ?? ctx.channel, mValue3, answerMs };
 }
 
 /**
  * Set a station-scoped scalar (132-byte body, no channel field) on an EXPLICIT channel — for the
  * HomeBase's own controls on the station broadcast channel 255 (alarm/speaker volume 1235).
  */
-export function setStationScalar(cmd: number, value: number, channel: number): Command {
-  return { kind: "p2p-station-scalar", cmd, value, channel };
+export function setStationScalar(cmd: number, value: number, channel: number, answerMs?: number): Command {
+  return { kind: "p2p-station-scalar", cmd, value, channel, answerMs };
 }
 
 /**

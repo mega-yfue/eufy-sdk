@@ -106,7 +106,7 @@ describe("MqttCommandRouter.dispatchCommand (ff09-actuate)", () => {
 
     const p = router.dispatchCommand("T85D0K0000000000", cmd);
     await vi.advanceTimersByTimeAsync(10_000);
-    await expect(p).resolves.toBeUndefined(); // fire-and-forget: no ack is not an error
+    await expect(p).resolves.toBe(false); // no ack is not an error, and not done
 
     expect(acks).toEqual([{ sn: "T85D0K0000000000", kind: "ff09-actuate", acked: false }]);
   });

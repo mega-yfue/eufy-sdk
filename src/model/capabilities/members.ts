@@ -80,29 +80,24 @@ export interface ValueMember {
   description: string;
   /** The wire, or absent for read-only. `undefined` from it = this value is not one we accept. */
   write?: (value: boolean | number | string, ctx: CommandContext) => Command | undefined;
-  /** @internal Policy for confirming this write through bounded readback before emitting its transition event. */
+  /** @internal The event this write announces once the device answered it with success. */
   observation?: {
     event: string;
     /**
-     * The param this write will be reflected under and the raw value to expect there, resolved together for
+     * The param this write will be reflected under and the raw value it holds there, resolved together for
      * THIS device — because on some members the family decides both at once.
      *
      * Both, not just the value, because the wire written and the wire reported are not always the same one:
      * camera enablement is written on the enablement param on every family, while the standalone
      * indoor/outdoor cameras report their state under a read alias and never the param that was written.
-     * Polling the written param there would never converge, so the readback has to name the param the device
-     * actually reports.
      *
-     * `undefined` means this device offers no readback to confirm against — it reported no such param, or its
-     * write lands on a wire its read does not observe. The command is then dispatched unobserved rather than
-     * waiting out a timeout that could never be satisfied.
+     * `undefined` means this device offers no readback for the write — it reported no such param, or its
+     * write lands on a wire its read does not observe. The command is then dispatched unobserved.
      */
     reflects(
       value: boolean | number | string,
       ctx: CommandContext,
-    ): { param: number; expected: boolean | number | string; observed?: boolean | number | string } | undefined;
-    resetStandaloneSession?: boolean;
-    timeoutMs: number;
+    ): { param: number; expected: boolean | number | string } | undefined;
   };
   /** Setter name when `set` + the key reads wrong (`isOn` → `set`, not `setIsOn`). */
   writeAs?: string;
@@ -713,17 +708,7 @@ export function memberWrite(
   const reflected = m.observation?.reflects(value, ctx);
   const readback = reflected ? { param: reflected.param, raw: String(reflected.expected) } : readbackOf(m, value, ctx);
   const cmd = readback ? reflectCommand(written, readback) : written;
-  return m.observation && reflected
-    ? observeCommand(cmd, {
-        event: m.observation.event,
-        expected: reflected.expected,
-        observed: reflected.observed,
-        param: reflected.param,
-        property: m.property ?? name,
-        resetStandaloneSession: m.observation.resetStandaloneSession,
-        timeoutMs: m.observation.timeoutMs,
-      })
-    : cmd;
+  return m.observation && reflected ? observeCommand(cmd, { event: m.observation.event }) : cmd;
 }
 
 /**

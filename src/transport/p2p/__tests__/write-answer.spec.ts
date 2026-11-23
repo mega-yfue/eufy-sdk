@@ -178,6 +178,33 @@ function session(signMode0 = false, stationSn = STATION_SN) {
   };
 }
 
+/** The app bounds its guard-mode request at 6 s per device and never resends it. */
+describe("a station scalar that states its answer deadline", () => {
+  const guard = { kind: "p2p-station-scalar", cmd: 1224, value: 63, channel: 255, answerMs: 6_000 } as const;
+
+  it("answers true on the station's success", async () => {
+    const { router } = station(0);
+    await expect(router.dispatchCommand(DEVICE_SN, guard)).resolves.toBe(true);
+  });
+
+  it("rejects when the station does not answer within the deadline", async () => {
+    vi.useFakeTimers();
+    const { router } = station();
+    let outcome: unknown;
+    void router.dispatchCommand(DEVICE_SN, guard).catch((e: unknown) => (outcome = e));
+    await vi.advanceTimersByTimeAsync(5_999);
+    expect(outcome).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(outcome).toBeInstanceOf(CommandResultError);
+  });
+
+  it("does not resend on a code the default write retries", async () => {
+    const { router, session } = station(5, 0);
+    await expect(router.dispatchCommand(DEVICE_SN, guard)).rejects.toMatchObject({ code: 5 });
+    expect(session.sendBytes).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("an acknowledged send", () => {
   it("goes once, and every 2 s only the oldest unacknowledged datagram goes again under its own sequence", () => {
     vi.useFakeTimers();
@@ -244,8 +271,10 @@ describe("one command in flight per device", () => {
   it("runs another device's command while one is in flight", async () => {
     const { router, session } = station();
     void router.dispatchCommand(DEVICE_SN, write).catch(() => {});
-    await router.dispatchCommand(STATION_SN, { kind: "p2p-station-scalar", cmd: 1235, value: 1, channel: 255 });
-    expect(session.sendBytes).toHaveBeenCalledTimes(2);
+    const other = router.dispatchCommand(STATION_SN, { kind: "p2p-station-scalar", cmd: 1235, value: 1, channel: 255 });
+    await vi.waitFor(() => expect(session.sendBytes).toHaveBeenCalledTimes(2));
+    session.emit("commandResult", { code: 0, channel: 255, commandId: 1235 });
+    await expect(other).resolves.toBe(true);
     session.emit("commandResult", { code: 0, channel: CHANNEL, commandId: PARAM });
   });
 });

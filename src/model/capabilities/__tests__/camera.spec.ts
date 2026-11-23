@@ -824,25 +824,21 @@ describe("camera enablement — observed write", () => {
     expect(observationFor("T8410", [OPEN_DEVICE], true)).toEqual({
       param: OPEN_DEVICE,
       expected: "true",
-      observed: true,
     });
     expect(observationFor("T8410", [OPEN_DEVICE], false)).toEqual({
       param: OPEN_DEVICE,
       expected: "false",
-      observed: false,
     });
   });
 
-  it("states the raw disable bit AND the decoded value it means", () => {
+  it("states the raw disable bit", () => {
     expect(observationFor("T8114", [CAMERA_ENABLE], true)).toEqual({
       param: CAMERA_ENABLE,
       expected: "0",
-      observed: true,
     });
     expect(observationFor("T8114", [CAMERA_ENABLE], false)).toEqual({
       param: CAMERA_ENABLE,
       expected: "1",
-      observed: false,
     });
   });
 
@@ -850,7 +846,6 @@ describe("camera enablement — observed write", () => {
     expect(observationFor("T8400", [OPEN_DEVICE, CAMERA_CMD.PRIVACY_MODE], true, true)).toEqual({
       param: CAMERA_CMD.PRIVACY_MODE,
       expected: "0",
-      observed: true,
     });
   });
 
@@ -881,7 +876,6 @@ describe("camera enablement — observed write", () => {
     expect(observationFor("T8416", [CAMERA_ENABLE], true, false)).toEqual({
       param: CAMERA_ENABLE,
       expected: "0",
-      observed: true,
     });
   });
 });
