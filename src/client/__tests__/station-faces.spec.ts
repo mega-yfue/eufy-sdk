@@ -14,7 +14,7 @@ const ROWS = [
   { person_id: 2, name: "stranger1", relation: "0" },
 ];
 
-function harness(opts: { adminUserId?: string; session?: { readDatabase: unknown } | null } = {}) {
+function harness(opts: { adminUserId?: string | null; session?: { readDatabase: unknown } | null } = {}) {
   const eufy = new EufyMega({ email: "t@example.com", password: "x" });
   Object.defineProperty((eufy as unknown as { mega: object }).mega, "auth", { get: () => ({ userId: "MEMBER-0000" }) });
   const readDatabase = vi.fn().mockResolvedValue(ROWS);
@@ -31,7 +31,10 @@ function harness(opts: { adminUserId?: string; session?: { readDatabase: unknown
   vi.spyOn(internals.registry, "list").mockReturnValue([
     {
       sn: STATION,
-      raw: { member: { admin_user_id: opts.adminUserId ?? "ADMIN-0000", member_user_id: "MEMBER-0000" } },
+      raw:
+        opts.adminUserId === null
+          ? {}
+          : { member: { admin_user_id: opts.adminUserId ?? "ADMIN-0000", member_user_id: "MEMBER-0000" } },
     },
   ]);
   internals.p2p = {
@@ -62,13 +65,14 @@ describe("getStationFaces", () => {
     );
   });
 
-  it("scopes a station whose record states no admin id to the signed-in user, as the app does", async () => {
-    const { eufy, readDatabase } = harness({ adminUserId: "" });
+  /** esiotkit's `p2pRequest` falls back on a missing member only (`?:`): a stated `""` goes out as is. */
+  it.each([
+    ["no member to the signed-in user", null, "MEMBER-0000"],
+    ['an admin id of "" as stated', "", ""],
+  ])("scopes a station whose record states %s, as the app does", async (_, adminUserId, accountId) => {
+    const { eufy, readDatabase } = harness({ adminUserId });
     await eufy.getStationFaces(STATION);
-    expect(readDatabase).toHaveBeenCalledWith(
-      "person_basic_info",
-      expect.objectContaining({ accountId: "MEMBER-0000" }),
-    );
+    expect(readDatabase).toHaveBeenCalledWith("person_basic_info", expect.objectContaining({ accountId }));
   });
 
   it("refuses when the station has no session to ask", async () => {

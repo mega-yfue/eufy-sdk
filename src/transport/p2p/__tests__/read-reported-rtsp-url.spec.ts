@@ -71,13 +71,19 @@ describe("P2PCommandRouter.readReportedRtspUrl", () => {
     }
   });
 
-  it("does not provoke a device that has no account id", async () => {
-    const s = session(false);
-    const router = routerWithSession(s, { accountId: "" });
+  it("provokes a device whose member states an empty admin id with that empty id, as the app does", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = session(false);
+      const router = routerWithSession(s, { accountId: "" });
+      void router.readReportedRtspUrl(DEVICE_SN);
+      await vi.advanceTimersByTimeAsync(500);
 
-    await expect(router.readReportedRtspUrl(DEVICE_SN)).resolves.toBeUndefined();
-    expect(s.sendBytes).not.toHaveBeenCalled();
-    expect(s.listenerCount("rtspUrl")).toBe(0);
+      expect(s.sendBytes).toHaveBeenCalledWith(buildDirectBinaryBody(1, "", 1), 1, CMD_NAS_SWITCH);
+      await vi.advanceTimersByTimeAsync(60_000);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("resolves undefined when the station session cannot be resolved", async () => {

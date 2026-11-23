@@ -20,17 +20,14 @@ import type { SessionFrame } from "../../core/contracts.js";
  *    station-scoped scalar (alarm/speaker volume `1235`); the hub is addressed by the outer frame
  *    channel 255, so there is no leading channel word.
  *
- * `account_id` is
- * **sliced to 128** (`Buffer.write` would otherwise silently truncate) and must be **non-empty** —
- * an all-zero account field is rejected by the HomeBase and the caller's fallback chain can resolve
- * to `""`, so we fail loud instead.
+ * `account_id` is **sliced to 128** (`Buffer.write` would otherwise silently truncate); a stated `""` goes out
+ * as the all-zero field the app sends.
  */
 /**
  * Write the account_id into the trailing 128-byte ASCII field every level-2 control body ends with.
- * Shared by all body builders so the encoding (non-empty guard, 128-byte truncation, ASCII) can't drift.
+ * Shared by all body builders so the encoding (128-byte truncation, ASCII) can't drift.
  */
 function writeAccountIdField(body: Buffer, offset: number, accountId: string): void {
-  if (!accountId) throw new Error("control command requires a non-empty account_id");
   body.write(accountId.slice(0, 128), offset, "ascii");
 }
 

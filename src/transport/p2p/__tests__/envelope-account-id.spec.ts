@@ -14,7 +14,7 @@ const DEVICE_ADMIN = "1".repeat(40);
 const STATION_ADMIN = "2".repeat(40);
 const ME = "3".repeat(40);
 
-function harness() {
+function harness(member: object = { admin_user_id: DEVICE_ADMIN }) {
   const session = Object.assign(connectedSession(), {
     sendSetPayload: vi.fn(),
     sendBytes: vi.fn(() => true),
@@ -28,7 +28,7 @@ function harness() {
           stationSn: STATION_SN,
           model: "T8114",
           channel: 1,
-          raw: { parent_sn: STATION_SN, device_channel: 1, member: { admin_user_id: DEVICE_ADMIN } },
+          raw: { parent_sn: STATION_SN, device_channel: 1, member },
         },
         {
           sn: STATION_SN,
@@ -57,5 +57,14 @@ describe("the P2P envelope account id, per app sender", () => {
     await onFakeTime(() => router.rebootStation(STATION_SN));
     expect(session.sendSetPayload.mock.calls[0]![2]).toMatchObject({ accountId: STATION_ADMIN });
     expect(session.sendBytes).toHaveBeenCalledWith(buildDirectBinaryBody(0, STATION_ADMIN), 255, 1034);
+  });
+
+  /** esiotkit's `?:` falls back on a missing member only: a stated `""` goes out as is. */
+  it('sends a stated "" admin as is on a bundle frame', async () => {
+    const { session, router } = harness({ admin_user_id: "" });
+    await onFakeTime(() =>
+      router.dispatchCommand(DEVICE_SN, { kind: "set-payload", cmd: 6201, payload: {}, channel: 1, mValue3: 0 }),
+    ).catch(() => {});
+    expect(session.sendSetPayload.mock.calls[0]![2]).toMatchObject({ accountId: "" });
   });
 });

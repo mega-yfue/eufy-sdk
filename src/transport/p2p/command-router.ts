@@ -1473,7 +1473,7 @@ export class P2PCommandRouter {
    * Bounded by {@link RTSP_URL_READ_TIMEOUT_MS}: the abort covers `resolveSession`'s connect wait and
    * the URL wait. The device/station resolution ahead of them relies on its own HTTP timeouts.
    *
-   * `undefined` on any failure: no route, no account id, or no matching push before the deadline.
+   * `undefined` on any failure: no route, or no matching push before the deadline.
    */
   async readReportedRtspUrl(sn: string): Promise<string | undefined> {
     const log = this.deps.logger ?? noopLogger;
@@ -1481,8 +1481,7 @@ export class P2PCommandRouter {
     const timer = setTimeout(() => controller.abort(), RTSP_URL_READ_TIMEOUT_MS);
     const { signal } = controller;
     try {
-      const { session, channel, accountId } = await this.resolveSession(sn, { signal });
-      if (!accountId) return undefined;
+      const { session, channel } = await this.resolveSession(sn, { signal });
       // Arm the wait BEFORE provoking, so a push that arrives between the two writes is not lost.
       const url = this.awaitRtspUrl(session, channel, signal);
       // Do not block the read on the provokes: it returns as soon as the push arrives (or the deadline aborts).
@@ -1674,7 +1673,6 @@ export class P2PCommandRouter {
       return this.sendNativeBody(sn, commandType, channel, () => pair);
     }
     const resolved = await this.resolveSession(sn);
-    if (!resolved.accountId) throw new Error(`int-plus-string command ${commandType} for ${sn} requires an account id`);
     await this.sendAnswered(
       sn,
       commandType,

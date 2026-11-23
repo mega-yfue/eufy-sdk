@@ -18,7 +18,7 @@ const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
 /** The record inputs the native RTC route needs, synthetic. */
 const RTC_INPUTS = { p2p_did: "SYNTH-000000-AAAAA", p2p_license: "SYNLIC", signaling_servers: ["https://192.0.2.7"] };
 
-function harness(opts: { signedOut?: true; session?: null; member?: Record<string, unknown> } = {}) {
+function harness(opts: { signedOut?: true; session?: null; member?: Record<string, unknown> | null } = {}) {
   const eufy = new EufyMega({ email: "t@example.com", password: "x", autoRealtime: false, pollMs: 0 });
   const auth = opts.signedOut ? undefined : { userId: "MEMBER-0000", authToken: "t" };
   Object.defineProperty((eufy as unknown as { mega: object }).mega, "auth", { get: () => auth });
@@ -34,10 +34,13 @@ function harness(opts: { signedOut?: true; session?: null; member?: Record<strin
     };
   };
   // A station the signed-in member was shared: its database is queried as its owner.
-  const member = opts.member ?? { admin_user_id: "ADMIN-0000", member_user_id: "MEMBER-0000", member_type: 1 };
+  const member =
+    opts.member === null
+      ? {}
+      : { member: opts.member ?? { admin_user_id: "ADMIN-0000", member_user_id: "MEMBER-0000", member_type: 1 } };
   vi.spyOn(internals.registry, "list").mockReturnValue([
-    { sn: HUB, model: "T8010", raw: { device_type: DeviceType.STATION, member } },
-    { sn: T9000, model: "T9000", raw: { device_type: DeviceType.STATION_9000, member, ...RTC_INPUTS } },
+    { sn: HUB, model: "T8010", raw: { device_type: DeviceType.STATION, ...member } },
+    { sn: T9000, model: "T9000", raw: { device_type: DeviceType.STATION_9000, ...member, ...RTC_INPUTS } },
     { sn: CAMERA, model: "T8425", stationSn: T9000, raw: { parent_sn: T9000, device_channel: 2 } },
   ]);
   vi.spyOn(internals.registry, "thingsOf").mockImplementation((sn) =>
@@ -67,10 +70,14 @@ describe("readStationTable", () => {
     expect(rtcTable).not.toHaveBeenCalled();
   });
 
-  /** esiotkit's `p2pRequest` quotes the record's stated admin as is, else the signed-in user, with no member rule. */
+  /**
+   * esiotkit's `p2pRequest` quotes the record's `FamilyMember.adminUserId` as is (`""` on a member stating none), with
+   * no member rule, and the signed-in user only on a record without a member.
+   */
   it.each([
     ["the stated admin, whoever the member is", { admin_user_id: "ADMIN-0000", member_user_id: "OTHER" }, "ADMIN-0000"],
-    ["the signed-in user on a record stating none", { member_user_id: "OTHER" }, "MEMBER-0000"],
+    ['"" on a member stating none', { member_user_id: "OTHER" }, ""],
+    ["the signed-in user on a record without a member", null, "MEMBER-0000"],
   ])("quotes %s", async (_, member, accountId) => {
     const { eufy, readDatabase } = harness({ member });
     await eufy.readStationTable(HUB, "history_record_info");
@@ -88,12 +95,12 @@ describe("readStationTable", () => {
     expect(readDatabase).not.toHaveBeenCalled();
   });
 
-  it("refuses a station not in the device list, one stating no admin signed out, and one with no session", async () => {
+  it("refuses a station not in the device list, one without a member signed out, and one with no session", async () => {
     const { eufy: unknown, readDatabase, rtcTable } = harness();
     await expect(unknown.readStationTable("T8010P0000000009", "history_record_info")).rejects.toThrow(
       /not in the device list/,
     );
-    const { eufy: unnamed } = harness({ signedOut: true, member: {} });
+    const { eufy: unnamed } = harness({ signedOut: true, member: null });
     await expect(unnamed.readStationTable(T9000, "history_record_info")).rejects.toThrow(/login\(\) first/);
     await expect(unnamed.readStationTable(HUB, "history_record_info")).rejects.toThrow(/login\(\) first/);
     const { eufy: sessionless } = harness({ session: null });
@@ -115,11 +122,11 @@ describe("readStationImage", () => {
     );
   });
 
-  it("refuses a station on no RTC route, one not in the device list, and one stating no admin signed out", async () => {
+  it("refuses a station on no RTC route, one not in the device list, and one without a member signed out", async () => {
     const { eufy, rtcImage } = harness();
     await expect(eufy.readStationImage(HUB, THUMB)).rejects.toThrow(/is not an RTC station/);
     await expect(eufy.readStationImage("T8010P0000000009", THUMB)).rejects.toThrow(/not in the device list/);
-    const { eufy: unnamed, rtcImage: unnamedImage } = harness({ signedOut: true, member: {} });
+    const { eufy: unnamed, rtcImage: unnamedImage } = harness({ signedOut: true, member: null });
     await expect(unnamed.readStationImage(T9000, THUMB)).rejects.toThrow(/login\(\) first/);
     expect(rtcImage).not.toHaveBeenCalled();
     expect(unnamedImage).not.toHaveBeenCalled();
