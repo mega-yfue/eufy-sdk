@@ -1052,22 +1052,12 @@ export class MegaHttpClient {
     );
   }
 
+  /** The app's `PushManager.uploadToken` body: the push token, also as `voip_token`. */
   async registerPushToken(token: string): Promise<void> {
     await this.post("push", "/app/push/register_push_token", {
-      is_notification_enable: true,
       token,
-      voip_token: "",
-    });
-
-    await this.securityAppPost("/v1/apppush/register_push_token", {
       is_notification_enable: true,
-      token,
-      transaction: String(Date.now()),
-    });
-
-    await this.securityAppPost("/v1/app/review/app_push_check", {
-      app_type: "eufySecurity",
-      transaction: String(Date.now()),
+      voip_token: token,
     });
   }
 
