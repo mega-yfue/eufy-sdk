@@ -815,6 +815,90 @@ describe("the regenerated data's forms", () => {
     expect(sent({ pots: [{ points: [{ x: 0, y: 0 }] }] }), "one point: the bundle throws").toBeUndefined();
   });
 
+  it("scales a zone on the description's geometry, as each parser reads it (pixel, forced pixel, inverted)", () => {
+    const pots = [
+      {
+        points: [
+          { x: 0.1, y: 0.2 },
+          { x: 0.6, y: 0.15 },
+          { x: 0.7, y: 0.8 },
+          { x: 0.05, y: 0.75 },
+        ],
+      },
+    ];
+    const sent = (model: string, identifier: string, geometry: string) => {
+      const eunmList = geometry
+        .split(" ")
+        .map((m) => ((value, desc) => ({ value, desc }))(...(m.split("=") as [string, string])));
+      const things = parseThingsList({
+        things_list: [
+          {
+            profile: { product_code: model },
+            properties: [{ identifier, access_mode: "RW", data_type: { type: "string", specs: { eunmList } } }],
+          },
+        ],
+      })[model];
+      return thingWrite(identifier, JSON.stringify({ index: 0, pots }), ctx(model, { things }));
+    };
+    const px = [
+      { x: 192, y: 216 },
+      { x: 1152, y: 162 },
+      { x: 1344, y: 864 },
+      { x: 96, y: 810 },
+    ];
+    expect(
+      sent("T8122", "activityzone_config", "normalized=0 zoneWidth=1920 zoneHeight=1080"),
+      "1700/6042",
+    ).toMatchObject({
+      data: {
+        polygens: [{ points: px }],
+        points: [{ LeftPointX: 96, LeftPointY: 162, RightPointX: 1344, RightPointY: 864 }],
+      },
+    });
+    expect(sent("T8122", "set_privacy_zone", "normalized=0 zoneWidth=1920 zoneHeight=1080"), "1295").toMatchObject({
+      payload: { Normalized: 1, points: [{ LeftPointX: 192, LeftPointY: 216, RightPointX: 1152, RightPointY: 162 }] },
+    });
+    expect(
+      sent("T8111", "activityzone_config", "normalized=1 zoneWidth=1280 zoneHeight=720"),
+      "V2 v4: pixel whatever",
+    ).toMatchObject({
+      cmd: 1204,
+      data: { DetSensitivity: 500, points: [{ LeftPointX: 128, LeftPointY: 144, RightPointX: 768, RightPointY: 108 }] },
+    });
+    expect(
+      sent("T8113", "set_privacy_zone", "normalized=1 zoneWidth=1920 zoneHeight=1080"),
+      "1295Percent: the rects alone",
+    ).toMatchObject({
+      payload: { points: [{ LeftPointX: 192, LeftPointY: 216, RightPointX: 1152, RightPointY: 162 }] },
+    });
+    expect(
+      sent("T86P2", "activityzone_config", "normalized=1 zoneWidth=1280 zoneHeight=720"),
+      "6021: inverted",
+    ).toMatchObject({
+      payload: {
+        activezone: {
+          polygens: [
+            {
+              points: [
+                { x: 128, y: 144 },
+                { x: 768, y: 108 },
+                { x: 896, y: 576 },
+                { x: 64, y: 540 },
+              ],
+            },
+          ],
+        },
+        index: 0,
+      },
+    });
+    expect(
+      sent("T8W11C", "activityzone_config", "Normalized=1 zoneWidth=1280 zoneHeight=720"),
+      "no `normalized`: pixel",
+    ).toMatchObject({
+      data: { points: [{ LeftPointX: 64, LeftPointY: 108, RightPointX: 896, RightPointY: 576 }] },
+    });
+  });
+
   it("reads the response-timeout schedule as the bundle re-stringifies it, a looping one unwrapped", () => {
     const read = (o: unknown) =>
       thingRead("device_response_timeout_schedule", ctx("T8214"), (p) =>

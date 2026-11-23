@@ -834,7 +834,7 @@ function cloudCommand(frame: BundleFrame, fill: (x: unknown) => unknown): Comman
  * body that is not an object, a data point whose template cannot be set, a cloud call with another method, or a
  * frame after it that is any of these.
  */
-export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandContext): Command | undefined {
+export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandContext, td?: Td): Command | undefined {
   const tokens: Record<string, unknown> = {
     $value: value,
     $channel: isStationSerial(ctx.serial ?? "") ? 255 : ctx.channel,
@@ -852,7 +852,7 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
     const [key, transform] = ref.split("|");
     const v = key ? input[key] : input;
     if (!transform) return v;
-    const out = TRANSFORMS[transform]?.(v, input, ctx.paramValue);
+    const out = TRANSFORMS[transform]?.(v, input, ctx.paramValue, td);
     unfilled ||= out === undefined;
     return out;
   };
@@ -908,7 +908,9 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
             ? mqttCommand(frame, value, fill)
             : undefined;
   const after = [...(frame.next ?? []), ...(frame.after ? [frame.after] : [])];
-  const next = after.length ? frameCommand({ ...after[0]!, next: after.slice(1), after: undefined }, value, ctx) : null;
+  const next = after.length
+    ? frameCommand({ ...after[0]!, next: after.slice(1), after: undefined }, value, ctx, td)
+    : null;
   if (!head || next === undefined || unfilled) return undefined;
   return next ? { ...head, next } : head;
 }
@@ -930,7 +932,10 @@ export function thingWrite(identifier: string, value: string, ctx: CommandContex
       : /^-?\d+$/.test(value)
         ? Number(value)
         : value);
-  return frame && frameCommand(frame, typed, ctx);
+  // The parser's `td_list`: the description's enum list under the identifier, each value's int desc.
+  const members = ctx.things?.properties[identifier]?.members;
+  const td = members?.length ? Object.fromEntries(members.map((m) => [m.value, toInt(m.desc)])) : undefined;
+  return frame && frameCommand(frame, typed, ctx, td);
 }
 
 const boolInt = (v: unknown) => (v === true || v === 1 || v === "1" || v === "true" ? 1 : 0);
@@ -952,10 +957,53 @@ const hhmm = (h: unknown, m: unknown) =>
 const rows = (v: unknown, f: (e: Row) => Row) => (Array.isArray(v) ? v.map((e) => f((e ?? {}) as Row)) : v);
 
 type Param = (id: number) => string | undefined;
-/** `ZonePot.toDeviceZonePot`, normalized: `min(1000, round(1000 * v + .5))` (NaN is 1000). */
-const up = (v: unknown) => {
-  const r = Math.round(1000 * Number(v) + 0.5);
-  return r < 1000 ? r : 1000;
+/** A zone's geometry, the description's `normalized`, `zoneWidth`, `zoneHeight` (`parseVideoConfig`). */
+type Td = Record<string, unknown>;
+/** `parseVideoConfig` without a list. */
+const VIDEO: Td = { normalized: 1, zoneWidth: 1280, zoneHeight: 720 };
+type Point = { x: number; y: number };
+/** `ZonePot.toDeviceZonePot`: normalized `min(1000, round(1000v + .5))` (NaN is 1000), else `round(1000v · size / 1000)`. */
+const devicePot = (normalized: boolean, td: Td) => (p: Row) => {
+  const up = (v: unknown) => ((r) => (r < 1000 ? r : 1000))(Math.round(1000 * Number(v) + 0.5));
+  const px = (v: unknown, size: unknown) => Math.round((1000 * Number(v) * Number(size)) / 1000);
+  return normalized ? { x: up(p.x), y: up(p.y) } : { x: px(p.x, td.zoneWidth), y: px(p.y, td.zoneHeight) };
+};
+/** `ZoneInfo.addPot` / `ZoneInfoIPC.addPot`: the pots as device points, only 4- or 6-point ones of the first's length. */
+const polygens = (v: unknown, normalized: boolean, td: Td) => {
+  const out: { points: Point[] }[] = [];
+  for (const pot of v as { points: Row[] }[]) {
+    const points = pot.points.map(devicePot(normalized, td));
+    if ((points.length === 4 || points.length === 6) && (!out.length || out[0]!.points.length === points.length))
+      out.push({ points });
+  }
+  return out;
+};
+/**
+ * `toRestorePrivacyRectZoneTwoPot`: each pot's first two points a rect, `round(1000v)` normalized, else
+ * `round(v · size)`, the host's `DetSensitivity` (500), `MoveDetStatus` (1 with a pot) and `Normalized` (1);
+ * nothing sent where the bundle throws.
+ */
+const privacyRect = (v: unknown, input: Row, td: Td) => {
+  try {
+    const { DetSensitivity = 500, MoveDetStatus = 0, Normalized = 1 } = input;
+    const [w, h] = td.normalized === 1 ? [1000, 1000] : [td.zoneWidth, td.zoneHeight];
+    const k = (n: unknown, size: unknown) => Math.round(Number(n) * Number(size));
+    const points = (v as { points: Row[] }[]).map(({ points: [l, r] }) => ({
+      LeftPointX: k(l!.x, w),
+      LeftPointY: k(l!.y, h),
+      RightPointX: k(r!.x, w),
+      RightPointY: k(r!.y, h),
+    }));
+    return {
+      account: "$userId",
+      DetSensitivity,
+      MoveDetStatus: MoveDetStatus || (points.length ? 1 : 0),
+      Normalized,
+      points,
+    };
+  } catch {
+    return undefined;
+  }
 };
 /** `DeviceMotionDetectionParser` v4/v7 (T8217 `{5,4}`, T85M0 `{5,6}`): type → bit, the two bits it owns being 0x8003. */
 // ponytail: one table for both products; read the mapping off the description's associatedValues if a third differs.
@@ -981,7 +1029,7 @@ const hb3 =
  * The transforms a bundle's parser applies to one host field before it sends it (`$input.<key>|<name>`), or to a
  * report's text after it decodes it (a `text` read's `transform`).
  */
-const TRANSFORMS: Record<string, (v: unknown, input: Row, param?: Param) => unknown> = {
+const TRANSFORMS: Record<string, (v: unknown, input: Row, param?: Param, td?: Td) => unknown> = {
   /** The schedule parsers: each `week` list as `[{day}]`. */
   weekDays: (v) => weekDays(v),
   /** `LightAmbientLightingSettingParser`: each loop's week a day bitmask, its `enable` 0 while `sunset2rise` is on. */
@@ -1052,68 +1100,46 @@ const TRANSFORMS: Record<string, (v: unknown, input: Row, param?: Param) => unkn
     }
   },
   /**
-   * `asDeviceZonePot`, normalized: the host's pots (`[{points: [{x, y}]}]`, 0–1) as the device's `ZoneInfo`, each
-   * point ×1000 rounded up from .5 and at most 1000, only 4- or 6-point pots of the first's length, each rect's bounds
-   * in `points`; nothing sent where the bundle throws.
+   * `asDeviceZonePot`: the host's pots (`[{points: [{x, y}]}]`, 0–1) as the device's `ZoneInfo` on the
+   * description's geometry, each rect's bounds in `points`; nothing sent where the bundle throws.
    */
-  zoneInfo: (v) => {
+  zoneInfo: (v, _, __, td = VIDEO) => {
     try {
-      const polygens: { points: { x: number; y: number }[] }[] = [];
-      for (const pot of v as { points: Row[] }[]) {
-        const points = pot.points.map((p) => ({ x: up(p.x), y: up(p.y) }));
-        if (
-          (points.length === 4 || points.length === 6) &&
-          (!polygens.length || polygens[0]!.points.length === points.length)
-        )
-          polygens.push({ points });
-      }
-      const bound = (ps: { x: number; y: number }[]) => ({
+      const pots = polygens(v, td.normalized === 1, td);
+      const bound = (ps: Point[]) => ({
         LeftPointX: Math.min(...ps.map((p) => p.x)),
         LeftPointY: Math.min(...ps.map((p) => p.y)),
         RightPointX: Math.max(...ps.map((p) => p.x)),
         RightPointY: Math.max(...ps.map((p) => p.y)),
       });
-      const n = polygens.length;
-      const points = polygens.filter((p) => p.points.length === 4).map((p) => bound(p.points));
+      const n = pots.length;
       return {
         account: "$userId",
         DetSensitivity: 0,
         MoveDetStatus: n ? 1 : 0,
         Normalized: 0,
         zonecount: n,
-        polygens,
-        points,
+        polygens: pots,
+        points: pots.filter((p) => p.points.length === 4).map((p) => bound(p.points)),
       };
     } catch {
       return undefined;
     }
   },
-  /**
-   * `toRestorePrivacyRectZoneTwoPot`, normalized (`SetPrivacyZoneParser1295`): each pot's first two points ×1000
-   * rounded as a rect, the host's `DetSensitivity` (500), `MoveDetStatus` (1 with a pot) and `Normalized` (1);
-   * nothing sent where the bundle throws.
-   */
-  privacyRect: (v, input) => {
+  /** `toRestoreHotZonePot` (`SetActiveZoneParser6021`), its flag `1 !== normalized`: `{polygens, account}`. */
+  hotZone: (v, _, __, td = VIDEO) => {
     try {
-      const { DetSensitivity = 500, MoveDetStatus = 0, Normalized = 1 } = input;
-      const k = (n: unknown) => Math.round(1000 * Number(n));
-      const points = (v as { points: Row[] }[]).map(({ points: [l, r] }) => ({
-        LeftPointX: k(l!.x),
-        LeftPointY: k(l!.y),
-        RightPointX: k(r!.x),
-        RightPointY: k(r!.y),
-      }));
-      return {
-        account: "$userId",
-        DetSensitivity,
-        MoveDetStatus: MoveDetStatus || (points.length ? 1 : 0),
-        Normalized,
-        points,
-      };
+      return { polygens: polygens(v, td.normalized !== 1, td), account: "$userId" };
     } catch {
       return undefined;
     }
   },
+  /** `SetPrivacyZoneParser1295`. */
+  privacyRect: (v, input, _, td = VIDEO) => privacyRect(v, input, td),
+  /** `SetActiveZoneParserV2` v4: pixel-scaled whatever the description says. */
+  privacyRectPx: (v, input, _, td = VIDEO) => privacyRect(v, input, { ...td, normalized: 0 }),
+  /** `SetPrivacyZoneParser1295Percent`: the pixel-scaled rects alone. */
+  privacyPoints: (v, input, _, td = VIDEO) => privacyRect(v, input, { ...td, normalized: 0 })?.points,
   /** `device_response_timeout_schedule` (6440, `decodeBase64StringToJSON`: `{}` for no JSON): its `schedules` as JSON when they `loop`, else the whole. */
   timeoutSchedule: (v) => {
     let o: { schedules?: { loop?: unknown } } | null;
