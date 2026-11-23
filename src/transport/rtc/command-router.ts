@@ -50,7 +50,7 @@ import { RtcCallType } from "./call.js";
 import { cmdGcm, kcpMulti, priv1, type RtcCommandCounter, type RtcDataChannel } from "./data-channel.js";
 import { pmIce } from "./ice.js";
 import { RtcPmLiveStream, mediaGcm, type RtcLiveCommand } from "./pm-live.js";
-import { RtcSignalClient, type RtcSignalOptions } from "./signal-client.js";
+import { RtcSignalClient, type RtcSignalOptions, type RtcToken } from "./signal-client.js";
 
 const STATION_CHANNEL = 255;
 /** ponytail: one bound for login + data channel; the app's per-request `time_out` is not pinned. */
@@ -90,6 +90,8 @@ export interface RtcCommandRouterDeps {
   userId: () => string | undefined;
   /** This install's stable id, the app's `app_id`. */
   appId: string;
+  /** Each station's cached signalling login (the app's `sp_webrtc`), read for a quick login and written on a new one. */
+  tokens?: { get(sn: string): RtcToken | undefined; set(sn: string, token: RtcToken): void };
   logger?: Logger;
   onError?: (e: Error) => void;
   /** ffmpeg for the live still (`ffmpeg` on PATH by default). */
@@ -394,7 +396,9 @@ export class RtcCommandRouter {
       host,
       userId,
       appId: this.deps.appId,
+      token: this.deps.tokens?.get(sn),
     });
+    signal.on("token", (t) => this.deps.tokens?.set(sn, t));
     const ready = new Promise<void>((resolve, reject) => {
       signal.once("login", () => resolve());
       signal.once("failure", () => reject(new Error(`rtc: ${sn} refused the signalling login`)));

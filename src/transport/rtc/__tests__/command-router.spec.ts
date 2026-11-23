@@ -7,7 +7,7 @@ import { buildStringBody } from "../../p2p/write-commands.js";
 import { RtcCommandRouter, type RtcLiveRoute } from "../command-router.js";
 import type { RtcCommandCounter, RtcDataChannel } from "../data-channel.js";
 import type { IceAgent } from "../ice.js";
-import type { RtcSignalClient } from "../signal-client.js";
+import type { RtcSignalClient, RtcSignalOptions } from "../signal-client.js";
 
 /** The shapes of the bundle's `rtcLive` frames: a T9000 camera's 1350 start and stop, a standalone T8170's. */
 const NVR_LIVE: RtcLiveRoute["live"] = {
@@ -385,6 +385,26 @@ describe("RtcCommandRouter on the native layers", () => {
   it("refuses a live view without the start JSON", async () => {
     const { router } = layers();
     await expect(router.mediaProviderFor({ ...ROUTE, live: undefined }).live()).rejects.toThrow("no RTC start frame");
+    router.close();
+  });
+
+  it("quick-logs a station in with its cached token and caches the token a new login hands out", async () => {
+    const { signal, data, priv1, pmIce } = layers();
+    const options: RtcSignalOptions[] = [];
+    const token = { aes: "A".repeat(16), contactId: "synthetic-contact", addr: "192.0.2.2", authTimestamp: 1 };
+    const tokens = { get: vi.fn(() => token), set: vi.fn() };
+    const router = new RtcCommandRouter({
+      userId: () => "synthetic-user",
+      appId: "0123456789abcdef",
+      tokens,
+      layers: { signal: (o) => (options.push(o), signal as unknown as RtcSignalClient), priv1, pmIce },
+    });
+    await router.dispatchCommand(ROUTE, { kind: "set-json", param: 1400, data: {}, channel: 3 });
+    expect([tokens.get.mock.calls[0], options[0]!.token]).toEqual([[ROUTE.stationSn], token]);
+    const fresh = { ...token, aes: "B".repeat(16) };
+    signal.emit("token", fresh);
+    expect(tokens.set).toHaveBeenCalledExactlyOnceWith(ROUTE.stationSn, fresh);
+    expect(data.command).toHaveBeenCalled();
     router.close();
   });
 

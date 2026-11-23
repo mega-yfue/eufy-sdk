@@ -47,3 +47,14 @@ describe("the last thing description of each product", () => {
     await expect(expired.getThingsList(["T8410"])).rejects.toBeInstanceOf(SessionExpiredError);
   });
 });
+
+describe("the RTC signalling login of each station", () => {
+  it("persists with the session and comes back on the next run", () => {
+    const store = new MemorySessionStore();
+    store.save(stored);
+    const token = { aes: "A".repeat(16), contactId: "synthetic-contact", addr: "192.0.2.1", authTimestamp: 1 };
+    client(store, async () => ({})).saveRtcToken("T9000P0000000000", token);
+    expect(store.load()?.rtc).toEqual({ T9000P0000000000: token });
+    expect(client(store, async () => ({})).rtcToken("T9000P0000000000")).toEqual(token);
+  });
+});

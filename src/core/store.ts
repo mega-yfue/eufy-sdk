@@ -20,6 +20,7 @@ import {
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { RegionShard } from "../transport/http/mega-client.js";
+import type { RtcToken } from "../transport/rtc/signal-client.js";
 
 /**
  * The persisted session record. Internal shape — a host supplies a `SessionStore`, never builds this.
@@ -54,6 +55,8 @@ export interface PersistedSession {
   savedAt: number;
   /** The last thing description of each product, as `get_things_list` returned it. */
   things?: unknown[];
+  /** The RTC signalling login of each station, as the vendor app caches it (`sp_webrtc[<sn>]`). */
+  rtc?: Record<string, RtcToken>;
 }
 
 /**

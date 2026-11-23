@@ -22,6 +22,7 @@ import {
   prepareKeyExchange,
 } from "../../core/crypto.js";
 import { MemorySessionStore, isSessionValid, type SessionStore } from "../../core/store.js";
+import type { RtcToken } from "../rtc/signal-client.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import type { EufyDevice } from "../../core/types.js";
 import type { SecureMqttCredentials } from "../mqtt/secure-mqtt.js";
@@ -390,6 +391,8 @@ export class MegaHttpClient {
   private rejectedTokenPending = false;
   /** The last thing description of each product fetched, persisted with the session — see {@link getThingsList}. */
   private things: unknown[];
+  /** The RTC signalling login of each station, persisted with the session — see {@link rtcToken}. */
+  private readonly rtcTokens: Record<string, RtcToken>;
 
   constructor(cfg: MegaClientConfig) {
     this.cfg = {
@@ -410,6 +413,7 @@ export class MegaHttpClient {
     // the stored token itself has expired.
     const saved = this.store.load();
     this.things = saved?.things ?? [];
+    this.rtcTokens = { ...saved?.rtc };
     this.openudid =
       cfg.openudid ?? saved?.openudid ?? createHash("md5").update(`eufy-mega:${cfg.email}`).digest("hex").slice(0, 16);
     this.phoneModel = cfg.phoneModel ?? saved?.phoneModel ?? randomPhoneModel(this.openudid);
@@ -1506,7 +1510,19 @@ export class MegaHttpClient {
       tokenExpiresAt: this.tokenExpiresAt,
       savedAt: Date.now(),
       things: this.things,
+      rtc: this.rtcTokens,
     });
+  }
+
+  /** A station's cached RTC signalling login, the app's `sp_webrtc[<sn>]`. */
+  rtcToken(sn: string): RtcToken | undefined {
+    return this.rtcTokens[sn];
+  }
+
+  /** Cache a station's RTC signalling login (the app's `onWebrtcToken`) with the session. */
+  saveRtcToken(sn: string, token: RtcToken): void {
+    this.rtcTokens[sn] = token;
+    this.persist();
   }
 
   /** Forget the persisted session (e.g. after the token is rejected). */
