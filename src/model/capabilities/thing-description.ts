@@ -377,7 +377,8 @@ const bare = (identifier: string): string => {
  * `identifier__vN` whose read conditions pass (a variant without read conditions is never chosen), the
  * one with the most conditions, the first listed on a tie, else the base `identifier`. The chosen
  * property's `identifier` keeps the variant's name. A property whose available conditions fail is left
- * out, as are actions and events whose available conditions fail.
+ * out, as are actions and events whose available conditions fail; one whose read conditions fail stays
+ * without its `defaultValue`.
  */
 export function resolveThing(td: ThingDescription, facts: ThingFacts): ThingDescription {
   const properties: Record<string, ThingProperty> = Object.create(null);
@@ -394,7 +395,9 @@ export function resolveThing(td: ThingDescription, facts: ThingFacts): ThingDesc
     }
     const p = td.properties[chosen];
     if (!p || !conditionsPass(p.availableConditions, facts)) continue;
-    properties[base] = p;
+    // The app's `ThingProperty.get()` reads an empty payload off a property whose read conditions fail.
+    const { defaultValue: _, ...unread } = p;
+    properties[base] = conditionsPass(p.readConditions, facts) ? p : unread;
   }
   const available = <T extends { availableConditions: ThingConditions }>(entries: Readonly<Record<string, T>>) => {
     const out: Record<string, T> = Object.create(null);

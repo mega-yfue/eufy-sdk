@@ -346,6 +346,31 @@ describe("resolveThing", () => {
     expect(standalone("2.3.0.0").properties.hidden).toBeUndefined();
     expect(Object.keys(standalone("2.3.0.0").actions)).toEqual(["always"]);
   });
+
+  it("keeps a property whose read conditions fail but reads no value off it (a T8170 below 3.4.0.0)", () => {
+    const t8170 = parseThingsList({
+      things_list: [
+        {
+          profile: { product_code: "T8170" },
+          properties: [
+            prop("is_connect_webrtc", "int", {
+              data_type: { type: "int", specs: { defaultValue: "1" } },
+              read_conditions: cond(
+                { type: "device_version", qualifier: ">=", value: "3.4.0.0" },
+                { type: "device_sn", qualifier: "SE", value: "^.{6}[^2]" },
+                { type: "parent_sn", qualifier: "RE", value: "^(?!T8030).*$" },
+              ),
+            }),
+          ],
+        },
+      ],
+    }).T8170!;
+    const at = (firmwareVersion: string) =>
+      resolveThing(t8170, { serial: "T8170P0000000000", firmwareVersion }).properties.is_connect_webrtc;
+    expect(at("3.3.6.0")).toBeDefined();
+    expect(at("3.3.6.0")?.defaultValue).toBeUndefined();
+    expect(at("3.4.0.0")?.defaultValue).toBe("1");
+  });
 });
 
 describe("a member's thing no longer gives its enum options from the description's wire values", () => {
