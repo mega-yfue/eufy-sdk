@@ -1126,6 +1126,13 @@ const TRANSFORMS: Record<string, (v: unknown, input: Row, param?: Param, td?: Td
       return undefined;
     }
   },
+  /** `SetActiveZoneParser1204V1` (T8203): `zoneInfo` with its polygons' points flattened into `points`, once it has one. */
+  zoneFlat: (v, input, param, td) => {
+    const z = TRANSFORMS.zoneInfo!(v, input, param, td) as { polygens: { points: Point[] }[] } | undefined;
+    if (!z?.polygens.length) return z;
+    const { polygens, ...rest } = z;
+    return { ...rest, points: polygens.flatMap((q) => q.points) };
+  },
   /** `toRestoreHotZonePot` (`SetActiveZoneParser6021`), its flag `1 !== normalized`: `{polygens, account}`. */
   hotZone: (v, _, __, td = VIDEO) => {
     try {
