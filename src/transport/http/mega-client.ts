@@ -287,6 +287,14 @@ function houseInvite(transaction: string, houseId: string, fields: Record<string
   return { transaction, house_id: houseId, ...fields, categories: [], add_pns: [] };
 }
 
+/** The app's `isClean`: the Home categories whose shares run on the Home host's `v1/share/active/*`. */
+const isHomeCategory = (category: string) => category === "eufy_home" || category === "eufy_home_tuya";
+
+/** `eufy_home_tuya` shares start with a Tuya-side share the app runs natively; this client does not speak it. */
+function tuyaShareRefused(category: string): never {
+  throw new Error(`sharing a ${category} device needs the Tuya-side share, which this client does not make`);
+}
+
 /** The `transaction` the app's `Transactions.c()` stamps on a request: the monotonic clock in nanoseconds. */
 const transactionStamp = () => String(process.hrtime.bigint());
 
@@ -399,6 +407,8 @@ export class MegaHttpClient {
   private region: RegionShard;
   /** `product_domains.eufy_security` of the last `estimate_domain` reply, `undefined` before one was seen. */
   private securityDomain?: string;
+  /** `product_domains.eufy_home` of the last `estimate_domain` reply, the app's Home category host. */
+  private homeDomain?: string;
   private bootstrapDomain?: string;
   private sessionKey?: SessionEntry;
   /** Per-host ECDH session keys for non-mega gateways (e.g. eufylife) keyed by host. */
@@ -506,6 +516,7 @@ export class MegaHttpClient {
     }
     this.region = saved.region;
     this.securityDomain = saved.securityDomain;
+    this.homeDomain = saved.homeDomain;
     this.auth_ = {
       userId: saved.userId,
       accountUserId: saved.accountUserId,
@@ -646,6 +657,7 @@ export class MegaHttpClient {
     const domain = (d.domain ?? d.host ?? d.server_secret_info ?? "") as string;
     const products = d.product_domains as Record<string, unknown> | undefined;
     this.securityDomain = typeof products?.eufy_security === "string" ? products.eufy_security : "";
+    this.homeDomain = typeof products?.eufy_home === "string" ? products.eufy_home : "";
     const blob = JSON.stringify(d);
     if (blob.includes("-eu-") || domain.includes("-eu-")) this.region = "eu-pr";
     else if (blob.includes("-us-") || domain.includes("-us-")) this.region = "us-pr";
@@ -991,6 +1003,10 @@ export class MegaHttpClient {
    * When any invite is `eufy_security`, the app seals a fresh 6-digit share code into every invite's
    * `encrypted_data` (`email=…&type=DEVICE&deviceSn=<first serial>&ts=…`); the invitee must enter that code
    * before accepting. Answers whether the cloud mailed the invitee, and that code when one was sealed.
+   *
+   * A Home-category device (`eufy_home`) goes first and alone, as the app's clean path sends it: the Home host's
+   * `GET v1/user/info/{email}` must know the invitee, then one `device_invite` per device with `nick_name` the email,
+   * `member_type` 1, `extension: ""` and a `subData` entry, no `transaction` and no share code.
    */
   async inviteShare(
     email: string,
@@ -1003,6 +1019,34 @@ export class MegaHttpClient {
       sub_sns?: string;
     }>,
   ): Promise<{ emailSent: boolean; authCode?: string }> {
+    let emailSent = false;
+    for (const i of invites.filter((i) => isHomeCategory(i.category))) {
+      if (i.category === "eufy_home_tuya") tuyaShareRefused(i.category);
+      const user = await this.homeRequest<{ user_info?: { id?: string } }>(
+        "GET",
+        `v1/user/info/${encodeURIComponent(email)}`,
+      );
+      if (!user?.user_info?.id) throw new Error("no eufy account holds this email");
+      const r = await this.post<{ email_sent?: boolean }>("devicerelation", "/app/devicerelation/device_invite", {
+        email,
+        nick_name: email,
+        invites: [
+          {
+            category: i.category,
+            sub_sns: "",
+            member_type: 1,
+            device_sn: i.device_sn,
+            device_name: "",
+            permissions: 0,
+            extension: "",
+            subData: [{ device_sn: i.device_sn, checked: true, device_name: "" }],
+          },
+        ],
+      });
+      emailSent ||= !!r?.email_sent;
+    }
+    invites = invites.filter((i) => !isHomeCategory(i.category));
+    if (!invites.length) return { emailSent };
     const sealed = invites.some((i) => i.category === "eufy_security")
       ? await sealShareCode(`email=${email}&type=DEVICE&deviceSn=${invites[0]?.device_sn ?? ""}&ts=${Date.now()}`)
       : undefined;
@@ -1019,7 +1063,7 @@ export class MegaHttpClient {
       nick_name: nickName,
       invites: body,
     });
-    return { emailSent: !!r?.email_sent, ...(sealed && { authCode: sealed.code }) };
+    return { emailSent: emailSent || !!r?.email_sent, ...(sealed && { authCode: sealed.code }) };
   }
 
   /**
@@ -1076,11 +1120,22 @@ export class MegaHttpClient {
   /**
    * Accept invitations addressed to this account (`confirm_invite`). An invitation carrying `encrypted_data` is
    * accepted, as the app does, only once `authCode` opens it, and then goes out with a {@link transactionStamp};
-   * without one the request has no `transaction`.
+   * without one the request has no `transaction`. A Home-category invitation is accepted on the Home host instead
+   * (`v1/share/active/accept_invitation {device_id, owner, category}`), one call each, and left out of the batch.
    */
   async confirmShareInvites(invites: ReadonlyArray<ShareInviteRef>, authCode?: string): Promise<void> {
     const sealed = invites.find((i) => i.encrypted_data)?.encrypted_data;
     if (sealed) await openShareCode(sealed, authCode);
+    for (const i of invites.filter((i) => isHomeCategory(i.category))) {
+      if (i.category === "eufy_home_tuya") tuyaShareRefused(i.category);
+      await this.homeRequest("POST", "v1/share/active/accept_invitation", {
+        device_id: i.device_sn,
+        owner: i.owner_user_id,
+        category: i.category,
+      });
+    }
+    invites = invites.filter((i) => !isHomeCategory(i.category));
+    if (!invites.length) return;
     await this.post("devicerelation", "/app/devicerelation/confirm_invite", {
       ...(sealed && { transaction: transactionStamp() }),
       invites: invites.map(inviteItem),
@@ -1147,6 +1202,24 @@ export class MegaHttpClient {
     owner_user_id: string;
   }): Promise<void> {
     await this.post("devicerelation", "/app/devicerelation/clear_share", { transaction: transactionStamp(), ...share });
+  }
+
+  /**
+   * Who a Home-category device (`eufy_home`) is shared with (`GET v1/share/active/single_device_share/{sn}` on the
+   * Home host): `{device_info, share_list[{device_id, owner, receiver, receiver_name, status, …}], is_ever_shared}`.
+   */
+  getHomeDeviceShares<T = unknown>(deviceSn: string): Promise<T> {
+    return this.homeRequest<T>("GET", `v1/share/active/single_device_share/${encodeURIComponent(deviceSn)}`);
+  }
+
+  /** Take a Home-category device away from the account `receiver` (`DELETE v1/share/active/owner_remove_share`). */
+  async removeHomeDeviceShare(deviceSn: string, receiver: string): Promise<void> {
+    await this.homeRequest("DELETE", "v1/share/active/owner_remove_share", { device_id: deviceSn, receiver });
+  }
+
+  /** Leave a Home-category device `owner` shared with this account (`DELETE v1/share/active/receiver_remove_share`). */
+  async leaveHomeDeviceShare(deviceSn: string, owner: string): Promise<void> {
+    await this.homeRequest("DELETE", "v1/share/active/receiver_remove_share", { device_id: deviceSn, owner });
   }
 
   /**
@@ -1414,6 +1487,41 @@ export class MegaHttpClient {
   }
 
   /**
+   * A call on the app's Home category host (`product_domains.eufy_home`, default `api.eufylife.com`), as its esiotkit
+   * client makes it: `category: Home`, signed and encrypted under that host's key, answered in the
+   * `{res_code, message, data}` envelope with `res_code` 1 for success. Answers `data`.
+   */
+  private async homeRequest<T>(method: "GET" | "POST" | "DELETE", path: string, body?: object): Promise<T> {
+    const host = this.homeDomain || "api.eufylife.com";
+    const entry = await this.ensureSessionKey(host);
+    const enc = body ? encryptBody(JSON.stringify(body), entry.shareKey) : "";
+    const res = await fetch(`https://${host}/${path}`, {
+      method,
+      headers: {
+        ...this.baseHeaders(),
+        "content-type": "text/plain",
+        ...signedHeaders(entry, enc),
+        "x-replay-info": "replay",
+        category: "Home",
+        ...this.authTokenHeaders(),
+      },
+      ...(body && { body: enc }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    const env = parseMaybeJson(await res.text()) as { res_code?: number; message?: string; data?: unknown } | undefined;
+    if (res.status !== 200 || env?.res_code !== 1)
+      throw new MegaApiError(
+        `${path} failed (${res.status}/${env?.res_code}): ${env?.message}`,
+        env?.res_code,
+        res.status,
+      );
+    const data = env.data;
+    return (
+      typeof data === "string" && data ? parseMaybeJson(decryptBody(data, entry.shareKey).toString("utf-8")) : data
+    ) as T;
+  }
+
+  /**
    * A cloud call a settings bundle names by `domain`, as the app resolves it: `eufy_security` is the
    * security-app host; a cloud module name (case-insensitive) is the mega host with `mega` replaced by
    * `app-<module>` (`Basic` the mega host itself, `CloudStorage` `app-cloudstor`, `ProMonitor`
@@ -1499,13 +1607,89 @@ export class MegaHttpClient {
 
   /** Fetch a fresh captcha challenge: { captchaId, image (data:image/png;base64) }. */
   async generateCaptcha(): Promise<{ captchaId: string; image: string }> {
-    const r = await this.postSigned<{ captcha_id: string; item: string }>(
-      `app-passport-${this.region}.eufy.com`,
-      "/passport/generate/captcha",
-      {},
-      false,
-    );
+    const r = await this.passport<{ captcha_id: string; item: string }>("/passport/generate/captcha", {});
     return { captchaId: r.captcha_id, image: r.item };
+  }
+
+  /** An unauthenticated passport call on `app-passport-{region}`, as the app's sign-up screens make them. */
+  private passport<T = unknown>(path: string, body: Record<string, unknown>, headers: Record<string, string> = {}) {
+    return this.postSigned<T>(`app-passport-${this.region}.eufy.com`, path, body, false, {}, headers);
+  }
+
+  /** Whether an account already holds `email` (`passport/validate_email`, `status` other than `"unregistered"`). */
+  async accountRegistered(email: string): Promise<boolean> {
+    const r = await this.passport<{ status?: string }>("/passport/validate_email", { email });
+    return r?.status !== "unregistered";
+  }
+
+  /**
+   * Mail the sign-up verification code to `email` (`passport/verification_sending`). A {@link MegaApiError} with
+   * code `CAPTCHA_REQUIRED` / `CAPTCHA_WRONG` asks for {@link generateCaptcha} and a retry carrying its answer.
+   */
+  async sendRegisterCode(
+    email: string,
+    captcha: { answer: string; captchaId: string } = { answer: "", captchaId: "" },
+  ) {
+    await this.passport("/passport/verification_sending", {
+      email,
+      answer: captcha.answer,
+      captcha_id: captcha.captchaId,
+    });
+  }
+
+  /** Check the sign-up code the cloud mailed (`passport/verification_check`, `type: "regist"`). */
+  async checkRegisterCode(email: string, verifyCode: string): Promise<void> {
+    await this.passport("/passport/verification_check", { email, verify_code: verifyCode, type: "regist" });
+  }
+
+  /**
+   * Create the account for `email` once its code checked out (`passport/register_create_account`): `password`
+   * goes out as the SHA-256 hex of the trimmed password, `country_code` and the `country` header are the client's
+   * `countryCode`, `timezone` the host's zone. Captcha codes answer as on {@link sendRegisterCode}. The account is
+   * not logged in; {@link login} follows, as the app's next call.
+   */
+  async registerAccount(opts: {
+    email: string;
+    password: string;
+    verifyCode: string;
+    subscribe?: boolean;
+    captcha?: { answer: string; captchaId: string };
+  }): Promise<void> {
+    const country = this.cfg.countryCode;
+    await this.passport(
+      "/passport/register_create_account",
+      {
+        email: opts.email,
+        password: createHash("sha256").update(opts.password.trim(), "utf8").digest("hex"),
+        verify_code: opts.verifyCode,
+        answer: opts.captcha?.answer ?? "",
+        captcha_id: opts.captcha?.captchaId ?? "",
+        is_subscribe: !!opts.subscribe,
+        country_code: country,
+      },
+      { country, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone },
+    );
+  }
+
+  /**
+   * Mail an activation code for an account that is not yet active (`passport/resend_active_email`), what the app
+   * does when login answers `26105`. Answers the `active_token` {@link activateAccount} sends back.
+   */
+  async sendActivationCode(
+    email: string,
+    captcha: { answer: string; captchaId: string } = { answer: "", captchaId: "" },
+  ): Promise<string> {
+    const r = await this.passport<{ active_token?: string }>("/passport/resend_active_email", {
+      email,
+      answer: captcha.answer,
+      captcha_id: captcha.captchaId,
+    });
+    return r?.active_token ?? "";
+  }
+
+  /** Activate the account with the mailed code (`passport/activate_register {activation_code, verify_code}`). */
+  async activateAccount(activeToken: string, verifyCode: string): Promise<void> {
+    await this.passport("/passport/activate_register", { activation_code: activeToken, verify_code: verifyCode });
   }
 
   /**
@@ -1801,6 +1985,7 @@ export class MegaHttpClient {
       region: this.region,
       countryCode: this.cfg.countryCode,
       securityDomain: this.securityDomain,
+      homeDomain: this.homeDomain,
       openudid: this.openudid,
       phoneModel: this.phoneModel,
       mediaUserAgent: this.mediaUserAgent,

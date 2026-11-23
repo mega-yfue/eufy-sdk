@@ -45,6 +45,8 @@ export interface PersistedSession {
   countryCode?: string;
   /** `estimate_domain`'s `product_domains.eufy_security`, the app's Security category host. */
   securityDomain?: string;
+  /** `estimate_domain`'s `product_domains.eufy_home`, the app's Home category host. */
+  homeDomain?: string;
   openudid: string;
   /** This install's reported device model + media user-agent, generated once and reused. */
   phoneModel?: string;
