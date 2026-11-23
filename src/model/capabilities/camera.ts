@@ -119,16 +119,6 @@ export const CAMERA_CMD = {
   STREAMING_QUALITY_SET: 2730,
 } as const;
 
-/** Whether a model-side record or bound context reports the camera-owned legacy EAS switch. */
-export function hasReportedEasSwitch(source: {
-  params?: Record<number, string>;
-  paramIds?: ReadonlySet<number>;
-}): boolean {
-  return (
-    source.paramIds?.has(CAMERA_CMD.EAS_SWITCH) === true || Object.hasOwn(source.params ?? {}, CAMERA_CMD.EAS_SWITCH)
-  );
-}
-
 // Wire: CMD_INDOOR_DET_SET_SOUND_DETECT_TYPE 6046, reported back on the cloud param.
 export const SoundDetectionType = {
   /** Crying alone triggers a detection. */

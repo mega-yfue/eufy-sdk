@@ -190,23 +190,42 @@ describe("siren capability module", () => {
     });
   });
 
-  describe("T8010 HomeBase alarm output", () => {
-    it("uses the station device type and reported alarm evidence rather than a model label", () => {
-      const { acts } = sirenOf({
-        channel: 0,
-        codec: "station",
-        deviceType: DeviceType.STATION,
-        model: "T8999",
-        accountName: "tester",
-        capabilities: new Set(["siren"]),
-        paramIds: new Set([1281]),
-      });
-      const alarm = acts as unknown as Record<string, unknown>;
+  /** A description listing `set_alarm_type` with `values`, as each product's does. */
+  const alarmThings = (model: string, values: string[]) =>
+    parseThingsList({
+      things_list: [
+        {
+          profile: { product_code: model },
+          properties: [
+            {
+              identifier: "set_alarm_type",
+              access_mode: "RW",
+              data_type: { type: "ienum", specs: { eunmList: values.map((value) => ({ value, desc: "" })) } },
+            },
+          ],
+        },
+      ],
+    })[model]!;
 
-      expect(alarm.setAlarmVolume).toBeDefined();
-      expect(alarm.setAlarmTone).toBeDefined();
-      expect(alarm.trigger).toBeDefined();
-      expect(alarm.stop).toBeDefined();
+  describe("HomeBase alarm output", () => {
+    it("keeps alarm volume and tone on reported evidence, the trigger on the description", () => {
+      const hub = {
+        channel: 0,
+        codec: "station" as const,
+        deviceType: DeviceType.STATION,
+        model: "T8010",
+        serial: "T8010P0000000001",
+        capabilities: new Set(["siren"] as const),
+        paramIds: new Set([1281]),
+      };
+      const bare = sirenOf(hub).acts;
+      expect(bare.setAlarmVolume).toBeDefined();
+      expect(bare.setAlarmTone).toBeDefined();
+      expect(bare.trigger).toBeUndefined();
+      expect(bare.stop).toBeUndefined();
+      const described = sirenOf({ ...hub, things: alarmThings("T8010", ["0", "3"]) }).acts;
+      expect(described.trigger).toBeDefined();
+      expect(described.stop).toBeDefined();
     });
 
     it("owns HomeBase alarm volume and tone while audio retains only prompt volume", async () => {
@@ -238,234 +257,95 @@ describe("siren capability module", () => {
     });
 
     it.each([
-      { deviceType: DeviceType.STATION, model: "T8010" },
-      { deviceType: DeviceType.HB3, model: "T8030" },
-    ])(
-      "binds the verified duration trigger and zero-duration stop on the station channel ($model)",
-      async ({ deviceType, model }) => {
-        const { acts, sent } = sirenOf({
-          channel: 0,
-          codec: "station",
-          deviceType,
-          model,
-          accountName: "tester",
-          capabilities: new Set(["siren"]),
-          paramIds: new Set([1279, 1280, 1281, 1282, 61008, 1825, 61006]),
-        });
-        const alarm = acts as unknown as {
-          trigger?: (seconds: number) => Promise<void>;
-          stop?: () => Promise<void>;
-        };
-
-        expect(alarm.trigger).toBeDefined();
-        expect(alarm.stop).toBeDefined();
-        expect((acts as unknown as Record<string, unknown>).active).toBeUndefined();
-        expect((acts as unknown as Record<string, unknown>).test).toBeUndefined();
-        await alarm.trigger!(10);
-        await alarm.stop!();
-        expect(sent).toEqual([
-          {
-            kind: "set-payload",
-            cmd: 1201,
-            payload: { time_out: 10, user_name: "tester" },
-            channel: 255,
-            mValue3: 0,
-          },
-          {
-            kind: "set-payload",
-            cmd: 1201,
-            payload: { time_out: 0, user_name: "tester" },
-            channel: 255,
-            mValue3: 0,
-          },
-        ]);
-      },
-    );
-
-    it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])(
-      "rejects invalid trigger duration %s without dispatch",
-      async (seconds) => {
-        const { acts, sent } = sirenOf({
-          channel: 0,
-          codec: "station",
-          deviceType: DeviceType.STATION,
-          model: "T8010",
-          accountName: "tester",
-          capabilities: new Set(["siren"]),
-          paramIds: new Set([1281]),
-        });
-        const trigger = (acts as unknown as { trigger: (value: number) => Promise<void> }).trigger;
-
-        await expect(trigger(seconds)).rejects.toThrow(/positive safe whole-number duration/);
-        expect(sent).toEqual([]);
-      },
-    );
-
-    it("installs no momentary alarm action without reported HomeBase alarm evidence", () => {
-      const { acts } = sirenOf({
+      ["T8010", { time_out: 30 }, { time_out: 0 }],
+      ["T9000", { time_out: 30, user_name: "" }, { time_out: 0, user_name: "", open: false }],
+    ])("sounds and stops a %s as the live view's HomeBase sound, on the station channel", async (model, on, off) => {
+      const { acts, sent } = sirenOf({
         channel: 0,
         codec: "station",
-        deviceType: DeviceType.STATION,
-        model: "T8010",
-        accountName: "tester",
+        model,
+        serial: `${model}P0000000001`,
         capabilities: new Set(["siren"]),
         paramIds: new Set(),
+        things: alarmThings(model, ["0", "3"]),
       });
-
-      expect((acts as unknown as Record<string, unknown>).trigger).toBeUndefined();
-      expect((acts as unknown as Record<string, unknown>).stop).toBeUndefined();
-      expect((acts as unknown as Record<string, unknown>).active).toBeUndefined();
+      await acts.trigger!();
+      await acts.stop!();
+      expect(sent).toEqual(
+        [on, off].map((payload) => ({
+          kind: "set-payload",
+          cmd: 1201,
+          payload: { ...payload, transaction: expect.any(String) },
+          channel: 255,
+          mValue3: 0,
+        })),
+      );
     });
   });
 
-  describe("HomeBase-attached camera alarm output", () => {
-    it("uses attached topology and reported EAS evidence rather than model or device type", () => {
-      const { acts } = sirenOf({
-        channel: 2,
-        codec: "camera",
-        deviceType: DeviceType.BATTERY_DOORBELL,
-        model: "T8999",
-        homeBaseAttached: true,
-        capabilities: new Set(["siren"]),
-        paramIds: new Set([1015]),
-      });
-      const alarm = acts as unknown as Record<string, unknown>;
-
-      expect(alarm.trigger).toBeDefined();
-      expect(alarm.stop).toBeDefined();
+  describe("camera alarm output", () => {
+    const camera = (model: string, attached: boolean, channel = 2): CommandContext => ({
+      channel,
+      codec: "camera",
+      model,
+      serial: `${model}P0000000001`,
+      homeBaseAttached: attached,
+      ...(attached && { stationSerial: "T8010P0000000009" }),
+      capabilities: new Set(["siren"]),
+      paramIds: new Set(),
+      things: alarmThings(model, ["0"]),
     });
 
     it.each([
-      [0, DeviceType.CAMERA2, "T8114"],
-      [1, DeviceType.CAMERA2, "T8114"],
-      [2, DeviceType.BATTERY_DOORBELL, "T8210"],
-    ])("routes trigger and stop only to the bound camera channel %i", async (channel, deviceType, model) => {
-      const { acts, sent } = sirenOf({
-        channel,
-        codec: "camera",
-        deviceType,
-        model,
-        homeBaseAttached: true,
-        capabilities: new Set(["siren"]),
-        paramIds: new Set([1015, 61008, 1825, 61006]),
-      });
-      const alarm = acts as unknown as {
-        trigger?: (seconds: number) => Promise<void>;
-        stop?: () => Promise<void>;
-      };
-
-      await alarm.trigger!(10);
-      await alarm.stop!();
-      expect(sent).toEqual([
-        { kind: "p2p-int-string", cmd: 1202, value: 10, valueSub: channel, channel },
-        { kind: "p2p-int-string", cmd: 1202, value: 0, valueSub: channel, channel },
-      ]);
-      expect((acts as unknown as Record<string, unknown>).setAlarmVolume).toBeUndefined();
-      expect((acts as unknown as Record<string, unknown>).setAlarmTone).toBeUndefined();
-      expect((acts as unknown as Record<string, unknown>).active).toBeUndefined();
-      expect((acts as unknown as Record<string, unknown>).test).toBeUndefined();
+      // `SetAlarmTypeParser` v3: SINGLE level 2 on 1201, the HomeBase default level 2 on 1202.
+      ["T8134", false, 1201],
+      ["T8134", true, 1202],
+    ])("sends a %s (attached %s) the bundle's 30 s sound-only alarm, then its stop", async (model, attached, cmd) => {
+      const { acts, sent } = sirenOf(camera(model, attached));
+      await acts.trigger!();
+      await acts.stop!();
+      expect(sent).toEqual(
+        [30, 0].map((time_out) => ({
+          kind: "set-payload",
+          cmd,
+          payload: { channel: 2, type: 10, time_out, user_name: "", transaction: expect.any(String) },
+          channel: 2,
+          mValue3: 0,
+        })),
+      );
     });
 
-    it.each(["T8134", "T814X", "T8214", "T8790", "T8122", "T8113-Z", "T8400"])(
-      "installs the alarm on a %s behind a HomeBase S1 Pro and sends it the portal's form",
-      async (model) => {
-        const { acts, sent } = sirenOf({
-          channel: 3,
-          codec: "camera",
-          deviceType: DeviceType.CAMERA2,
-          model,
-          homeBaseAttached: true,
-          stationDeviceType: DeviceType.STATION_9000,
-          accountName: "Synthetic Home",
-          capabilities: new Set(["siren"]),
-          paramIds: new Set([1015, 61008, 1825, 61006]),
-        });
-        const alarm = acts as unknown as { trigger?: (s: number) => Promise<void>; stop?: () => Promise<void> };
-
-        await alarm.trigger!(5);
-        await alarm.stop!();
-        expect(sent).toEqual([
-          {
-            kind: "set-payload",
-            cmd: 1202,
-            payload: { time_out: 5, type: 10, channel: 3, username: "Synthetic Home" },
-            channel: 3,
-            mValue3: undefined,
-            form: undefined,
-          },
-          {
-            kind: "set-payload",
-            cmd: 1202,
-            payload: { time_out: 0, type: 10, channel: 3, username: "Synthetic Home" },
-            channel: 3,
-            mValue3: undefined,
-            form: undefined,
-          },
-        ]);
-      },
-    );
-
-    it("installs no alarm action on a camera behind a HomeBase S1 Pro for a model with no evidence for the portal form", () => {
-      const { acts } = sirenOf({
-        channel: 2,
-        codec: "camera",
-        deviceType: DeviceType.CAMERA2,
-        model: "T8114",
-        homeBaseAttached: true,
-        stationDeviceType: DeviceType.STATION_9000,
-        accountName: "Synthetic Home",
-        capabilities: new Set(["siren"]),
-        paramIds: new Set([1015, 61008, 1825, 61006]),
-      });
-      const alarm = acts as unknown as Record<string, unknown>;
-
-      expect(alarm.trigger).toBeUndefined();
-      expect(alarm.stop).toBeUndefined();
+    it("sends a standalone T8410 the bundle's level-1 1201 on the station channel", async () => {
+      const { acts, sent } = sirenOf(camera("T8410", false));
+      await acts.trigger!();
+      await acts.stop!();
+      expect(sent).toEqual(
+        [30, 0].map((value) => ({
+          kind: "p2p-int-string",
+          cmd: 1201,
+          value,
+          valueSub: 10,
+          channel: 255,
+          form: "int-pair",
+        })),
+      );
     });
 
-    it.each([
-      [DeviceType.CAMERA2, "T8114", false, true],
-      [DeviceType.INDOOR_PT_CAMERA, "T8410", false, false],
-      [DeviceType.INDOOR_PT_CAMERA, "T8410", true, false],
-      [DeviceType.BATTERY_DOORBELL, "T8210", true, false],
-    ])(
-      "installs no alarm action without topology and EAS evidence for %s/%s/%s/%s",
-      (deviceType, model, attached, evidenced) => {
-        const { acts } = sirenOf({
-          channel: 0,
-          codec: "camera",
-          deviceType,
-          model,
-          homeBaseAttached: attached,
-          capabilities: new Set(["siren"]),
-          paramIds: new Set(evidenced ? [1015] : []),
-        });
-        const alarm = acts as unknown as Record<string, unknown>;
+    it("sends a T8114 behind a HomeBase the bundle's 1202 pair", async () => {
+      const { acts, sent } = sirenOf(camera("T8114", true, 3));
+      await acts.trigger!();
+      await acts.stop!();
+      expect(sent).toEqual(
+        [30, 0].map((value) => ({ kind: "set-param", param: 1202, value, channel: 3, form: "int-pair" })),
+      );
+    });
 
-        expect(alarm.trigger).toBeUndefined();
-        expect(alarm.stop).toBeUndefined();
-        expect(alarm.active).toBeUndefined();
-      },
-    );
-
-    it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1, "10"])(
-      "rejects invalid camera trigger duration %s without dispatch",
-      async (seconds) => {
-        const { acts, sent } = sirenOf({
-          channel: 1,
-          codec: "camera",
-          deviceType: DeviceType.CAMERA2,
-          model: "T8114",
-          homeBaseAttached: true,
-          capabilities: new Set(["siren"]),
-          paramIds: new Set([1015]),
-        });
-        const trigger = (acts as unknown as { trigger: (value: number) => Promise<void> }).trigger;
-
-        await expect(trigger(seconds as unknown as number)).rejects.toThrow(/positive safe whole-number duration/);
-        expect(sent).toEqual([]);
-      },
-    );
+    it("installs no alarm action where the description lists no set_alarm_type", () => {
+      const { acts } = sirenOf({ ...camera("T8134", true), things: undefined, paramIds: new Set([1015]) });
+      expect(acts.trigger).toBeUndefined();
+      expect(acts.stop).toBeUndefined();
+      expect(acts.active).toBeUndefined();
+    });
   });
 
   it("does not install standalone members from colliding params on another device family", () => {
@@ -517,18 +397,22 @@ describe("siren capability module", () => {
     {
       channel: 0,
       codec: "station" as const,
-      deviceType: DeviceType.STATION,
-      accountName: "tester",
+      model: "T8010",
+      serial: "T8010P0000000001",
       capabilities: new Set(["siren"] as const),
-      paramIds: new Set([1281]),
+      paramIds: new Set<number>(),
+      things: alarmThings("T8010", ["0", "3"]),
     },
     {
       channel: 1,
       codec: "camera" as const,
-      deviceType: DeviceType.BATTERY_DOORBELL,
+      model: "T8134",
+      serial: "T8134P0000000001",
       homeBaseAttached: true,
+      stationSerial: "T8010P0000000009",
       capabilities: new Set(["siren"] as const),
-      paramIds: new Set([1015]),
+      paramIds: new Set<number>(),
+      things: alarmThings("T8134", ["0"]),
     },
   ])("propagates transport rejection without fabricating active state", async (context) => {
     const attempted: Command[] = [];
@@ -543,43 +427,18 @@ describe("siren capability module", () => {
       read: () => undefined,
     }).siren as SirenActions;
 
-    await expect(actions.trigger!(10)).rejects.toThrow(/transport failed/);
+    await expect(actions.trigger!()).rejects.toThrow(/transport failed/);
     await expect(actions.stop!()).rejects.toThrow(/transport failed/);
     expect(attempted).toHaveLength(2);
     expect(actions.active).toBeUndefined();
   });
 
   describe("detection", () => {
-    it("requires both attached topology and reported EAS evidence for a camera", () => {
-      expect(
-        detectCapabilities(
-          {
-            deviceType: DeviceType.BATTERY_DOORBELL,
-            model: "T8999",
-            parentSn: "T8000P0000000000",
-            params: { 1015: "0" },
-          },
-          "camera",
-        ),
-      ).toContain("siren");
-      expect(
-        detectCapabilities(
-          { deviceType: DeviceType.BATTERY_DOORBELL, model: "T8999", params: { 1015: "0" } },
-          "camera",
-        ),
-      ).not.toContain("siren");
-      expect(
-        detectCapabilities(
-          { deviceType: DeviceType.SENSOR, model: "T8999", parentSn: "T8000P0000000000", params: { 1015: "0" } },
-          "sensor",
-        ),
-      ).not.toContain("siren");
-      expect(
-        detectCapabilities(
-          { deviceType: DeviceType.BATTERY_DOORBELL, model: "T8999", parentSn: "T8000P0000000000", params: {} },
-          "camera",
-        ),
-      ).not.toContain("siren");
+    it("detects a camera from its description's set_alarm_type, not from the EAS switch", () => {
+      const record = { deviceType: DeviceType.BATTERY_DOORBELL, model: "T8134", params: { 1015: "0" } };
+      expect(detectCapabilities({ ...record, things: alarmThings("T8134", ["0"]) }, "camera")).toContain("siren");
+      expect(detectCapabilities({ ...record, parentSn: "T8010P0000000000" }, "camera")).not.toContain("siren");
+      expect(detectCapabilities({ ...record, things: alarmThings("T8134", ["0"]) }, "sensor")).not.toContain("siren");
     });
     it("does not detect a motion sensor from generic timeout alone", () => {
       expect(
@@ -652,7 +511,7 @@ const _setVolumeOptional: Exact<undefined extends typeof sn.setVolume ? true : f
 const _testOptional: Exact<undefined extends typeof sn.test ? true : false, true> = true;
 const _testArgs: Exact<Parameters<NonNullable<typeof sn.test>>, []> = true;
 const _triggerOptional: Exact<undefined extends typeof sn.trigger ? true : false, true> = true;
-const _triggerArgs: Exact<Parameters<NonNullable<typeof sn.trigger>>, [seconds: number]> = true;
+const _triggerArgs: Exact<Parameters<NonNullable<typeof sn.trigger>>, []> = true;
 const _stopOptional: Exact<undefined extends typeof sn.stop ? true : false, true> = true;
 const _stopArgs: Exact<Parameters<NonNullable<typeof sn.stop>>, []> = true;
 

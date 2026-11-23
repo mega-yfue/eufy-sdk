@@ -93,6 +93,20 @@ const tableReads = (m: CapabilityModule, paramIds: Set<number>): string[] =>
 
 describe("describeCapabilities — enumeration of the live bound objects", () => {
   it("describes only the alarm-output members installed for each verified siren family", () => {
+    const alarm = (model: string, values: string[]) =>
+      parseThingsList({
+        things_list: [
+          {
+            profile: { product_code: model },
+            properties: [
+              {
+                identifier: "set_alarm_type",
+                data_type: { type: "ienum", specs: { eunmList: values.map((value) => ({ value, desc: "" })) } },
+              },
+            ],
+          },
+        ],
+      })[model];
     const describeSiren = (ctx: CommandContext) =>
       describeCapabilities(buildActions(["siren"], { ctx, sink, read: () => undefined })).find(
         (entry) => entry.capability === "siren",
@@ -102,9 +116,10 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
       codec: "station",
       deviceType: 0,
       model: "T8010",
-      accountName: "tester",
+      serial: "T8010P0000000001",
       capabilities: new Set(["siren"]),
       paramIds: new Set([1281, 1282]),
+      things: alarm("T8010", ["0", "3"]),
     });
     const camera = describeSiren({
       channel: 1,
@@ -112,8 +127,10 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
       deviceType: 9,
       model: "T8114",
       homeBaseAttached: true,
+      stationSerial: "T8010P0000000009",
       capabilities: new Set(["siren"]),
-      paramIds: new Set([1015]),
+      paramIds: new Set(),
+      things: alarm("T8114", ["0"]),
     });
     const standalone = describeSiren({
       channel: 16,
@@ -138,9 +155,7 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
       "trigger",
       "stop",
     ]);
-    expect(homeBase.actions.find((action) => action.name === "trigger")?.args).toEqual([
-      { name: "seconds", kind: "seconds", min: 1, description: "A positive whole-number duration." },
-    ]);
+    expect(homeBase.actions.find((action) => action.name === "trigger")?.args).toEqual([]);
     expect(camera.reads).toEqual([]);
     expect(camera.actions.map((action) => action.name)).toEqual(["trigger", "stop"]);
     expect(standalone.reads.map((read) => read.accessor)).toEqual(["active", "volume"]);
