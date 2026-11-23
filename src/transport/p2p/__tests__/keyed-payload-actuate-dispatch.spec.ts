@@ -127,7 +127,7 @@ function harness(script: (sent: Sent, index: number) => Answer[], opts: { nickNa
   const member = { admin_user_id: ACCOUNT_ID, ...(opts.nickName ? { nick_name: opts.nickName } : {}) };
   const router = routerWithSession(session, {
     deps: {
-      mega: { getDevicePublicKey: vi.fn(async () => devicePublicKeyHex) } as never,
+      mega: { auth: { userId: ACCOUNT_ID }, getDevicePublicKey: vi.fn(async () => devicePublicKeyHex) } as never,
       listDevices: () =>
         [
           {

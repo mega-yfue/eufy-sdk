@@ -60,7 +60,7 @@ export interface RtcRoute {
   stationSn: string;
   /** True for a device attached to the station, which keeps the command's own channel. */
   attached: boolean;
-  /** The station's `member.admin_user_id`, the payload's `account_id`; the logged-in user when absent. */
+  /** The payload's `account_id`: the station's `memberAccountId`; the logged-in user when absent. */
   adminUserId?: string;
   /** The station record's `p2p_did`, `p2p_license` and first IPv4 `signaling_servers` host. */
   did: string;

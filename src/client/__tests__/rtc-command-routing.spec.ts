@@ -17,7 +17,7 @@ const RECORD = {
   signaling_servers: ["https://signal.example.invalid/x", "https://192.0.2.7/path"],
   main_sw_version: "4.1.0.2",
   webrtc_sdk_version: "1.7.2",
-  member: { admin_user_id: "synthetic-admin" },
+  member: { admin_user_id: "synthetic-admin", member_user_id: "synthetic-member" },
 };
 
 const prop = (identifier: string, defaultValue: string) =>
@@ -31,6 +31,9 @@ function fixture(model: string, props: Record<string, string> = {}, record: Reco
     autoRealtime: false,
     pollMs: 0,
     storedSnapshotCache: false,
+  });
+  Object.defineProperty((client as unknown as { mega: object }).mega, "auth", {
+    get: () => ({ userId: "synthetic-member" }),
   });
   const internals = client as unknown as {
     registry: { devices: EufyDevice[]; thingsOf(sn: string): ThingDescription | undefined };

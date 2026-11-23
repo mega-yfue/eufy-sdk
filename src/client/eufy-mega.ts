@@ -69,6 +69,7 @@ import { StoredImageCache } from "../transport/stored-image-cache.js";
 import type { PushEvent, RawPushMessage } from "../transport/push/types.js";
 import { type AvailabilityObservation, type EufyDevice, type RealtimeTransport } from "../core/types.js";
 import { Timer } from "../core/util.js";
+import { memberAccountId } from "../core/member.js";
 import {
   Device,
   resolveDevice,
@@ -113,7 +114,7 @@ type SemanticEventRefresh = Pick<CommandObservation, "param" | "property" | "res
   observed?: CommandObservation["observed"];
 };
 
-/** The owning member's `admin_user_id` off a raw device record, which its station scopes writes to. */
+/** The `member.admin_user_id` a raw device record states, as the app's esiotkit MQTT path reads it (no `memberAccountId` rule). */
 function adminUserIdFrom(raw: unknown): string | undefined {
   const member = ((raw ?? {}) as Record<string, unknown>).member as Record<string, unknown> | undefined;
   const id = member?.admin_user_id;
@@ -1392,7 +1393,7 @@ export class EufyMega extends EventEmitter {
    * station's description reads `is_connect_webrtc` 2, or 1 (`true`) on one listing no
    * `is_connect_webrtc_sub_device_list`, and the station's record carries what the app's `WebrtcInterceptor` refuses
    * a request without: `p2p_did`, `p2p_license` and an IPv4 `signaling_servers` entry. `undefined` otherwise. The
-   * admin id is the station's `member.admin_user_id`.
+   * account id is the station's {@link memberAccountId}.
    *
    * A station at 1 with a sub-device list (a T8030 or T8025) keeps its P2P connection, so it has no route without
    * `send`; with a child model in the list, `send` (the command id, its inner id, its header channel) goes as the
@@ -1426,7 +1427,7 @@ export class EufyMega extends EventEmitter {
     return {
       stationSn,
       attached: stationSn !== sn,
-      adminUserId: text(raw.member?.admin_user_id),
+      adminUserId: memberAccountId(raw, this.mega.auth?.userId),
       did,
       lic,
       host,
@@ -2334,8 +2335,7 @@ export class EufyMega extends EventEmitter {
    * the transport the station speaks: the RTC data channel on an RTC route, P2P for any other
    * station. The query is the table's whole content; the rows are the station's, shaped by it.
    *
-   * Resolves with the rows the station returned. Rejects on a serial not in the device list, on a record
-   * stating no `admin_user_id`, on a station that cannot be reached, on a query the station refuses, and
+   * Resolves with the rows the station returned. Rejects on a serial not in the device list, signed out, on a station that cannot be reached, on a query the station refuses, and
    * on the reply not arriving in time. Assembling the reply is the transport's; this resolves which
    * station, which transport and which account id.
    */
@@ -2353,7 +2353,7 @@ export class EufyMega extends EventEmitter {
    * (`thumb_path`, …), read over the station's data channel.
    *
    * Resolves with the image bytes as the station holds them. Rejects on a serial not in the device list,
-   * on a record stating no `admin_user_id`, on a station on no RTC route, on a station that cannot be
+   * signed out, on a station on no RTC route, on a station that cannot be
    * reached, and on the reply not arriving in time. Fetching the image is the transport's; this resolves
    * which station and which account id.
    */
@@ -2365,8 +2365,8 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * The station a database read goes to, its `admin_user_id` and its RTC route, if any. Throws,
-   * prefixed with `op`, on a serial the device list does not carry and on a record stating no admin id.
+   * The station a database read goes to, the account id it is quoted ({@link memberAccountId}) and its RTC route,
+   * if any. Throws, prefixed with `op`, on a serial the device list does not carry and signed out.
    */
   private async stationReadTarget(
     op: string,
@@ -2376,14 +2376,9 @@ export class EufyMega extends EventEmitter {
     const station = this.p2p.stationKeyOf(stationSn);
     const found = this.stationOf(station);
     if (!found.station) throw new Error(`${op}: ${station} is not in the device list`);
-    const accountId = this.adminUserIdOf(station);
-    if (!accountId) throw new Error(`${op}: no admin_user_id on record for ${station}`);
+    const accountId = memberAccountId(found.raw, this.mega.auth?.userId);
+    if (!accountId) throw new Error(`${op}: no account id for ${station}, login() first`);
     return { station, accountId, route: this.rtcRouteFor(station, { cmd: 1350, sub: 1306, channel: 255 }) };
-  }
-
-  /** The station's own `admin_user_id`, which its database refuses the query without. */
-  private adminUserIdOf(stationSn: string): string | undefined {
-    return adminUserIdFrom(this.registry.list().find((d) => d.sn === stationSn)?.raw);
   }
 
   /**
@@ -2600,7 +2595,7 @@ export class EufyMega extends EventEmitter {
       things: rec.things,
       capabilities: new Set(resolved.capabilities),
       // Member identity for ff09-* command devices (see core/contracts Ff09Identity).
-      adminUserId: typeof member.admin_user_id === "string" ? member.admin_user_id : undefined,
+      adminUserId: memberAccountId(raw, this.mega.auth?.userId) || undefined,
       shortUserId: typeof member.short_user_id === "string" ? member.short_user_id : undefined,
       accountName: this.mega.accountName || undefined,
       nickName: this.mega.nickName,

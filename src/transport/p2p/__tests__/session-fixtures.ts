@@ -105,7 +105,8 @@ export function routerWithSession(
 ): P2PCommandRouter {
   const accountId = opts.accountId ?? ACCOUNT_ID;
   const deps: P2PRouterDeps = {
-    mega: {} as P2PRouterDeps["mega"],
+    // Signed in as the record's admin, as an owner is: the account id the router quotes is theirs either way.
+    mega: { auth: { userId: accountId } } as unknown as P2PRouterDeps["mega"],
     listDevices: () => [
       {
         sn: DEVICE_SN,

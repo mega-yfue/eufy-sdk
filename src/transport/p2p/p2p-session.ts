@@ -297,8 +297,8 @@ export interface P2PSessionConfig {
    */
   resolveCipherKey?: (cipherId: number, version: number) => Promise<string | undefined>;
   /**
-   * The user id the app connects a station under (`IUser.getUid`: the station's `admin_user_id`, else the signed-in
-   * account's): the sign-1 GCM key is built from it.
+   * The user id the app connects a station under (`IUser.getUid`, `AnkerAccountManager.e` of the station: the
+   * router's `memberAccountId`): the sign-1 GCM key is built from it.
    */
   userId?: string;
   /** Diagnostics sink. Omit for silence. */

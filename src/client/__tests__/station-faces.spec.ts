@@ -4,8 +4,8 @@ import { EufyMega } from "../eufy-mega.js";
 /**
  * `getStationFaces` resolves which station and which account id, and hands the rest to
  * `P2PSession.readDatabase` — which owns assembling the reply and is specced with the transport.
- * These cover the facade's own half: the station key, the admin id the station refuses the query
- * without, and the session having to exist.
+ * These cover the facade's own half: the station key, the account id the query is scoped to, and the
+ * session having to exist.
  */
 const STATION = "T8010P0000000000";
 
@@ -16,6 +16,7 @@ const ROWS = [
 
 function harness(opts: { adminUserId?: string; session?: { readDatabase: unknown } | null } = {}) {
   const eufy = new EufyMega({ email: "t@example.com", password: "x" });
+  Object.defineProperty((eufy as unknown as { mega: object }).mega, "auth", { get: () => ({ userId: "MEMBER-0000" }) });
   const readDatabase = vi.fn().mockResolvedValue(ROWS);
   const session = opts.session === undefined ? { readDatabase } : opts.session;
 
@@ -28,7 +29,10 @@ function harness(opts: { adminUserId?: string; session?: { readDatabase: unknown
     };
   };
   vi.spyOn(internals.registry, "list").mockReturnValue([
-    { sn: STATION, raw: { member: { admin_user_id: opts.adminUserId ?? "ADMIN-0000" } } },
+    {
+      sn: STATION,
+      raw: { member: { admin_user_id: opts.adminUserId ?? "ADMIN-0000", member_user_id: "MEMBER-0000" } },
+    },
   ]);
   internals.p2p = {
     stationKeyOf: (sn: string) => sn,
@@ -58,11 +62,13 @@ describe("getStationFaces", () => {
     );
   });
 
-  it("refuses a station whose record states no admin id, rather than querying with none", async () => {
-    // A wrong or absent account id is answered `-104` by the station, which looks like silence.
+  it("scopes a station whose record states no admin id to the signed-in user, as the app does", async () => {
     const { eufy, readDatabase } = harness({ adminUserId: "" });
-    await expect(eufy.getStationFaces(STATION)).rejects.toThrow(/admin_user_id/);
-    expect(readDatabase).not.toHaveBeenCalled();
+    await eufy.getStationFaces(STATION);
+    expect(readDatabase).toHaveBeenCalledWith(
+      "person_basic_info",
+      expect.objectContaining({ accountId: "MEMBER-0000" }),
+    );
   });
 
   it("refuses when the station has no session to ask", async () => {

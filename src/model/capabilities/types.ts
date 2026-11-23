@@ -323,8 +323,8 @@ export interface CommandContext extends AvailabilityContext {
    */
   capabilities?: ReadonlySet<Capability>;
   /**
-   * The lock owner's account id — the identity a lock command is authenticated against. Present on
-   * lock-family devices; absent elsewhere.
+   * The lock owner's account id — the identity a lock command is authenticated against: the record's
+   * `memberAccountId`, as `AnkerAccountManager.e` gives it. Absent signed out.
    */
   adminUserId?: string;
   /** The acting member's short id (`member.short_user_id`, hex, e.g. `"0003"`) — the lock cmd `A5` field. */
