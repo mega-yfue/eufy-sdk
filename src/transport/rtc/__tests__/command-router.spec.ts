@@ -262,6 +262,24 @@ describe("RtcCommandRouter on the native layers", () => {
     expect(stop.body).toEqual(Buffer.alloc(4));
   });
 
+  it("sends an old T8223's 1700 start and 1004 stop over the data channel, from 3.3.7.6 over ANKE", async () => {
+    const sn = "T8223P0000000000";
+    const route = { ...ROUTE, stationSn: sn, cameraSn: sn, attached: false, channel: 0, live: SOLO_LIVE };
+    const old = layers();
+    const consumer = await old.router.mediaProviderFor({ ...route, version: 3375 }).live();
+    await vi.waitFor(() => expect(old.data.command).toHaveBeenCalledWith(1700, expect.any(Buffer), 0, 10));
+    consumer.stop();
+    old.router.close();
+    expect(old.data.command).toHaveBeenLastCalledWith(1004, Buffer.alloc(4), 0, 0);
+    expect(old.agent.write).not.toHaveBeenCalled();
+    const fresh = layers();
+    const live = await fresh.router.mediaProviderFor({ ...route, version: 3376 }).live();
+    expect(sent(fresh.agent, 0)).toMatchObject({ cmd: 1700, flag: 10 });
+    expect(fresh.data.command).not.toHaveBeenCalled();
+    live.stop();
+    fresh.router.close();
+  });
+
   it("refuses a live view without the start JSON", async () => {
     const { router } = layers();
     await expect(router.mediaProviderFor({ ...ROUTE, live: undefined }).live()).rejects.toThrow("no RTC start frame");
