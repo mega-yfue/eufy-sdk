@@ -248,13 +248,14 @@ describe("siren capability module", () => {
       await expect(siren.acts.setAlarmTone!(3)).rejects.toThrow(/alarmTone: 3 is not a valid value/);
     });
 
-    it("previews a hub's alarm as the app's volume setting does, 2 s in the account's name; none on a HomeBase 3", async () => {
-      const hub = (model: string): CommandContext => ({
+    it("previews a hub's alarm as the app's volume setting does, 2 s under the raw nick_name; none on a HomeBase 3", async () => {
+      const hub = (model: string, nick: { nickName?: string } = { nickName: "someone" }): CommandContext => ({
         channel: 0,
         codec: "station",
         model,
         serial: `${model}P0000000001`,
-        accountName: "someone",
+        accountName: "local-part",
+        ...nick,
         capabilities: new Set(["siren"]),
         paramIds: new Set(),
         things: alarmThings(model, ["0", "3"]),
@@ -271,6 +272,18 @@ describe("siren capability module", () => {
         },
       ]);
       expect(sirenOf(hub("T8030")).acts.test).toBeUndefined();
+      // No local-part fallback: an empty nick_name goes as is, and none drops the key, as the RN screen's JSON does.
+      for (const [nick, named] of [
+        [{ nickName: "" }, { user_name: "" }],
+        [{}, {}],
+      ] as const) {
+        const empty = sirenOf(hub("T8010", nick));
+        await empty.acts.test!();
+        const { transaction: _, ...payload } = JSON.parse(
+          JSON.stringify((empty.sent[0] as { payload: object }).payload),
+        );
+        expect(payload).toEqual({ time_out: 2, ...named });
+      }
     });
 
     it.each([

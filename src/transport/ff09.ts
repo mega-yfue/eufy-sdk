@@ -34,7 +34,7 @@
  *   A1 04 <time u32 LE>            — freshness stamp
  *   A2 <len> <admin_user_id ASCII> — the lock owner's id (40 hex chars)
  *   A3 01 <lockByte>               — 0 = lock, 1 = unlock
- *   A4 <len> <username ASCII>      — the acting user's display name (email local-part)
+ *   A4 <len> <username ASCII>      — the acting user's display name (the account name)
  *   A5 <len> <short_user_id bytes> — the acting member's short id (hex→bytes, e.g. "0003")
  * ```
  *
@@ -177,7 +177,7 @@ export interface Ff09FrameInput {
   engage: boolean;
   /** The lock owner's account id (`member.admin_user_id`, 40 hex chars) — drives the key + `A2`. */
   adminUserId: string;
-  /** The acting user's display name (the login email's local-part) — the `A4` field. Omitted when {@link omitUserFields}. */
+  /** The acting user's display name (`MegaHttpClient.accountName`) — the `A4` field. Omitted when {@link omitUserFields}. */
   username?: string;
   /** The acting member's short id (`member.short_user_id`, hex, e.g. `"0003"`) — the `A5` field. Omitted when {@link omitUserFields}. */
   shortUserId?: string;

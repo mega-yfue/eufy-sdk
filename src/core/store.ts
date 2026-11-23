@@ -38,6 +38,8 @@ export interface PersistedSession {
   accountUserId?: string;
   authToken: string;
   geoKey?: string;
+  /** The login reply's `nick_name`, as the app caches its passport data. */
+  nickName?: string;
   region: RegionShard;
   /** The `countryCode` the session was logged in with; a different configured one logs in again. */
   countryCode?: string;

@@ -107,12 +107,13 @@ const PREVIEW_HUBS = ["T8010", "T8002", "T8001", "T8025", "T9000", "T8N00", "T70
 /**
  * The app's alarm test. A sensor siren's settings test (`AlarmVolumeSettingScreen`, `IndoorSensorTestScreen`, the
  * add-device test) sounds `{open: true, forTest: true}`. A HomeBase other than a HomeBase 3 (`AudioSettingsScreen`'s
- * volume preview) sounds 2 s of its type-0 alarm in the account's name. No other family has one.
+ * volume preview) sounds 2 s of its type-0 alarm under the raw login `nick_name`: `''` as is, the key dropped when the
+ * login had none (Gson omits the null, so RN's `UserInfo.nickName` is undefined). No other family has one.
  */
 function testAlarm(ctx: CommandContext): Command | undefined {
   if (isSensorCodec(ctx)) return alarmWrite('{"open":true,"forTest":true}', ctx);
   if (!PREVIEW_HUBS.some((p) => ctx.serial?.startsWith(p))) return undefined;
-  const preview = { type: 0, time: 2, open: true, nick_name: ctx.accountName };
+  const preview = { type: 0, time: 2, open: true, nick_name: ctx.nickName };
   return alarmWrite(JSON.stringify(preview), ctx, JSON.stringify({ ...preview, nick_name: "$input.nick_name" }));
 }
 

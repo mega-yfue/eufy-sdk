@@ -2603,6 +2603,7 @@ export class EufyMega extends EventEmitter {
       adminUserId: typeof member.admin_user_id === "string" ? member.admin_user_id : undefined,
       shortUserId: typeof member.short_user_id === "string" ? member.short_user_id : undefined,
       accountName: this.mega.accountName || undefined,
+      nickName: this.mega.nickName,
       // The same claim the command sink routes on — a capability gates its P2P-only variants (e.g.
       // setRainMode) on this. Keyed on the P2P stack's own predicate (a usable `p2p_did` endpoint).
       hasP2p: P2PCommandRouter.claimsDevice(dev),

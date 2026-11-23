@@ -223,11 +223,7 @@ function armingModeOf(v: boolean | number | string): ArmingMode | undefined {
 
 /**
  * Build the {@link ARMING_CMD.SET_ARMING} write intent, or throw if the context has no account
- * identity. `user_name` — the app sends a MASKED value (its privacy-display truncation of the
- * account's email local-part), not the unmasked acting name `ctx.accountName` carries. Sending the
- * acting name as it stands is the more correct choice — it's almost certainly
- * just attribution (e.g. "who armed the system" in event history), not a value the device checks
- * against anything.
+ * identity. `user_name` is `ctx.accountName`, the account's nick name the app writes there.
  */
 function armingCommand(mode: ArmingMode, ctx: CommandContext): Command {
   if (!ctx.accountName) {

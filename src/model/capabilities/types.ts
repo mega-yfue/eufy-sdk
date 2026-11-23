@@ -331,10 +331,12 @@ export interface CommandContext extends AvailabilityContext {
   shortUserId?: string;
   /**
    * The acting name a command attributes itself to — the lock cmd acting-username `A4` field, and the
-   * `user_name` of the guard-mode write. The logged-in account's display name
-   * (email local-part) unless the client pins a different label for it.
+   * `user_name` of the guard-mode write. The account's `nick_name` (email local-part when it has
+   * none) unless the client pins a different label for it.
    */
   accountName?: string;
+  /** The login reply's raw `nick_name`, `''` kept, no fallback: the name the HomeBase siren preview carries. */
+  nickName?: string;
   /**
    * Whether the device has a usable P2P endpoint (a non-empty `p2p_did`). A HomeBase-attached lock
    * (T8531) is P2P-reachable; a standalone garage/lock (T85D0, `p2p_did:""`) is MQTT-only. The lock
