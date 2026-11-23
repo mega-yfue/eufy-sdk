@@ -16,8 +16,12 @@ const CALL: RtcCallSdp = {
   video: 7,
 };
 const CHANNEL = 3;
-const START = JSON.stringify({ cmd: 1003, mChannel: CHANNEL, payload: { chn_list: [] } });
-const STOP = JSON.stringify({ cmd: 1004, mChannel: CHANNEL, mValue3: 0, payload: { channel: CHANNEL } });
+const START_JSON = JSON.stringify({ cmd: 1003, mChannel: CHANNEL, payload: { chn_list: [] } });
+const STOP_JSON = JSON.stringify({ cmd: 1004, mChannel: CHANNEL, mValue3: 0, payload: { channel: CHANNEL } });
+const command =
+  (json: string, cmd = 1350, flag = 0) =>
+  () => ({ cmd, body: Buffer.from(json), channel: CHANNEL, flag });
+const [START, STOP] = [command(START_JSON), command(STOP_JSON)];
 const SSRC = 0x0a0b0c0d;
 const [M, S] = [RTC_SRTP_KEY.subarray(0, 16), RTC_SRTP_KEY.subarray(16)];
 
@@ -62,10 +66,10 @@ function srtcpApp(frame: Buffer, i = 1): Buffer {
   ]);
 }
 
-const xzyhReply = (result: number) => {
+const xzyhReply = (result: number, cmd = 1350) => {
   const f = Buffer.alloc(20);
   f.write("XZYH", 0, "latin1");
-  f.writeUInt16LE(1350, 4);
+  f.writeUInt16LE(cmd, 4);
   f.writeUInt32LE(4, 6);
   f.writeInt32LE(result, 16);
   return f;
@@ -160,9 +164,9 @@ describe("RtcPmLiveStream", () => {
     ];
   }
 
-  function stream(gcm = true) {
+  function stream(gcm = true, start = START) {
     const agent = fakeAgent();
-    const s = new RtcPmLiveStream(agent, { call: CALL, gcm, cmdGcm: gcm, channel: CHANNEL, start: START, stop: STOP });
+    const s = new RtcPmLiveStream(agent, { call: CALL, gcm, cmdGcm: gcm, start, stop: STOP });
     const errors: Error[] = [];
     const frames: LiveVideoFrame[] = [];
     s.on("error", (e) => errors.push(e)).on("video", (f) => frames.push(f));
@@ -193,7 +197,7 @@ describe("RtcPmLiveStream", () => {
     const d = createDecipheriv("aes-128-gcm", Buffer.from(CALL.key.slice(0, 16)), body.subarray(16, 28));
     d.setAAD(Buffer.from("eufy security"));
     d.setAuthTag(body.subarray(0, 16));
-    expect(Buffer.concat([d.update(body.subarray(32)), d.final()]).toString()).toBe(START);
+    expect(Buffer.concat([d.update(body.subarray(32)), d.final()]).toString()).toBe(START_JSON);
   });
 
   it("emits the decrypted key frame from a station SRTP stream, parameter sets opened from byte 2", () => {
@@ -244,6 +248,16 @@ describe("RtcPmLiveStream", () => {
     expect(c.errors.map((e) => e.message)).toEqual(["rtc pm live: start not answered"]);
   });
 
+  it("checks a 1700 start's answer under 1700, with its flag in header byte 14", async () => {
+    const { agent, s, errors } = stream(false, command("{}", 1700, 10));
+    s.start();
+    agent.emit("connected");
+    expect(frameOf(agent.write.mock.calls[0]![0])[20 + 14]).toBe(10);
+    agent.emit("data", srtcpApp(ankeFrame(0, 1, xzyhReply(0, 1700))));
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(errors.map((e) => e.message)).toEqual(["rtc pm live: start not answered"]);
+  });
+
   it("fails at once on a reply of 0", async () => {
     const { agent, s, errors } = stream();
     s.start();
@@ -259,7 +273,6 @@ describe("RtcPmLiveStream", () => {
       call: CALL,
       gcm: false,
       cmdGcm: false,
-      channel: CHANNEL,
       start: START,
       stop: STOP,
     });

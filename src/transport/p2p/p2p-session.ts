@@ -66,7 +66,7 @@ import {
   readNullTerminatedString,
 } from "./codec.js";
 import { commandName, CommandType } from "./commands.js";
-import { setPayloadJson } from "./write-commands.js";
+import { renderFrame, setPayloadJson } from "./write-commands.js";
 import { traceLiveStart, type LiveTrace } from "./live-trace.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { CMD_DATABASE, CMD_DATABASE_IMAGE, DB_QUERY, DB_TABLE_TIMEOUT_MS, fullTableQuery } from "./database-wire.js";
@@ -1476,62 +1476,28 @@ export class P2PSession extends EventEmitter {
   }
 
   /**
-   * Send one frame of a product's bundle as the app's sender builds it, its `$channel`, `$userId`, `$now`, `$key` and
-   * `$entryType` tokens filled: `json1700` as `{commandType: subCmd, data: payload}`, `json1350` as the `{account_id, cmd: subCmd,
-   * mChannel, mValue3, payload}` envelope, `json` as the payload itself on header channel `payload.mChannel`, and a
-   * `native` body as `[u32 channel]`, followed for layout `0x2db020` by the key and a NUL when the key is 256
-   * characters. Header byte 14 is the frame's `counter` ({@link headerCounter}). The key is the app's `getCrypto`:
-   * the session's P-256 point once a gateway info came as version 8 or for an `ability` of 128 up, else the RSA
-   * modulus. Sealed by the session, sent once and resent by DRW ({@link sendAcknowledged}).
+   * Send one frame of a product's bundle as {@link renderFrame} builds it, with `$entryType` and the media `$key`:
+   * the app's `getCrypto`, the session's P-256 point once a gateway info came as version 8 or for an `ability` of 128
+   * up, else the RSA modulus. Header byte 14 is the frame's `counter` ({@link headerCounter}). Sealed by the session,
+   * sent once and resent by DRW ({@link sendAcknowledged}).
    */
   sendFrame(frame: SessionFrame, channel: number, userId = "", ability = 0, entryType = 0): void {
     if (!this.connectAddress) throw new Error(`P2P session ${this.cfg.stationSn} is not connected`);
     const ecc = this.notifiedVersion8 || ability >= 128;
-    const now = String(Date.now());
     let keyed = false;
-    const tokens: Record<string, () => unknown> = {
-      $channel: () => channel,
-      $userId: () => userId,
-      $now: () => now,
+    const { cmd, body, header } = renderFrame(frame, channel, userId, {
       $entryType: () => entryType,
       $key: () => ((keyed = true), ecc ? this.mediaEccPair().point : this.rsaModulus()),
-    };
-    const fill = (x: unknown): unknown =>
-      typeof x === "string" && x in tokens
-        ? tokens[x]!()
-        : Array.isArray(x)
-          ? x.map(fill)
-          : x && typeof x === "object"
-            ? Object.fromEntries(Object.entries(x).map(([k, v]) => [k, fill(v)]))
-            : x;
-    const payload = (fill(frame.payload) ?? {}) as Record<string, unknown>;
-    const json = (value: unknown) => Buffer.from(JSON.stringify(value), "utf-8");
-    const u32 = Buffer.alloc(4);
-    u32.writeUInt32LE(channel >>> 0);
-    const key = payload.cryptoKey;
-    const body =
-      frame.body === "json1700"
-        ? json({ commandType: frame.subCmd, data: payload })
-        : frame.body === "json1350"
-          ? json({ account_id: userId, cmd: frame.subCmd, mChannel: channel, mValue3: frame.mValue3 ?? 0, payload })
-          : frame.body === "json"
-            ? json(payload)
-            : frame.layout === "0x2db020" && typeof key === "string" && key.length === 256
-              ? Buffer.concat([u32, Buffer.from(key, "latin1"), Buffer.alloc(1)])
-              : frame.layout === "u32-ch" || frame.layout === "0x2db020"
-                ? u32
-                : undefined;
-    if (!body || frame.cmd === undefined) throw new Error(`P2P frame ${frame.cmd}/${frame.body} has no sender form`);
-    const header = frame.body === "json" && typeof payload.mChannel === "number" ? payload.mChannel : channel;
+    });
     const streamId = this.headerCounter(
       frame.counter === "bump" || frame.counter === "current" ? frame.counter : undefined,
     );
     if (keyed) {
       this.tracedDatagramGaps = 0;
-      this.trace({ phase: "media-command", cmd: frame.cmd, key: ecc ? "ecc" : "rsa" });
+      this.trace({ phase: "media-command", cmd, key: ecc ? "ecc" : "rsa" });
     }
     this.sendAcknowledged(() => {
-      this.transmit(frame.cmd!, header, body, { streamId, text: frame.body !== "native" });
+      this.transmit(cmd, header, body, { streamId, text: frame.body !== "native" });
       return true;
     });
   }

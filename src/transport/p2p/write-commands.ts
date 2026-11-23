@@ -5,8 +5,10 @@
  * (`src/model/capabilities/*`): each module owns its own `buildCommand`, and the barrel's
  * `buildCommand()` resolves across them. This file keeps ONLY the **direct-binary** body builder
  * — a packed struct, not a JSON recipe — used by `EufyMega.sendDirectBinary` for camera on/off +
- * spotlight brightness/color-temp/enable. No dependency on the capability barrel (avoids a cycle).
+ * spotlight brightness/color-temp/enable, and the bundle frame renderer. No dependency on the capability barrel
+ * (avoids a cycle).
  */
+import type { SessionFrame } from "../../core/contracts.js";
 
 /**
  * Build the packed binary body for a "direct" control command — TWO shapes, one layout. The tail is
@@ -102,4 +104,57 @@ export function setPayloadJson(
     ...(opts.omitPayload ? {} : opts.unzip ? (payload as object) : { payload }),
   };
   return JSON.stringify(inner, (_, v) => (v === "$userId" ? (opts.accountId ?? "") : v));
+}
+
+/**
+ * A product bundle's frame as the app's sender builds it, its `$…` tokens filled, each once, from `tokens` (with
+ * `$channel`, `$userId` and `$now` given): `json1700` as `{commandType: subCmd, data: payload}`, `json1350` as the
+ * `{account_id, cmd: subCmd, mChannel, mValue3, payload}` envelope, `json` as the payload itself on header channel
+ * `payload.mChannel`, and a `native` body as `[u32 channel]`, followed for layout `0x2db020` by the key and a NUL
+ * when the key is 256 characters. Throws for a frame no sender carries.
+ */
+export function renderFrame(
+  frame: SessionFrame,
+  channel: number,
+  userId: string,
+  tokens: Record<string, () => unknown> = {},
+): { cmd: number; body: Buffer; header: number } {
+  const now = String(Date.now());
+  const all: Record<string, () => unknown> = {
+    $channel: () => channel,
+    $userId: () => userId,
+    $now: () => now,
+    ...tokens,
+  };
+  const filled: Record<string, unknown> = {};
+  const fill = (x: unknown): unknown =>
+    typeof x === "string" && x in all
+      ? x in filled
+        ? filled[x]
+        : (filled[x] = all[x]!())
+      : Array.isArray(x)
+        ? x.map(fill)
+        : x && typeof x === "object"
+          ? Object.fromEntries(Object.entries(x).map(([k, v]) => [k, fill(v)]))
+          : x;
+  const payload = (fill(frame.payload) ?? {}) as Record<string, unknown>;
+  const json = (value: unknown) => Buffer.from(JSON.stringify(value), "utf-8");
+  const u32 = Buffer.alloc(4);
+  u32.writeUInt32LE(channel >>> 0);
+  const key = payload.cryptoKey;
+  const body =
+    frame.body === "json1700"
+      ? json({ commandType: frame.subCmd, data: payload })
+      : frame.body === "json1350"
+        ? json({ account_id: userId, cmd: frame.subCmd, mChannel: channel, mValue3: frame.mValue3 ?? 0, payload })
+        : frame.body === "json"
+          ? json(payload)
+          : frame.layout === "0x2db020" && typeof key === "string" && key.length === 256
+            ? Buffer.concat([u32, Buffer.from(key, "latin1"), Buffer.alloc(1)])
+            : frame.layout === "u32-ch" || frame.layout === "0x2db020"
+              ? u32
+              : undefined;
+  if (!body || frame.cmd === undefined) throw new Error(`frame ${frame.cmd}/${frame.body} has no sender form`);
+  const header = frame.body === "json" && typeof payload.mChannel === "number" ? payload.mChannel : channel;
+  return { cmd: frame.cmd, body, header };
 }

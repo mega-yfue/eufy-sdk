@@ -117,10 +117,10 @@ export function readLinkMessage(msg: Buffer, multi: boolean): { type: number; da
  * An `XZYH` command frame: magic, u16 LE id, u32 LE body length, byte 10 version, 11 0, 12 channel, 13 sign code,
  * 14 and 15 0, then the body.
  */
-function xzyh(cmd: number, body: Buffer, channel: number, version: number, sign: number): Buffer {
+function xzyh(cmd: number, body: Buffer, channel: number, version: number, sign: number, flag = 0): Buffer {
   const id = Buffer.alloc(2);
   id.writeUInt16LE(cmd);
-  return Buffer.concat([Buffer.from(MAGIC_WORD), id, buildRawCommandPayload(body, channel, sign, [version, 0])]);
+  return Buffer.concat([Buffer.from(MAGIC_WORD), id, buildRawCommandPayload(body, channel, sign, [version, 0], flag)]);
 }
 
 /** The per-device count every AES-GCM command carries, from 0x01020304, shared by the data channel and RTCP. */
@@ -129,7 +129,8 @@ export interface RtcCommandCounter {
 }
 
 /**
- * A command's `XZYH` frame, its body (JSON text without NUL, or the native body) and header byte 12 = `channel`. With
+ * A command's `XZYH` frame, its body (JSON text without NUL, or the native body), header byte 12 = `channel` and byte
+ * 14 = `flag` (the stream flag, `rtc_get_stream_flag`, where the app's sender writes one). With
  * `seal` and a body of 1 to 0x200000 bytes it is AES-128-GCM under the first 16 bytes of the key: byte 10 `0x0a`, byte
  * 13 1, body {@link gcmSeal} under the counter, which counts on.
  */
@@ -138,11 +139,12 @@ export function commandFrame(
   body: string | Buffer,
   channel: number,
   seal?: { key: Buffer; counter: RtcCommandCounter },
+  flag = 0,
 ): Buffer {
   const text = Buffer.from(body);
   return seal && text.length >= 1 && text.length <= 0x200000
-    ? xzyh(cmd, gcmSeal(seal.key, text, seal.counter.word++), channel, GCM_VERSION, 1)
-    : xzyh(cmd, text, channel, 1, 0);
+    ? xzyh(cmd, gcmSeal(seal.key, text, seal.counter.word++), channel, GCM_VERSION, 1, flag)
+    : xzyh(cmd, text, channel, 1, 0, flag);
 }
 
 function kcp(conv: number, out: (d: Buffer) => void): Kcp {

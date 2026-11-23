@@ -80,7 +80,7 @@ import {
 import { isHomeBase, isTuyaVacuum, isVideoSmartLock } from "../model/device-family.js";
 import { DeviceType } from "../model/device-types.js";
 import { cameraPowerTier } from "../model/capabilities/battery.js";
-import { liveFrames } from "../model/capabilities/bundle.js";
+import { liveFrames, rtcLiveFrames } from "../model/capabilities/bundle.js";
 import { DeviceRegistry, recordString, type DeviceRecord, type ParamChange } from "./device-registry.js";
 import { PushRepeats } from "./push-repeats.js";
 import type {
@@ -1450,17 +1450,19 @@ export class EufyMega extends EventEmitter {
 
   /**
    * The RTC media of a device on an RTC route: the station's own on channel 0 unless its record states one, an
-   * attached camera's when its `device_channel` resolves back to it on the station; `undefined` otherwise.
+   * attached camera's when its `device_channel` resolves back to it on the station; `undefined` otherwise. Its view
+   * starts and stops with the bundle's RTC player frames for its product under the station ({@link rtcLiveFrames}).
    */
   private rtcMediaFor(sn: string): MediaProvider | undefined {
     const route = this.rtcRouteFor(sn);
     if (!route) return undefined;
-    const raw = (this.registry.list().find((d) => d.sn === sn)?.raw ?? {}) as { device_channel?: unknown };
+    const device = this.registry.list().find((d) => d.sn === sn);
+    const raw = (device?.raw ?? {}) as { device_channel?: unknown };
     const channel = typeof raw.device_channel === "number" ? raw.device_channel : route.attached ? undefined : 0;
     if (channel === undefined || (route.attached && this.registry.serialForFrame(route.stationSn, channel) !== sn))
       return undefined;
-    // CALLER INPUT: the RTC player's open/close_live_stream JSON, absent until the bundle data carries it.
-    return this.rtc.mediaProviderFor({ ...route, cameraSn: sn, channel, live: undefined });
+    const live = device?.model ? rtcLiveFrames(device.model, route.stationSn) : undefined;
+    return this.rtc.mediaProviderFor({ ...route, cameraSn: sn, channel, live });
   }
 
   /**

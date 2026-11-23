@@ -149,6 +149,14 @@ export class Anke {
   }
 }
 
+/** A live command as the app's RTC sender frames it: its id, body, header channel and header byte 14. */
+export interface RtcLiveCommand {
+  cmd: number;
+  body: Buffer;
+  channel: number;
+  flag: number;
+}
+
 export interface RtcPmLiveOptions {
   /** The PM call's `sdp_info`: its audio value is the RTCP sender SSRC, its key and iv the media AES-GCM's. */
   call: RtcCallSdp;
@@ -156,11 +164,9 @@ export interface RtcPmLiveOptions {
   gcm: boolean;
   /** Whether its live commands are ({@link cmdGcm}). */
   cmdGcm: boolean;
-  /** The live commands' header channel, which the station also writes as each video frame's last byte. */
-  channel: number;
-  /** The 1350 JSON texts that start (inner `cmd` 1003) and stop (1004) the view. */
-  start: string;
-  stop: string;
+  /** The commands that start (framed on `start()`) and stop (framed when sent) the view. */
+  start: () => RtcLiveCommand;
+  stop: () => RtcLiveCommand;
   counter?: RtcCommandCounter;
   logger?: Logger;
 }
@@ -172,10 +178,10 @@ export interface RtcPmLiveOptions {
  *
  * Video is the SRTP RTP of payload type 97 (H.265) or 99 (H.264). With `gcm`, a parameter-set packet (H.264 SPS/PPS
  * over 18 bytes, H.265 VPS/SPS/PPS over 16) is opened from its third byte; a packet that does not open is kept. Each
- * access unit's last byte must be `channel`, else it is dropped; the 8 bytes before it, a u64 LE ms timestamp no
- * further than 100 years ahead of the clock, go with it. A key frame of 17 bytes or more with its IDR NAL header past
- * offset 0 is then opened from that header + 2, and dropped when it does not open. After a drop, units wait for
- * the next key frame.
+ * access unit's last byte must be the start's header channel (`sendRTCChannelNotify`), else it is dropped; the 8
+ * bytes before it, a u64 LE ms timestamp no further than 100 years ahead of the clock, go with it. A key frame of 17
+ * bytes or more with its IDR NAL header past offset 0 is then opened from that header + 2, and dropped when it does
+ * not open. After a drop, units wait for the next key frame.
  */
 export class RtcPmLiveStream extends EventEmitter implements LiveStreamHandle {
   private readonly srtp = new SrtpReceiver();
@@ -189,6 +195,7 @@ export class RtcPmLiveStream extends EventEmitter implements LiveStreamHandle {
   private firstKey = false;
   private waitKey = false;
   private startedAt = 0;
+  private startCommand?: RtcLiveCommand;
   private readonly onConnected = () => {
     traceLiveStart(this.logger, { phase: "session-connected", waitedMs: Date.now() - this.startedAt });
     this.sendStart();
@@ -219,6 +226,7 @@ export class RtcPmLiveStream extends EventEmitter implements LiveStreamHandle {
     if (this.running || this.closed) return this;
     this.running = true;
     this.startedAt = Date.now();
+    this.startCommand = this.opts.start();
     if (this.agent.connected) this.sendStart();
     else this.agent.once("connected", this.onConnected);
     return this;
@@ -228,19 +236,20 @@ export class RtcPmLiveStream extends EventEmitter implements LiveStreamHandle {
     if (!this.running) return;
     this.running = false;
     this.agent.off("connected", this.onConnected);
-    void this.command(this.opts.stop);
+    void this.command(this.opts.stop());
     this.emit("stop");
   }
 
   private async sendStart(): Promise<void> {
-    if (!(await this.command(this.opts.start)) && this.running) this.fail(new Error("rtc pm live: start not answered"));
+    if (!(await this.command(this.startCommand!)) && this.running)
+      this.fail(new Error("rtc pm live: start not answered"));
   }
 
-  /** Send a 1350 over `ANKE` and check its answer as the app does; `true` on success. */
-  private async command(json: string): Promise<boolean> {
-    this.anke.send(commandFrame(1350, json, this.opts.channel, this.seal));
+  /** Send a command over `ANKE` and check its answer as the app does (`setCmd2Rtcp`); `true` on success. */
+  private async command(c: RtcLiveCommand): Promise<boolean> {
+    this.anke.send(commandFrame(c.cmd, c.body, c.channel, this.seal, c.flag));
     for (let i = 0; i < 10 && !this.closed; i++) {
-      const r = this.anke.result(1350);
+      const r = this.anke.result(c.cmd);
       if (r > 0 || this.firstUnit) return true;
       if (r !== -1) return false;
       await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -285,7 +294,7 @@ export class RtcPmLiveStream extends EventEmitter implements LiveStreamHandle {
   private onUnit(codec: "h264" | "h265", unit: Buffer, timestamp: number): void {
     const keyframe = hasIdr(unit, codec);
     if (!keyframe && this.waitKey) return;
-    if (unit[unit.length - 1] !== this.opts.channel) return void (this.waitKey = true);
+    if (unit[unit.length - 1] !== this.startCommand!.channel) return void (this.waitKey = true);
     const ahead = BigInt(Math.floor(Date.now() / 1000)) * 1000n + TRAILER_AHEAD;
     let data = unit.subarray(
       0,

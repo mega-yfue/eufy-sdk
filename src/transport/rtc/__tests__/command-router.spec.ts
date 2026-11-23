@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { createDecipheriv } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RtcCallSdp } from "../call.js";
@@ -6,6 +7,47 @@ import { RtcCommandRouter, type RtcLiveRoute } from "../command-router.js";
 import type { RtcCommandCounter, RtcDataChannel } from "../data-channel.js";
 import type { IceAgent } from "../ice.js";
 import type { RtcSignalClient } from "../signal-client.js";
+
+/** The shapes of the bundle's `rtcLive` frames: a T9000 camera's 1350 start and stop, a standalone T8170's. */
+const NVR_LIVE: RtcLiveRoute["live"] = {
+  start: {
+    cmd: 1350,
+    body: "json",
+    payload: {
+      cmd: 1003,
+      mChannel: "$mChannel",
+      account_id: "$userId",
+      mValue3: 1003,
+      payload: {
+        accountId: "$userId",
+        streamtype: 2,
+        entrytype: "$entryType",
+        msg_id: "$msgId",
+        mChannel: "$mChannel",
+      },
+      msg_id: "$msgId",
+      transaction: "$now",
+    },
+    counter: "bump",
+  },
+  stop: {
+    cmd: 1350,
+    body: "json1350",
+    payload: { channel: "$channel", transaction: "$now" },
+    subCmd: 1004,
+    mValue3: 0,
+  },
+};
+const SOLO_LIVE: RtcLiveRoute["live"] = {
+  start: {
+    cmd: 1700,
+    body: "json1700",
+    payload: { cmd: 1000, mChannel: "$channel", account_id: "$userId", streamtype: 2, extValue: 1000 },
+    subCmd: 1000,
+    counter: "bump",
+  },
+  stop: { cmd: 1004, body: "native", payload: {}, layout: "u32-ch" },
+};
 
 /** Synthetic throughout: no serial, did or license off a device, no network. */
 const ROUTE: RtcLiveRoute = {
@@ -19,7 +61,7 @@ const ROUTE: RtcLiveRoute = {
   sdkVersion: "1.7.2",
   cameraSn: "T8425P0000000001",
   channel: 3,
-  live: { start: '{"cmd":1003}', stop: '{"cmd":1004}' },
+  live: NVR_LIVE,
 };
 const CALL: RtcCallSdp = {
   ufrag: "abcd",
@@ -169,6 +211,55 @@ describe("RtcCommandRouter on the native layers", () => {
     router.close();
     expect(agent.close).toHaveBeenCalled();
     expect(signal.hangup).toHaveBeenCalledWith("pm-call");
+  });
+
+  /** The `XZYH` command of the ANKE frame in the `i`th APP packet the PM agent wrote, opened under the PM key. */
+  function sent(agent: { write: { mock: { calls: unknown[][] } } }, i: number) {
+    const p = agent.write.mock.calls[i]![0] as Buffer;
+    const x = p.subarray(32, 32 + p.readUInt32LE(24));
+    let body = x.subarray(16);
+    if (x[10] === 0x0a) {
+      const d = createDecipheriv("aes-128-gcm", Buffer.from(CALL.key), body.subarray(16, 28));
+      d.setAAD(Buffer.from("eufy security"));
+      d.setAuthTag(body.subarray(0, 16));
+      body = Buffer.concat([d.update(body.subarray(32)), d.final()]);
+    }
+    return { cmd: x.readUInt16LE(4), channel: x[12], flag: x[14], body };
+  }
+
+  it("starts a T9000 camera's view with its rtcLive 1350, tokens filled, as a sealed ANKE command", async () => {
+    const { router, agent } = layers();
+    const consumer = await router.mediaProviderFor(ROUTE).live({ entryType: 4 });
+    const start = sent(agent, 0);
+    const json = JSON.parse(start.body.toString()) as { payload: Record<string, unknown> } & Record<string, unknown>;
+    expect(start).toMatchObject({ cmd: 1350, channel: 3, flag: 0 });
+    expect(json).toMatchObject({ cmd: 1003, mChannel: 3, account_id: "synthetic-admin", mValue3: 1003, msg_id: 1 });
+    expect(json.payload).toMatchObject({ mChannel: 3, accountId: "synthetic-admin", entrytype: 4, msg_id: 1 });
+    expect(json.payload.streamtype).toBe(2);
+    expect(String(json.transaction)).toMatch(/^\d{13}$/);
+    consumer.stop();
+    router.close();
+    const stop = sent(agent, agent.write.mock.calls.length - 1);
+    expect(stop).toMatchObject({ cmd: 1350, channel: 3, flag: 0 });
+    expect(JSON.parse(stop.body.toString())).toMatchObject({ cmd: 1004, mChannel: 3, payload: { channel: 3 } });
+  });
+
+  it("starts a standalone T8170 with its 1700 inner 1000, the event-stream flag in byte 14, and stops with 1004", async () => {
+    const { router, agent } = layers();
+    const sn = "T8170P0000000000";
+    const route = { ...ROUTE, stationSn: sn, cameraSn: sn, attached: false, channel: 0, version: 1000 };
+    const consumer = await router.mediaProviderFor({ ...route, live: SOLO_LIVE }).live();
+    const start = sent(agent, 0);
+    expect(start).toMatchObject({ cmd: 1700, channel: 0, flag: 10 });
+    expect(JSON.parse(start.body.toString())).toMatchObject({
+      commandType: 1000,
+      data: { cmd: 1000, mChannel: 0, account_id: "synthetic-admin", streamtype: 2, extValue: 1000 },
+    });
+    consumer.stop();
+    router.close();
+    const stop = sent(agent, agent.write.mock.calls.length - 1);
+    expect(stop).toMatchObject({ cmd: 1004, channel: 0, flag: 0 });
+    expect(stop.body).toEqual(Buffer.alloc(4));
   });
 
   it("refuses a live view without the start JSON", async () => {

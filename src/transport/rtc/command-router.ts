@@ -24,8 +24,10 @@ import { setTimeout as sleep } from "node:timers/promises";
 import {
   LiveSnapshotUnavailableError,
   type Command,
+  type LiveFrames,
   type LiveStreamHandle,
   type MediaProvider,
+  type SessionFrame,
   type SharedSourceHints,
   type AbortableCall,
 } from "../../core/contracts.js";
@@ -41,11 +43,11 @@ import {
 } from "../p2p/database-wire.js";
 import { openReadableFromConsumer } from "../p2p/readable-egress.js";
 import { SharedLiveSource, attachUnlessAborted } from "../p2p/shared-live-source.js";
-import { buildDirectBinaryBody, setPayloadJson } from "../p2p/write-commands.js";
+import { buildDirectBinaryBody, renderFrame, setPayloadJson } from "../p2p/write-commands.js";
 import { RtcCallType } from "./call.js";
 import { cmdGcm, kcpMulti, priv1, type RtcCommandCounter, type RtcDataChannel } from "./data-channel.js";
 import { pmIce } from "./ice.js";
-import { RtcPmLiveStream, mediaGcm } from "./pm-live.js";
+import { RtcPmLiveStream, mediaGcm, type RtcLiveCommand } from "./pm-live.js";
 import { RtcSignalClient, type RtcSignalOptions } from "./signal-client.js";
 
 const STATION_CHANNEL = 255;
@@ -74,11 +76,8 @@ export interface RtcLiveRoute extends RtcRoute {
   cameraSn: string;
   /** The camera's `device_channel` on the station. */
   channel: number;
-  /**
-   * The `1350` JSON texts that start and stop the view: a CALLER INPUT until the bundle data carries the RTC
-   * player's `open_live_stream` / `close_live_stream` frames. Without them the view is refused.
-   */
-  live?: { start: string; stop: string };
+  /** The bundle frames the app's RTC player starts and stops the view with; without them the view is refused. */
+  live?: Pick<LiveFrames, "start" | "stop">;
 }
 
 export interface RtcCommandRouterDeps {
@@ -98,6 +97,8 @@ interface Station {
   signal: RtcSignalClient;
   ready: Promise<void>;
   counter: RtcCommandCounter;
+  /** The event-stream flag, `rtc_get_stream_flag(ctx, 1)` (ctx+61): 0 until first used. */
+  flag: number;
   data?: RtcDataChannel;
   /** The app's PRIV1 `call_fail_count` and `scall_sleep` end (ms): see {@link RtcCommandRouter.dataChannel}. */
   fails: number;
@@ -144,6 +145,8 @@ const u32s = (...v: number[]) => Buffer.from(new Uint32Array(v.map((x) => x >>> 
 export class RtcCommandRouter {
   private readonly stations = new Map<string, Station>();
   private readonly lives = new Map<string, { cameraSn: string; source: SharedLiveSource }>();
+  /** The app's `RtcLivePlayerBridge.msgIdMap`: the last live `msg_id` per station, process-wide. */
+  private readonly msgIds = new Map<string, number>();
   private lastTransaction = 0;
 
   constructor(private readonly deps: RtcCommandRouterDeps) {}
@@ -307,7 +310,7 @@ export class RtcCommandRouter {
       signal.once("failure", () => reject(new Error(`rtc: ${sn} refused the signalling login`)));
     });
     ready.catch(() => undefined);
-    const st: Station = { signal, ready, counter: { word: 0x01020304 }, fails: 0, sleepUntil: 0 };
+    const st: Station = { signal, ready, counter: { word: 0x01020304 }, flag: 0, fails: 0, sleepUntil: 0 };
     this.stations.set(sn, st);
     signal.start().catch((e: unknown) => this.deps.onError?.(e instanceof Error ? e : new Error(String(e))));
     return st;
@@ -432,7 +435,7 @@ export class RtcCommandRouter {
     let entry = this.lives.get(sn);
     if (!entry) {
       const source: SharedLiveSource = new SharedLiveSource({
-        makeStream: () => this.pmStream(route, st, live),
+        makeStream: () => this.pmStream(route, st, live, opts.entryType ?? 0),
         label: `${sn}#${route.channel}`,
         logger: this.deps.logger,
         powered: opts.powered,
@@ -454,15 +457,20 @@ export class RtcCommandRouter {
   }
 
   /** One live view on a fresh PM call; its ICE closes and the call hangs up when the view stops or fails. */
-  private pmStream(route: RtcLiveRoute, st: Station, live: { start: string; stop: string }): LiveStreamHandle {
+  private pmStream(
+    route: RtcLiveRoute,
+    st: Station,
+    live: Pick<LiveFrames, "start" | "stop">,
+    entryType: number,
+  ): LiveStreamHandle {
     const call = st.signal.call(RtcCallType.PM);
     const agent = (this.deps.layers?.pmIce ?? pmIce)(st.signal, call);
     const stream = new RtcPmLiveStream(agent, {
       call,
       gcm: mediaGcm(route.stationSn, route.version),
       cmdGcm: cmdGcm(route.stationSn, route.version),
-      channel: route.channel,
-      ...live,
+      start: () => this.liveCommand(route, st, live.start, entryType),
+      stop: () => this.liveCommand(route, st, live.stop, entryType),
       counter: st.counter,
       logger: this.deps.logger,
     });
@@ -471,6 +479,24 @@ export class RtcCommandRouter {
       st.signal.hangup(call.uuid);
     };
     return stream.once("stop", end).once("error", end);
+  }
+
+  /**
+   * A live frame as the app's RTC sender frames it ({@link renderFrame}): `$mChannel` the camera's channel (the
+   * player's single-camera page, page index -1), `$msgId` the station's next `getNextMsgId` (1 to 255, then 1 again),
+   * `$entryType` the view's. Header byte 14 is the station's event-stream flag for a `1700` of inner `1000`, moved on
+   * per use as `rtc_get_stream_flag` does (10 when `(flag + 5) & 0xff < 15`, else up one), else 0.
+   */
+  private liveCommand(route: RtcLiveRoute, st: Station, frame: SessionFrame, entryType: number): RtcLiveCommand {
+    const sn = route.stationSn;
+    const { cmd, body, header } = renderFrame(frame, route.channel, this.accountId(route), {
+      $mChannel: () => route.channel,
+      $msgId: () => this.msgIds.set(sn, ((this.msgIds.get(sn) ?? 0) % 255) + 1).get(sn),
+      $entryType: () => entryType,
+    });
+    const bump = cmd === 1700 && frame.subCmd === 1000;
+    if (bump) st.flag = ((st.flag + 5) & 0xff) < 15 ? 10 : st.flag + 1;
+    return { cmd, body, channel: header, flag: bump ? st.flag : 0 };
   }
 
   private drop(sn: string): void {
