@@ -56,7 +56,7 @@ Worth knowing:
 ## Cameras behind a T8N00
 
 T8E00, T8P00, T8P10, T8162, T8410 and T8214 cameras attached to a T8N00 support `live()`,
-`openReadable()` and `snapshotLive()`. `live()` delivers H.265 video and AAC-LC or G.711 A-law audio;
+`openReadable()` and `snapshotLive()`. `live()` delivers H.265 video and Opus audio;
 `openReadable()` provides video, and `snapshotLive()` captures a fresh still.
 Recording and talkback are not implemented for this route.
 
@@ -79,8 +79,9 @@ stream.on("video", (frame) => {
   // frame.sourceTimestamp  optional source-reported u32 timestamp; unit/clock origin unspecified
 });
 stream.on("audio", (frame) => {
-  // frame.codec   "aac-lc" | "aac-eld" | "g711a"
-  // frame.data    one ADTS frame (aac-lc), one raw access unit (aac-eld), raw A-law samples (g711a)
+  // frame.codec   "aac-lc" | "aac-eld" | "g711a" | "opus"
+  // frame.data    one ADTS frame (aac-lc), one raw access unit (aac-eld), raw A-law samples (g711a),
+  //               one Opus packet (opus, RTC routes: the offer's 48 kHz stereo payload type 111)
   // frame.config  the AudioSpecificConfig that decodes frame.data — present for aac-eld only
   consumeAudio(frame.codec, frame.data);
 });
@@ -178,7 +179,8 @@ this touches the shared pull or any peer consumer.
 The two codecs reach you differently. **Video** `codec` is sniffed off the parameter sets on a keyframe
 and carried on the delta frames that follow, so every frame carries one even though only keyframes have
 config to sniff. **Audio** `codec` is declared by the station in each frame's header, so it is read
-rather than inferred — and read on every frame, because the device is free to change it mid-stream.
+rather than inferred — and read on every frame, because the device is free to change it mid-stream. A
+station on the app's RTC client sends `opus` only, the one audio codec of the app's offer.
 
 Audio carries **no sample rate and no channel count** of its own: neither is on the wire. The eufy app
 assumes 16 kHz mono for all three codecs, and a host that needs those numbers for `aac-lc` or `g711a` is

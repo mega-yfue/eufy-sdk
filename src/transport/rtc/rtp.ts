@@ -127,6 +127,17 @@ function tagOk(auth: Buffer, parts: Buffer[], tag: Buffer): boolean {
   return timingSafeEqual(h.digest().subarray(0, TAG), tag);
 }
 
+/** An RTP packet's payload past its CSRCs and header extension, padding removed; `undefined` when nothing is left. */
+export function rtpPayload(packet: Buffer): Buffer | undefined {
+  let off = 12 + (packet[0]! & 0x0f) * 4;
+  if (packet[0]! & 0x10) {
+    if (packet.length < off + 4) return undefined;
+    off += 4 + packet.readUInt16BE(off + 2) * 4;
+  }
+  const end = packet.length - (packet[0]! & 0x20 ? packet[packet.length - 1]! : 0);
+  return end > off ? packet.subarray(off, end) : undefined;
+}
+
 /**
  * RTP depacketizer for H.264 (single NAL, STAP-A 24, FU-A 28) or H.265 (single NAL, AP 48, FU 49). Feed whole RTP
  * packets; it calls `onUnit` with each complete Annex-B access unit when the marker bit closes it. A unit with a
@@ -155,15 +166,8 @@ export class RtpDepacketizer {
     const timestamp = packet.readUInt32BE(4);
     if (this.lastSeq >= 0 && seq !== ((this.lastSeq + 1) & 0xffff)) this.broken = true;
     this.lastSeq = seq;
-    let off = 12 + (packet[0]! & 0x0f) * 4;
-    if (packet[0]! & 0x10) {
-      if (packet.length < off + 4) return;
-      off += 4 + packet.readUInt16BE(off + 2) * 4;
-    }
-    let end = packet.length;
-    if (packet[0]! & 0x20) end -= packet[packet.length - 1]!;
-    if (end <= off) return;
-    const p = packet.subarray(off, end);
+    const p = rtpPayload(packet);
+    if (!p) return;
     const h265 = this.codec === "h265";
     const [ap, fu, hdr] = h265 ? [48, 49, 2] : [24, 28, 1];
     const type = h265 ? (p[0]! >> 1) & 0x3f : p[0]! & 0x1f;

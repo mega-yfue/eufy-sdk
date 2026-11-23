@@ -716,12 +716,12 @@ export interface ReceivedVideoFrame {
 }
 
 /**
- * Elementary-stream audio codec of a {@link LiveAudioFrame}. The station declares it per frame as a
+ * Elementary-stream audio codec of a {@link LiveAudioFrame}. Over P2P the station declares it per frame as a
  * byte in the `CMD_AUDIO_FRAME` header — unlike video, nothing is sniffed. These are the three values
  * the v6 app accepts (`AudioReader.setAudioSpecificConfig`: 0 → `mp4a.40.2`, 2 → G.711 A-law,
- * 7 → `mp4a.40.39`); it fails the stream on anything else.
+ * 7 → `mp4a.40.39`); it fails the stream on anything else. Over RTC it is the offer's only audio codec, `opus`.
  */
-export type AudioCodec = "aac-lc" | "aac-eld" | "g711a";
+export type AudioCodec = "aac-lc" | "aac-eld" | "g711a" | "opus";
 
 /** The codec a camera's speaker plays: `aac-eld` on a camera whose speaker plays it, `aac-lc` otherwise. */
 export type TalkbackCodec = Extract<AudioCodec, "aac-lc" | "aac-eld">;
@@ -737,8 +737,8 @@ export type TalkbackCodec = Extract<AudioCodec, "aac-lc" | "aac-eld">;
 export type LiveAudioFrame =
   | {
       /** Codec declared in the frame header. */
-      codec: "aac-lc" | "g711a";
-      /** One ADTS frame for `aac-lc`, raw A-law samples for `g711a`. */
+      codec: "aac-lc" | "g711a" | "opus";
+      /** One ADTS frame for `aac-lc`, raw A-law samples for `g711a`, one Opus packet (48 kHz, RFC 7587) for `opus`. */
       data: Buffer;
       config?: undefined;
     }

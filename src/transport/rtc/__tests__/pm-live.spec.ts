@@ -222,6 +222,19 @@ describe("RtcPmLiveStream", () => {
     expect(frames).toHaveLength(0);
   });
 
+  it("emits Opus audio (payload type 111) without its trailer, opened whole, dropping a mismatched channel", () => {
+    const { agent, s } = stream();
+    const audio: unknown[] = [];
+    s.on("audio", (f) => audio.push(f));
+    s.start();
+    const opus = Buffer.from("an opus packet");
+    const other = trailer();
+    other[8] = CHANNEL + 1;
+    agent.emit("data", srtp(1, Buffer.concat([seal(opus, 0), trailer()]), true, 111));
+    agent.emit("data", srtp(2, Buffer.concat([seal(opus, 0), other]), true, 111));
+    expect(audio).toEqual([{ codec: "opus", data: opus }]);
+  });
+
   it("succeeds on the station's 1350 reply, and on a first video unit", async () => {
     const a = stream();
     a.s.start();

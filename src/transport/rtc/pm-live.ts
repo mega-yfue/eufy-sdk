@@ -7,6 +7,8 @@
  * acknowledges the seq it echoes, 8 asks for an MTU reply (type 9); 8 and 9 are not checksummed. It leaves as a plain
  * RTCP APP packet (subtype 30, name `ANKE`, sender SSRC = the call's audio value, payload zero-padded to 4 bytes); the
  * station's frames arrive as SRTCP whose bytes 8..11 read `AZWC`, the frame from byte 12.
+ *
+ * Audio is the offer's `a=rtpmap:111 opus/48000/2`: each payload one Opus packet.
  */
 import { EventEmitter } from "node:events";
 import type { LiveStreamHandle } from "../../core/contracts.js";
@@ -17,11 +19,12 @@ import { traceLiveStart } from "../p2p/live-trace.js";
 import type { RtcCallSdp } from "./call.js";
 import { commandFrame, type RtcCommandCounter } from "./data-channel.js";
 import type { IceAgent } from "./ice.js";
-import { RtpDepacketizer, SrtpReceiver, idrAt, mediaOpen } from "./rtp.js";
+import { RtpDepacketizer, SrtpReceiver, idrAt, mediaOpen, rtpPayload } from "./rtp.js";
 
 const MAGIC = 0x12345678;
 const AZWC = 0x415a5743;
 const VIDEO_PT: Record<number, "h264" | "h265"> = { 97: "h265", 99: "h264" };
+const OPUS_PT = 111;
 /** How far in ms a live-stream trailer timestamp may lie ahead of the clock: 100 years of 365.25 days. */
 const TRAILER_AHEAD = 3155760000000n;
 
@@ -185,7 +188,8 @@ export interface RtcPmLiveOptions {
  * access unit's last byte must be the start's header channel (`sendRTCChannelNotify`), else it is dropped; the 8
  * bytes before it, a u64 LE ms timestamp no further than 100 years ahead of the clock, go with it. A key frame of 17
  * bytes or more with its IDR NAL header past offset 0 is then opened from that header + 2, and dropped when it does
- * not open. After a drop, units wait for the next key frame.
+ * not open. After a drop, units wait for the next key frame. Audio (payload type 111) carries the same trailer and,
+ * with `gcm`, is opened whole; a payload that does not open is dropped.
  */
 export class RtcPmLiveStream extends EventEmitter implements LiveStreamHandle {
   private readonly srtp = new SrtpReceiver();
@@ -277,8 +281,10 @@ export class RtcPmLiveStream extends EventEmitter implements LiveStreamHandle {
       if (p.length > 11 && p.length % 4 === 0 && p.readUInt32BE(8) === AZWC) this.anke.input(p.subarray(12));
       return;
     }
+    if (!this.running) return;
+    if (pt === OPUS_PT) return this.onAudio(rtpPayload(p));
     const codec = VIDEO_PT[pt];
-    if (!codec || !this.running) return;
+    if (!codec) return;
     let units = this.units.get(pt);
     if (!units) {
       const single = this.opts.gcm ? (nal: Buffer) => this.openParameterSet(codec, nal) : undefined;
@@ -296,15 +302,27 @@ export class RtcPmLiveStream extends EventEmitter implements LiveStreamHandle {
     return (set && mediaOpen(this.opts.call.key, this.opts.call.iv, nal, 2)) || nal;
   }
 
+  /**
+   * A unit without its live-stream trailer: `undefined` when its last byte is not the start's header channel; the
+   * 8 bytes before it go too when they read as a u64 LE ms timestamp no further than 100 years ahead of the clock.
+   */
+  private untrail(unit: Buffer): Buffer | undefined {
+    if (unit[unit.length - 1] !== this.startCommand!.channel) return undefined;
+    const ahead = BigInt(Math.floor(Date.now() / 1000)) * 1000n + TRAILER_AHEAD;
+    return unit.subarray(0, unit.length - (unit.length >= 9 && unit.readBigUInt64LE(unit.length - 9) <= ahead ? 9 : 1));
+  }
+
+  private onAudio(payload: Buffer | undefined): void {
+    const data = payload && this.untrail(payload);
+    const plain = data && (this.opts.gcm ? mediaOpen(this.opts.call.key, this.opts.call.iv, data, 0) : data);
+    if (plain) this.emit("audio", { codec: "opus", data: plain });
+  }
+
   private onUnit(codec: "h264" | "h265", unit: Buffer, timestamp: number): void {
     const keyframe = hasIdr(unit, codec);
     if (!keyframe && this.waitKey) return;
-    if (unit[unit.length - 1] !== this.startCommand!.channel) return void (this.waitKey = true);
-    const ahead = BigInt(Math.floor(Date.now() / 1000)) * 1000n + TRAILER_AHEAD;
-    let data = unit.subarray(
-      0,
-      unit.length - (unit.length >= 9 && unit.readBigUInt64LE(unit.length - 9) <= ahead ? 9 : 1),
-    );
+    let data = this.untrail(unit);
+    if (!data) return void (this.waitKey = true);
     const idr = keyframe && this.opts.gcm && data.length >= 17 ? idrAt(data, codec) : -1;
     if (idr >= 1) {
       const plain = mediaOpen(this.opts.call.key, this.opts.call.iv, data, idr + 2);
