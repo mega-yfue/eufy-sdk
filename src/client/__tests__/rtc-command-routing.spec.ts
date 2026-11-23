@@ -144,9 +144,16 @@ describe("native RTC routing off is_connect_webrtc", () => {
     expect(media.mock.calls[0]![0]).toMatchObject({ cameraSn: CAMERA, channel: 3, live: rtcLiveFrames("T8425", hub) });
     expect(rtcLiveFrames("T8425", hub)?.start).toMatchObject({ cmd: 1350, payload: { cmd: 1003 } });
     expect(rtcLiveFrames("T8425", hub)).toMatchObject({ talkStart: { cmd: 1005 }, talkStop: { cmd: 1006 } });
+    // A camera whose param 9240 lists lenses opens the T_B_2X2 page.
+    camera.params = { 9240: '[{"type":0,"id":0},{"type":1,"id":1}]' };
+    internals.rtcMediaFor(CAMERA);
+    expect(media.mock.calls[1]![0]).toMatchObject({
+      sensors: [0, 1],
+      live: { start: { payload: { payload: { stitch_mode: 5 } } } },
+    });
     camera.model = "T8010";
     internals.rtcMediaFor(CAMERA);
-    expect(media.mock.calls[1]![0].live).toBeUndefined();
+    expect(media.mock.calls[2]![0].live).toBeUndefined();
   });
 
   it("refuses an attached device whose channel does not resolve back to it, before sending", async () => {

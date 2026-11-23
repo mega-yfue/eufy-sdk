@@ -148,8 +148,11 @@ interface BundleWires {
   >;
   /** Per product code, then parent topology ({@link topologyOf}), the indexes of its live and talkback frames. */
   live?: Grouped<Grouped<{ start: number; stop: number; talkStart?: number; talkStop?: number }>>;
-  /** The same for the app's RTC player, whose `open_live_stream` input is its own (`RtcLivePlayerBridge`). */
-  rtcLive?: Grouped<Grouped<{ start: number; stop: number }>>;
+  /**
+   * The same for the app's RTC player, whose `open_live_stream` input is its own (`RtcLivePlayerBridge`): `start` the
+   * single-camera page, `startTB` / `startPip` a camera's lens pages where the frame differs.
+   */
+  rtcLive?: Grouped<Grouped<{ start: number; stop: number; startTB?: number; startPip?: number }>>;
 }
 
 const BUNDLE_WIRES = DATA as unknown as BundleWires;
@@ -248,16 +251,22 @@ export function liveFrames(
 
 /**
  * The frames the app's RTC player starts and stops `model`'s live view with under `parentSn` (its own serial when it
- * is its own station), the player's single-camera page, and its talkback with: `start_intercom` / `stop_intercom`
- * take no player input, so they are {@link liveFrames}' own. `undefined` for a product the bundles give no RTC view.
+ * is its own station), and its talkback with: `start_intercom` / `stop_intercom` take no player input, so they are
+ * {@link liveFrames}' own. The start is the page `MediaLiveActivityViewModel.startPlay` opens: with `lenses` (a sensor
+ * list) the portrait lens page `Stitch_T_B_2X2`, else the single-camera page. `undefined` for a product the bundles
+ * give no RTC view.
  */
-export function rtcLiveFrames(model: string, parentSn: string): Omit<LiveFrames, "ability"> | undefined {
+export function rtcLiveFrames(
+  model: string,
+  parentSn: string,
+  { lenses = false }: { lenses?: boolean } = {},
+): Omit<LiveFrames, "ability"> | undefined {
   const entry = memberOf(memberOf(BUNDLE_WIRES.rtcLive, model), topologyOf(parentSn));
   const frames = BUNDLE_WIRES.frames ?? [];
   const { talkStart, talkStop } = liveFrames(model, parentSn, []) ?? {};
   return (
     entry && {
-      start: frames[entry.start]!,
+      start: frames[lenses && entry.startTB !== undefined ? entry.startTB : entry.start]!,
       stop: frames[entry.stop]!,
       ...(talkStart && talkStop && { talkStart, talkStop }),
     }
