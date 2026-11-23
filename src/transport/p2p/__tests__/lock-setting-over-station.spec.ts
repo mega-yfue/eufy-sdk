@@ -68,7 +68,8 @@ describe("a v2 lock setting over its station", () => {
 
 /** `createPayloadForZhixingStationBle` (v4): `{payload}` = the station-sealed `{channel, lock_cmd, lock_payload, seq_num}`. */
 describe("a v4 lock setting over its station", () => {
-  it("sends {payload}, the TLV sealed under the station key with the lock's next seq_num", async () => {
+  const tlv = Buffer.from("a1021964a20101", "hex");
+  const send = (member: { admin_user_id: string } | undefined) => {
     const session = connectedSession(true) as FakeP2PSession & { sendSetPayload: ReturnType<typeof vi.fn> };
     session.sendSetPayload = vi.fn(() => true);
     const record = (sn: string, channel: number, parent?: string) => ({
@@ -76,7 +77,7 @@ describe("a v4 lock setting over its station", () => {
       stationSn: parent ?? sn,
       channel,
       p2pDid: "XXXXXXX-000000-XXXXX",
-      raw: { device_channel: channel, parent_sn: parent, member: { admin_user_id: ADMIN } },
+      raw: { device_channel: channel, parent_sn: parent, member },
     });
     const router = new P2PCommandRouter({
       mega: { auth: { userId: ADMIN } } as unknown as P2PRouterDeps["mega"],
@@ -92,8 +93,7 @@ describe("a v4 lock setting over its station", () => {
       STATION_SN,
       session,
     );
-    const tlv = Buffer.from("a1021964a20101", "hex");
-    void router.dispatchCommand("T8500P0000000000", {
+    const sent = router.dispatchCommand("T8500P0000000000", {
       kind: "set-payload",
       cmd: 1911,
       payload: {},
@@ -101,6 +101,11 @@ describe("a v4 lock setting over its station", () => {
       mValue3: 0,
       lock: { version: 4, bleCommand: 0x22, payload: tlv },
     });
+    return { session, sent };
+  };
+
+  it("sends {payload}, the TLV sealed under the station key with the lock's next seq_num", async () => {
+    const { session } = send({ admin_user_id: ADMIN });
     await vi.waitFor(() => expect(session.sendSetPayload).toHaveBeenCalledTimes(1));
 
     const [cmd, params] = session.sendSetPayload.mock.calls[0]!;
@@ -110,5 +115,11 @@ describe("a v4 lock setting over its station", () => {
     const inner = JSON.parse(plain.toString("utf-8").replace(/\0+$/, ""));
     expect(inner).toMatchObject({ channel: 0, lock_cmd: 0x22, lock_payload: tlv.toString("base64") });
     expect(typeof inner.seq_num).toBe("number");
+  });
+
+  it('has no key on a lock record stating no admin_user_id, as generateStationAesKey keys from "", not the user\'s id', async () => {
+    const { session, sent } = send(undefined);
+    await expect(sent).rejects.toThrow(/40-character admin id/);
+    expect(session.sendSetPayload).not.toHaveBeenCalled();
   });
 });

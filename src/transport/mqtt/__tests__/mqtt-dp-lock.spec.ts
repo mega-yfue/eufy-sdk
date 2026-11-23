@@ -12,12 +12,12 @@ import type { EufyDevice } from "../../../core/types.js";
 const SN = "T8531Q0000000000";
 const ADMIN = "0000000000000000000000000000000000000000";
 
-function lockRouter() {
+function lockRouter(member?: { admin_user_id: string }) {
   const dev = {
     sn: SN,
     category: "eufy_security",
     model: "T8531",
-    raw: { device_new_pn: "T8531" },
+    raw: { device_new_pn: "T8531", member },
   } as unknown as EufyDevice;
   const acks: Record<string, unknown>[] = [];
   const mqtt = Object.assign(new EventEmitter(), { id: "client-1", publish: vi.fn(async () => {}) });
@@ -102,6 +102,24 @@ describe("a bundle mqtt-dp write to a lock", () => {
     await send(8);
     await send(10);
     expect(acks.map((a) => a.acked)).toEqual([false, true]);
+  });
+});
+
+/** esiotkit's `doPublish`: the envelope's `account_id` is the record's `member.admin_user_id`, else `""`. */
+describe("an MQTT lock write's envelope account id", () => {
+  const OWNER = "1111111111111111111111111111111111111111";
+  it.each([
+    ["the record's admin_user_id", { admin_user_id: OWNER }, OWNER],
+    ["empty on a record stating none, the frame keeping the user's id", undefined, ""],
+  ])("is %s", async (_name, member, expected) => {
+    const { router, mqtt } = lockRouter(member);
+    const dp = { kind: "mqtt-dp", mqttCmdCode: 9, cmdCode: 0x23, fields: [], encrypt: false, retryCount: 0 } as const;
+    await router.dispatchCommand(SN, { ...dp, timeoutS: 0 });
+    await router.dispatchCommand(SN, { kind: "mqtt-json", mqttCmdCode: 9, cmd: 1235, payload: {}, needAck: false });
+    const bodies = mqtt.publish.mock.calls.map((call) => (call as unknown as [string, string])[1]);
+    const accounts = bodies.map((body) => JSON.parse(JSON.parse(body).payload).account_id);
+    expect(accounts).toEqual([expected, expected]);
+    expect(published(mqtt).frame.includes(ADMIN)).toBe(true);
   });
 });
 
