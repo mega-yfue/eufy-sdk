@@ -1405,15 +1405,22 @@ export class EufyMega extends EventEmitter {
    * `send`; with a child model in the list, `send` (the command id, its inner id, its header channel) goes as the
    * app's `sendCommandByWebrtc` decides: channel 255 and a child other than a T8223 or T8224 over RTC, a T8223 or
    * T8224 child (`isUglyConnection`, an empty `uglyCommands`) only for 1700 with inner 1000 to 1002 and for 1004 to
-   * 1006.
+   * 1006; `"live"` (the RTC player's view, `isWebrtc` of the child) goes RTC.
    */
-  private rtcRouteFor(sn: string, send?: { cmd: number; sub: number; channel: number }): RtcRoute | undefined {
+  private rtcRouteFor(sn: string, send?: { cmd: number; sub: number; channel: number } | "live"): RtcRoute | undefined {
     const { target, station, stationSn, raw } = this.stationOf(sn);
     const things = this.registry.thingsOf(stationSn)?.properties;
     const connect = things?.is_connect_webrtc?.defaultValue;
     const level = connect === "true" ? 1 : Number(connect);
     const list = things?.is_connect_webrtc_sub_device_list?.defaultValue;
-    if (!target || !station || !(level > 1 || (level === 1 && (!list || (send && this.rtcSubSend(sn, list, send))))))
+    if (
+      !target ||
+      !station ||
+      !(
+        level > 1 ||
+        (level === 1 && (!list || (send && this.rtcSubSend(sn, list, send === "live" ? undefined : send))))
+      )
+    )
       return undefined;
     const text = (v: unknown) => (typeof v === "string" && v ? v : undefined);
     const hosts = (Array.isArray(raw.signaling_servers) ? raw.signaling_servers : []).map(
@@ -1437,7 +1444,7 @@ export class EufyMega extends EventEmitter {
   }
 
   /** Whether a station-at-1 sub-device-list command goes RTC — see {@link rtcRouteFor}. */
-  private rtcSubSend(sn: string, list: unknown, send: { cmd: number; sub: number; channel: number }): boolean {
+  private rtcSubSend(sn: string, list: unknown, send?: { cmd: number; sub: number; channel: number }): boolean {
     let models: unknown;
     try {
       models = JSON.parse(String(list));
@@ -1447,7 +1454,8 @@ export class EufyMega extends EventEmitter {
     const { target, stationSn } = this.stationOf(sn);
     const children = this.registry.list().filter((d) => d.stationSn === stationSn && d.sn !== stationSn);
     if (!Array.isArray(models) || !children.some((d) => d.model && models.includes(d.model))) return false;
-    if (send.channel === 255 || sn === stationSn || !["T8223", "T8224"].includes(target?.model ?? "")) return true;
+    if (!send || send.channel === 255 || sn === stationSn || !["T8223", "T8224"].includes(target?.model ?? ""))
+      return true;
     return send.cmd === 1700 ? send.sub >= 1000 && send.sub <= 1002 : send.cmd >= 1004 && send.cmd <= 1006;
   }
 
@@ -1458,7 +1466,7 @@ export class EufyMega extends EventEmitter {
    * the lens page when its param 9240 lists sensors (`getSensorListBy`: `[{type, id}]`, unreadable as none).
    */
   private rtcMediaFor(sn: string): MediaProvider | undefined {
-    const route = this.rtcRouteFor(sn);
+    const route = this.rtcRouteFor(sn, "live");
     if (!route) return undefined;
     const device = this.registry.list().find((d) => d.sn === sn);
     const raw = (device?.raw ?? {}) as { device_channel?: unknown };
@@ -1473,8 +1481,13 @@ export class EufyMega extends EventEmitter {
     } catch {
       /* none */
     }
+    const firmware = (this.registry.list().find((d) => d.sn === route.stationSn)?.raw as Record<string, unknown>)
+      ?.main_sw_version;
     const live = device?.model
-      ? rtcLiveFrames(device.model, route.stationSn, { lenses: sensors.length > 0 })
+      ? rtcLiveFrames(device.model, route.stationSn, {
+          lenses: sensors.length > 0,
+          parent: typeof firmware === "string" ? firmware : "",
+        })
       : undefined;
     return this.rtc.mediaProviderFor({ ...route, cameraSn: sn, channel, live, ...(sensors.length && { sensors }) });
   }

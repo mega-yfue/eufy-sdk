@@ -253,17 +253,22 @@ export function liveFrames(
  * The frames the app's RTC player starts and stops `model`'s live view with under `parentSn` (its own serial when it
  * is its own station), and its talkback with: `start_intercom` / `stop_intercom` take no player input, so they are
  * {@link liveFrames}' own. The start is the page `MediaLiveActivityViewModel.startPlay` opens: with `lenses` (a sensor
- * list) the portrait lens page `Stitch_T_B_2X2`, else the single-camera page. `undefined` for a product the bundles
+ * list) the portrait lens page `Stitch_T_B_2X2`, else the single-camera page; above the parent's firmware 4.2.0.0
+ * (`parent`), a product's `<topology>>4.2.0.0` frames, as {@link liveFrames}. `undefined` for a product the bundles
  * give no RTC view.
  */
 export function rtcLiveFrames(
   model: string,
   parentSn: string,
-  { lenses = false }: { lenses?: boolean } = {},
+  { lenses = false, parent = "" }: { lenses?: boolean; parent?: string } = {},
 ): Omit<LiveFrames, "ability"> | undefined {
-  const entry = memberOf(memberOf(BUNDLE_WIRES.rtcLive, model), topologyOf(parentSn));
+  const byTopology = memberOf(BUNDLE_WIRES.rtcLive, model);
+  const topology = topologyOf(parentSn);
+  const entry =
+    (newerThan(parent, "4.2.0.0") ? memberOf(byTopology, `${topology}>4.2.0.0`) : undefined) ??
+    memberOf(byTopology, topology);
   const frames = BUNDLE_WIRES.frames ?? [];
-  const { talkStart, talkStop } = liveFrames(model, parentSn, []) ?? {};
+  const { talkStart, talkStop } = liveFrames(model, parentSn, [], parent || undefined) ?? {};
   return (
     entry && {
       start: frames[lenses && entry.startTB !== undefined ? entry.startTB : entry.start]!,

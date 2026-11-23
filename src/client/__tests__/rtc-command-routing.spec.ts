@@ -112,6 +112,33 @@ describe("native RTC routing off is_connect_webrtc", () => {
       expect(internals.rtcRouteFor(HUB)).toBeUndefined();
     });
 
+    it("plays every child on the station's RTC session once a listed model is among them, with its hb3 frames", () => {
+      const { internals } = fixture("T8030", sub('["T8425"]'));
+      const hub = "T8030P0000000000";
+      const [station, camera] = internals.registry.devices as [EufyDevice, EufyDevice];
+      Object.assign(station, { sn: hub });
+      Object.assign(camera, { stationSn: hub, raw: { parent_sn: hub, device_channel: 3 } });
+      vi.mocked(internals.registry.thingsOf).mockImplementation((sn) =>
+        sn === hub
+          ? ({
+              properties: Object.fromEntries(Object.entries(sub('["T8425"]')).map(([k, v]) => [k, prop(k, v)])),
+            } as never)
+          : undefined,
+      );
+      const media = vi.spyOn(internals.rtc, "mediaProviderFor").mockReturnValue({});
+      internals.rtcMediaFor(CAMERA);
+      expect(media.mock.calls[0]![0]).toMatchObject({
+        stationSn: hub,
+        cameraSn: CAMERA,
+        live: rtcLiveFrames("T8425", hub),
+      });
+      expect(rtcLiveFrames("T8425", hub)?.start).toBeDefined();
+      // A T8600 under it starts with 1700, above the station's 4.2.0.0 with the NVR 1350.
+      expect(rtcLiveFrames("T8600", hub)?.start.cmd).toBe(1700);
+      expect(rtcLiveFrames("T8600", hub, { parent: "4.2.0.1" })?.start.cmd).toBe(1350);
+      expect(internals.rtcRouteFor(hub)).toBeUndefined();
+    });
+
     it("keeps every command on P2P when no child model is listed", async () => {
       const { internals, rtc, p2p } = fixture("T8030", sub('["T8223"]'));
       await internals.routeCommand(CAMERA, command);
