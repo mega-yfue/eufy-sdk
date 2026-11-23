@@ -106,7 +106,7 @@ export interface KeyedActuatePayload {
  * @param userName the acting member's display name as the device shows it in its log.
  */
 export function buildKeyedActuatePayload(
-  id: Ff09Identity,
+  id: Omit<Ff09Identity, "adminUserId"> & { adminUserId?: string },
   devicePublicKeyHex: string,
   userName: string,
   rnd: KeyedPayloadRandomness,

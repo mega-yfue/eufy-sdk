@@ -1744,7 +1744,7 @@ export class P2PCommandRouter {
    * nothing is resent. Commands run one at a time per device: the replies carry no correlation id, so one
    * command's answer must never be read as another's.
    */
-  private sendKeyedPayloadActuate(sn: string, cmd: Ff09Identity): Promise<void> {
+  private sendKeyedPayloadActuate(sn: string, cmd: Extract<Command, { kind: "keyed-payload-actuate" }>): Promise<void> {
     return this.serializeAnswered(sn, async () => {
       const devicePublicKey = await this.deps.mega.getDevicePublicKey(sn);
       const { session, channel, zmediaAccountId: accountId } = await this.resolveSession(sn);
@@ -1996,7 +1996,10 @@ export class P2PCommandRouter {
    * wrong user. The name is the intent's account name, the app's `AccountDelegate.i()`. Sealed by the session like
    * every command.
    */
-  private async sendDoorlockPassThrough(sn: string, cmd: Ff09Identity): Promise<void> {
+  private async sendDoorlockPassThrough(
+    sn: string,
+    cmd: Extract<Command, { kind: "doorlock-pass-through-actuate" }>,
+  ): Promise<void> {
     const resolved = await this.resolveSession(sn);
     const { parentSn, channel } = resolved;
     if (!/^[0-9a-fA-F]{4}$/.test(cmd.shortUserId)) {
