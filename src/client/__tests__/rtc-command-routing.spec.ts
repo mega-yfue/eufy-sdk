@@ -136,6 +136,20 @@ describe("native RTC routing off is_connect_webrtc", () => {
       // A T8600 under it starts with 1700, above the station's 4.2.0.0 with the NVR 1350.
       expect(rtcLiveFrames("T8600", hub)?.start.cmd).toBe(1700);
       expect(rtcLiveFrames("T8600", hub, { parent: "4.2.0.1" })?.start.cmd).toBe(1350);
+      // Each frame's route as its parser gates it: a T8172's NVR start from the T8030's 3.7.4.3, its stop always.
+      expect(rtcLiveFrames("T8172", hub, { parent: "3.7.4.2" })).toMatchObject({
+        start: { rtcSendRoute: 0 },
+        stop: { rtcSendRoute: 1 },
+      });
+      expect(rtcLiveFrames("T8172", hub, { parent: "3.7.4.3" })?.start.rtcSendRoute).toBe(1);
+      // A standalone T8223's stop from its own 3.3.7.6; its start never.
+      const solo = "T8223P0000000000";
+      expect(rtcLiveFrames("T8223", solo, { own: "3.3.7.5" })).toMatchObject({
+        start: { cmd: 1700 },
+        stop: { rtcSendRoute: 0 },
+      });
+      expect(rtcLiveFrames("T8223", solo, { own: "3.3.7.6" })?.stop.rtcSendRoute).toBe(1);
+      expect(rtcLiveFrames("T8223", solo, { own: "3.3.7.6" })?.start.rtcSendRoute).toBeUndefined();
       expect(internals.rtcRouteFor(hub)).toBeUndefined();
     });
 

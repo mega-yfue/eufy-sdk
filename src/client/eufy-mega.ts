@@ -1481,12 +1481,15 @@ export class EufyMega extends EventEmitter {
     } catch {
       /* none */
     }
-    const firmware = (this.registry.list().find((d) => d.sn === route.stationSn)?.raw as Record<string, unknown>)
-      ?.main_sw_version;
+    const firmware = (serial: string) => {
+      const v = (this.registry.list().find((d) => d.sn === serial)?.raw as Record<string, unknown>)?.main_sw_version;
+      return typeof v === "string" ? v : "";
+    };
     const live = device?.model
       ? rtcLiveFrames(device.model, route.stationSn, {
           lenses: sensors.length > 0,
-          parent: typeof firmware === "string" ? firmware : "",
+          own: firmware(sn),
+          parent: firmware(route.stationSn),
         })
       : undefined;
     return this.rtc.mediaProviderFor({ ...route, cameraSn: sn, channel, live, ...(sensors.length && { sensors }) });

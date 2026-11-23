@@ -180,7 +180,8 @@ The two codecs reach you differently. **Video** `codec` is sniffed off the param
 and carried on the delta frames that follow, so every frame carries one even though only keyframes have
 config to sniff. **Audio** `codec` is declared by the station in each frame's header, so it is read
 rather than inferred — and read on every frame, because the device is free to change it mid-stream. A
-station on the app's RTC client sends `opus` only, the one audio codec of the app's offer.
+station on the app's RTC client sends `opus` only, the one audio codec of the app's offer; so does every camera of a
+HomeBase 3 or T8025 whose sub-device list names one of its cameras, which the app plays on that client too.
 
 Audio carries **no sample rate and no channel count** of its own: neither is on the wire. The eufy app
 assumes 16 kHz mono for all three codecs, and a host that needs those numbers for `aac-lc` or `g711a` is
@@ -431,7 +432,7 @@ present only on a camera that reported a speaker, so guard it like the other opt
 (the snippets below assert it once with `!` rather than repeating the guard on each line).
 
 The handle says which codec the speaker plays: `talk.codec`. It is `opus` on a station the app reaches
-over its RTC client, else `aac-eld` on a T8410C that sends `aac-eld`, and `aac-lc` on every other camera,
+over its RTC client (and on those HomeBase 3 / T8025 cameras), else `aac-eld` on a T8410C that sends `aac-eld`, and `aac-lc` on every other camera,
 including another model that sends `aac-eld`, whose speaker codec is not evidenced.
 
 - `aac-lc`: **AAC-LC, 16 kHz, mono, in ADTS frames**, through `write()` / `writable()`. Chunk
