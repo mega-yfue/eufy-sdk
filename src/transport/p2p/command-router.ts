@@ -35,6 +35,7 @@ import {
 import { buildKeyedActuatePayload, keyedPayloadReportCode, keyedPayloadSeqMark } from "./keyed-payload.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { assertNever, isStationSerial } from "../../core/util.js";
+import { memberAccountId } from "../../core/member.js";
 import { setTimeout as sleep } from "node:timers/promises";
 import { CONNECT_TIMEOUT_MS, P2PSession, STATION_CHANNEL, type P2PFrame } from "./p2p-session.js";
 import { buildDirectBinaryBody, buildStringBody } from "./write-commands.js";
@@ -541,7 +542,7 @@ export class P2PCommandRouter {
     localAddress: string | undefined,
     key = stationSn,
   ): P2PSession {
-    const adminUserId = ((raw?.member as any)?.admin_user_id as string) || this.deps.mega.auth?.userId || "";
+    const adminUserId = memberAccountId(raw, this.deps.mega.auth?.userId);
     const session: P2PSession = new P2PSession({
       stationSn,
       p2pDid: did,
@@ -1524,7 +1525,6 @@ export class P2PCommandRouter {
     rebuilt = false,
   ): Promise<ResolvedSession> {
     const dev = await this.deviceFor(sn);
-    const raw = (dev.raw ?? {}) as Record<string, any>;
     const parentSn = stationOf(dev);
     const homeBaseAttached = parentSn !== sn;
     const session =
@@ -1552,9 +1552,11 @@ export class P2PCommandRouter {
     this.manager.bumpCommand(parentSn);
     // The request channel `P2PRequestCreatorKt.p2pRequest` gives: 255 for a station serial.
     const channel = isStationSerial(sn) ? STATION_CHANNEL : address.channel;
-    const stationAdminId = (raw.member as any)?.admin_user_id;
-    const stationModel = this.recordFor(parentSn)?.model;
-    const accountId = (stationAdminId as string) ?? this.deps.mega.auth?.userId ?? "";
+    const station = parentSn === sn ? dev : this.recordFor(parentSn);
+    const stationAdminId = (station?.raw as any)?.member?.admin_user_id;
+    const stationModel = station?.model;
+    // `ZmediaUtil` quotes `AccountDelegate.m(mHubSn)`, the station's member read by `AnkerAccountManager.u`.
+    const accountId = memberAccountId(station?.raw, this.deps.mega.auth?.userId);
 
     this.traceOnStation(session, {
       phase: "station-resolved",
@@ -1711,7 +1713,8 @@ export class P2PCommandRouter {
    * {@link buildKeyedActuatePayload}, sent as a keyed envelope through {@link P2PSession.sendSetPayload}
    * on the lock's device channel. No session key is waited for — the envelope seals its own per-command
    * key for the device's public key (fetched from the cloud, cached per serial), so it goes as soon as
-   * the session is up. The acting name is the intent's account name, the app's `AccountDelegate.i()`.
+   * the session is up. The acting name is the intent's account name, the app's `AccountDelegate.i()`; the envelope's
+   * account id is the resolved one (`AccountDelegate.m`).
    *
    * It goes once at the next {@link keyedSeq}, as the app's `ESLAnkerP2PService.q` sends it, and
    * {@link awaitKeyedReply} settles it on the replies: a non-zero code, a sequence refusal included, throws and
@@ -1721,13 +1724,13 @@ export class P2PCommandRouter {
   private sendKeyedPayloadActuate(sn: string, cmd: Ff09Identity): Promise<void> {
     return this.serializeAnswered(sn, async () => {
       const devicePublicKey = await this.deps.mega.getDevicePublicKey(sn);
-      const { session, channel } = await this.resolveSession(sn);
+      const { session, channel, accountId } = await this.resolveSession(sn);
       const { key, payload } = buildKeyedActuatePayload(cmd, devicePublicKey, cmd.username, {
         seqNum: this.keyedSeq++,
       });
       const code = await this.awaitKeyedReply(sn, session, channel, cmd.engage, () =>
         session.sendAcknowledged(() => {
-          session.sendSetPayload(CommandType.P2P_ON_OFF_LOCK, payload, { accountId: cmd.adminUserId, channel, key });
+          session.sendSetPayload(CommandType.P2P_ON_OFF_LOCK, payload, { accountId, channel, key });
           return true;
         }),
       );
@@ -1927,7 +1930,10 @@ export class P2PCommandRouter {
    * `seq_num`, the descriptor's `cmd` as `apiCommand`, and the frame's key time.
    */
   private async lockParams(sn: string, lock: NonNullable<Extract<Command, { kind: "set-payload" }>["lock"]>) {
-    const { accountId, parentSn } = await this.resolveSession(sn);
+    const { parentSn } = await this.resolveSession(sn);
+    // The esiotkit lock path keys with the lock's own `member.admin_user_id` as stated, not `AnkerAccountManager`'s.
+    const accountId: string =
+      (this.recordFor(sn)?.raw as any)?.member?.admin_user_id ?? this.deps.mega.auth?.userId ?? "";
     if (lock.version === 4) {
       // `createPayloadForZhixingStationBle`: the lock's counter + 1, stored under the station (the lock's never moves).
       const seqNum = (this.lockSeq.get(sn) ?? Math.trunc(Date.now() / 1000)) + 1;
@@ -1987,10 +1993,14 @@ export class P2PCommandRouter {
     (this.deps.logger ?? noopLogger).debug(
       `[p2p] ${parentSn} door-lock pass-through ${cmd.engage ? "lock" : "unlock"} ${sn} ch=${channel}`,
     );
-    await this.sendSetPayloadEnvelope(sn, CommandType.CMD_DOORLOCK_DATA_PASS_THROUGH, { payload: blob }, channel, 0, {
-      ...resolved,
-      accountId: (this.recordFor(parentSn)?.raw as any)?.member?.admin_user_id || this.deps.mega.auth?.userId || "",
-    });
+    await this.sendSetPayloadEnvelope(
+      sn,
+      CommandType.CMD_DOORLOCK_DATA_PASS_THROUGH,
+      { payload: blob },
+      channel,
+      0,
+      resolved,
+    );
   }
 
   /**

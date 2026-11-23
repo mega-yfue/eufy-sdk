@@ -55,7 +55,9 @@ function homeBase2(deps: Partial<P2PRouterDeps> = {}, opts: { finish?: boolean; 
   const getCiphers = vi.fn(async (ids: number[]) =>
     ids[0] === CIPHER_ID ? [{ cipher_id: CIPHER_ID, ecc_private_key: cam.eccHex }] : [],
   );
-  const router = routerWithSession(session, { deps: { mega: { getCiphers } as never, ...deps } });
+  const router = routerWithSession(session, {
+    deps: { mega: { auth: { userId: ACCOUNT_ID }, getCiphers } as never, ...deps },
+  });
   return { media: router.mediaProviderFor(DEVICE_SN), session, sent, getCiphers, transfers };
 }
 
@@ -92,7 +94,9 @@ function homeBase3(opts: { missing?: string } = {}) {
     }),
   });
   const getCiphers = vi.fn(async () => []);
-  const router = routerWithSession(session, { deps: { mega: { getCiphers } as never, ...attachedTo("T8030") } });
+  const router = routerWithSession(session, {
+    deps: { mega: { auth: { userId: ACCOUNT_ID }, getCiphers } as never, ...attachedTo("T8030") },
+  });
   return { media: router.mediaProviderFor(DEVICE_SN), sent, getCiphers };
 }
 

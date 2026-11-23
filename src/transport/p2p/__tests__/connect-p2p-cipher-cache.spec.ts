@@ -42,13 +42,15 @@ const DEVICE: EufyDevice = {
   api: "mega",
   realtime: "p2p",
   p2pDid: "XXXXXXX-000000-XXXXX",
-  raw: { member: { admin_user_id: "0".repeat(40) } },
+  // A member the owner shared the device with: the signed-in user `u1` is the member, the owner the admin.
+  raw: { member: { admin_user_id: "0".repeat(40), member_user_id: "u1", member_type: 1 } },
 };
 
 function makeDeps(
   getCiphers: ReturnType<typeof vi.fn>,
   logger?: P2PRouterDeps["logger"],
   onError: P2PRouterDeps["onError"] = () => {},
+  device = DEVICE,
 ): P2PRouterDeps {
   return {
     ...(logger ? { logger } : {}),
@@ -57,7 +59,7 @@ function makeDeps(
       getDskKeys: vi.fn().mockResolvedValue({}),
       getCiphers,
     } as unknown as P2PRouterDeps["mega"],
-    listDevices: () => [DEVICE],
+    listDevices: () => [device],
     ensureDevices: async () => {},
     onConnect: () => {},
     onClose: () => {},
@@ -66,6 +68,23 @@ function makeDeps(
     onFrame: () => {},
   };
 }
+
+describe("P2PCommandRouter.ensureStation — the account a station is connected under", () => {
+  /** `IUser.getUid` is `AnkerAccountManager.e`: the admin only for a member record of the signed-in user. */
+  it.each([
+    ["a shared member's record, the owner", { member_user_id: "u1", member_type: 1 }, "0".repeat(40)],
+    ["a member_type 2 record, the user's own id", { member_user_id: "u1", member_type: 2 }, "u1"],
+    ["another user's member record, the user's own id", { member_user_id: "u2", member_type: 1 }, "u1"],
+    ["a record stating no admin, the user's own id", { admin_user_id: "", member_user_id: "u1" }, "u1"],
+  ])("quotes for %s", async (_, member, expected) => {
+    const getCiphers = vi.fn().mockResolvedValue([{ cipher_id: 97, ecc_private_key: "cafebabe" }]);
+    const device = { ...DEVICE, raw: { member: { admin_user_id: "0".repeat(40), ...member } } };
+    await new P2PCommandRouter(makeDeps(getCiphers, undefined, undefined, device)).ensureStation(DEVICE.sn);
+
+    await resolveCipherKey(97);
+    expect([capturedConfig!.userId, getCiphers.mock.calls[0]![1]]).toEqual([expected, expected]);
+  });
+});
 
 describe("P2PCommandRouter.ensureStation — resolveCipherKey cache", () => {
   /** `ConnectKeyFactory` asks again once when its first pass leaves no key, and caches only a key. */

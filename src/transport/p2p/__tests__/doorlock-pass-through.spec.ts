@@ -10,6 +10,7 @@ const STATION_SN = "T8000P0000000000";
 const P2P_DID = "XXXXXXX-000000-XXXXX";
 const ADMIN = "0000000000000000000000000000000000000000";
 const STATION_ADMIN = "1111111111111111111111111111111111111111";
+const ME = "2222222222222222222222222222222222222222";
 
 const frame = {
   adminUserId: ADMIN,
@@ -73,10 +74,12 @@ describe("a door-lock pass-through actuation", () => {
       channel: 0,
       p2pDid: P2P_DID,
       // The station's own member is someone else: only the envelope's account id may come from it.
-      raw: { member: { admin_user_id: STATION_ADMIN, short_user_id: "0099", nick_name: "member-nick" } },
+      raw: {
+        member: { admin_user_id: STATION_ADMIN, member_user_id: ME, short_user_id: "0099", nick_name: "member-nick" },
+      },
     };
     const deps: P2PRouterDeps = {
-      mega: {} as P2PRouterDeps["mega"],
+      mega: { auth: { userId: ME } } as unknown as P2PRouterDeps["mega"],
       listDevices: () => [station, lock] as never,
       ensureDevices: async () => {},
       onConnect: () => {},

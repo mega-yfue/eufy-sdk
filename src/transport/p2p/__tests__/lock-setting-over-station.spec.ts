@@ -23,7 +23,7 @@ describe("a v2 lock setting over its station", () => {
       raw: { device_channel: channel, parent_sn: parent, member: { admin_user_id: ADMIN } },
     });
     const router = new P2PCommandRouter({
-      mega: {} as P2PRouterDeps["mega"],
+      mega: { auth: { userId: ADMIN } } as unknown as P2PRouterDeps["mega"],
       listDevices: () => [record(STATION_SN, 0), record(LOCK_SN, 3, STATION_SN)] as never,
       ensureDevices: async () => {},
       onConnect: () => {},
@@ -79,7 +79,7 @@ describe("a v4 lock setting over its station", () => {
       raw: { device_channel: channel, parent_sn: parent, member: { admin_user_id: ADMIN } },
     });
     const router = new P2PCommandRouter({
-      mega: {} as P2PRouterDeps["mega"],
+      mega: { auth: { userId: ADMIN } } as unknown as P2PRouterDeps["mega"],
       listDevices: () => [record(STATION_SN, 0), record("T8500P0000000000", 3, STATION_SN)] as never,
       ensureDevices: async () => {},
       onConnect: () => {},
