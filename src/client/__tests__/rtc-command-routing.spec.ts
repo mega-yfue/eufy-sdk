@@ -3,7 +3,8 @@ import type { Command } from "../../core/contracts.js";
 import type { EufyDevice } from "../../core/types.js";
 import type { ThingDescription, ThingProperty } from "../../model/capabilities/thing-description.js";
 import { DeviceType } from "../../model/device-types.js";
-import type { RtcRoute } from "../../transport/rtc/command-router.js";
+import { rtcLiveFrames } from "../../model/capabilities/bundle.js";
+import type { RtcLiveRoute, RtcRoute } from "../../transport/rtc/command-router.js";
 import { EufyMega } from "../eufy-mega.js";
 
 /** Synthetic serials, did, license and documentation-range addresses throughout; no network. */
@@ -33,10 +34,14 @@ function fixture(model: string, props: Record<string, string> = {}, record: Reco
   });
   const internals = client as unknown as {
     registry: { devices: EufyDevice[]; thingsOf(sn: string): ThingDescription | undefined };
-    rtc: { dispatchCommand(route: RtcRoute, cmd: Command): Promise<void> };
+    rtc: {
+      dispatchCommand(route: RtcRoute, cmd: Command): Promise<void>;
+      mediaProviderFor(route: RtcLiveRoute): unknown;
+    };
     p2p: { dispatchCommand(sn: string, cmd: Command): Promise<void> };
     routeCommand(sn: string, cmd: Command): Promise<void>;
     rtcRouteFor(sn: string): RtcRoute | undefined;
+    rtcMediaFor(sn: string): unknown;
   };
   internals.registry.devices = [
     { sn: HUB, model, raw: { device_type: DeviceType.STATION_9000, ...record } },
@@ -122,6 +127,24 @@ describe("native RTC routing off is_connect_webrtc", () => {
       expect(rtc.mock.calls.map(([, c]) => c)).toEqual([live, stop]);
       expect(p2p).toHaveBeenCalledExactlyOnceWith(CAMERA, command);
     });
+  });
+
+  it("gives an RTC camera's view its product's rtcLive frames under the station, none for a product without", () => {
+    const { internals } = fixture("T9000", { is_connect_webrtc: "2" });
+    const hub = "T9000P0000000000";
+    const [station, camera] = internals.registry.devices as [EufyDevice, EufyDevice];
+    Object.assign(station, { sn: hub });
+    Object.assign(camera, { stationSn: hub, raw: { parent_sn: hub, device_channel: 3 } });
+    vi.mocked(internals.registry.thingsOf).mockImplementation(
+      (sn) => (sn === hub ? { properties: { is_connect_webrtc: prop("is_connect_webrtc", "2") } } : undefined) as never,
+    );
+    const media = vi.spyOn(internals.rtc, "mediaProviderFor").mockReturnValue({});
+    internals.rtcMediaFor(CAMERA);
+    expect(media.mock.calls[0]![0]).toMatchObject({ cameraSn: CAMERA, channel: 3, live: rtcLiveFrames("T8425", hub) });
+    expect(rtcLiveFrames("T8425", hub)?.start).toMatchObject({ cmd: 1350, payload: { cmd: 1003 } });
+    camera.model = "T8010";
+    internals.rtcMediaFor(CAMERA);
+    expect(media.mock.calls[1]![0].live).toBeUndefined();
   });
 
   it("refuses an attached device whose channel does not resolve back to it, before sending", async () => {
