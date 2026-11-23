@@ -1,15 +1,17 @@
 /**
  * Live view over the vendor app's PrivMedia (PM) call: the live commands as `ANKE` RTCP APP frames, the station's
- * SRTP video turned into Annex-B access units.
+ * RTP video turned into Annex-B access units, its Opus audio, and talkback Opus back.
  *
  * `ANKE` frame, all fields little-endian: u32 magic 0x12345678, u32 seq, u8 type, 3 bytes 0xAA, u32 payload length,
  * u32 checksum (the byte sum of bytes 0..15 and the payload, wrapping), then the payload. Type 1 carries data, 2
  * acknowledges the seq it echoes, 8 asks for an MTU reply (type 9); 8 and 9 are not checksummed. It leaves as a plain
  * RTCP APP packet (subtype 30, name `ANKE`, sender SSRC = the call's audio value, payload zero-padded to 4 bytes); the
- * station's frames arrive as SRTCP whose bytes 8..11 read `AZWC`, the frame from byte 12.
+ * station's frames arrive as RTCP whose bytes 8..11 read `AZWC`, the frame from byte 12. RTP and RTCP are plain both
+ * ways: the app's SRTP session passes every packet through unchanged.
  *
  * Audio is the offer's `a=rtpmap:111 opus/48000/2`: each payload one Opus packet.
  */
+import { randomInt } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type { LiveStreamHandle } from "../../core/contracts.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
@@ -19,7 +21,7 @@ import { traceLiveStart } from "../p2p/live-trace.js";
 import type { RtcCallSdp } from "./call.js";
 import { commandFrame, type RtcCommandCounter } from "./data-channel.js";
 import type { IceAgent } from "./ice.js";
-import { RtpDepacketizer, SrtpReceiver, idrAt, mediaOpen, rtpPayload } from "./rtp.js";
+import { RtpDepacketizer, idrAt, mediaOpen, mediaSeal, rtpPayload } from "./rtp.js";
 
 const MAGIC = 0x12345678;
 const AZWC = 0x415a5743;
@@ -183,7 +185,7 @@ export interface RtcPmLiveOptions {
  * answer at once and every second, ten times: a queued reply above 0 or a first video unit is success, any other
  * answer or ten empty checks end the view with `error`. `stop()` sends the stop.
  *
- * Video is the SRTP RTP of payload type 97 (H.265) or 99 (H.264). With `gcm`, a parameter-set packet (H.264 SPS/PPS
+ * Video is the RTP of payload type 97 (H.265) or 99 (H.264). With `gcm`, a parameter-set packet (H.264 SPS/PPS
  * over 18 bytes, H.265 VPS/SPS/PPS over 16) is opened from its third byte; a packet that does not open is kept. Each
  * access unit's last byte must be the start's header channel (`sendRTCChannelNotify`), else it is dropped; the 8
  * bytes before it, a u64 LE ms timestamp no further than 100 years ahead of the clock, go with it. A key frame of 17
@@ -192,7 +194,6 @@ export interface RtcPmLiveOptions {
  * with `gcm`, is opened whole; a payload that does not open is dropped.
  */
 export class RtcPmLiveStream extends EventEmitter implements LiveStreamHandle {
-  private readonly srtp = new SrtpReceiver();
   private readonly anke: Anke;
   private readonly logger: Logger;
   private readonly seal?: { key: Buffer; counter: RtcCommandCounter };
@@ -204,6 +205,8 @@ export class RtcPmLiveStream extends EventEmitter implements LiveStreamHandle {
   private waitKey = false;
   private startedAt = 0;
   private startCommand?: RtcLiveCommand;
+  private talkSeq?: number;
+  private talkTs?: number;
   private readonly onConnected = () => {
     traceLiveStart(this.logger, { phase: "session-connected", waitedMs: Date.now() - this.startedAt });
     this.sendStart();
@@ -253,8 +256,29 @@ export class RtcPmLiveStream extends EventEmitter implements LiveStreamHandle {
       this.fail(new Error("rtc pm live: start not answered"));
   }
 
-  /** Send a command over `ANKE` and check its answer as the app does (`setCmd2Rtcp`); `true` on success. */
-  private async command(c: RtcLiveCommand): Promise<boolean> {
+  /**
+   * Send one talkback Opus packet as the app's audio track does: RTP payload type 111 under the call's audio SSRC,
+   * sealed whole with `gcm`, no trailer. ponytail: one 20 ms packet per call (timestamp + 960), read the TOC if a
+   * host sends other durations.
+   */
+  sendAudio(packet: Buffer): void {
+    const h = Buffer.alloc(12);
+    h[0] = 0x80;
+    h[1] = OPUS_PT | (this.talkSeq === undefined ? 0x80 : 0);
+    this.talkSeq = ((this.talkSeq ?? randomInt(0x10000)) + 1) & 0xffff;
+    this.talkTs = ((this.talkTs ?? randomInt(2 ** 32)) + 960) >>> 0;
+    h.writeUInt16BE(this.talkSeq, 2);
+    h.writeUInt32BE(this.talkTs, 4);
+    h.writeUInt32BE(this.opts.call.audio >>> 0, 8);
+    const { key, iv } = this.opts.call;
+    this.agent.write(Buffer.concat([h, this.opts.gcm ? mediaSeal(key, iv, packet) : packet]));
+  }
+
+  /**
+   * Send a command: over `ANKE`, its answer checked as the app does (`setCmd2Rtcp`), or by its own `send`. `true` on
+   * success.
+   */
+  async command(c: RtcLiveCommand): Promise<boolean> {
     if (c.send) return (c.send(), true);
     this.anke.send(commandFrame(c.cmd, c.body, c.channel, this.seal, c.flag));
     for (let i = 0; i < 10 && !this.closed; i++) {
@@ -273,12 +297,11 @@ export class RtcPmLiveStream extends EventEmitter implements LiveStreamHandle {
     this.emit("error", err);
   }
 
-  private onDatagram(d: Buffer): void {
-    const p = this.srtp.unprotect(d);
-    if (!p) return;
+  private onDatagram(p: Buffer): void {
+    if (p.length < 12) return;
     const pt = p[1]! & 0x7f;
     if (pt >= 64 && pt < 96) {
-      if (p.length > 11 && p.length % 4 === 0 && p.readUInt32BE(8) === AZWC) this.anke.input(p.subarray(12));
+      if (p.length % 4 === 0 && p.readUInt32BE(8) === AZWC) this.anke.input(p.subarray(12));
       return;
     }
     if (!this.running) return;

@@ -99,6 +99,8 @@ function layers() {
   return { router, signal, data, agent, priv1, pmIce };
 }
 
+const u32 = (...v: number[]) => Buffer.from(new Uint32Array(v).buffer);
+
 afterEach(() => vi.useRealTimers());
 
 describe("RtcCommandRouter on the native layers", () => {
@@ -118,7 +120,6 @@ describe("RtcCommandRouter on the native layers", () => {
     const { router, data } = layers();
     const account = Buffer.alloc(128);
     account.write("synthetic-admin");
-    const u32 = (...v: number[]) => Buffer.from(new Uint32Array(v).buffer);
     await router.dispatchCommand(ROUTE, { kind: "set-param", param: 1035, value: 1, channel: 3 });
     await router.dispatchCommand(ROUTE, { kind: "p2p-station-scalar", cmd: 1235, value: 7, channel: 3 });
     await router.dispatchCommand(ROUTE, { kind: "set-param", param: 1250, value: 2, channel: 3 });
@@ -278,6 +279,33 @@ describe("RtcCommandRouter on the native layers", () => {
     expect(fresh.data.command).not.toHaveBeenCalled();
     live.stop();
     fresh.router.close();
+  });
+
+  it("talks inside a T9000 camera's view: 1005/1006 over the data channel, Opus as plain RTP on the PM call", async () => {
+    const { router, agent, data } = layers();
+    const talkStart = { cmd: 1005, body: "native", payload: {}, layout: "u32-ch" } as const;
+    const talkStop = { cmd: 1006, body: "native", payload: {}, layout: "u32-ch" } as const;
+    const route = { ...ROUTE, version: 4000, live: { ...NVR_LIVE!, talkStart, talkStop } };
+    const opening = router.mediaProviderFor(route).talkback!();
+    await vi.waitFor(() => expect(agent.write).toHaveBeenCalled());
+    const idr = Buffer.alloc(22);
+    idr.writeUInt32BE(0x80e30001);
+    idr.writeUInt32BE(9000, 4);
+    idr[12] = 0x65;
+    idr.writeBigUInt64LE(BigInt(Date.now()), 13);
+    idr[21] = 3;
+    agent.emit("data", idr);
+    const talk = await opening;
+    expect(talk.codec).toBe("opus");
+    await vi.waitFor(() => expect(data.command).toHaveBeenLastCalledWith(1005, u32(3), 3, 0));
+    const opus = Buffer.from("one opus packet");
+    talk.write(opus);
+    await vi.waitFor(() => expect((agent.write.mock.calls.at(-1)![0] as Buffer)[1]).toBe(0x80 | 111));
+    const rtp = agent.write.mock.calls.at(-1)![0] as Buffer;
+    expect([rtp[0], rtp.readUInt32BE(8), rtp.subarray(12)]).toEqual([0x80, CALL.audio, opus]);
+    await talk.stop();
+    expect(data.command).toHaveBeenLastCalledWith(1006, u32(3), 3, 0);
+    router.close();
   });
 
   it("refuses a live view without the start JSON", async () => {
