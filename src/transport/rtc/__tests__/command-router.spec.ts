@@ -16,15 +16,17 @@ const NVR_LIVE: RtcLiveRoute["live"] = {
     body: "json",
     payload: {
       cmd: 1003,
-      mChannel: "$mChannel",
+      mChannel: "$channel",
       account_id: "$userId",
       mValue3: 1003,
       payload: {
         accountId: "$userId",
         streamtype: 2,
+        camera_type: "$cameraType",
         entrytype: "$entryType",
+        chn_list: "$chnList",
+        audio_chn: "$channel",
         msg_id: "$msgId",
-        mChannel: "$mChannel",
       },
       msg_id: "$msgId",
       transaction: "$now",
@@ -246,14 +248,16 @@ describe("RtcCommandRouter on the native layers", () => {
     return { cmd: x.readUInt16LE(4), channel: x[12], flag: x[14], body };
   }
 
-  it("starts a T9000 camera's view with its rtcLive 1350, tokens filled, as a sealed ANKE command", async () => {
+  it("starts a T9000 camera's view with its rtcLive 1350, the single-camera page filled, as a sealed ANKE command", async () => {
     const { router, agent } = layers();
     const consumer = await router.mediaProviderFor(ROUTE).live({ entryType: 4 });
     const start = sent(agent, 0);
     const json = JSON.parse(start.body.toString()) as { payload: Record<string, unknown> } & Record<string, unknown>;
     expect(start).toMatchObject({ cmd: 1350, channel: 3, flag: 0 });
     expect(json).toMatchObject({ cmd: 1003, mChannel: 3, account_id: "synthetic-admin", mValue3: 1003, msg_id: 1 });
-    expect(json.payload).toMatchObject({ mChannel: 3, accountId: "synthetic-admin", entrytype: 4, msg_id: 1 });
+    expect(json.payload).toMatchObject({ accountId: "synthetic-admin", entrytype: 4, msg_id: 1, audio_chn: 3 });
+    // The single-camera page: one channel order, camera id 0.
+    expect(json.payload).toMatchObject({ camera_type: 0, chn_list: [{ cameraType: 0, chn: 3, index: 0, sensor: 0 }] });
     expect(json.payload.streamtype).toBe(2);
     expect(String(json.transaction)).toMatch(/^\d{13}$/);
     consumer.stop();
