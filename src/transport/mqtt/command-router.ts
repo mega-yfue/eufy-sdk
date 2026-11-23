@@ -781,11 +781,8 @@ export class MqttCommandRouter {
    */
   private async dispatchAiotDp(sn: string, cmd: Extract<Command, { kind: "aiot-dp" }>): Promise<void> {
     const dev = await this.pnDeviceFor(sn);
-    if (!this.deps.resolveAccountId) {
-      throw new Error(`aiot-dp for ${sn}: resolveAccountId dependency not wired`);
-    }
-    const accountId = this.deps.resolveAccountId(dev);
-    if (!accountId) throw new Error(`aiot-dp for ${sn}: no account id resolved`);
+    // The clean line's account id: the record's admin id when it states one, else the signed-in user's own id.
+    const accountId = adminUserIdOf(dev.raw) || this.deps.mega.auth?.userId || "";
     if (!this.deps.publishSecure) {
       throw new Error(`aiot-dp for ${sn}: publishSecure dependency not wired`);
     }

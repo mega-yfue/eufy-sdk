@@ -1,5 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { buildCleanDpEnvelope } from "../clean-codec.js";
+import { MqttCommandRouter } from "../command-router.js";
+import type { EufyDevice } from "../../../core/types.js";
 
 /**
  * `buildCleanDpEnvelope` — AIoT MQTT command envelope for clean-line DP writes. The injectable
@@ -47,5 +49,28 @@ describe("buildCleanDpEnvelope", () => {
     const inner = JSON.parse(outer.payload);
     expect(typeof outer.head.timestamp).toBe("number");
     expect(typeof inner.t).toBe("string");
+  });
+});
+
+/** The clean line's `account_id`: the record's admin id when it states one, else the signed-in user's own id. */
+describe("an aiot-dp write's account id", () => {
+  it.each([
+    ["the admin id", "2".repeat(40), "2".repeat(40)],
+    ["the own id where the member states no admin", "", "1".repeat(40)],
+  ])("is %s", async (_name, admin, expected) => {
+    const dev = { sn: "T2351P0000000000", raw: { device_new_pn: "T2351", member: { admin_user_id: admin } } };
+    const publishSecure = vi.fn(async () => {});
+    const router = new MqttCommandRouter({
+      mega: { auth: { userId: "1".repeat(40) } } as never,
+      listDevices: () => [dev as unknown as EufyDevice],
+      ensureDevices: async () => {},
+      resolveAccountId: (d) => (d.raw as typeof dev.raw).member.admin_user_id,
+      publishSecure,
+      onCommandAck: () => {},
+      onError: () => {},
+    });
+    await router.dispatchCommand(dev.sn, { kind: "aiot-dp", dp: 151, value: true });
+    const [, , body] = publishSecure.mock.calls[0] as unknown as [unknown, string, string];
+    expect(JSON.parse(JSON.parse(body).payload).account_id).toBe(expected);
   });
 });
