@@ -63,6 +63,7 @@ const route = (attached: boolean): RtcRoute => ({
   did: "SYNTH-000000-AAAAA",
   lic: "SYNLIC",
   host: "192.0.2.7",
+  domain: "signal.example.invalid",
   version: 4102,
   sdkVersion: "1.7.2",
 });

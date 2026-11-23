@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { createSocket, type Socket } from "node:dgram";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Socket, createSocket } from "node:dgram";
 import { constants, generateKeyPairSync, privateDecrypt } from "node:crypto";
 import {
   RTC_DEFAULT_KEY,
@@ -13,7 +13,7 @@ import {
   wrapRtcPacket,
   type RtcPacket,
 } from "../packet.js";
-import { RtcSignalClient, type RtcToken } from "../signal-client.js";
+import { RtcSignalClient, type RtcServer, type RtcToken } from "../signal-client.js";
 
 const SN = "T8000P0000000000";
 const DID = "XXXXXXX-000000-XXXXX";
@@ -56,6 +56,11 @@ describe("rtc packet", () => {
     expect(parseRtcDatagram(bad)).toBeUndefined();
   });
 });
+
+/** The next token handing out a login other than `aes`. */
+function loginToken(client: RtcSignalClient, aes = ""): Promise<RtcToken> {
+  return new Promise((r) => client.on("token", (t) => t.aes !== aes && r(t)));
+}
 
 describe("RtcSignalClient", () => {
   let server: Socket;
@@ -115,7 +120,7 @@ describe("RtcSignalClient", () => {
 
   it("hands out the login as a token, and a fresh one logs in quickly with nothing sent; a 23 h old one does not", async () => {
     const seen = await fakeServer(false);
-    const token = new Promise<RtcToken>((r) => client.once("token", r));
+    const token = loginToken(client);
     await client.start();
     const t = await token;
     expect(t).toMatchObject({ aes: client.sessionKey, contactId: "c0ffee00c0ffee00", addr: "127.0.0.1" });
@@ -159,7 +164,7 @@ describe("RtcSignalClient", () => {
     expect(seen.auth).toBeUndefined();
     client.close();
     await connectBoth(43_201);
-    const t = await new Promise<RtcToken>((r) => client.once("token", r));
+    const t = await loginToken(client, "0123456789abcdef");
     expect(seen.auth).toBe(`${DID}:${LIC}`);
     expect(t.aes).not.toBe("0123456789abcdef");
     expect(Math.abs(t.authTimestamp - Date.now() / 1000)).toBeLessThan(2);
@@ -194,5 +199,95 @@ describe("RtcSignalClient", () => {
     expect(seen.regs[2]).not.toBe(seen.regs[0]);
     await vi.advanceTimersByTimeAsync(30_000);
     expect(seen.regs).toHaveLength(3);
+  });
+});
+
+describe("RtcSignalClient servers", () => {
+  const server = (type: number, ip: string, protocol = 0, avgRtt = 0, domain = "sig.example.com"): RtcServer => ({
+    domain,
+    type,
+    ip,
+    protocol,
+    lastUsed: 0,
+    avgRtt,
+  });
+  const expired = { aes: "A".repeat(16), contactId: "synthetic-contact", addr: "192.0.2.7", authTimestamp: 1 };
+  let sent: { socket: Socket; host: string; kind: number }[];
+  let client: RtcSignalClient;
+  beforeEach(() => {
+    sent = [];
+    vi.useFakeTimers({ toFake: ["Date"], now: 1_700_000_000_000 });
+    vi.spyOn(Socket.prototype, "send").mockImplementation(function (
+      this: Socket,
+      msg: unknown,
+      _p: unknown,
+      host: unknown,
+    ) {
+      sent.push({ socket: this, host: host as string, kind: parseRtcDatagram(msg as Buffer)!.header.readUInt16LE(4) });
+    } as never);
+  });
+  afterEach(() => {
+    client.close();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("restarts on the cached servers: ties go to the lowest ip, DISCOVER switches, a CALL takes a backup", async () => {
+    const cached = [server(0, "192.0.2.1"), server(0, "192.0.2.0", 0, 0, "other.example.com")];
+    client = new RtcSignalClient({
+      sn: SN,
+      did: DID,
+      lic: LIC,
+      host: "192.0.2.9",
+      domain: "sig.example.com",
+      token: { ...expired, servers: cached },
+    });
+    const tokens: RtcToken[] = [];
+    client.on("token", (t) => tokens.push(t));
+    await client.start();
+    expect(sent[0]).toMatchObject({ host: "192.0.2.1", kind: 9 });
+    expect(tokens[0]!.servers!.map((s) => `${s.type}${s.protocol} ${s.ip}`)).toEqual([
+      "00 192.0.2.9",
+      "11 192.0.2.7",
+      "10 192.0.2.7",
+      "00 192.0.2.1",
+    ]);
+    vi.setSystemTime(Date.now() + 40);
+    const h = rtcHeader({ kind: 9, sn: SN, seq: 1, route: 0, ts: TS });
+    [h[14], h[41]] = [1, 2];
+    h.writeUInt16LE(200, 16);
+    const reply = JSON.stringify({ server_addr: "192.0.2.5", timestamp: 0, saddrs: ["192.0.2.3"] });
+    sent[0]!.socket.emit("message", wrapRtcPacket(rtcPacket(h, 2, Buffer.from(reply))));
+    expect(sent[1]).toMatchObject({ host: "192.0.2.5", kind: 1 });
+    expect(sent[1]!.socket).not.toBe(sent[0]!.socket);
+    client.call(6);
+    expect(sent[2]).toMatchObject({ host: "192.0.2.3", kind: 2 });
+    expect(tokens.at(-1)!.servers!.map((s) => `${s.type}${s.protocol} ${s.ip} ${s.avgRtt}`)).toEqual([
+      "10 192.0.2.3 0",
+      "11 192.0.2.3 0",
+      "10 192.0.2.5 0",
+      "11 192.0.2.5 0",
+      "00 192.0.2.1 40",
+      "00 192.0.2.9 0",
+      "11 192.0.2.7 0",
+      "10 192.0.2.7 0",
+    ]);
+    expect(tokens.at(-1)).toMatchObject(expired);
+  });
+
+  it("keeps 8 of a type and protocol: a 9th drops the last of that type with the highest mean rtt", async () => {
+    const cached = [30, 0, 30, 10, 0, 0, 0, 0].map((rtt, i) => server(1, `192.0.2.${10 + i}`, 0, rtt));
+    client = new RtcSignalClient({
+      sn: SN,
+      did: DID,
+      lic: LIC,
+      host: "192.0.2.9",
+      token: { ...expired, servers: cached },
+    });
+    const token = new Promise<RtcToken>((r) => client.once("token", r));
+    await client.start();
+    const ips = (await token).servers!.map((s) => s.ip);
+    expect(ips.slice(0, 3)).toEqual(["192.0.2.9", "192.0.2.7", "192.0.2.7"]);
+    expect(ips.filter((ip) => ip.endsWith(".10") || ip.endsWith(".12"))).toEqual(["192.0.2.10"]);
   });
 });

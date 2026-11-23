@@ -1416,9 +1416,10 @@ export class EufyMega extends EventEmitter {
     if (!target || !station || !(level > 1 || (level === 1 && (!list || (send && this.rtcSubSend(sn, list, send))))))
       return undefined;
     const text = (v: unknown) => (typeof v === "string" && v ? v : undefined);
-    const host = (Array.isArray(raw.signaling_servers) ? raw.signaling_servers : [])
-      .map((s) => /^(?:https:\/\/)?([^/]*)/.exec(String(s))?.[1] ?? "")
-      .find((h) => /^\d{1,3}(\.\d{1,3}){3}$/.test(h));
+    const hosts = (Array.isArray(raw.signaling_servers) ? raw.signaling_servers : []).map(
+      (s) => /^(?:https:\/\/)?([^/]*)/.exec(String(s))?.[1] ?? "",
+    );
+    const host = hosts.find((h) => /^\d{1,3}(\.\d{1,3}){3}$/.test(h));
     const did = text(raw.p2p_did);
     const lic = text(raw.p2p_license);
     if (!host || !did || !lic) return undefined;
@@ -1429,6 +1430,7 @@ export class EufyMega extends EventEmitter {
       did,
       lic,
       host,
+      domain: hosts.find((h) => /^([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(:\d+)?$/.test(h)),
       version: Number(String(raw.main_sw_version ?? "").replace(/\./g, "")) || 0,
       sdkVersion: text(raw.webrtc_sdk_version),
     };
