@@ -397,7 +397,13 @@ export function priv1(
     agent.addRemoteCandidate(line);
   };
   const onAck = (uuid: string, num: number) => void (mine(uuid) && acked.add(num));
-  signal.on("trying", onTrying).on("answer", onAnswer).on("fileCandidate", onCandidate).on("fileCandidateAck", onAck);
+  const onHangup = (uuid: string) => mine(uuid) && channel.close();
+  signal
+    .on("trying", onTrying)
+    .on("answer", onAnswer)
+    .on("fileCandidate", onCandidate)
+    .on("fileCandidateAck", onAck)
+    .on("hangup", onHangup);
   agent.on("candidate", (line) => {
     lines.push(line);
     const slot = Number(/^a=candidate:(\d+)/.exec(line)?.[1]) - 1;
@@ -429,7 +435,8 @@ export function priv1(
       .off("trying", onTrying)
       .off("answer", onAnswer)
       .off("fileCandidate", onCandidate)
-      .off("fileCandidateAck", onAck);
+      .off("fileCandidateAck", onAck)
+      .off("hangup", onHangup);
     agent.close();
     signal.hangup(call.uuid);
   });

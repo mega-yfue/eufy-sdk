@@ -373,9 +373,12 @@ export function pmIce(signal: RtcSignalClient, call: { uuid: string } & RtcCallS
   const onCandidate = (uuid: string, line: string) => {
     if (uuid === call.uuid) agent.addRemoteCandidate(line);
   };
-  signal.on("trying", onTrying).on("sdp", onSdp).on("candidate", onCandidate);
+  const onHangup = (uuid: string) => uuid === call.uuid && agent.close();
+  signal.on("trying", onTrying).on("sdp", onSdp).on("candidate", onCandidate).on("hangup", onHangup);
   agent.on("candidate", (line) => signal.info(call.uuid, { candidate: line }, 1));
   agent.once("connected", () => signal.connected(call.uuid));
-  agent.once("close", () => signal.off("trying", onTrying).off("sdp", onSdp).off("candidate", onCandidate));
+  agent.once("close", () =>
+    signal.off("trying", onTrying).off("sdp", onSdp).off("candidate", onCandidate).off("hangup", onHangup),
+  );
   return agent;
 }
