@@ -926,6 +926,57 @@ describe("the regenerated data's forms", () => {
     expect((cmd as { data: object }).data).not.toHaveProperty("polygens");
   });
 
+  it("writes an IPC zone as the lens's ZoneInfoIPC: active pots 4- or 6-point, privacy pots all (6497, 6477)", () => {
+    const pots = [
+      {
+        points: [
+          { x: 0.1, y: 0.2 },
+          { x: 0.6, y: 0.15 },
+          { x: 0.7, y: 0.8 },
+          { x: 0.05, y: 0.75 },
+        ],
+      },
+      {
+        points: [
+          { x: 0.3, y: 0.3 },
+          { x: 0.4, y: 0.3 },
+          { x: 0.4, y: 0.4 },
+        ],
+      },
+    ];
+    const [rect, tri] = [
+      {
+        points: [
+          { x: 101, y: 201 },
+          { x: 601, y: 151 },
+          { x: 701, y: 801 },
+          { x: 51, y: 751 },
+        ],
+      },
+      {
+        points: [
+          { x: 301, y: 301 },
+          { x: 401, y: 301 },
+          { x: 401, y: 401 },
+        ],
+      },
+    ];
+    const sent = (model: string, identifier: string, zone: object) =>
+      thingWrite(identifier, JSON.stringify(zone), ctx(model));
+    expect(sent("T8170", "aic_activityzone_config", { index: 2, sensor_id: 1, pots })).toMatchObject({
+      cmd: 6497,
+      payload: {
+        originSubCmd: 6201,
+        is_preset_position: 1,
+        list: [{ sensor_id: 1, posZoneList: [{ index: 2, activezone: { polygens: [rect] } }] }],
+      },
+    });
+    expect(sent("T8217", "set_privacy_zone", { sensor_id: 0, pots })).toMatchObject({
+      cmd: 6477,
+      payload: { list: [{ sensor_id: 0, privacyzone: { polygens: [rect, tri] } }] },
+    });
+  });
+
   it("reads the response-timeout schedule as the bundle re-stringifies it, a looping one unwrapped", () => {
     const read = (o: unknown) =>
       thingRead("device_response_timeout_schedule", ctx("T8214"), (p) =>

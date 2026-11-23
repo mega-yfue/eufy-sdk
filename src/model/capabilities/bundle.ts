@@ -1141,6 +1141,37 @@ const TRANSFORMS: Record<string, (v: unknown, input: Row, param?: Param, td?: Td
       return undefined;
     }
   },
+  /**
+   * `asActivityZonePot`'s `ZoneInfoIPC.addPot`: the pots on the description's geometry, 4- or 6-point of the first's
+   * length, a levelled one `{level, label, points, isSaved: 1}`; nothing sent where the bundle throws.
+   */
+  ipcActive: (v, _, __, td = VIDEO) => {
+    try {
+      const out: { points: Point[]; [k: string]: unknown }[] = [];
+      for (const { points, level, label } of v as { points: Row[]; level?: unknown; label?: unknown }[]) {
+        const ps = points.map(devicePot(td.normalized === 1, td));
+        if (!(ps.length === 4 || ps.length === 6) || (out.length && out[0]!.points.length !== ps.length)) continue;
+        out.push(
+          level
+            ? { level, label: label ?? null, points: ps, isSaved: 1 }
+            : { points: ps, ...(level != null && { level }), ...(label != null && { label }) },
+        );
+      }
+      return { polygens: out };
+    } catch {
+      return undefined;
+    }
+  },
+  /** `asPrivacyZonePot`, sensor 0: every pot on the description's geometry; nothing sent where the bundle throws. */
+  ipcPrivacy: (v, _, __, td = VIDEO) => {
+    try {
+      return {
+        polygens: (v as { points: Row[] }[]).map((p) => ({ points: p.points.map(devicePot(td.normalized === 1, td)) })),
+      };
+    } catch {
+      return undefined;
+    }
+  },
   /** `SetPrivacyZoneParser1295`. */
   privacyRect: (v, input, _, td = VIDEO) => privacyRect(v, input, td),
   /** `SetActiveZoneParserV2` v4: pixel-scaled whatever the description says. */
