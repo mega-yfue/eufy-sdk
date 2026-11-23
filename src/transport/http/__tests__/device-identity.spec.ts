@@ -1,7 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { MemorySessionStore, type PersistedSession } from "../../../core/store.js";
-import { MegaHttpClient } from "../mega-client.js";
+import { LoginStatus, MegaHttpClient } from "../mega-client.js";
 
 const storedSession = (extra: Partial<PersistedSession>): PersistedSession => ({
   userId: "u",
@@ -73,5 +73,21 @@ describe("acting account name", () => {
     expect(name({ accountName: "  Front Desk  " })).toBe("Front Desk");
     expect(name({ accountName: "   " })).toBe("someone+tag");
     expect(name({ accountName: "" })).toBe("someone+tag");
+  });
+
+  it("takes the login reply's nick_name, and keeps it with the stored session", async () => {
+    const store = new MemorySessionStore();
+    const mega = new MegaHttpClient({ email: "someone+tag@example.com", password: "x", region: "us-pr", store });
+    const internals = mega as unknown as Record<string, unknown>;
+    internals.ensureSessionKey = vi.fn(async () => {
+      internals.sessionKey = { keyIdent: "00", shareKey: "00" };
+    });
+    internals.postSigned = vi.fn(async () => ({ user_id: "u", auth_token: "t", nick_name: "Synthetic Nick" }));
+
+    await expect(mega.login()).resolves.toMatchObject({ status: LoginStatus.Ok });
+    expect(mega.accountName).toBe("Synthetic Nick");
+    expect(new MegaHttpClient({ email: "someone+tag@example.com", password: "x", store }).accountName).toBe(
+      "Synthetic Nick",
+    );
   });
 });

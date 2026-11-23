@@ -65,10 +65,8 @@ export interface MegaClientConfig {
   mediaUserAgent?: string;
   /**
    * Acting name written into the commands that carry an actor field — guard mode (`user_name`), a
-   * lock's acting username. Trimmed, and blank counts as unset: the default
-   * is the login email's local-part (the whole string when it has no `@`). Attribution only — the
-   * device stores it for its own activity record, and no captured frame shows it being validated
-   * against the account.
+   * lock's acting username. Trimmed, and blank counts as unset: the default is the account's
+   * `MegaHttpClient.accountName`. Attribution only — the device stores it for its own activity record.
    */
   accountName?: string;
   /** Persist + reuse the session (token + session key) across runs. Default: in-memory. */
@@ -353,7 +351,7 @@ export class MegaHttpClient {
    * The `gtoken` header is hashed from `accountUserId`: that is the id the gateway recomputes the header
    * from, rejecting a disagreement with `"gtoken not equal userid error"`.
    */
-  private auth_?: { userId: string; authToken: string; geoKey?: string; accountUserId?: string };
+  private auth_?: { userId: string; authToken: string; geoKey?: string; accountUserId?: string; nickName?: string };
   /** captcha_id of an in-flight challenge, held between login() and solveCaptcha(). */
   private pendingCaptchaId?: string;
   /** True while a 2FA code is outstanding: `auth_` holds only the limited pre-verify token, so the
@@ -452,6 +450,7 @@ export class MegaHttpClient {
       accountUserId: saved.accountUserId,
       authToken: saved.authToken,
       geoKey: saved.geoKey,
+      nickName: saved.nickName,
     };
     this.tokenExpiresAt = saved.tokenExpiresAt;
     this.pending2fa = false;
@@ -483,17 +482,16 @@ export class MegaHttpClient {
 
   /**
    * The name commands attribute themselves to — {@link MegaClientConfig.accountName} when the config
-   * pins one (trimmed; blank counts as unset), otherwise the logged-in account's display name, which
-   * is the login email's local-part (e.g. `someone+tag` for `someone+tag@example.com`) and falls back
-   * to the whole email if it has no `@`.
-   *
-   * The local-part is the string the app writes into the ff09 command's acting "username" field,
-   * so it is the faithful default. An override is a
-   * different LABEL for the same account, not a different identity: the session authenticates on the
-   * token and the device record's member ids, neither of which this touches.
+   * pins one, otherwise the app's own: the login reply's `nick_name`, else the login email's local-part
+   * (the whole email when it has no `@`).
    */
+  /** The login reply's raw `nick_name` (`''` kept), `undefined` when the reply had none. */
+  get nickName(): string | undefined {
+    return this.auth_?.nickName;
+  }
+
   get accountName(): string {
-    const pinned = this.cfg.accountName?.trim();
+    const pinned = this.cfg.accountName?.trim() || this.auth_?.nickName;
     if (pinned) return pinned;
     const email = this.cfg.email ?? "";
     const at = email.indexOf("@");
@@ -1463,7 +1461,7 @@ export class MegaHttpClient {
     }
     const reply = readLoginReply(res);
     if (!reply) throw new Error(`login returned no session: ${JSON.stringify(res).slice(0, 200)}`);
-    const { userId, accountUserId, authToken, geoKey } = reply;
+    const { userId, accountUserId, authToken, geoKey, nickName } = reply;
 
     if (!isVerify && reply.twoFactorPending) {
       // Keep the limited token: sendVerifyCode() AND the follow-up verify-login must both be authed
@@ -1481,7 +1479,7 @@ export class MegaHttpClient {
     this.pendingCaptchaId = undefined;
     this.pending2fa = false;
     this.reloginChallenged = false;
-    this.auth_ = { userId, accountUserId, authToken, geoKey };
+    this.auth_ = { userId, accountUserId, authToken, geoKey, nickName };
     this.tokenExpiresAt = reply.tokenExpiresAt;
     // Re-exchange WITH the auth token so the gateway binds the key-ident to the user.
     this.sessionKey = undefined;
@@ -1499,6 +1497,7 @@ export class MegaHttpClient {
       accountUserId: this.auth_.accountUserId ?? this.auth_.userId,
       authToken: this.auth_.authToken,
       geoKey: this.auth_.geoKey,
+      nickName: this.auth_.nickName,
       region: this.region,
       countryCode: this.cfg.countryCode,
       securityDomain: this.securityDomain,
