@@ -1,8 +1,8 @@
 import type { Command } from "../../core/contracts.js";
 import { asBool, enumLabels } from "../../core/util.js";
 import { setJson, setPayload, setScalar } from "./access.js";
-import { kindRoutable, method, propertiesOf, type Members, type Surface } from "./members.js";
-import type { AvailabilityContext, CapabilityModule, CommandContext, DecodedState, InboundSignal } from "./types.js";
+import { method, propertiesOf, type Members, type Surface } from "./members.js";
+import type { CapabilityModule, CommandContext, DecodedState, InboundSignal } from "./types.js";
 
 /** The state params this capability owns — its OWN vocabulary, used by no other capability. */
 export const RTSP_PARAM = {
@@ -103,17 +103,6 @@ export type RtspRecordingModeValue = (typeof RtspRecordingMode)[keyof typeof Rts
  * and the served effect on each endpoint with an RTSP `DESCRIBE`: 401 = challenged, 200 = open.
  */
 export type RtspActions = Surface<typeof RTSP_MEMBERS>;
-
-/**
- * Whether the device's transport can carry the publish switch — a plain `set-param` scalar. Gates the
- * `publish`/`withdraw` METHOD members: the generic portal-reach gate withholds the derived setter and the
- * write intents, but cannot reach a `method`, whose arbitrary signature it has no command kind to probe,
- * so the two momentary methods ask the same question explicitly. True on P2P; false behind any station
- * whose portal cannot frame a scalar (an S1 Pro or a T8N00, which take only the `1350`/`1700` envelopes).
- */
-function publishable(ctx: AvailabilityContext): boolean {
-  return kindRoutable("set-param", ctx);
-}
 
 /** The RTSP publish switch, both directions — a plain scalar on both topologies, settled on the device's answer. */
 function publishCommand(on: boolean, ctx: CommandContext): Command {
@@ -219,7 +208,6 @@ export const RTSP_MEMBERS = {
       (): Promise<void> =>
         sink.dispatch(publishCommand(true, ctx)),
     "Publish the stream.",
-    publishable,
   ),
   /** Withdraw this camera's persistent publication; consumer retries do not ask the SDK to republish it. */
   withdraw: method(
@@ -227,7 +215,6 @@ export const RTSP_MEMBERS = {
       (): Promise<void> =>
         sink.dispatch(publishCommand(false, ctx)),
     "Withdraw the stream.",
-    publishable,
   ),
 
   /**

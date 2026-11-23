@@ -11,7 +11,6 @@ import {
   bindMembers,
   hasRequiredCapabilities,
   installs,
-  kindRoutable,
   memberWrite,
   propertiesOf,
   type MemberDeps,
@@ -975,9 +974,7 @@ function memberCommand(
       );
     }
     if (!member.write || !installs(member, ctx)) continue;
-    const cmd = memberWrite(name, member, claims ? value : (aliased as boolean | number | string), ctx);
-    if (!kindRoutable(cmd.kind, ctx)) continue;
-    return cmd;
+    return memberWrite(name, member, claims ? value : (aliased as boolean | number | string), ctx);
   }
   return undefined;
 }
