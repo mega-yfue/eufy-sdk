@@ -267,6 +267,18 @@ describe("RtcCommandRouter on the native layers", () => {
     expect(JSON.parse(stop.body.toString())).toMatchObject({ cmd: 1004, mChannel: 3, payload: { channel: 3 } });
   });
 
+  it("lists a camera's lenses in the lens page's chn_list", async () => {
+    const { router, agent } = layers();
+    const consumer = await router.mediaProviderFor({ ...ROUTE, sensors: [0, 1] }).live();
+    const json = JSON.parse(sent(agent, 0).body.toString()) as { payload: Record<string, unknown> };
+    expect(json.payload.chn_list).toEqual([
+      { cameraType: 0, chn: 3, index: 0, sensor: 0 },
+      { cameraType: 0, chn: 3, index: 1, sensor: 1 },
+    ]);
+    consumer.stop();
+    router.close();
+  });
+
   it("starts a standalone T8170 with its 1700 inner 1000, the event-stream flag in byte 14, and stops with 1004", async () => {
     const { router, agent } = layers();
     const sn = "T8170P0000000000";

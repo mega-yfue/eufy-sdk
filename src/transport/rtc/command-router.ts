@@ -85,6 +85,8 @@ export interface RtcLiveRoute extends RtcRoute {
    * talkback with, without which there is no talkback.
    */
   live?: Omit<LiveFrames, "ability">;
+  /** The camera's lens ids (its param 9240 sensor list, in order) when it has any: its view is the lens page. */
+  sensors?: readonly number[];
 }
 
 export interface RtcCommandRouterDeps {
@@ -574,10 +576,11 @@ export class RtcCommandRouter {
   }
 
   /**
-   * A live frame as the app's RTC sender frames it ({@link renderFrame}), its page the live page of a camera with no
-   * sensor list (`LiveParamHelper.getLiveParams`, `Stitch_Std_1X1`, camera id `CameraFixed`): `$chnList` its one
-   * channel order `{cameraType: 0, chn, index: 0, sensor: 0}`, `$cameraType` 0; `$msgId` the station's next
-   * `getNextMsgId` (1 to 255, then 1 again), `$entryType` the view's. Header byte 14 is the station's event-stream flag for a `1700` of inner `1000`, moved on
+   * A live frame as the app's RTC sender frames it ({@link renderFrame}), its page the one `LiveParamHelper.getLiveParams`
+   * builds: `$chnList` one `{cameraType: 0, chn, index, sensor}` per lens (index 0 for lens 0, else 1) on the lens page,
+   * else the single-camera page's one `{cameraType: 0, chn, index: 0, sensor: 0}` (camera id `CameraFixed`), and
+   * `$cameraType` 0; `$msgId` the next `getNextMsgId` of the player's parent (1 to 255, then 1 again): the station, or
+   * the camera itself on a lens page (a sensor device's parent), `$entryType` the view's. Header byte 14 is the station's event-stream flag for a `1700` of inner `1000`, moved on
    * per use as `rtc_get_stream_flag` does (10 when `(flag + 5) & 0xff < 15`, else up one), else 0.
    *
    * It goes over `ANKE` or the data channel as the app's RTC sender routes it: `rtc_type` is the bundle's
@@ -593,10 +596,12 @@ export class RtcCommandRouter {
     talk = false,
   ): RtcLiveCommand {
     const sn = route.stationSn;
+    const parent = route.sensors ? route.cameraSn : sn;
     const { cmd, body, header } = renderFrame(frame, route.channel, this.accountId(route), {
-      $chnList: () => [{ cameraType: 0, chn: route.channel, index: 0, sensor: 0 }],
+      $chnList: () =>
+        (route.sensors ?? [0]).map((s) => ({ cameraType: 0, chn: route.channel, index: s === 0 ? 0 : 1, sensor: s })),
       $cameraType: () => 0,
-      $msgId: () => this.msgIds.set(sn, ((this.msgIds.get(sn) ?? 0) % 255) + 1).get(sn),
+      $msgId: () => this.msgIds.set(parent, ((this.msgIds.get(parent) ?? 0) % 255) + 1).get(parent),
       $entryType: () => entryType,
     });
     const bump = cmd === 1700 && frame.subCmd === 1000;
