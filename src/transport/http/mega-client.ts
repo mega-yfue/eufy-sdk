@@ -32,6 +32,7 @@ import { downloadMediaResource, mediaFailureError, MediaDownloadAuthenticationEr
 import { randomPhoneModel, randomUserAgent } from "./phone-model.js";
 import { normalizePushImage } from "./decodeImageV1.js";
 import { loginCredentials, readLoginReply, signedHeaders } from "./passport.js";
+import type { TuyaCommandRouter } from "../tuya/command-router.js";
 
 export type RegionShard = "eu-pr" | "us-pr";
 
@@ -277,10 +278,13 @@ type ShareInviteRef = {
   category: string;
   owner_user_id: string;
   encrypted_data?: string;
+  /** The invite's `extension`: on an `eufy_home_tuya` invitation, the owner's Tuya share id. */
+  extension?: string;
 };
 
-/** A {@link ShareInviteRef} as the app's `ConfirmMemberData` / `IgnoreMember` serialise it, without `encrypted_data`. */
-const inviteItem = ({ encrypted_data: _, ...item }: ShareInviteRef & { recevicer_user_id?: string }) => item;
+/** A {@link ShareInviteRef} as the app's `ConfirmMemberData` / `IgnoreMember` serialise it, without `encrypted_data` and `extension`. */
+const inviteItem = ({ encrypted_data: _, extension: __, ...item }: ShareInviteRef & { recevicer_user_id?: string }) =>
+  item;
 
 /** The body the app's `HouseInviteOkRequest` serialises: `transaction`, `house_id`, the call's fields, `categories`, `add_pns`. */
 function houseInvite(transaction: string, houseId: string, fields: Record<string, unknown> = {}) {
@@ -289,11 +293,6 @@ function houseInvite(transaction: string, houseId: string, fields: Record<string
 
 /** The app's `isClean`: the Home categories whose shares run on the Home host's `v1/share/active/*`. */
 const isHomeCategory = (category: string) => category === "eufy_home" || category === "eufy_home_tuya";
-
-/** `eufy_home_tuya` shares start with a Tuya-side share the app runs natively; this client does not speak it. */
-function tuyaShareRefused(category: string): never {
-  throw new Error(`sharing a ${category} device needs the Tuya-side share, which this client does not make`);
-}
 
 /** The `transaction` the app's `Transactions.c()` stamps on a request: the monotonic clock in nanoseconds. */
 const transactionStamp = () => String(process.hrtime.bigint());
@@ -407,6 +406,8 @@ export class MegaHttpClient {
   private region: RegionShard;
   /** `product_domains.eufy_security` of the last `estimate_domain` reply, `undefined` before one was seen. */
   private securityDomain?: string;
+  /** @internal The facade's Tuya session, for the Tuya-side step of `eufy_home_tuya` sharing. */
+  tuya?: TuyaCommandRouter;
   /** `product_domains.eufy_home` of the last `estimate_domain` reply, the app's Home category host. */
   private homeDomain?: string;
   private bootstrapDomain?: string;
@@ -1021,12 +1022,14 @@ export class MegaHttpClient {
   ): Promise<{ emailSent: boolean; authCode?: string }> {
     let emailSent = false;
     for (const i of invites.filter((i) => isHomeCategory(i.category))) {
-      if (i.category === "eufy_home_tuya") tuyaShareRefused(i.category);
       const user = await this.homeRequest<{ user_info?: { id?: string } }>(
         "GET",
         `v1/user/info/${encodeURIComponent(email)}`,
       );
-      if (!user?.user_info?.id) throw new Error("no eufy account holds this email");
+      const userId = user?.user_info?.id;
+      if (!userId) throw new Error("no eufy account holds this email");
+      const extension =
+        i.category === "eufy_home_tuya" ? await this.tuyaSharing().inviteShare(i.device_sn, userId) : "";
       const r = await this.post<{ email_sent?: boolean }>("devicerelation", "/app/devicerelation/device_invite", {
         email,
         nick_name: email,
@@ -1038,7 +1041,7 @@ export class MegaHttpClient {
             device_sn: i.device_sn,
             device_name: "",
             permissions: 0,
-            extension: "",
+            extension,
             subData: [{ device_sn: i.device_sn, checked: true, device_name: "" }],
           },
         ],
@@ -1127,7 +1130,7 @@ export class MegaHttpClient {
     const sealed = invites.find((i) => i.encrypted_data)?.encrypted_data;
     if (sealed) await openShareCode(sealed, authCode);
     for (const i of invites.filter((i) => isHomeCategory(i.category))) {
-      if (i.category === "eufy_home_tuya") tuyaShareRefused(i.category);
+      if (i.category === "eufy_home_tuya") await this.tuyaSharing().acceptShare(i.extension);
       await this.homeRequest("POST", "v1/share/active/accept_invitation", {
         device_id: i.device_sn,
         owner: i.owner_user_id,
@@ -1145,7 +1148,8 @@ export class MegaHttpClient {
   /**
    * Decline a received invitation, or with `asOwner` withdraw one this account sent (`ignore_invite`). The owner's
    * withdrawal sends `transaction: ""`; a decline sends a {@link transactionStamp} when an invitation carries
-   * `encrypted_data`, and no `transaction` otherwise.
+   * `encrypted_data`, and no `transaction` otherwise. A Home-category invitation is declined here too, with no
+   * Home-host or Tuya call: unlike accepting, the app declines every invitation through `ignore_invite`.
    */
   async ignoreShareInvites(
     invites: ReadonlyArray<ShareInviteRef & { recevicer_user_id?: string }>,
@@ -1212,13 +1216,21 @@ export class MegaHttpClient {
     return this.homeRequest<T>("GET", `v1/share/active/single_device_share/${encodeURIComponent(deviceSn)}`);
   }
 
-  /** Take a Home-category device away from the account `receiver` (`DELETE v1/share/active/owner_remove_share`). */
-  async removeHomeDeviceShare(deviceSn: string, receiver: string): Promise<void> {
+  /**
+   * Take a Home-category device away from the account `receiver` (`DELETE v1/share/active/owner_remove_share`),
+   * an `eufy_home_tuya` one after its Tuya-side share.
+   */
+  async removeHomeDeviceShare(deviceSn: string, receiver: string, category = "eufy_home"): Promise<void> {
+    if (category === "eufy_home_tuya") await this.tuyaSharing().removeShare(deviceSn, receiver);
     await this.homeRequest("DELETE", "v1/share/active/owner_remove_share", { device_id: deviceSn, receiver });
   }
 
-  /** Leave a Home-category device `owner` shared with this account (`DELETE v1/share/active/receiver_remove_share`). */
-  async leaveHomeDeviceShare(deviceSn: string, owner: string): Promise<void> {
+  /**
+   * Leave a Home-category device `owner` shared with this account (`DELETE v1/share/active/receiver_remove_share`),
+   * an `eufy_home_tuya` one after its Tuya-side share.
+   */
+  async leaveHomeDeviceShare(deviceSn: string, owner: string, category = "eufy_home"): Promise<void> {
+    if (category === "eufy_home_tuya") await this.tuyaSharing().leaveShare(deviceSn);
     await this.homeRequest("DELETE", "v1/share/active/receiver_remove_share", { device_id: deviceSn, owner });
   }
 
@@ -1484,6 +1496,12 @@ export class MegaHttpClient {
    */
   async securityAppPost<T = any>(path: string, body: Record<string, unknown> = {}): Promise<T> {
     return this.postSigned<T>(this.securityAppHost(), path, body, true);
+  }
+
+  /** The Tuya session an `eufy_home_tuya` share runs its Tuya-side step on, which `EufyMega` binds. */
+  private tuyaSharing(): TuyaCommandRouter {
+    if (!this.tuya) throw new Error("eufy_home_tuya sharing needs the Tuya session EufyMega binds after login");
+    return this.tuya;
   }
 
   /**

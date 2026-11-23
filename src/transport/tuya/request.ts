@@ -61,6 +61,8 @@ export interface TuyaSession {
    * login completes; it keys et=3 body encryption and reply decryption for every session call.
    */
   ecode?: string;
+  /** The logged-in user's `phoneCode` (`User.phoneCode`), read from the same reply. */
+  phoneCode?: string;
 }
 
 /**

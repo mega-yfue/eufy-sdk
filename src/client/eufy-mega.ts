@@ -485,6 +485,7 @@ export class EufyMega extends EventEmitter {
       },
     });
     this.tuya = new TuyaCommandRouter({ allowUnverified: this.opts.tuyaAllowUnverified });
+    this.mega.tuya = this.tuya;
     this.tuyaDpRouter = new TuyaDpRouter();
     this.tuyaDpRouter.setListener(this.makeTuyaDpInbound());
   }

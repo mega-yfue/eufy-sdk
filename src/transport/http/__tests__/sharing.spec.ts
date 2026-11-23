@@ -275,17 +275,45 @@ describe("MegaHttpClient sharing calls", () => {
       expect((post.mock.calls[1]![2] as { invites: unknown[] }).invites).toHaveLength(1);
     });
 
-    it("refuses an invitee the Home host does not know, and a Tuya-side share", async () => {
+    it("refuses an invitee the Home host does not know", async () => {
       const { mega, post } = home([{ res_code: 1, data: {} }]);
       await expect(
         mega.inviteShare("g@example.invalid", "G", [{ device_sn: "T2080P0", category: "eufy_home", member_type: 0 }]),
       ).rejects.toThrow(/no eufy account/);
-      await expect(
-        mega.inviteShare("g@example.invalid", "G", [
-          { device_sn: "T2080P0", category: "eufy_home_tuya", member_type: 0 },
-        ]),
-      ).rejects.toThrow(/Tuya/);
       expect(post).not.toHaveBeenCalled();
+    });
+
+    it("runs the Tuya-side step of an eufy_home_tuya share before its Home calls", async () => {
+      const user = { res_code: 1, data: encryptBody(JSON.stringify({ user_info: { id: "u-0" } }), KEY) };
+      const { mega, post, fetchMock, call } = home([user, user]);
+      const tuyaInvite = [{ device_sn: "T2080P0", category: "eufy_home_tuya", member_type: 0 }];
+      await expect(mega.inviteShare("g@example.invalid", "G", tuyaInvite)).rejects.toThrow(/Tuya session/);
+      const tuya = {
+        inviteShare: vi.fn(async () => "42"),
+        acceptShare: vi.fn(),
+        removeShare: vi.fn(),
+        leaveShare: vi.fn(),
+      };
+      mega.tuya = tuya as unknown as NonNullable<typeof mega.tuya>;
+      const before = (step: { mock: { invocationCallOrder: number[] } }, n: number) =>
+        expect(step.mock.invocationCallOrder[0]).toBeLessThan(fetchMock.mock.invocationCallOrder[n]!);
+
+      await mega.inviteShare("g@example.invalid", "G", tuyaInvite);
+      expect(tuya.inviteShare).toHaveBeenCalledWith("T2080P0", "u-0");
+      expect(lastBody(post)).toMatchObject({ invites: [{ category: "eufy_home_tuya", extension: "42" }] });
+
+      await mega.confirmShareInvites([{ ...ref, device_sn: "T2080P0", category: "eufy_home_tuya", extension: "42" }]);
+      expect(tuya.acceptShare).toHaveBeenCalledWith("42");
+      before(tuya.acceptShare, 2);
+      expect(call(2).body).toEqual({ device_id: "T2080P0", owner: "owner-0", category: "eufy_home_tuya" });
+
+      await mega.removeHomeDeviceShare("T2080P0", "m-0", "eufy_home_tuya");
+      expect(tuya.removeShare).toHaveBeenCalledWith("T2080P0", "m-0");
+      before(tuya.removeShare, 3);
+      await mega.leaveHomeDeviceShare("T2080P0", "owner-0", "eufy_home_tuya");
+      expect(tuya.leaveShare).toHaveBeenCalledWith("T2080P0");
+      before(tuya.leaveShare, 4);
+      expect(post).toHaveBeenCalledTimes(1);
     });
 
     it("accepts Home invitations on the Home host and confirms only the rest", async () => {
