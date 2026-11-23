@@ -19,7 +19,7 @@
  *
  * The station serves one live view at a time: a second camera is refused while the first one's view has consumers.
  */
-import { randomInt } from "node:crypto";
+import { createECDH, randomInt } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   LiveSnapshotUnavailableError,
@@ -45,7 +45,7 @@ import {
 import { openReadableFromConsumer } from "../p2p/readable-egress.js";
 import { SharedLiveSource, attachUnlessAborted, type Consumer } from "../p2p/shared-live-source.js";
 import { Talkback } from "../p2p/talkback.js";
-import { buildDirectBinaryBody, renderFrame, setPayloadJson } from "../p2p/write-commands.js";
+import { buildDirectBinaryBody, buildStringBody, renderFrame, setPayloadJson } from "../p2p/write-commands.js";
 import { RtcCallType } from "./call.js";
 import { cmdGcm, kcpMulti, priv1, type RtcCommandCounter, type RtcDataChannel } from "./data-channel.js";
 import { pmIce } from "./ice.js";
@@ -122,7 +122,8 @@ class StationStreamBusyError extends Error {
  * as its P2P sender: `A` `[u32 channel][u32 value][account_id → 128]` on the device channel, `B` `[u32 value]
  * [account_id → 128]` on 255, `C` that on the device channel, `I` `[u32 channel][u32 value]` on the device channel,
  * `J` `[u32 value][u32 value_sub]` on 255, `E` the JSON text (on the device channel for 1204, 1271 and 1350, else
- * 255). Every other id is framed some other way, sent nowhere, or not implemented (-103).
+ * 255), `G` the P2P string body ({@link buildStringBody}) and a fresh P-256 public key on 255. Every other id is
+ * framed some other way, sent nowhere, or not implemented (-103).
  */
 const NATIVE_GROUPS: Record<string, readonly number[]> = {
   A: [
@@ -136,16 +137,22 @@ const NATIVE_GROUPS: Record<string, readonly number[]> = {
   ],
   C: [1249, 1250, 1251, 1252, 9258],
   E: [1060, 1204, 1254, 1255, 1256, 1258, 1259, 1260, 1261, 1262, 1264, 1271, 1350, 1404],
+  G: [1025, 1132, 1215, 1216, 1217, 1414],
   I: [1013, 1202, 1205, 1206],
   J: [1026, 1164, 1201],
 };
 const nativeGroup = (id: number) => Object.keys(NATIVE_GROUPS).find((g) => NATIVE_GROUPS[g]!.includes(id));
 const JSON_ON_DEVICE_CHANNEL = [1204, 1271, 1350];
 
-/** The command kinds the data channel cannot frame as the app does: the string body carries the app's ECC block. */
-export const RTC_REFUSED_COMMAND_KINDS: ReadonlySet<Command["kind"]> = new Set<Command["kind"]>(["p2p-string"]);
-
 const u32s = (...v: number[]) => Buffer.from(new Uint32Array(v.map((x) => x >>> 0)).buffer);
+
+/**
+ * The app's `rtc_crypto_get_ecc_crypto`: a fresh P-256 key pair per command (`GenerateKeyForECC`, micro-ecc), its
+ * 64-byte public key (X ‖ Y) as 128 upper-case hex characters. ponytail: the private half, which the app keeps on the
+ * device context, is dropped: nothing the SDK sends reads it back.
+ */
+const eccPublicHex = () =>
+  Buffer.from(createECDH("prime256v1").generateKeys().subarray(1).toString("hex").toUpperCase());
 
 export class RtcCommandRouter {
   private readonly stations = new Map<string, Station>();
@@ -193,6 +200,11 @@ export class RtcCommandRouter {
         if (nativeGroup(cmd.cmd) !== "E") break;
         const body = JSON.stringify({ account_id: this.accountId(route), ...cmd.data });
         return { id: cmd.cmd, body, channel: JSON_ON_DEVICE_CHANNEL.includes(cmd.cmd) ? cmd.channel : STATION_CHANNEL };
+      }
+      case "p2p-string": {
+        if (nativeGroup(cmd.cmd) !== "G") break;
+        const body = Buffer.concat([buildStringBody(cmd.channel, cmd.value, this.accountId(route)), eccPublicHex()]);
+        return { id: cmd.cmd, body, channel: STATION_CHANNEL };
       }
       case "p2p-int-string": {
         const { cmd: id, form, value, channel } = cmd;

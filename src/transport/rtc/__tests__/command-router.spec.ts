@@ -1,8 +1,9 @@
 import { EventEmitter } from "node:events";
-import { createDecipheriv } from "node:crypto";
+import { createDecipheriv, createECDH } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RtcCallSdp } from "../call.js";
+import { buildStringBody } from "../../p2p/write-commands.js";
 import { RtcCommandRouter, type RtcLiveRoute } from "../command-router.js";
 import type { RtcCommandCounter, RtcDataChannel } from "../data-channel.js";
 import type { IceAgent } from "../ice.js";
@@ -148,6 +149,23 @@ describe("RtcCommandRouter on the native layers", () => {
     router.close();
   });
 
+  it("sends a rename as the 389-byte RTC string body: the P2P body, then a fresh P-256 public key in hex", async () => {
+    const { router, data } = layers();
+    const rename = { kind: "p2p-string", cmd: 1217, value: "Garden", channel: 3 } as const;
+    await router.dispatchCommand(ROUTE, rename);
+    await router.dispatchCommand(ROUTE, rename);
+    const [[id, body, channel], [, again]] = data.command.mock.calls as unknown as [number, Buffer, number][];
+    expect([id, channel, body.length]).toEqual([1217, 255, 389]);
+    expect(body.subarray(0, 261)).toEqual(buildStringBody(3, "Garden", "synthetic-admin"));
+    const key = body.subarray(261).toString();
+    expect(key).toMatch(/^[0-9A-F]{128}$/);
+    const peer = createECDH("prime256v1");
+    peer.generateKeys();
+    expect(() => peer.computeSecret(Buffer.from(`04${key}`, "hex"))).not.toThrow();
+    expect(again.subarray(261)).not.toEqual(body.subarray(261));
+    router.close();
+  });
+
   it("refuses what the app's RTC sender does not frame, before connecting", async () => {
     const { router, priv1 } = layers();
     for (const cmd of [
@@ -155,7 +173,7 @@ describe("RtcCommandRouter on the native layers", () => {
       { kind: "set-param", param: 1035, value: 1, channel: 3, form: "int-pair" },
       { kind: "set-json-raw", cmd: 1035, data: {}, channel: 3 },
       { kind: "p2p-int-string", cmd: 1035, value: 1, valueSub: 3, channel: 3 },
-      { kind: "p2p-string", cmd: 1217, value: "name", channel: 3 },
+      { kind: "p2p-string", cmd: 1035, value: "name", channel: 3 },
       { kind: "set-payload", cmd: 1214, payload: {}, channel: 3, counter: "bump" },
     ] as const)
       await expect(router.dispatchCommand(ROUTE, cmd)).rejects.toThrow("not framed by the app's RTC sender");
