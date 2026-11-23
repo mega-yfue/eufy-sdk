@@ -962,9 +962,10 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
 /**
  * The command writing `identifier`'s `value` (a boolean's `"1"`/`"0"`, else the value as the description
  * states it) on this device, as its bundle sends it; `undefined` where the bundle sends nothing for it.
- * `$value` is a boolean for a boolean property, a number where the value is one, else the string.
+ * `$value` is a boolean for a boolean property, a number where the value is one, else the string. `key` picks the
+ * frame where the value carries the host's own field (`$input.nick_name`): the row the bundle answered for it.
  */
-export function thingWrite(identifier: string, value: string, ctx: CommandContext): Command | undefined {
+export function thingWrite(identifier: string, value: string, ctx: CommandContext, key = value): Command | undefined {
   if (javaOverridden(identifier, ctx)) return undefined;
   // A `{paramType, param}` lock settings write (JSON): its frame is the paramType's, its marks the param's fields.
   const struct = structOf(value);
@@ -973,7 +974,7 @@ export function thingWrite(identifier: string, value: string, ctx: CommandContex
   const frame =
     Object.entries(parse(value) ?? {})
       .map(([k, v]) => memberOf(write, `*${k}=${v}`))
-      .find(Boolean) ?? frameFor(write, struct ? String(struct.paramType) : value);
+      .find(Boolean) ?? frameFor(write, struct ? String(struct.paramType) : key);
   const typed =
     struct ??
     (ctx.things?.properties[identifier]?.type === "bool"

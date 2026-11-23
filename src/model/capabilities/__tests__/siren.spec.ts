@@ -1,4 +1,4 @@
-import { SIREN, SIREN_PARAM, SIREN_CMD, SirenVolume, HubAlarmTone, type SirenActions } from "../siren.js";
+import { SIREN, SIREN_PARAM, SirenVolume, HubAlarmTone, type SirenActions } from "../siren.js";
 import { DeviceType } from "../../device-types.js";
 import { bind } from "./bind.js";
 import { parseThingsList } from "../thing-description.js";
@@ -97,44 +97,36 @@ describe("siren capability module", () => {
       expect(a.setAlarmDuration).toBeUndefined();
     });
 
-    it("test + stop are momentary triggers gated on volume plus ring-state evidence", async () => {
-      const { acts: a, sent } = sirenOf(ctx([1825, 61008]));
-      await a.test!();
-      await a.stop!();
-      expect(sent.map((c) => (c as { cmd: number }).cmd)).toEqual([SIREN_CMD.ALARM_TEST, SIREN_CMD.MANUAL_STOP]);
-      expect(sent.every((c) => (c as { kind: string }).kind === "set-payload")).toBe(true);
-    });
-
-    it("installs standalone actions from sensor codec and evidence without a siren device type or model", () => {
-      const { acts } = sirenOf({
-        channel: 16,
-        codec: "sensor",
-        deviceType: DeviceType.MOTION_SENSOR,
-        model: "T8999",
-        capabilities: new Set(["siren"]),
-        paramIds: new Set([1825, 61006]),
+    it.each([
+      // `SetAlarmTypeParser` (forTest): the test on 1826, the ringing stop on 61017 APP_CMD_DEV_SIREN_STOP_ALARM.
+      ["T90R0", 61017],
+      // The open-only parser: the test on 1826, any stop on 1871.
+      ["T8920", 1871],
+    ])("sends a %s the settings' test and ringing stop as its bundle frames them", async (model, stop) => {
+      const { acts, sent } = sirenOf({
+        ...ctx(),
+        model,
+        serial: `${model}0000000000`,
+        things: alarmThings(model, ["0"]),
       });
-
-      expect(acts.test).toBeDefined();
-      expect(acts.stop).toBeDefined();
+      await acts.test!();
+      await acts.stop!();
+      expect(sent).toEqual(
+        [1826, stop].map((cmd) => ({
+          kind: "set-payload",
+          cmd,
+          payload: { transaction: expect.any(String) },
+          channel: 16,
+          mValue3: 0,
+        })),
+      );
     });
 
-    it.each([{ paramIds: [61006] }, { paramIds: [61008] }, { paramIds: [1825] }])(
-      "installs no standalone action from partial evidence $paramIds",
-      ({ paramIds }) => {
-        const actions = sirenOf({
-          channel: 16,
-          codec: "sensor",
-          deviceType: DeviceType.SIREN_SENSOR_E20,
-          model: "T90R0",
-          capabilities: new Set(["siren"]),
-          paramIds: new Set(paramIds),
-        }).acts;
-
-        expect(actions.test).toBeUndefined();
-        expect(actions.stop).toBeUndefined();
-      },
-    );
+    it("installs no test or stop on a sensor siren whose description lists no set_alarm_type", () => {
+      const { acts } = sirenOf(ctx());
+      expect(acts.test).toBeUndefined();
+      expect(acts.stop).toBeUndefined();
+    });
 
     it("retains configured duration and volume on the volume-plus-timeout evidence path", () => {
       const actions = sirenOf({ ...ctx([1825, 61006]), things: T90R0_TIMEOUT }).acts;
@@ -254,6 +246,31 @@ describe("siren capability module", () => {
       ]);
       expect(HubAlarmTone).toEqual({ Tone1: 1, Tone2: 2 });
       await expect(siren.acts.setAlarmTone!(3)).rejects.toThrow(/alarmTone: 3 is not a valid value/);
+    });
+
+    it("previews a hub's alarm as the app's volume setting does, 2 s in the account's name; none on a HomeBase 3", async () => {
+      const hub = (model: string): CommandContext => ({
+        channel: 0,
+        codec: "station",
+        model,
+        serial: `${model}P0000000001`,
+        accountName: "someone",
+        capabilities: new Set(["siren"]),
+        paramIds: new Set(),
+        things: alarmThings(model, ["0", "3"]),
+      });
+      const { acts, sent } = sirenOf(hub("T8010"));
+      await acts.test!();
+      expect(sent).toEqual([
+        {
+          kind: "set-payload",
+          cmd: 1201,
+          payload: { time_out: 2, user_name: "someone", transaction: expect.any(String) },
+          channel: 255,
+          mValue3: 0,
+        },
+      ]);
+      expect(sirenOf(hub("T8030")).acts.test).toBeUndefined();
     });
 
     it.each([
