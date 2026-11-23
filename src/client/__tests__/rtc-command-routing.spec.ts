@@ -48,7 +48,13 @@ function fixture(model: string, props: Record<string, string> = {}, record: Reco
   };
   internals.registry.devices = [
     { sn: HUB, model, raw: { device_type: DeviceType.STATION_9000, ...record } },
-    { sn: CAMERA, model: "T8425", stationSn: HUB, channel: 3, raw: { parent_sn: HUB, device_channel: 3 } },
+    {
+      sn: CAMERA,
+      model: "T8425",
+      stationSn: HUB,
+      channel: 3,
+      raw: { parent_sn: HUB, device_channel: 3, member: { admin_user_id: "camera-admin" } },
+    },
   ] as EufyDevice[];
   const properties = Object.fromEntries(Object.entries(props).map(([k, v]) => [k, prop(k, v)]));
   vi.spyOn(internals.registry, "thingsOf").mockImplementation((sn) =>
@@ -59,10 +65,11 @@ function fixture(model: string, props: Record<string, string> = {}, record: Reco
   return { internals, rtc, p2p };
 }
 
+/** The app's RTC sender carries esiotkit's account id: the TARGET record's stated admin, not the station's. */
 const route = (attached: boolean): RtcRoute => ({
   stationSn: HUB,
   attached,
-  adminUserId: "synthetic-admin",
+  adminUserId: attached ? "camera-admin" : "synthetic-admin",
   did: "SYNTH-000000-AAAAA",
   lic: "SYNLIC",
   host: "192.0.2.7",

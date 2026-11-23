@@ -69,7 +69,7 @@ import { StoredImageCache } from "../transport/stored-image-cache.js";
 import type { PushEvent, RawPushMessage } from "../transport/push/types.js";
 import { type AvailabilityObservation, type EufyDevice, type RealtimeTransport } from "../core/types.js";
 import { Timer } from "../core/util.js";
-import { adminUserIdOf, memberAccountId } from "../core/member.js";
+import { adminUserIdOf } from "../core/member.js";
 import {
   Device,
   resolveDevice,
@@ -1269,7 +1269,7 @@ export class EufyMega extends EventEmitter {
     const target = devices.find((d) => d.sn === sn);
     const stationSn = target?.stationSn || sn;
     const station = devices.find((d) => d.sn === stationSn);
-    const raw = (station?.raw ?? {}) as Record<string, unknown> & { member?: { admin_user_id?: unknown } };
+    const raw = (station?.raw ?? {}) as Record<string, unknown>;
     const deviceType = typeof raw.device_type === "number" ? raw.device_type : undefined;
     return { target, station, stationSn, raw, deviceType };
   }
@@ -1386,7 +1386,7 @@ export class EufyMega extends EventEmitter {
    * station's description reads `is_connect_webrtc` 2, or 1 (`true`) on one listing no
    * `is_connect_webrtc_sub_device_list`, and the station's record carries what the app's `WebrtcInterceptor` refuses
    * a request without: `p2p_did`, `p2p_license` and an IPv4 `signaling_servers` entry. `undefined` otherwise. The
-   * account id is the station's {@link memberAccountId}.
+   * account id is esiotkit's `p2pRequest` one, which the app's RTC sender carries too: the target's stated admin.
    *
    * A station at 1 with a sub-device list (a T8030 or T8025) keeps its P2P connection, so it has no route without
    * `send`; with a child model in the list, `send` (the command id, its inner id, its header channel) goes as the
@@ -1420,7 +1420,7 @@ export class EufyMega extends EventEmitter {
     return {
       stationSn,
       attached: stationSn !== sn,
-      adminUserId: memberAccountId(raw, this.mega.auth?.userId),
+      adminUserId: adminUserIdOf(target.raw),
       did,
       lic,
       host,
