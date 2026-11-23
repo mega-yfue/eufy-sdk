@@ -2595,7 +2595,7 @@ export class EufyMega extends EventEmitter {
       things: rec.things,
       capabilities: new Set(resolved.capabilities),
       // Member identity for ff09-* command devices (see core/contracts Ff09Identity).
-      adminUserId: memberAccountId(raw, this.mega.auth?.userId) || undefined,
+      adminUserId: typeof member.admin_user_id === "string" ? member.admin_user_id : undefined,
       shortUserId: typeof member.short_user_id === "string" ? member.short_user_id : undefined,
       accountName: this.mega.accountName || undefined,
       nickName: this.mega.nickName,

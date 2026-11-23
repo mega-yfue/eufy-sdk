@@ -323,8 +323,8 @@ export interface CommandContext extends AvailabilityContext {
    */
   capabilities?: ReadonlySet<Capability>;
   /**
-   * The lock owner's account id — the identity a lock command is authenticated against: the record's
-   * `memberAccountId`, as `AnkerAccountManager.e` gives it. Absent signed out.
+   * The lock owner's account id — the record's `member.admin_user_id` as stated, which the app quotes in every lock
+   * command it builds (`OnOffRequestPayload.userId`, the bundle's `user_id`). Absent when the record states none.
    */
   adminUserId?: string;
   /** The acting member's short id (`member.short_user_id`, hex, e.g. `"0003"`) — the lock cmd `A5` field. */
