@@ -1959,32 +1959,27 @@ export class P2PCommandRouter {
   /**
    * **`doorlock-pass-through-actuate` intent** — `CMD_DOORLOCK_DATA_PASS_THROUGH` inside the
    * `CMD_SET_PAYLOAD` envelope, `mValue3=0`, on the lock's channel of the station it is paired to, its
-   * `payload` the sealed blob from {@link buildDoorlockPassThrough} keyed to that station and its owner's
-   * member record. Sent once: the blob carries its own sequence number, the clock in seconds + 1 as the app
-   * sends it. The key is the station owner's, so it reads the station's member record rather than the lock's
-   * `accountId` from `resolveSession`. Its `short_user_id` is hex, as on the `ff09` path, and anything
-   * but four hex digits throws rather than writing the wrong user. The name is the intent's account name, the app's
-   * `AccountDelegate.i()`. Sealed by the session like every command.
+   * `payload` the sealed blob from {@link buildDoorlockPassThrough} keyed to that station and the
+   * lock's member, as the app's `ESLStationP2PService.r` does. Sent once: the blob carries its own sequence number,
+   * the clock in seconds + 1 as the app sends it. The key's admin id and the TLV's short user id are the lock's
+   * member (`ESLStationAesManager.a(AnkerAccountManager.e(lockSn), stationSn)`, `OnOffRequestPayload.shortUserId`),
+   * which the intent carries; only the envelope's account id is the station's (`AccountDelegate.m(stationSn)`). The
+   * `short_user_id` is hex, as on the `ff09` path, and anything but four hex digits throws rather than writing the
+   * wrong user. The name is the intent's account name, the app's `AccountDelegate.i()`. Sealed by the session like
+   * every command.
    */
   private async sendDoorlockPassThrough(sn: string, cmd: Ff09Identity): Promise<void> {
     const resolved = await this.resolveSession(sn);
     const { parentSn, channel } = resolved;
-    const member = ((this.recordFor(parentSn)?.raw as Record<string, unknown> | undefined)?.member ?? {}) as Record<
-      string,
-      unknown
-    >;
-    const adminUserId = typeof member.admin_user_id === "string" ? member.admin_user_id : cmd.adminUserId;
-    const shortUserIdHex = String(member.short_user_id ?? cmd.shortUserId);
-    if (!/^[0-9a-fA-F]{4}$/.test(shortUserIdHex)) {
+    if (!/^[0-9a-fA-F]{4}$/.test(cmd.shortUserId)) {
       throw new Error(
-        `door-lock pass-through: ${parentSn} has no 4-digit hex short_user_id for ${sn}, got ${JSON.stringify(shortUserIdHex)}`,
+        `door-lock pass-through: ${sn} has no 4-digit hex short_user_id, got ${JSON.stringify(cmd.shortUserId)}`,
       );
     }
-    const shortUserId = Number.parseInt(shortUserIdHex, 16);
     const blob = buildDoorlockPassThrough({
       engage: cmd.engage,
-      adminUserId,
-      shortUserId,
+      adminUserId: cmd.adminUserId,
+      shortUserId: Number.parseInt(cmd.shortUserId, 16),
       nickname: cmd.username,
       stationSn: parentSn,
       seqNum: Math.trunc(Date.now() / 1000) + 1,
@@ -1994,7 +1989,7 @@ export class P2PCommandRouter {
     );
     await this.sendSetPayloadEnvelope(sn, CommandType.CMD_DOORLOCK_DATA_PASS_THROUGH, { payload: blob }, channel, 0, {
       ...resolved,
-      accountId: adminUserId,
+      accountId: (this.recordFor(parentSn)?.raw as any)?.member?.admin_user_id || this.deps.mega.auth?.userId || "",
     });
   }
 
