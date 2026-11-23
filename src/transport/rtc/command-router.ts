@@ -574,9 +574,10 @@ export class RtcCommandRouter {
   }
 
   /**
-   * A live frame as the app's RTC sender frames it ({@link renderFrame}): `$mChannel` the camera's channel (the
-   * player's single-camera page, page index -1), `$msgId` the station's next `getNextMsgId` (1 to 255, then 1 again),
-   * `$entryType` the view's. Header byte 14 is the station's event-stream flag for a `1700` of inner `1000`, moved on
+   * A live frame as the app's RTC sender frames it ({@link renderFrame}), its page the live page of a camera with no
+   * sensor list (`LiveParamHelper.getLiveParams`, `Stitch_Std_1X1`, camera id `CameraFixed`): `$chnList` its one
+   * channel order `{cameraType: 0, chn, index: 0, sensor: 0}`, `$cameraType` 0; `$msgId` the station's next
+   * `getNextMsgId` (1 to 255, then 1 again), `$entryType` the view's. Header byte 14 is the station's event-stream flag for a `1700` of inner `1000`, moved on
    * per use as `rtc_get_stream_flag` does (10 when `(flag + 5) & 0xff < 15`, else up one), else 0.
    *
    * It goes over `ANKE` or the data channel as the app's RTC sender routes it: `rtc_type` is the bundle's
@@ -593,7 +594,8 @@ export class RtcCommandRouter {
   ): RtcLiveCommand {
     const sn = route.stationSn;
     const { cmd, body, header } = renderFrame(frame, route.channel, this.accountId(route), {
-      $mChannel: () => route.channel,
+      $chnList: () => [{ cameraType: 0, chn: route.channel, index: 0, sensor: 0 }],
+      $cameraType: () => 0,
       $msgId: () => this.msgIds.set(sn, ((this.msgIds.get(sn) ?? 0) % 255) + 1).get(sn),
       $entryType: () => entryType,
     });
