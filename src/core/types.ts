@@ -63,6 +63,13 @@ export interface EufyDevice {
   /** Present (and non-empty) for P2P devices. */
   p2pDid?: string;
   /**
+   * This account's role on the device, its record's `member.member_type`, the one field the app's `isSuperAdmin()`
+   * (2), `isAdmin()` (1) and `isGuest()` (0) test; 4 is a keypad entry-only user. 2 is the owner's own account. A
+   * guest cannot change the security mode, re-share, or open some camera settings; an admin can. Absent when the
+   * record names no member.
+   */
+  memberType?: number;
+  /**
    * Device state data points (param_type → param_value), exactly as the cloud record carries them.
    * Raw and unnamed: the capability surface resolves these into named properties. `Device.inspect`
    * labels them for troubleshooting.

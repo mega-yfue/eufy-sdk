@@ -11,7 +11,8 @@
  *
  * Bodies are AES-128-CBC(shareKey) base64; x-signature = HMAC over ts+once+encBody.
  */
-import { createHash } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, pbkdf2, randomBytes, randomInt } from "node:crypto";
+import { promisify } from "node:util";
 import {
   type SessionEntry,
   EUFYLIFE_LOCAL_KEY_HEX,
@@ -264,6 +265,66 @@ const CONTENDED_SESSION_HINT =
   "the token was rejected again soon after it was last replaced; one possible cause is another client signed " +
   "in with the same account and device identity, since the cloud holds about one session per pair and each " +
   "login ends the other's (where that is another SDK install, give each its own openudid)";
+
+/**
+ * A device-share invitation as `confirm_invite`/`ignore_invite` carry it, filled from a received invite: its `id`,
+ * `device_sn`, `sub_sns`, `category` and owner `user_id`. `encrypted_data` is the invite's own, never sent back.
+ */
+type ShareInviteRef = {
+  invite_id: number;
+  device_sn: string;
+  sub_sns: string;
+  category: string;
+  owner_user_id: string;
+  encrypted_data?: string;
+};
+
+/** A {@link ShareInviteRef} as the app's `ConfirmMemberData` / `IgnoreMember` serialise it, without `encrypted_data`. */
+const inviteItem = ({ encrypted_data: _, ...item }: ShareInviteRef & { recevicer_user_id?: string }) => item;
+
+/** The body the app's `HouseInviteOkRequest` serialises: `transaction`, `house_id`, the call's fields, `categories`, `add_pns`. */
+function houseInvite(transaction: string, houseId: string, fields: Record<string, unknown> = {}) {
+  return { transaction, house_id: houseId, ...fields, categories: [], add_pns: [] };
+}
+
+/** The `transaction` the app's `Transactions.c()` stamps on a request: the monotonic clock in nanoseconds. */
+const transactionStamp = () => String(process.hrtime.bigint());
+
+const pbkdf2Async = promisify(pbkdf2);
+
+/**
+ * A share auth code and the `encrypted_data` it seals, as the app's `AuthCodeCrypto.encrypt` makes them: a 6-digit
+ * code drawn from 100000..999999, PBKDF2-HMAC-SHA256 (100000 rounds, 16-byte salt) to an AES-256-GCM key, and
+ * base64 of salt | 12-byte nonce | ciphertext | 16-byte tag over `plain`.
+ */
+async function sealShareCode(plain: string): Promise<{ code: string; encrypted: string }> {
+  const code = String(randomInt(100000, 1000000));
+  const salt = randomBytes(16);
+  const nonce = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", await pbkdf2Async(code, salt, 100000, 32, "sha256"), nonce);
+  const sealed = Buffer.concat([salt, nonce, cipher.update(plain, "utf8"), cipher.final(), cipher.getAuthTag()]);
+  return { code, encrypted: sealed.toString("base64") };
+}
+
+/**
+ * Refuse unless `code` opens `encrypted` (`AuthCodeCrypto.decrypt` yields text), the only check the app makes
+ * before it accepts an invitation that carries `encrypted_data`. Nothing reaches the cloud on a refusal.
+ */
+async function openShareCode(encrypted: string, code: string | undefined): Promise<void> {
+  const raw = Buffer.from(encrypted, "base64");
+  try {
+    const decipher = createDecipheriv(
+      "aes-256-gcm",
+      await pbkdf2Async(code ?? "", raw.subarray(0, 16), 100000, 32, "sha256"),
+      raw.subarray(16, 28),
+    );
+    decipher.setAuthTag(raw.subarray(-16));
+    if (Buffer.concat([decipher.update(raw.subarray(28, -16)), decipher.final()]).length) return;
+  } catch {
+    /* wrong code or malformed data */
+  }
+  throw new Error("the share code does not open this invitation");
+}
 
 /**
  * Whether a rejection's CODE or WORDING says the token is finished, rather than that this request was refused
@@ -919,6 +980,245 @@ export class MegaHttpClient {
       { attribute: 7, house_id: "" },
       { category: "eufy_home" },
     );
+  }
+
+  /**
+   * Share devices with another eufy account by email, as the app's family module sends it
+   * (`app/devicerelation/device_invite`, `transaction: ""`). Each invite names a device and the role it grants:
+   * `member_type` 0 guest, 1 admin (the app forces 1 on `eufy_pet`). `permissions` goes out 0, as every 6.1.32
+   * invite does. Only devices this account administers (`memberType` 1 or 2) can be shared.
+   *
+   * When any invite is `eufy_security`, the app seals a fresh 6-digit share code into every invite's
+   * `encrypted_data` (`email=…&type=DEVICE&deviceSn=<first serial>&ts=…`); the invitee must enter that code
+   * before accepting. Answers whether the cloud mailed the invitee, and that code when one was sealed.
+   */
+  async inviteShare(
+    email: string,
+    nickName: string,
+    invites: ReadonlyArray<{
+      device_sn: string;
+      category: string;
+      member_type: number;
+      device_name?: string;
+      sub_sns?: string;
+    }>,
+  ): Promise<{ emailSent: boolean; authCode?: string }> {
+    const sealed = invites.some((i) => i.category === "eufy_security")
+      ? await sealShareCode(`email=${email}&type=DEVICE&deviceSn=${invites[0]?.device_sn ?? ""}&ts=${Date.now()}`)
+      : undefined;
+    const body = invites.map((i) => ({
+      permissions: 0,
+      encrypted_data: sealed?.encrypted ?? "",
+      sub_sns: "",
+      ...i,
+      member_type: i.category === "eufy_pet" ? 1 : i.member_type,
+    }));
+    const r = await this.post<{ email_sent?: boolean }>("devicerelation", "/app/devicerelation/device_invite", {
+      transaction: "",
+      email,
+      nick_name: nickName,
+      invites: body,
+    });
+    return { emailSent: !!r?.email_sent, ...(sealed && { authCode: sealed.code }) };
+  }
+
+  /**
+   * Whether the invitee's newest eufy app predates share codes, as the app asks before sealing one
+   * (`passport/get_latest_app_version_by_email`): its `app_version`, else `os_app_version_map.android`, else
+   * `.ios`, read as `major minor patch` digits joined (`v6.1.32_x` → 6132) and outdated below 6030. No answer
+   * within 2 s, a failed call or an unreadable version count as current.
+   */
+  async inviteeAppOutdated(email: string): Promise<boolean> {
+    type V = { app_version?: string; os_app_version_map?: { android?: string; ios?: string } };
+    const parse = (v = "") => {
+      const digits = v
+        .split("_")[0]!
+        .replace(/^[vV]+/, "")
+        .split(".")
+        .slice(0, 3)
+        .join("");
+      return /^\d+$/.test(digits) ? Number(digits) : undefined;
+    };
+    const ask = this.post<V>("passport", "/passport/get_latest_app_version_by_email", { email }).catch(() => undefined);
+    const d = await Promise.race([ask, new Promise<undefined>((r) => setTimeout(() => r(undefined), 2000).unref())]);
+    const code = parse(d?.app_version) ?? parse(d?.os_app_version_map?.android) ?? parse(d?.os_app_version_map?.ios);
+    return code !== undefined && code < 6030;
+  }
+
+  /** The members this account shares devices with (`get_related`, `relateds`), one page of 300 as the app asks. */
+  async getShareMembers<T = unknown>(): Promise<T[]> {
+    const r = await this.post<{ relateds?: T[] }>("devicerelation", "/app/devicerelation/get_related", {
+      transaction: "",
+      num: 300,
+      page: 0,
+      orderby: "",
+      categories: [],
+      add_pns: [],
+    });
+    return r?.relateds ?? [];
+  }
+
+  /**
+   * Pending device-share invitations (`get_invites`, `invites`): the ones this account sent when `asOwner`, else the
+   * ones addressed to it. The app's `is_inviter` is the inverse of its `own` flag: 0 on the owner's screen (family
+   * module, `transaction: ""`), 1 on the invitee's (home screen, a {@link transactionStamp}).
+   */
+  async getShareInvites<T = unknown>(asOwner: boolean): Promise<T[]> {
+    const r = await this.post<{ invites?: T[] }>("devicerelation", "/app/devicerelation/get_invites", {
+      transaction: asOwner ? "" : transactionStamp(),
+      is_inviter: asOwner ? 0 : 1,
+      categories: [],
+      add_pns: [],
+    });
+    return r?.invites ?? [];
+  }
+
+  /**
+   * Accept invitations addressed to this account (`confirm_invite`). An invitation carrying `encrypted_data` is
+   * accepted, as the app does, only once `authCode` opens it, and then goes out with a {@link transactionStamp};
+   * without one the request has no `transaction`.
+   */
+  async confirmShareInvites(invites: ReadonlyArray<ShareInviteRef>, authCode?: string): Promise<void> {
+    const sealed = invites.find((i) => i.encrypted_data)?.encrypted_data;
+    if (sealed) await openShareCode(sealed, authCode);
+    await this.post("devicerelation", "/app/devicerelation/confirm_invite", {
+      ...(sealed && { transaction: transactionStamp() }),
+      invites: invites.map(inviteItem),
+    });
+  }
+
+  /**
+   * Decline a received invitation, or with `asOwner` withdraw one this account sent (`ignore_invite`). The owner's
+   * withdrawal sends `transaction: ""`; a decline sends a {@link transactionStamp} when an invitation carries
+   * `encrypted_data`, and no `transaction` otherwise.
+   */
+  async ignoreShareInvites(
+    invites: ReadonlyArray<ShareInviteRef & { recevicer_user_id?: string }>,
+    asOwner: boolean,
+  ): Promise<void> {
+    const stamp = asOwner ? "" : invites.some((i) => i.encrypted_data) ? transactionStamp() : undefined;
+    await this.post("devicerelation", "/app/devicerelation/ignore_invite", {
+      ...(stamp !== undefined && { transaction: stamp }),
+      invites: invites.map(inviteItem),
+      is_inviter: asOwner ? 0 : 1,
+    });
+  }
+
+  /**
+   * Change what a member holds (`update_share`): per device its role, or `is_delete` to take it away. The app
+   * removes a member by sending every shared device with `is_delete: true`.
+   */
+  async updateShare(
+    member: { user_id: string; nick_name: string; receive_email: string },
+    devices: ReadonlyArray<{
+      device_sn: string;
+      category: string;
+      member_type: number;
+      is_delete?: boolean;
+      sub_devices?: ReadonlyArray<{ device_sn: string; is_delete: boolean }>;
+    }>,
+  ): Promise<void> {
+    await this.post("devicerelation", "/app/devicerelation/update_share", {
+      transaction: "",
+      ...member,
+      devices: devices.map((d) => ({ permissions: 0, is_delete: false, sub_devices: [], ...d })),
+    });
+  }
+
+  /** Promote a guest on the given devices (`promote_guest`). */
+  async promoteGuest(userId: string, devices: ReadonlyArray<{ device_sn: string; category: string }>): Promise<void> {
+    await this.post("devicerelation", "/app/devicerelation/promote_guest", {
+      transaction: "",
+      device_sn: "",
+      user_id: userId,
+      promote_devices: devices,
+    });
+  }
+
+  /**
+   * Leave a device shared with this account (`clear_share`), what the app sends where an owner would unbind:
+   * `device_sn` the device's station (its own serial when it has none), `sub_sns` the device, `owner_user_id` the
+   * record's `user_id`, with a {@link transactionStamp}.
+   */
+  async clearShare(share: {
+    device_sn: string;
+    sub_sns: string;
+    category: string;
+    owner_user_id: string;
+  }): Promise<void> {
+    await this.post("devicerelation", "/app/devicerelation/clear_share", { transaction: transactionStamp(), ...share });
+  }
+
+  /**
+   * Invite an account by email into a whole home (`app/house/invite_house_member`). The app seals a fresh share
+   * code into `encrypted_data` (`email=…&type=HOUSE&houseId=…&ts=…`) on every home invitation; answers that code,
+   * which the invitee must enter before accepting.
+   */
+  async inviteHouseMember(houseId: string, email: string): Promise<string> {
+    const { code, encrypted } = await sealShareCode(`email=${email}&type=HOUSE&houseId=${houseId}&ts=${Date.now()}`);
+    await this.post("house", "/app/house/invite_house_member", {
+      transaction: transactionStamp(),
+      house_id: houseId,
+      email,
+      encrypted_data: encrypted,
+      categories: [],
+      add_pns: [],
+    });
+    return code;
+  }
+
+  /** Home invitations addressed to this account (`get_house_invite_records`, `house_invite_records`). */
+  async getHouseInvites<T = unknown>(): Promise<T[]> {
+    const r = await this.post<{ house_invite_records?: T[] }>("house", "/app/house/get_house_invite_records", {
+      transaction: `transaction_${Date.now()}`,
+      is_inviter: 1,
+    });
+    return r?.house_invite_records ?? [];
+  }
+
+  /**
+   * Accept a home invitation (`confirm_house_invited`) read off {@link getHouseInvites}. One carrying
+   * `encrypted_data` is accepted only once `authCode` opens it, as the app does.
+   */
+  async confirmHouseInvite(
+    invite: { house_id: string; id: number; encrypted_data?: string },
+    authCode?: string,
+  ): Promise<void> {
+    if (invite.encrypted_data) await openShareCode(invite.encrypted_data, authCode);
+    await this.post(
+      "house",
+      "/app/house/confirm_house_invited",
+      houseInvite(transactionStamp(), invite.house_id, { is_inviter: 1, invite_id: invite.id }),
+    );
+  }
+
+  /**
+   * Decline a home invitation (a {@link transactionStamp}), or with `asOwner` withdraw one this account sent
+   * (`transaction: "transaction_id"`, as the app's house repository sends it) (`ignore_house_invited`).
+   */
+  async ignoreHouseInvite(houseId: string, inviteId: number, asOwner: boolean): Promise<void> {
+    await this.post(
+      "house",
+      "/app/house/ignore_house_invited",
+      houseInvite(asOwner ? "transaction_id" : transactionStamp(), houseId, {
+        is_inviter: asOwner ? 0 : 1,
+        invite_id: inviteId,
+      }),
+    );
+  }
+
+  /** Remove a member from a home this account owns (`remove_house_user`). */
+  async removeHouseUser(houseId: string, userId: string): Promise<void> {
+    await this.post(
+      "house",
+      "/app/house/remove_house_user",
+      houseInvite("transaction_id", houseId, { user_id: userId }),
+    );
+  }
+
+  /** Leave a home shared with this account (`clear_share_member`). */
+  async leaveHouse(houseId: string): Promise<void> {
+    await this.post("house", "/app/house/clear_share_member", houseInvite(`transaction_${Date.now()}`, houseId));
   }
 
   /**

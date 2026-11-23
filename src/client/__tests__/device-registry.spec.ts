@@ -78,6 +78,24 @@ describe("DeviceRegistry", () => {
     });
   });
 
+  it("carries the record's member_type as memberType, absent when the record names no member", async () => {
+    const mega = fakeMega({
+      post: async (_s, path, body) =>
+        path.endsWith("get_house_list") || JSON.stringify(body) !== "{}"
+          ? {}
+          : {
+              devices: [
+                rawDevice("OWN", { member: { member_type: 2, admin_user_id: "u-0", member_user_id: "u-0" } }),
+                rawDevice("GUEST", { member: { member_type: 0, admin_user_id: "u-1", member_user_id: "u-0" } }),
+                rawDevice("BARE"),
+              ],
+            },
+    });
+    const devs = await new DeviceRegistry({ mega, onError: () => {} }).getDevices();
+    expect(Object.fromEntries(devs.map((d) => [d.sn, d.memberType]))).toEqual({ OWN: 2, GUEST: 0, BARE: undefined });
+    expect(devs.find((d) => d.sn === "BARE")).not.toHaveProperty("memberType");
+  });
+
   describe("getDevices — error resilience", () => {
     it("still queries {} when get_house_list throws, and surfaces the error via onError", async () => {
       const errors: unknown[] = [];
