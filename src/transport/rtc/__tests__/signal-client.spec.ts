@@ -13,7 +13,7 @@ import {
   wrapRtcPacket,
   type RtcPacket,
 } from "../packet.js";
-import { RtcSignalClient } from "../signal-client.js";
+import { RtcSignalClient, type RtcToken } from "../signal-client.js";
 
 const SN = "T8000P0000000000";
 const DID = "XXXXXXX-000000-XXXXX";
@@ -108,6 +108,29 @@ describe("RtcSignalClient", () => {
     expect(seen.auth).toBe(`${DID}:${LIC}`);
     expect(seen.wrapped).toEqual([true, true, true]);
     expect(client.sessionKey).toMatch(/^[0-9a-zA-Z]{16}$/);
+  });
+
+  it("hands out the login as a token, and a fresh one logs in quickly with nothing sent; a 23 h old one does not", async () => {
+    const seen = await fakeServer(false);
+    const token = new Promise<RtcToken>((r) => client.once("token", r));
+    await client.start();
+    const t = await token;
+    expect(t).toMatchObject({ aes: client.sessionKey, contactId: "c0ffee00c0ffee00", addr: "127.0.0.1" });
+    expect(Math.abs(t.authTimestamp - Date.now() / 1000)).toBeLessThan(2);
+    client.close();
+    const port = server.address().port;
+    const sent = seen.wrapped.length;
+    const quick = new RtcSignalClient({ sn: SN, did: DID, lic: LIC, host: "192.0.2.1", port, token: t });
+    const login = new Promise<string>((r) => quick.once("login", r));
+    await quick.start();
+    expect([await login, quick.sessionKey, quick.host]).toEqual(["c0ffee00c0ffee00", t.aes, "127.0.0.1"]);
+    quick.close();
+    const old = { ...t, authTimestamp: t.authTimestamp - 82_801 };
+    client = new RtcSignalClient({ sn: SN, did: DID, lic: LIC, host: "127.0.0.1", port, token: old });
+    const again = new Promise<string>((r) => client.once("login", r));
+    await client.start();
+    await again;
+    expect(seen.wrapped.length).toBe(sent + 3);
   });
 
   it("a second 401 in a row is a login failure", async () => {

@@ -15,6 +15,11 @@
  *    without a reg between is a login failure.
  * 4. 200 with body kind 6 = the NUL-terminated contact_id; header byte 44 is echoed in later regs.
  *
+ * Quick login: with a station's cached {@link RtcToken} no older than 23 h, the client starts registered on the cached
+ * server, session key and contact_id, and sends neither DISCOVER nor reg (the app's work protocol 2 path of
+ * `Webrtc_SignalInit` and `rtc_signal_network`); a re-discover flag still sends one DISCOVER. Every first 200 after
+ * a key exchange hands out a new token (`onWebrtcToken`).
+ *
  * The app's work protocol (2, header byte 15 of reg) starts no login timer: reg goes out once per settled
  * DISCOVER, and nothing resends it. A request the server leaves unanswered for 5 s is not resent either: the app's
  * timeout scan has no caller.
@@ -87,7 +92,20 @@ export interface RtcSignalOptions {
   port?: number;
   userId?: string;
   appId?: string;
+  /** The station's cached login, for a quick login. */
+  token?: RtcToken;
 }
+
+/** A station's signalling login as the app caches it: session key, contact_id, server address, UTC seconds of the 200. */
+export interface RtcToken {
+  aes: string;
+  contactId: string;
+  addr: string;
+  authTimestamp: number;
+}
+
+/** How long the app takes a cached login: `auth_timestamp` + 82800 s (`rtc_signal_set_quick_login_info`). */
+const TOKEN_TTL_S = 82_800;
 
 interface RtcCall {
   type: number;
@@ -103,8 +121,10 @@ interface RtcCall {
 }
 
 export interface RtcSignalEvents {
-  /** First 200 after a key exchange: the contact_id. */
+  /** Registered: a quick login at start, or the first 200 after a key exchange. */
   login: [contactId: string];
+  /** The first 200 after a key exchange: the login to cache. */
+  token: [token: RtcToken];
   /** A second 401 in a row. */
   failure: [];
   /** The station's first 100 (or a 200 without one): its `turn` object. */
@@ -147,6 +167,12 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
   /** Bind and start discovering. */
   async start(): Promise<void> {
     await new Promise<void>((resolve) => this.socket.bind(0, resolve));
+    const t = this.opts.token;
+    if (t?.aes && t.contactId && t.addr && t.authTimestamp + TOKEN_TTL_S >= Date.now() / 1000) {
+      [this.host, this.sessionKey, this.contactId] = [t.addr, t.aes, t.contactId];
+      this.discovered = this.registered = true;
+      return void this.emit("login", this.contactId);
+    }
     this.discover();
     this.discoverTimer = setInterval(() => this.discovered || this.discover(), DISCOVER_INTERVAL_MS);
   }
@@ -404,6 +430,8 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
       if (this.registered) return;
       this.registered = true;
       this.emit("login", this.contactId);
+      const { sessionKey: aes, contactId, host: addr } = this;
+      this.emit("token", { aes, contactId, addr, authTimestamp: Math.floor(Date.now() / 1000) });
     }
   }
 }

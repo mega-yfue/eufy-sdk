@@ -443,6 +443,7 @@ export class EufyMega extends EventEmitter {
     this.rtc = new RtcCommandRouter({
       userId: () => this.mega.auth?.userId,
       appId: this.mega.openudid,
+      tokens: { get: (sn) => this.mega.rtcToken(sn), set: (sn, t) => this.mega.saveRtcToken(sn, t) },
       logger: opts.logger,
       ffmpegPath: opts.ffmpegPath,
       onError: (e) => this.reportError(e),
