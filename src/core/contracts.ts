@@ -1048,13 +1048,15 @@ export interface MediaProvider {
   talkback?(opts?: { encoder?: AacEncoder } & SharedSourceHints): Promise<TalkbackHandle>;
   /**
    * Download one recording the camera's station stored. `recording` names it: the file name the station stores
-   * it under, without the folder or the extension. `cipherId` is the cipher the station names for it, and is not
-   * read on a station that stores its recordings in the clear. One download runs at a time per station. Rejects with
+   * it under, without the folder or the extension. `cipherId` is the cipher the station names for it, and
+   * `cipherUserId` the account its archive row states for it (`account`), without which the camera's own account
+   * is asked; neither is read on a station that stores its recordings in the clear. One download runs at a time
+   * per station. Rejects with
    * {@link RecordingDownloadError}. Optional, and absent on a camera whose station's recording download is
    * unverified.
    */
   downloadRecording?(
-    opts: { recording: string; cipherId: number; timeoutMs?: number } & AbortableCall,
+    opts: { recording: string; cipherId: number; cipherUserId?: string; timeoutMs?: number } & AbortableCall,
   ): Promise<RecordingDownload>;
   /**
    * Generic P2P request/reply query: send a `SET_PAYLOAD` sub-command and resolve with the reply
