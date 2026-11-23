@@ -899,6 +899,33 @@ describe("the regenerated data's forms", () => {
     });
   });
 
+  it("writes T8203's zone with its polygons' points flattened into points (1204)", () => {
+    const pots = [
+      {
+        points: [
+          { x: 0.1, y: 0.2 },
+          { x: 0.6, y: 0.15 },
+          { x: 0.7, y: 0.8 },
+          { x: 0.05, y: 0.75 },
+        ],
+      },
+    ];
+    const cmd = thingWrite("activityzone_config", JSON.stringify({ index: 0, pots }), ctx("T8203"));
+    expect(cmd).toMatchObject({
+      cmd: 1204,
+      data: {
+        zonecount: 1,
+        points: [
+          { x: 101, y: 201 },
+          { x: 601, y: 151 },
+          { x: 701, y: 801 },
+          { x: 51, y: 751 },
+        ],
+      },
+    });
+    expect((cmd as { data: object }).data).not.toHaveProperty("polygens");
+  });
+
   it("reads the response-timeout schedule as the bundle re-stringifies it, a looping one unwrapped", () => {
     const read = (o: unknown) =>
       thingRead("device_response_timeout_schedule", ctx("T8214"), (p) =>
