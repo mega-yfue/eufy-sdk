@@ -205,7 +205,7 @@ const TEST_WIRING = 6254;
 
 /**
  * The products whose settings bundle builds `power_charge_mode` as something other than the 1350
- * SET_PAYLOAD `{charge_mode}` on 1293 every other bundle sends (corpus 2026-11-13). `PowerChargeModeParser("v2")`
+ * SET_PAYLOAD `{charge_mode}` on 1293 every other bundle sends (corpus 2026-11-24). `PowerChargeModeParser("v2")`
  * sends 1350 {@link TEST_WIRING} with no payload whatever the value, so it sets nothing; `PowerChargeModeParser1700` sends the
  * 1700 wrapper `{enable}` on 1293; the SoloCam bundle's inline case sends that `{enable}` unless the camera
  * hangs off a HomeBase (`connectHB`). The description has no variant that tells them apart. The `{enable}`
@@ -214,9 +214,9 @@ const TEST_WIRING = 6254;
  */
 const POWER_CHARGE_BUILDER: Readonly<Partial<Record<string, "test-wiring" | "enable" | "standalone-enable">>> =
   Object.fromEntries([
-    ...["T8110", "T8110E", "T814X", "T8171", "T86P2"].map((c) => [c, "test-wiring"] as const),
+    ...["T8110", "T8110E", "T814X", "T8170", "T8171", "T86P2"].map((c) => [c, "test-wiring"] as const),
     ...["T8150", "T8151"].map((c) => [c, "enable"] as const),
-    ...["T8122", "T8123", "T8124R", "T8130", "T8131", "T8134", "T8170", "T8172", "T8B00"].map(
+    ...["T8122", "T8123", "T8124R", "T8130", "T8131", "T8134", "T8172", "T8B00"].map(
       (c) => [c, "standalone-enable"] as const,
     ),
   ]);

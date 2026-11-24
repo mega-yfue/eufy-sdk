@@ -243,7 +243,7 @@ describe("camera capability module", () => {
     });
 
     it("checks a number member published as an enum against its options too", () => {
-      const reported = ctx(0, { model: "T8150", things: DESCRIBED, paramIds: new Set([1020]) });
+      const reported = ctx(0, { model: "T8150", things: DESCRIBED, paramIds: new Set([1205]) });
       const read = (value: number) => bind<CameraActions>("camera", reported, { read: () => ({ value }) }).acts;
       expect(read(5).streamingQuality).toBeUndefined();
       expect(read(10).streamingQuality).toBe(10);
