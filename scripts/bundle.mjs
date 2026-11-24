@@ -1,10 +1,12 @@
 /**
- * Collapse the emitted `dist` JavaScript into the single ESM file `dist/index.js`.
+ * Collapse the emitted `dist` JavaScript into the single ESM file `dist/index.js`. The things catalog,
+ * its own `exports` subpath that the barrel never imports, stays apart: `dist/catalog.js` as `tsc`
+ * emitted it, loading the generated JSON as generated.
  *
- * A consumer evaluates the whole package on import — `exports` has one entry and no subpaths, so the
- * barrel is the only door — and ~200 separate module records cost far more resident memory than the
- * same code in one. Measured on Node 22 x86-64, importing the package costs +28 MB as a tree and
- * +15 MB bundled: module records, per-file source maps and compilation units collapse into one.
+ * A consumer evaluates the whole package on import — the barrel is the only door to the runtime — and
+ * ~200 separate module records cost far more resident memory than the same code in one. Measured on
+ * Node 22 x86-64, importing the package costs +28 MB as a tree and +15 MB bundled: module records,
+ * per-file source maps and compilation units collapse into one.
  *
  * Runtime dependencies stay external, so `mqtt` and `protobufjs` keep loading on first use rather
  * than being pulled into the bundle and evaluated at import.
@@ -15,11 +17,13 @@
  */
 
 import { build } from "esbuild";
-import { readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 const DIST = "dist";
 const ENTRY = join(DIST, "index.js");
+const KEEP = ["index.js", "index.js.map", "catalog.js", "catalog.js.map"];
+const CATALOG = join("model", "capabilities", "things-catalog.generated.json");
 
 const pkg = JSON.parse(readFileSync("package.json", "utf8"));
 
@@ -51,9 +55,10 @@ await build({
 // Everything tsc emitted except the bundle and its map, which the bundle now supersedes: the JSON data a
 // module imports is inlined into it too.
 for (const file of readdirSync(DIST, { recursive: true, encoding: "utf8" })) {
-  if (file === "index.js" || file === "index.js.map") continue;
+  if (KEEP.includes(file)) continue;
   if (file.endsWith(".js") || file.endsWith(".js.map") || file.endsWith(".json")) rmSync(join(DIST, file));
 }
+copyFileSync(join("src", CATALOG), join(DIST, CATALOG));
 
 const bytes = statSync(ENTRY).size;
 console.log(`bundled dist/index.js (${(bytes / 1024 / 1024).toFixed(2)} MB, external: ${external.join(", ")})`);
