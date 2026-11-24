@@ -1155,38 +1155,51 @@ test("names a shared frame by its index, and reads a quality config through its 
   vi.doUnmock("../bundle-wires.generated.json");
 });
 
-test("refuses an identifier the app handles in its own Java, write and read alike", async () => {
+test("timezone_set: written, read and reflected as the app's own code does, redirected over MQTT on T8028", async () => {
   vi.resetModules();
-  vi.doMock("../bundle-wires.generated.json", () => ({
-    default: {
-      wires: {
-        timezone_set: {
-          T0001: {
-            override: "java",
-            write: {
-              standalone: {
-                "*": {
-                  cmd: 1215,
-                  body: "groupA",
-                  channel: "$channel",
-                  payload: { value: "$value" },
-                  valueKey: "value",
-                },
-              },
-            },
-            read: { standalone: { order: "1215" } },
-          },
-        },
-      },
-    },
-  }));
-  const bundle = await import("../bundle.js");
   const index = await import("../index.js");
-  const c = ctx("T0001", { things: things({ timezone_set: ["Europe/Berlin"] }) });
-  expect(bundle.thingWrite("timezone_set", "1", c)).toBeUndefined();
-  expect(index.buildCommand("timezone_set", "1", c)).toBeUndefined();
-  expect(index.thingValue("timezone_set", c, () => "x")).toBeUndefined();
-  vi.doUnmock("../bundle-wires.generated.json");
+  const { commandReflection } = await import("../../../core/contracts.js");
+  const td = things({ timezone_set: ["0"] });
+  const berlin = "CET-1CEST,M3.5.0,M10.5.0/3|1.1375|Europe/Berlin";
+  const standalone = ctx("T8410", { things: td });
+  const cmd = index.buildCommand("timezone_set", "Europe/Berlin", standalone)!;
+  expect(cmd).toEqual({ kind: "p2p-string", cmd: 1215, value: berlin, channel: 3, stationAccount: true });
+  expect(commandReflection(cmd)).toEqual({ param: 1215, raw: "Europe/Berlin" });
+  expect(index.buildCommand("timezone_set", "Europe/Berlin", ctx("T8410", { things: td, ...attached }))).toEqual({
+    kind: "p2p-string",
+    cmd: 1215,
+    value: berlin,
+    channel: 255,
+    stationAccount: true,
+  });
+  expect(index.buildCommand("timezone_set", "Mars/Olympus", standalone)).toMatchObject({ value: "" });
+  const underCamera = { ...standalone, stationSerial: "T8214P0000000000", stationChannel: 1 };
+  expect(index.buildCommand("timezone_set", "Europe/Berlin", underCamera), "parent's channel").toMatchObject({
+    channel: 1,
+  });
+  const redirect = ctx("T8028", { things: things({ timezone_set: ["0"], timezone_set_redirect: ["0"] }) });
+  const sent = (zone: string) => {
+    const { payload, ...rest } = index.buildCommand("timezone_set", zone, redirect) as any;
+    return { ...rest, inner: JSON.parse(Buffer.from(payload.data, "base64").toString()) };
+  };
+  expect(sent("Europe/Berlin")).toEqual({
+    kind: "mqtt-json",
+    mqttCmdCode: 9,
+    cmd: 1215,
+    needAck: false,
+    timeoutS: 15,
+    inner: { cmd: 1215, payload: { timezone: berlin } },
+  });
+  expect(sent("Mars/Olympus").inner).toEqual({ cmd: 1215, payload: { timezone: "" } });
+  const read = (raw?: string) => index.thingValue("timezone_set", standalone, (p) => (p === 1215 ? raw : undefined));
+  expect(read(berlin)).toBe("Europe/Berlin");
+  expect(read("PST8PDT,M3.2.0,M11.1.0|1.1361|US/Pacific"), "first sn wins").toBe("Canada/Pacific");
+  expect(read("CET-1CEST,M3.5.0,M10.5.0/3"), "first rule wins").toBe("Africa/Ceuta");
+  expect(read("Japan")).toBe("Japan");
+  expect(read("x|Asia/Tokyo"), "last part").toBe("Asia/Tokyo");
+  expect(read(undefined)).toBeUndefined();
+  const own = index.thingValue("timezone_set", { ...standalone, deviceTimezone: berlin }, () => undefined);
+  expect(own, "the device record's zone when 1215 is unreported").toBe("Europe/Berlin");
 });
 
 describe("legacy floodlight writes the app sends in Java", () => {
