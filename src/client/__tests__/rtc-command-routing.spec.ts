@@ -65,11 +65,15 @@ function fixture(model: string, props: Record<string, string> = {}, record: Reco
   return { internals, rtc, p2p };
 }
 
-/** The app's RTC sender carries esiotkit's account id: the TARGET record's stated admin, not the station's. */
+/**
+ * The app's RTC sender carries esiotkit's account id: the TARGET record's stated admin, not the station's; a legacy
+ * request the station's member one.
+ */
 const route = (attached: boolean): RtcRoute => ({
   stationSn: HUB,
   attached,
   adminUserId: attached ? "camera-admin" : "synthetic-admin",
+  stationAccountId: "synthetic-admin",
   did: "SYNTH-000000-AAAAA",
   lic: "SYNLIC",
   host: "192.0.2.7",

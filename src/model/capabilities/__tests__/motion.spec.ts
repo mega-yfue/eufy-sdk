@@ -120,6 +120,7 @@ describe("motion capability module", () => {
     it("emits the direct-binary 1011 scalar (on=1/off=0) — the capture-verified watermark-class wire", () => {
       expect(intent("motionDetection", true, ctx([], 3))).toEqual({
         kind: "set-param",
+        stationAccount: true,
         param: MOTION_CMD.CAMERA_PIR, // 1011
         value: 1,
         channel: 3,
@@ -134,6 +135,7 @@ describe("motion capability module", () => {
       await acts.setDetection(true);
       expect(sent[0]).toMatchObject({
         kind: "set-param",
+        stationAccount: true,
         param: MOTION_CMD.CAMERA_PIR,
         value: 1,
       });
@@ -216,6 +218,7 @@ describe("motion capability module", () => {
     it("a camera reporting only 1011 keeps the 1011 direct-binary switch", () => {
       expect(intent("motionDetection", true, { ...ctx([1011], 3), model: "T8425" })).toMatchObject({
         kind: "set-param",
+        stationAccount: true,
         param: MOTION_CMD.CAMERA_PIR,
       });
     });
@@ -285,6 +288,7 @@ describe("motion capability module", () => {
       >;
       expect(cmd).toMatchObject({
         kind: "set-json-raw",
+        stationAccount: true,
         cmd: MOTION_CMD.SNOOZE_TIME, // 1271
         channel: 2,
         data: { snooze_time: 3600, chime_onoff: 0, homebase_onoff: 0, motion_notify_onoff: 1 },
@@ -296,6 +300,7 @@ describe("motion capability module", () => {
     it("0 (or omitted) → the bare captured clear/cancel shape, no extra fields", () => {
       expect(intent("snoozeTime", 0, ctx([], 2))).toEqual({
         kind: "set-json-raw",
+        stationAccount: true,
         cmd: MOTION_CMD.SNOOZE_TIME,
         channel: 2,
         data: { snooze_time: 0 },
@@ -311,7 +316,9 @@ describe("motion capability module", () => {
       const sent: any[] = [];
       const acts = bindMotion(ctx([], 2), sent);
       await acts.setSnoozeTime(0);
-      expect(sent).toEqual([{ kind: "set-json-raw", cmd: 1271, channel: 2, data: { snooze_time: 0 } }]);
+      expect(sent).toEqual([
+        { kind: "set-json-raw", stationAccount: true, cmd: 1271, channel: 2, data: { snooze_time: 0 } },
+      ]);
     });
 
     it(
@@ -405,6 +412,7 @@ describe("motion — sensor test mode", () => {
     await actions.setTestMode(false);
     expect(sent[0]).toMatchObject({
       kind: "set-param",
+      stationAccount: true,
       param: MOTION_CMD.SENSOR_EXIT_TEST_MODE,
     });
   });

@@ -173,6 +173,7 @@ describe("arming capability module", () => {
       expect(sent).toEqual([
         {
           kind: "set-json-raw",
+          stationAccount: true,
           cmd: 1255,
           channel: 255,
           data: {
@@ -244,12 +245,14 @@ describe("arming capability module", () => {
       expect(sent).toEqual([
         {
           kind: "set-json-raw",
+          stationAccount: true,
           cmd: 1255,
           channel: 0,
           data: { mode_id: 1, devices: [{ device_channel: 0, action: 0x01000021 }] },
         },
         {
           kind: "set-json-raw",
+          stationAccount: true,
           cmd: 1255,
           channel: 0,
           data: { mode_id: 3, devices: [{ device_channel: 0, action: 0x03000009 }] },
@@ -311,6 +314,7 @@ describe("arming capability module", () => {
       expect(sent).toEqual([
         {
           kind: "set-json-raw",
+          stationAccount: true,
           cmd: 1255,
           channel: 0,
           data: {

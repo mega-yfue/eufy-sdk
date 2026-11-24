@@ -193,12 +193,14 @@ describe("battery capability module", () => {
     // OFF ⇒ value 1, ON ⇒ value 0 (inverted); 132-byte station-scalar body (no channel word) on ch1.
     expect(buildCommand("recordAutoStop", false, ctx)).toEqual({
       kind: "p2p-station-scalar",
+      stationAccount: true,
       cmd: BATTERY_PARAM.RECORD_AUTO_STOP,
       value: 1,
       channel: 1,
     });
     expect(buildCommand("recordAutoStop", true, ctx)).toEqual({
       kind: "p2p-station-scalar",
+      stationAccount: true,
       cmd: BATTERY_PARAM.RECORD_AUTO_STOP,
       value: 0,
       channel: 1,
@@ -209,12 +211,14 @@ describe("battery capability module", () => {
     const ctx = evidenced({ channel: 1 });
     expect(buildCommand("recordDuration", 70, ctx)).toEqual({
       kind: "p2p-station-scalar",
+      stationAccount: true,
       cmd: BATTERY_PARAM.RECORD_DURATION,
       value: 70,
       channel: 1,
     });
     expect(buildCommand("recordInterval", 10, ctx)).toEqual({
       kind: "p2p-station-scalar",
+      stationAccount: true,
       cmd: BATTERY_PARAM.RECORD_INTERVAL,
       value: 10,
       channel: 1,
@@ -273,6 +277,7 @@ describe("battery capability module", () => {
     const ctx = evidenced({ channel: 6 });
     expect(buildCommand("workingMode", 1, ctx)).toEqual({
       kind: "set-param",
+      stationAccount: true,
       param: 1246,
       value: 1,
       channel: 6,
@@ -385,6 +390,7 @@ describe("battery capability module", () => {
     const ctx = evidenced({ channel: 6, model: "T8214" });
     expect(buildCommand("workingMode", "Optimal Battery Life", ctx)).toEqual({
       kind: "set-param",
+      stationAccount: true,
       param: 1246,
       value: 3,
       channel: 6,
@@ -426,7 +432,7 @@ describe("battery capability module", () => {
       channel: 6,
       mValue3: 0,
     });
-    expect(sent[1]).toEqual({ kind: "set-param", param: 1246, value: 0, channel: 6 });
+    expect(sent[1]).toEqual({ kind: "set-param", stationAccount: true, param: 1246, value: 0, channel: 6 });
   });
 
   it("derives `charging` from BATTERY_STATUS (2111) as value ∉ {0,2} — matching the app decode", () => {

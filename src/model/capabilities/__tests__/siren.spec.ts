@@ -242,7 +242,7 @@ describe("siren capability module", () => {
       await siren.acts.setAlarmVolume!(44);
       await siren.acts.setAlarmTone!(2);
       expect(siren.sent).toEqual([
-        { kind: "p2p-station-scalar", cmd: 1235, value: 44, channel: 255 },
+        { kind: "p2p-station-scalar", stationAccount: true, cmd: 1235, value: 44, channel: 255 },
         { kind: "set-payload", cmd: 1281, payload: { type: 2 }, channel: 0, mValue3: 0 },
       ]);
       expect(HubAlarmTone).toEqual({ Tone1: 1, Tone2: 2 });
