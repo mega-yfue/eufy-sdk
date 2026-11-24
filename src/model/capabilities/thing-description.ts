@@ -123,6 +123,63 @@ export interface ThingFacts {
   readonly stationFirmwareVersion?: string;
   readonly country?: string;
   readonly params?: Readonly<Record<number, string>>;
+  /** The device's cloud record, which the app's own lock screens read `sec_sw_version` and `ai_*_version` off. */
+  readonly record?: Readonly<Record<string, unknown>>;
+}
+
+/** Java's `a.compareTo(b) >= 0` on a non-empty `a`. */
+const atLeast = (a: string | undefined, b: string): boolean => !!a && a >= b;
+
+/**
+ * The app's remote-config version check (`device >= remote`): both stripped to digits and dots, then compared
+ * field by field as integers, a missing field 0; false for an empty one or a field that is no integer.
+ */
+function dottedAtLeast(device: unknown, remote: string): boolean {
+  const ints = (v: string) => (v ? v.split(".").map((f) => (/^\d+$/.test(f) ? Number(f) : NaN)) : [NaN]);
+  const [a, b] = [String(device ?? "").replace(/[^0-9.]/g, ""), remote].map(ints);
+  if ([...a!, ...b!].some(Number.isNaN)) return false;
+  for (let i = 0; i < Math.max(a!.length, b!.length); i++)
+    if ((a![i] ?? 0) !== (b![i] ?? 0)) return (a![i] ?? 0) > (b![i] ?? 0);
+  return true;
+}
+
+/** Stations whose lock behind them shows loitering detection whatever its firmware. */
+const LOITERING_STATIONS = /^(T8030|T9000|t9000|T90H1|t90h1|T8N00|T7000|T8040|T8025)/;
+
+/**
+ * Whether the app's own lock screens offer `identifier` on this device, the remote-config thresholds at the app's
+ * compiled defaults: the T8531's rain mode from MCU version 1.2.1.6 (`"1."` and the last character of each
+ * `ai_kernel_version`, `ai_algor_version`, `ai_rootfs_version` standalone, param 6621 behind a station); the T85V0's
+ * radar rain mode from `sec_sw_version` 0.2.4.7, and behind a station from its firmware 3.6.9.2; its rear screen
+ * settings (display mode, live view) from firmware 1.1.3.5 while param 6492 is on, below it unless its serial has `9`
+ * at index 6; the T8530's loitering detection behind a {@link LOITERING_STATIONS} station, else from firmware 1.1.4.0
+ * behind a station on 3.2.0.8h.
+ * Versions compare as Java strings but for the radar rain mode ({@link dottedAtLeast}).
+ *
+ * ponytail: the three remote-config thresholds are Firebase Remote Config keys the SDK cannot fetch, pinned at the
+ * app's defaults (the service overrides none today); fetch them through a Firebase client if it ever does.
+ */
+function lockScreenShows(identifier: string, f: ThingFacts): boolean {
+  const serial = f.serial ?? "";
+  const behind = !!f.stationSerial && f.stationSerial !== serial;
+  if (serial.startsWith("T8531") && identifier === "smart_lock_rain_mode_switch") {
+    const last = (k: string) => String(f.record?.[k] ?? "").slice(-1);
+    const own = [last("ai_kernel_version"), last("ai_algor_version"), last("ai_rootfs_version")];
+    return atLeast(behind ? f.params?.[6621] : own.some((c) => !c) ? "" : `1.${own.join(".")}`, "1.2.1.6");
+  }
+  if (serial.startsWith("T85V0") && identifier === "device_rain_mode")
+    return (
+      dottedAtLeast(f.record?.sec_sw_version, "0.2.4.7") &&
+      (!behind || dottedAtLeast(f.stationFirmwareVersion, "3.6.9.2"))
+    );
+  if (serial.startsWith("T85V0") && ["smart_lock_set_back_screen", "device_live_view_switch"].includes(identifier))
+    return atLeast(f.firmwareVersion, "1.1.3.5") ? /^(1|true)$/i.test(f.params?.[6492] ?? "") : serial[6] !== "9";
+  if (serial.startsWith("T8530") && identifier.startsWith("detection_loitering_detection_"))
+    return (
+      LOITERING_STATIONS.test(f.stationSerial ?? serial) ||
+      (atLeast(f.firmwareVersion, "1.1.4.0") && behind && atLeast(f.stationFirmwareVersion, "3.2.0.8h"))
+    );
+  return true;
 }
 
 /** The SDK version the v6 app evaluates `sdk_version` conditions against (6.1.32). */
@@ -377,8 +434,8 @@ const bare = (identifier: string): string => {
  * `identifier__vN` whose read conditions pass (a variant without read conditions is never chosen), the
  * one with the most conditions, the first listed on a tie, else the base `identifier`. The chosen
  * property's `identifier` keeps the variant's name. A property whose available conditions fail is left
- * out, as are actions and events whose available conditions fail; one whose read conditions fail stays
- * without its `defaultValue`.
+ * out, as is one the app's own lock screens do not offer ({@link lockScreenShows}), and actions and events
+ * whose available conditions fail; one whose read conditions fail stays without its `defaultValue`.
  */
 export function resolveThing(td: ThingDescription, facts: ThingFacts): ThingDescription {
   const properties: Record<string, ThingProperty> = Object.create(null);
@@ -394,7 +451,7 @@ export function resolveThing(td: ThingDescription, facts: ThingFacts): ThingDesc
       if (count > most) [chosen, most] = [key, count];
     }
     const p = td.properties[chosen];
-    if (!p || !conditionsPass(p.availableConditions, facts)) continue;
+    if (!p || !conditionsPass(p.availableConditions, facts) || !lockScreenShows(base, facts)) continue;
     // The app's `ThingProperty.get()` reads an empty payload off a property whose read conditions fail.
     const { defaultValue: _, ...unread } = p;
     properties[base] = conditionsPass(p.readConditions, facts) ? p : unread;

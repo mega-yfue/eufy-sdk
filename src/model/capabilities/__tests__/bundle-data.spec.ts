@@ -2,6 +2,7 @@ import { frameCommand, thingRead, thingWrite, type BundleFrame } from "../bundle
 import { byteCodec } from "./proto-bytes.js";
 import type { ThingDescription, ThingProperty } from "../thing-description.js";
 import type { CommandContext } from "../types.js";
+import type { Command } from "../../../core/contracts.js";
 import DATA from "../bundle-wires.generated.json" with { type: "json" };
 
 /** The identifiers a member writes from the shipped data, `bool` where the member is a switch. */
@@ -134,12 +135,15 @@ function expected(f: BundleFrame, value: unknown, ctx: CommandContext): object {
 describe("every write of the shipped data, as the member identifiers send it", () => {
   // `type: "json"` MQTT frames have their own command shape (`mqtt-json`, bundle.spec.ts).
   const sent = rows.filter((r) => !(r.frame.transport === "mqtt" && r.frame.type === "json"));
+  // The T8531 / T85V0 night vision goes as their own settings screens send it (below).
+  const bundled = sent.filter((r) => !(/^T85(31|V0)$/.test(r.model) && r.identifier.startsWith("nightvision_type")));
 
   it("covers the data", () => {
     expect(sent.length).toBeGreaterThan(5000);
     expect(rows.length - sent.length).toBe(6);
+    expect(sent.length - bundled.length).toBe(18);
   });
-  it.each(sent.map((r) => [`${r.model}${r.variant} ${r.identifier} ${r.topology} ${r.value}`, r] as const))(
+  it.each(bundled.map((r) => [`${r.model}${r.variant} ${r.identifier} ${r.topology} ${r.value}`, r] as const))(
     "%s",
     (_, r) => {
       const ctx = contextOf(r);
@@ -229,6 +233,262 @@ describe("smart_lock_rain_mode_switch on a T8531 behind a HomeBase", () => {
       [0xa3, "07"],
       [0xa4, "01"],
     ]);
+  });
+});
+
+/** A lock that is its own station, as its own settings screen sends there: over secure MQTT, its result awaited. */
+describe("a standalone T8531 / T85V0 lock setting", () => {
+  const standalone = (identifier: string, model: string, type: string) =>
+    contextOf({ identifier, type, model, variant: "", topology: "standalone" });
+  const tlv = (c: Command | undefined) =>
+    (c as Extract<Command, { kind: "mqtt-dp" }>).fields.map((f) => [f.tag, f.value.toString("hex")]);
+  const sent = { kind: "mqtt-dp", mqttCmdCode: 9, cmdCode: 52, apiCommand: 6015, lockService: true };
+
+  it("is the settings TLV in the lock's ff09 frame, a volume re-sending the do-not-disturb fields", () => {
+    const rain = thingWrite(
+      "smart_lock_rain_mode_switch",
+      "1",
+      standalone("smart_lock_rain_mode_switch", "T8531", "bool"),
+    );
+    expect(rain).toMatchObject({ ...sent, subVersion: 3, functionType: 2, encrypt: true, timeoutS: 20 });
+    expect(tlv(rain)).toEqual([
+      [0xa3, "07"],
+      [0xa4, "01"],
+    ]);
+    const volume = thingWrite(
+      "smart_lock_lock_sound_volume",
+      "3",
+      standalone("smart_lock_lock_sound_volume", "T8531", "string"),
+    );
+    expect(volume).toMatchObject({ ...sent, preserve: [0xbd, 0xbe, 0xbf] });
+    expect(tlv(volume)).toEqual([
+      [0xa3, "04"],
+      [0xa4, "03"],
+    ]);
+    const off = thingWrite(
+      "smart_lock_lock_sound_switch",
+      "false",
+      standalone("smart_lock_lock_sound_switch", "T85V0", "string"),
+    );
+    expect(tlv(off)).toEqual([
+      [0xa3, "04"],
+      [0xa4, "00"],
+    ]);
+    const params = standalone("smart_lock_set_setting_params", "T85V0", "text");
+    const write = (paramType: number, param = {}) =>
+      thingWrite("smart_lock_set_setting_params", JSON.stringify({ paramType, param }), params);
+    expect(tlv(write(8, { isPassageMode: 1, passageModeStartTime: "19:00", passageModeEndTime: "07:30" }))).toEqual([
+      [0xa3, "08"],
+      [0xa4, "01"],
+      [0xa5, "1300"],
+      [0xa6, "071e"],
+    ]);
+    expect(tlv(write(6, { isEnableLog: 1 }))).toEqual([]);
+    expect(write(13, { faceEnabled: 1, faceWakeType: 0, fingerprintEnabled: 1 })).toBeUndefined();
+  });
+
+  it("is a station JSON body as its cmd and payload", () => {
+    const ctx = standalone("device_rain_mode", "T85V0", "bool");
+    expect(thingWrite("device_rain_mode", "1", ctx)).toEqual({
+      kind: "mqtt-json",
+      mqttCmdCode: 9,
+      cmd: 2732,
+      payload: { pvm_rainny_switch: 1 },
+      needAck: false,
+      lockService: true,
+      timeoutS: 20,
+    });
+  });
+
+  it("awaits the lock's result for a notification switch, as its own settings screen", () => {
+    const ctx = standalone("smart_lock_notification_locked_switch", "T85V0", "bool");
+    expect(thingWrite("smart_lock_notification_locked_switch", "1", ctx)).toMatchObject({
+      kind: "mqtt-json",
+      cmd: 1919,
+      lockService: true,
+      timeoutS: 20,
+    });
+  });
+});
+
+/** What the T8531 / T85V0 settings screens send through the app's legacy sender, and the items they do not show. */
+describe("a T8531 / T85V0 lock's own settings screens", () => {
+  const on = (identifier: string, model: string, type: string, topology: string) =>
+    contextOf({ identifier, type, model, variant: "", topology });
+
+  it("send night vision as a 1350 body without transaction, under the station's member account", () => {
+    const legacy = { kind: "set-payload", channel: 2, mValue3: 0, stationAccount: true };
+    const write = (identifier: string, value: string, model = "T8531", topology = "hb2", type = "bool") =>
+      thingWrite(identifier, value, on(identifier, model, type, topology));
+    expect(write("smart_lock_night_vision_optimization", "1")).toEqual({
+      ...legacy,
+      cmd: 6244,
+      payload: { nightVisionEnhance: 1 },
+    });
+    expect(write("smart_lock_night_vision_open_direction", "2", "T8531", "standalone", "int")).toEqual({
+      ...legacy,
+      cmd: 6245,
+      payload: { lockOpenDirection: 2 },
+    });
+    expect(write("nightvision_type", "1", "T8531", "standalone")).toEqual({
+      ...legacy,
+      cmd: 1277,
+      payload: { night_sion: 1, channel: 2 },
+    });
+    expect(write("nightvision_type_new", "102", "T85V0", "hb3", "enum")).toEqual({
+      ...legacy,
+      cmd: 1277,
+      payload: { night_sion: 1, channel: 2 },
+    });
+  });
+
+  it("send the loitering groups through the lock's settings service on its own, else through the legacy sender", () => {
+    const groups = {
+      num: 1,
+      setting: [
+        {
+          active: 1,
+          auto_voice_id: 0,
+          auto_voice_name: "",
+          auto_voice_resp: 1,
+          end_hour: "23",
+          end_min: "59",
+          familiar_id: 0,
+          homebase_alert: 1,
+          push_notify: 1,
+          start_hour: "00",
+          start_min: "00",
+        },
+      ],
+    };
+    const write = (topology: string) =>
+      thingWrite(
+        "device_loitering_detection_response",
+        JSON.stringify(groups),
+        on("device_loitering_detection_response", "T85V0", "text", topology),
+      );
+    expect(write("standalone")).toEqual({
+      kind: "mqtt-json",
+      mqttCmdCode: 9,
+      cmd: 2715,
+      payload: groups,
+      needAck: false,
+      lockService: true,
+      timeoutS: 20,
+    });
+    expect(write("hb2")).toEqual({
+      kind: "set-payload",
+      cmd: 2715,
+      payload: groups,
+      channel: 2,
+      mValue3: 0,
+      stationAccount: true,
+    });
+  });
+
+  it("send a T8530's loitering groups as the T85V0's: settings service on its own, else the legacy sender", () => {
+    const write = (topology: string) =>
+      thingWrite(
+        "device_loitering_detection_response",
+        JSON.stringify({ num: 0, setting: [] }),
+        on("device_loitering_detection_response", "T8530", "text", topology),
+      );
+    expect(write("standalone")).toMatchObject({ kind: "mqtt-json", cmd: 2715, lockService: true });
+    expect(write("hb3")).toEqual({
+      kind: "set-payload",
+      cmd: 2715,
+      payload: { num: 0, setting: [] },
+      channel: 2,
+      mValue3: 0,
+      stationAccount: true,
+    });
+  });
+
+  it("send the T85V0 rear screen settings through the legacy sender on every topology", () => {
+    const ctx = on("device_live_view_switch", "T85V0", "bool", "standalone");
+    expect(thingWrite("device_live_view_switch", "1", ctx)).toEqual({
+      kind: "set-payload",
+      cmd: 6491,
+      payload: { auto_up: 1 },
+      channel: 2,
+      mValue3: 0,
+      stationAccount: true,
+    });
+  });
+
+  it("carry the radar rain notification bit in the notification bitmask as the app does", () => {
+    const mode = (rain: boolean, cached?: string) => {
+      const ctx = on("smart_lock_notification_locked_switch", "T85V0", "bool", "standalone");
+      const things = { properties: { ...ctx.things!.properties, ...(rain && { device_rain_mode: {} }) } };
+      const c = { ...ctx, things, paramValue: (p: number) => (p === 1919 ? cached : undefined) } as CommandContext;
+      return (thingWrite("smart_lock_notification_locked_switch", "1", c) as { payload: { mode: number } }).payload
+        .mode;
+    };
+    expect(mode(true, "3")).toBe(7);
+    expect(mode(true, "19")).toBe(23);
+    expect(mode(false, "3")).toBe(23);
+    expect(mode(true)).toBe(17);
+  });
+
+  it("send loitering detection as the dialog's 1-based index, read back as the UI value", () => {
+    const ctx = (identifier: string, model: string, topology: string) => on(identifier, model, "int", topology);
+    const range = "detection_loitering_detection_range";
+    expect(thingWrite(range, "8", ctx(range, "T85V0", "standalone"))).toEqual({
+      kind: "mqtt-json",
+      mqttCmdCode: 9,
+      cmd: 2707,
+      payload: { radar_wd_distance: 4 },
+      needAck: false,
+      lockService: true,
+      timeoutS: 20,
+    });
+    const time = "detection_loitering_detection_length";
+    expect(thingWrite(time, "45", ctx(time, "T8530", "hb3"))).toEqual({
+      kind: "set-payload",
+      cmd: 2708,
+      payload: { radar_wd_time: 5 },
+      channel: 2,
+      mValue3: 0,
+      stationAccount: true,
+    });
+    expect(thingWrite(time, "35", ctx(time, "T8530", "hb3"))).toBeUndefined();
+    const raw = Buffer.from(JSON.stringify({ radar_wd_time: 6 })).toString("base64");
+    expect(thingRead(time, ctx(time, "T85V0", "hb2"), (p) => (p === 2708 ? raw : undefined))).toBe("60");
+  });
+
+  it("send a T8530 setting over its last read, under the station's member account", () => {
+    const value = JSON.stringify({ paramType: 6505, param: { lockVolume: 2 } });
+    const command = thingWrite(
+      "smart_lock_set_setting_params",
+      value,
+      on("smart_lock_set_setting_params", "T8530", "text", "hb3"),
+    ) as Extract<Command, { kind: "set-payload" }>;
+    expect(command).toMatchObject({
+      kind: "set-payload",
+      cmd: 1958,
+      payload: { lockVolume: 2, paramType: 6505 },
+      channel: 2,
+      stationAccount: true,
+      base: { query: 1959 },
+    });
+    expect(Object.keys(command.base!.fields)).toHaveLength(33);
+  });
+
+  it("offer rain mode on the T8531 only, never on a lock whose settings are its bundle's", () => {
+    const rain = (model: string, topology: string) =>
+      thingWrite("smart_lock_rain_mode_switch", "1", on("smart_lock_rain_mode_switch", model, "bool", topology));
+    expect(rain("T8531", "standalone")).toBeDefined();
+    expect(rain("T8531", "hb2")).toBeDefined();
+    expect(rain("T85V0", "standalone")).toBeUndefined();
+    expect(rain("T85M0", "standalone")).toBeUndefined();
+    const params = (topology: string) =>
+      thingWrite(
+        "smart_lock_set_setting_params",
+        JSON.stringify({ paramType: 7, param: { isRainMode: 1 } }),
+        on("smart_lock_set_setting_params", "T85V0", "text", topology),
+      );
+    expect(params("standalone")).toBeUndefined();
+    expect(params("hb2")).toBeUndefined();
   });
 });
 

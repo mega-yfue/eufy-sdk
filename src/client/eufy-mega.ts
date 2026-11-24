@@ -80,8 +80,7 @@ import {
   type DeviceInspection,
   type RawParams,
 } from "../model/index.js";
-import { isHomeBase, isTuyaVacuum, isVideoSmartLock } from "../model/device-family.js";
-import { DeviceType } from "../model/device-types.js";
+import { isHomeBase, isTuyaVacuum, settingsOverMqttWhenStandalone } from "../model/device-family.js";
 import { cameraPowerTier } from "../model/capabilities/battery.js";
 import { liveFrames, rtcLiveFrames } from "../model/capabilities/bundle.js";
 import {
@@ -1059,8 +1058,7 @@ export class EufyMega extends EventEmitter {
   /**
    * Choose the transport stack for one command — the routing half of {@link commandSinkFor}.
    *
-   * The `ff09-*` kinds share ONE frame that rides either transport. A standalone video lock takes them over
-   * secure MQTT although it has a P2P endpoint; for any other device each stack is asked whether it drives
+   * The `ff09-*` kinds share ONE frame that rides either transport; for any other device each stack is asked whether it drives
    * it (`claimsDevice`) rather than inferring from the kind; `keyed-payload-actuate` (the classic Wi-Fi
    * lock) and `doorlock-pass-through-actuate` (the Bluetooth lock) are routed the same way, an actuation
    * claimed by the stack that drives the lock. `registry.require` throws on an unloaded serial, so a
@@ -1076,12 +1074,10 @@ export class EufyMega extends EventEmitter {
     if (
       cmd.kind === "ff09-actuate" ||
       cmd.kind === "ff09-autolock" ||
-      cmd.kind === "ff09-setting-toggle" ||
       cmd.kind === "keyed-payload-actuate" ||
       cmd.kind === "doorlock-pass-through-actuate"
     ) {
       const dev = this.registry.require(sn);
-      if (this.ff09OverMqtt(dev)) return this.mqtt.dispatchCommand(sn, cmd);
       if (P2PCommandRouter.claimsDevice(dev)) return this.p2p.dispatchCommand(sn, cmd);
       if (MqttCommandRouter.claimsDevice(dev)) return this.mqtt.dispatchCommand(sn, cmd);
       throw new Error(`no transport stack claims device ${sn} for a ${cmd.kind} command`);
@@ -1347,12 +1343,11 @@ export class EufyMega extends EventEmitter {
     return dev;
   }
 
-  /** A standalone video lock takes its `ff09` frames over secure MQTT although it has a P2P endpoint. */
+  /** A lock whose own settings say so reads its settings through its MQTT settings service when it is its own station. */
   private ff09OverMqtt(dev: EufyDevice): boolean {
-    const raw = (dev.raw ?? {}) as Record<string, any>;
-    const deviceType = raw.device_type;
-    const videoLock = isVideoSmartLock({ deviceType }) || deviceType === DeviceType.LOCK_85V0;
-    return videoLock && !homeBaseAttached(raw, dev.sn);
+    return (
+      settingsOverMqttWhenStandalone(dev.model) && !homeBaseAttached((dev.raw ?? {}) as Record<string, any>, dev.sn)
+    );
   }
 
   /**
@@ -1371,10 +1366,12 @@ export class EufyMega extends EventEmitter {
     const adminUserId = ctx.adminUserId;
     const deviceSn = ctx.serial ?? "";
     return {
-      getAutoLockState: () =>
-        ctx.hasP2p && !this.ff09OverMqtt(this.registry.require(sn))
+      getAutoLockState: () => {
+        const lockService = this.ff09OverMqtt(this.registry.require(sn));
+        return ctx.hasP2p && !lockService
           ? this.p2p.getAutoLockState(sn, { adminUserId, deviceSn })
-          : this.mqtt.getAutoLockState(sn, { adminUserId, deviceSn }),
+          : this.mqtt.getAutoLockState(sn, { adminUserId, deviceSn, ...(lockService && { lockService }) });
+      },
     };
   }
 
@@ -2388,8 +2385,7 @@ export class EufyMega extends EventEmitter {
       shortUserId: typeof member.short_user_id === "string" ? member.short_user_id : undefined,
       accountName: this.mega.accountName || undefined,
       nickName: this.mega.nickName,
-      // The same claim the command sink routes on — a capability gates its P2P-only variants (e.g.
-      // setRainMode) on this. Keyed on the P2P stack's own predicate (a usable `p2p_did` endpoint).
+      // The same claim the command sink routes on — a capability gates its P2P-only variants on this. Keyed on the P2P stack's own predicate (a usable `p2p_did` endpoint).
       hasP2p: P2PCommandRouter.claimsDevice(dev),
       // A station that isn't the device itself means HomeBase-attached (outdoor mode makes it its own).
       homeBaseAttached: rec.parentSn !== undefined,

@@ -57,7 +57,7 @@ await dev.ptz?.()?.rotate(PtzDirection.left, 1.0); // PTZ step — see the PTZ g
 await dev.light?.()?.setBrightness(50); // spotlight 1–100
 await dev.lock?.()?.lock?.();
 await dev.lock?.()?.setAutoLock?.(true, 60); // enable, 60s delay
-await dev.lock?.()?.setRainMode?.(true); // P2P video lock only — optional accessor
+await eufy.setProperty(sn, "smart_lock_rain_mode_switch", true); // a described lock setting
 const [listed] = await eufy.getDevices();
 await eufy.setHouseMode(listed!.houseId!, ArmingMode.home); // arm the stations of a house
 ```
@@ -72,14 +72,13 @@ permanent-outdoor-light line: on/off/brightness/custom colour/effect — see the
 `ptz` (rotate + left/right/up/down, zoom, and a `preset()` sub-API — see the [PTZ guide](/ptz)), plus
 `arming`, `lock` (lock/unlock/setAutoLock on both the P2P video lock and the MQTT garage door; lock/unlock
 also on the classic Wi-Fi lock over its own keyed envelope, both directions hardware-confirmed, where
-`setAutoLock` is absent — optional accessor, `?.()`; plus setRainMode on the video lock only; `unlock()` alone
+`setAutoLock` is absent — optional accessor, `?.()`; `unlock()` alone
 opens a standalone SmartDrop lid), and `siren` (volume, alarm duration, and test/stop triggers — see below).
 
 > **Unverified writes are absent, they don't guess.** A write method present on a `dev.<cap>()` object
 > means its wire is verified — so you know at compile time what's settable. Where a write isn't yet
 > verified on a mega device the method is simply absent from the object (an optional `?.()` that reads
-> back `undefined`), not present-and-throwing: a few lock settings (`setOneTouchLock` and its siblings)
-> are absent until confirmed on-device. The read getter still works in every case.
+> back `undefined`), not present-and-throwing. The read getter still works in every case.
 
 > **A value outside what a control accepts is refused, not adjusted.** Every setter states the values
 > it takes — an option set, or a numeric range — and a value outside it rejects before anything is

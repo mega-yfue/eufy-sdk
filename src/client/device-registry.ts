@@ -526,6 +526,7 @@ export class DeviceRegistry {
       stationFirmwareVersion: firmware(this.devices.find((d) => d.sn === station)),
       country: this.mega.countryCode,
       params,
+      record: dev.raw as Record<string, unknown> | undefined,
     });
   }
 

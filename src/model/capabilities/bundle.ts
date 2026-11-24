@@ -32,9 +32,9 @@ import TIMEZONES from "./timezones.json" with { type: "json" };
  * - `ble`: not sent.
  *
  * Payloads, values and bodies carry `$value`, `$channel`, `$now`, `$nowS`, `$sn` and `$station` tokens, and
- * `$param:<id>[.<path>][|<m> | &~<m>][??<fallback>]` for a field the bundle reads off the device's cached param
+ * `$param:<id>[.<path>][|<m> | &~<m>]…[??<fallback>]` for a field the bundle reads off the device's cached param
  * `id`: its raw value, the `.`-joined `path` inside its (base64) JSON where given, as an int with bits `m` set or
- * cleared, else the JSON `fallback` the bundle sends when the param is unreported; none and the write is not
+ * cleared in turn, else the JSON `fallback` the bundle sends when the param is unreported; none and the write is not
  * sent. `next` are the frames sent after it, `after` the cloud write sent once it succeeds.
  */
 export interface BundleFrame extends SessionFrame {
@@ -70,6 +70,16 @@ export interface BundleFrame extends SessionFrame {
   timeout?: number | string;
   retryCount?: number;
   needAck?: boolean;
+  /** MQTT: sent as the lock's own settings service does (no ack asked, its result code awaited, sent once). */
+  lockService?: boolean;
+  /** MQTT `ff09`: the payload's `apiCommand` where it is not 1940. */
+  apiCommand?: number;
+  /** MQTT `ff09`: the settings reply tags whose bytes follow the TLV, read off the lock first. */
+  preserve?: readonly number[];
+  /** P2P 1350: the station record's member account id in place of the admin's. */
+  stationAccount?: true;
+  /** P2P 1350: the payload over these fields of the device's answer to query `query`, each its default where it lacks one. */
+  base?: { query: number; fields: Readonly<Record<string, number | string>> };
   next?: BundleFrame[];
   after?: BundleFrame;
   /** A lock setting over its station: the `ble` the app builds the 1350 params from. */
@@ -160,6 +170,9 @@ interface BundleWires {
 
 const BUNDLE_WIRES = DATA as unknown as BundleWires;
 
+/** What {@link bundleEntry} selects: the write frames by value, the read, and whether the app's Java overrides both. */
+type BundleEntry = { write?: Record<string, BundleFrame>; read?: BundleRead; override?: string };
+
 /** The value of the `grouped` key listing `member`. */
 function memberOf<T>(grouped: Grouped<T> | undefined, member: string): T | undefined {
   return Object.entries(grouped ?? {}).find(([key]) => key.split(" ").includes(member))?.[1];
@@ -175,12 +188,14 @@ function variantOf(identifier: string, ctx: AvailabilityContext): string {
  * resolved variant, standalone unless attached (a record naming a station serial is), a T8030 station as
  * `hb3`, any other as `hb2`.
  */
-export function bundleEntry(identifier: string, ctx: AvailabilityContext) {
+export function bundleEntry(identifier: string, ctx: AvailabilityContext): BundleEntry | undefined {
   const groups = BUNDLE_WIRES.wires[identifier];
   const model = ctx.model ?? "";
   const entry = memberOf(groups, model + variantOf(identifier, ctx)) ?? memberOf(groups, model);
   const attached = ctx.homeBaseAttached ?? ctx.stationSerial !== undefined;
   const topology = !attached ? "standalone" : ctx.stationSerial?.startsWith("T8030") ? "hb3" : "hb2";
+  const java = javaEntry(identifier, model, topology === "standalone");
+  if (java) return java;
   const frame = (f: BundleFrame | number) => (typeof f === "number" ? BUNDLE_WIRES.frames?.[f] : f);
   const frames = (w: Grouped<BundleFrame | number> = {}) =>
     Object.fromEntries(Object.entries(w).flatMap(([k, f]) => (frame(f) ? [[k, frame(f)!]] : [])));
@@ -188,7 +203,211 @@ export function bundleEntry(identifier: string, ctx: AvailabilityContext) {
   const reads = Object.fromEntries(Object.entries(entry?.read ?? {}).map(([k, r]) => [k, hex ? base64Keys(r) : r]));
   const read = memberOf(reads, topology);
   const write = memberOf(entry?.write, topology);
-  return entry && { write: write && frames(write), read, override: entry.override };
+  const esl =
+    ESL_SETTINGS.test(model) || (model.startsWith("T8530") && identifier === "device_loitering_detection_response");
+  const lockService = topology === "standalone" && esl;
+  const rain = !!ctx.things?.properties.device_rain_mode;
+  const own = write
+    ? esl
+      ? Object.fromEntries(
+          Object.entries(frames(write)).flatMap(([k, f]) => {
+            const sent = shown(model, f.lock?.tlv) && eslFrame(f, lockService, rain);
+            return sent ? [[k, sent]] : [];
+          }),
+        )
+      : frames(write)
+    : lockService
+      ? ownStationWrite(identifier, frames(memberOf(entry?.write, "hb2")), model)
+      : undefined;
+  return entry || own ? { write: own, read, override: entry?.override } : undefined;
+}
+
+/**
+ * The products whose settings are the app's own lock settings screens (no `rn_settings` in its device
+ * configuration) and go over the lock's own MQTT settings service when it is its own station: T8531, T85V0.
+ */
+const ESL_SETTINGS = /^T85(31|V0)/;
+
+/**
+ * Whether the lock's settings screen offers a settings TLV's paramType: rain mode (7) only where the product has
+ * that screen item, the T8531.
+ */
+const shown = (model: string, tlv = ""): boolean => !/a30107/i.test(tlv) || model.startsWith("T8531");
+
+/** A 1350 body's payload without the bundle's `transaction`, as the app's legacy sender and lock service send it. */
+const bare = (f: BundleFrame): unknown => {
+  const { transaction: _, ...payload } = f.payload as Record<string, unknown>;
+  return payload;
+};
+
+/** A write through the lock's own MQTT settings service: no ack asked, its result awaited 20 s, sent once. */
+const LOCK_SERVICE = { transport: "mqtt", mqttCmdCode: 9, needAck: false, lockService: true, timeout: 20 } as const;
+
+/**
+ * A bundle frame as the lock's own settings screens send it: a notification switch (1919) with its bitmask's radar
+ * rain notification bit (16) as the lock reports it, on where unreported or the lock has no radar `rain` mode, through
+ * its settings service when it is its own station; night vision (1277, 6244, 6245), the loitering groups (2715) and
+ * the rear screen (6466, 6491) through the app's legacy sender, a 1350 body without `transaction` under the station's
+ * member account, the groups through the settings service as `{cmd, payload}` when it is its own station.
+ */
+function eslFrame(f: BundleFrame, standalone: boolean, rain: boolean): BundleFrame {
+  if (f.cmd === 1919 || f.subCmd === 1919) f = rainBit(f, rain);
+  if (standalone && f.cmd === 1919) return { ...f, lockService: true, timeout: 20 };
+  if (f.body !== "json1350" || ![1277, 2715, 6244, 6245, 6466, 6491].includes(f.subCmd ?? NaN)) return f;
+  if (standalone && f.subCmd === 2715) return { ...LOCK_SERVICE, type: "json", cmd: 2715, payload: bare(f) };
+  return { ...f, payload: bare(f), stationAccount: true };
+}
+
+/** A 1919 frame's `mode` with bit 16 forced on unless the lock has a radar rain mode, and on in its fallback. */
+function rainBit(f: BundleFrame, rain: boolean): BundleFrame {
+  const payload = f.payload as Record<string, unknown>;
+  if (typeof payload.mode !== "string") return f;
+  const [token, fallback] = payload.mode.split("??");
+  const mode = `${token}${rain ? "" : "|16"}${fallback === undefined ? "" : `??${Number(fallback) | 16}`}`;
+  return { ...f, payload: { ...payload, mode } };
+}
+
+/**
+ * Loitering detection as the lock's own motion screen writes it (T8530, T85V0): `{<key>: n}` under `cmd`, `n` the
+ * switch's 0/1 or the 1-based index of the UI value in its dialog (2-10 ft, 15-60 s), read back off param `cmd`'s JSON.
+ */
+const LOITERING: Readonly<Record<string, readonly [cmd: number, key: string, ui: readonly number[], from: number]>> = {
+  detection_loitering_detection_switch: [2706, "radar_wd_switch", [0, 1], 0],
+  detection_loitering_detection_range: [2707, "radar_wd_distance", [2, 4, 6, 8, 10], 1],
+  detection_loitering_detection_length: [2708, "radar_wd_time", [15, 20, 25, 30, 45, 60], 1],
+};
+
+/**
+ * The T8530's settings write (1958) as the app sends it: every settings field the app writes (its default where the
+ * lock's 1959 answer lacks it) under the host's `paramType` and `param` fields, without `transaction`, under the
+ * station's member account.
+ */
+const T8530_SETTINGS: BundleFrame = {
+  cmd: 1350,
+  body: "json1350",
+  channel: "$channel",
+  subCmd: 1958,
+  mValue3: 0,
+  payload: { $input: "...param", paramType: "$input.paramType" },
+  stationAccount: true,
+  base: {
+    query: 1959,
+    fields: {
+      paramType: 0,
+      isAutoLock: 0,
+      autoLockTime: 30,
+      isSchedule: 0,
+      scheduleStart: "1700",
+      scheduleEnd: "0600",
+      isOneTouchLock: 1,
+      isOneTouchRearLock: 1,
+      isWrongTryProtect: 1,
+      wrongTryTime: 5,
+      lockDownTime: 180,
+      isScramblePasscode: 0,
+      isNotification: 0,
+      isLockNotification: 0,
+      isUnLockNotification: 0,
+      lockOpenDirection: 0,
+      nightVisionEnhance: 0,
+      openLeftAlarmEnable: 0,
+      openLeftAlarmTimer: 3,
+      openLeftAlarmWays: 5,
+      openLeftAlarmScheduled: 0,
+      openLeftAlarmScheduleStart: "1700",
+      openLeftAlarmScheduleEnd: "0600",
+      tamperAlarmEnable: 0,
+      tamperAlarmWays: 0,
+      tamperAlarmScheduled: 0,
+      tamperAlarmScheduleStart: "1700",
+      tamperAlarmScheduleEnd: "0600",
+      lockVolume: 0,
+      lockSound: 0,
+      privacyModel: 1,
+      isCalibration: 0,
+      isDoorStateCheck: 0,
+    },
+  },
+};
+
+/**
+ * What a lock's own Java screens send where its bundle's data does not: {@link LOITERING} through the lock's settings
+ * service when it is its own station, else as a 1350 body without `transaction` under the station's member account;
+ * {@link T8530_SETTINGS}.
+ */
+function javaEntry(identifier: string, model: string, standalone: boolean): BundleEntry | undefined {
+  if (identifier === "smart_lock_set_setting_params" && model.startsWith("T8530"))
+    return { write: { "*": T8530_SETTINGS } };
+  const loitering = /^T85(30|V0)/.test(model) ? LOITERING[identifier] : undefined;
+  if (!loitering) return undefined;
+  const [cmd, key, ui, from] = loitering;
+  const frame = (n: number): BundleFrame =>
+    standalone
+      ? { ...LOCK_SERVICE, type: "json", cmd, payload: { [key]: n } }
+      : {
+          cmd: 1350,
+          body: "json1350",
+          channel: "$channel",
+          subCmd: cmd,
+          mValue3: 0,
+          payload: { [key]: n },
+          stationAccount: true,
+        };
+  const map = Object.fromEntries(ui.map((v, i) => [String(i + from), String(v)]));
+  return {
+    write: Object.fromEntries(ui.map((v, i) => [String(v), frame(i + from)])),
+    read: { order: String(cmd), field: { param: cmd, path: key, map } },
+  };
+}
+
+/** The settings TLV after `A1`/`A2` of a scalar a lock's own settings screen writes, per value, bundled or not. */
+const OWN_STATION_TLV: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  smart_lock_rain_mode_switch: { "*": "a30107a401{value:u8}" },
+  smart_lock_lock_sound_volume: { "*": "a30104a401{value:u8}" },
+  smart_lock_lock_sound_switch: { true: "a30104a40102", false: "a30104a40100" },
+};
+
+/**
+ * What a lock that is its own station sends where the bundles write only through a station, as its own settings
+ * screen does over secure MQTT (`head.cmd` 9, no ack asked, the lock's result code awaited 20 s, sent once): a
+ * settings TLV in its `ff09` frame under apiCommand 6015, a station JSON body as its `cmd` and payload. A volume
+ * write re-sends the do-not-disturb flag, start and end the lock reports; a log switch (paramType 6) carries no
+ * field; a paramType the screens never send (13, 14), nothing.
+ */
+function ownStationWrite(
+  identifier: string,
+  hb: Record<string, BundleFrame>,
+  model: string,
+): Record<string, BundleFrame> | undefined {
+  const tlvFrame = (tlv: string): BundleFrame | undefined => {
+    const type = /^a301(..)/i.exec(tlv)?.[1]?.toLowerCase();
+    if (type === "0d" || type === "0e" || !shown(model, tlv)) return undefined;
+    const payload = type === "06" ? "" : tlv;
+    const preserve = type === "04" ? [0xbd, 0xbe, 0xbf] : undefined;
+    return {
+      ...LOCK_SERVICE,
+      type: "ble",
+      cmdCode: 52,
+      apiCommand: 6015,
+      subVersion: 3,
+      functionType: 2,
+      needEncrypt: true,
+      payload,
+      ...(preserve && { preserve }),
+    };
+  };
+  const frameOf = (f: BundleFrame): BundleFrame | undefined => {
+    if (f.lock)
+      return f.lock.version === 2 ? tlvFrame(f.lock.tlv.replace(/^a104\{nowS:u32le\}a228\{userId\}/i, "")) : undefined;
+    if (f.body !== "json1350" || !f.payload || typeof f.payload !== "object") return undefined;
+    return { ...LOCK_SERVICE, type: "json", cmd: f.subCmd, payload: bare(f) };
+  };
+  const table = OWN_STATION_TLV[identifier];
+  const out = Object.entries(table ?? hb).flatMap(([k, f]) => {
+    const frame = typeof f === "string" ? tlvFrame(f) : frameOf(f);
+    return frame ? [[k, frame] as const] : [];
+  });
+  return out.length ? Object.fromEntries(out) : undefined;
 }
 
 /**
@@ -638,6 +857,7 @@ function mqttJsonCommand(frame: BundleFrame, fill: (x: unknown) => unknown): Com
     cmd: frame.cmd,
     payload,
     ...(typeof frame.needAck === "boolean" && { needAck: frame.needAck }),
+    ...(frame.lockService && { lockService: true }),
     ...(typeof frame.timeout === "number" && { timeoutS: frame.timeout }),
     ...(typeof frame.retryCount === "number" && { retryCount: frame.retryCount }),
   };
@@ -684,6 +904,9 @@ function mqttCommand(frame: BundleFrame, value: unknown, fill: (x: unknown) => u
     ...(frame.subVersion !== undefined && { subVersion: frame.subVersion }),
     ...(frame.functionType !== undefined && { functionType: frame.functionType }),
     encrypt: frame.needEncrypt !== false,
+    ...(frame.lockService && { lockService: true }),
+    ...(frame.apiCommand !== undefined && { apiCommand: frame.apiCommand }),
+    ...(frame.preserve && { preserve: frame.preserve }),
     ...(typeof frame.timeout === "number" && { timeoutS: frame.timeout }),
     ...(typeof frame.retryCount === "number" && { retryCount: frame.retryCount }),
   };
@@ -714,8 +937,8 @@ function nativeCommand(
 
 /**
  * The session command a `p2p` frame is, its tokens filled by `fill`, with the device's admin account id as esiotkit's
- * sender quotes it (never `stationAccount`). Refused where the SDK cannot send it as
- * the app does: a session other than the device's own (the default the client selects), a 1350 raw-params
+ * sender quotes it, the station's member one on a frame stating `stationAccount`. Refused where the SDK cannot send
+ * it as the app does: a session other than the device's own (the default the client selects), a 1350 raw-params
  * frame (`params.cmd` 1003), or a 1700 live-start (`extValue` > 0).
  */
 function sessionCommand(
@@ -762,6 +985,8 @@ function sessionCommand(
     }
     return {
       ...command,
+      ...(frame.stationAccount && { stationAccount: true as const }),
+      ...(frame.base && { base: frame.base }),
       ...(frame.unzipParams && object && { unzip: true as const }),
       ...(counter && { counter }),
     } as Command;
@@ -1025,8 +1250,8 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
     return out;
   };
   const param = (x: string) => {
-    const [, id, path, op, m, fallback] =
-      /^\$param:(\d+)((?:\.[^.|&?]+)*)(?:(\||&~)(\d+))?(?:\?\?(.*))?$/.exec(x) ?? [];
+    const [, id, path, ops, fallback] =
+      /^\$param:(\d+)((?:\.[^.|&?]+)*)((?:(?:\||&~)\d+)*)(?:\?\?(.*))?$/.exec(x) ?? [];
     const raw = ctx.paramValue?.(Number(id));
     const v =
       raw === undefined || !path
@@ -1036,8 +1261,10 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
             .split(".")
             .reduce<unknown>((o, k) => (o as Record<string, unknown> | undefined)?.[k], decoded(raw));
     const n = Number.parseInt(String(v), 10);
-    const bits = Number.isNaN(n) ? undefined : op === "|" ? n | Number(m) : n & ~Number(m);
-    const out = v === undefined ? fallback && JSON.parse(fallback) : op ? bits : v;
+    const bits = Number.isNaN(n)
+      ? undefined
+      : [...ops!.matchAll(/(\||&~)(\d+)/g)].reduce((b, [, op, m]) => (op === "|" ? b | Number(m) : b & ~Number(m)), n);
+    const out = v === undefined ? fallback && JSON.parse(fallback) : ops ? bits : v;
     unfilled ||= out === undefined;
     return out;
   };

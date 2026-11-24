@@ -9,7 +9,8 @@
  * video lock (T8531) and the MQTT-only garage door (T85D0) — `dev.lock?.()` looks identical either
  * way, the capability picks the transport and the wire. The classic Wi-Fi lock takes `lock()`/`unlock()`
  * over its own keyed envelope but none of the settings writes, so `setAutoLock` is OPTIONAL on the
- * returned object, like `setRainMode(enabled)` (P2P video lock only) — guard both with `?.()`.
+ * returned object — guard it with `?.()`. Rain Mode is the lock's described `smart_lock_rain_mode_switch`, written
+ * with `setProperty`.
  *
  *   EUFY_EMAIL=… EUFY_PASSWORD=… node examples/06-lock.ts <serial> [lock|unlock|autolock-on|autolock-off|rain-on|rain-off]
  *
@@ -59,10 +60,8 @@ async function main(): Promise<void> {
       break;
     case "rain-on":
     case "rain-off":
-      // Optional — only the P2P video lock (T8531) has this, so check before calling.
-      if (!lock.setRainMode) throw new Error(`${sn} has no setRainMode (not a P2P video lock?)`);
       console.log(`setting rain mode ${action === "rain-on" ? "on" : "off"} …`);
-      await lock.setRainMode(action === "rain-on");
+      await eufy.setProperty(sn, "smart_lock_rain_mode_switch", action === "rain-on");
       break;
   }
 
