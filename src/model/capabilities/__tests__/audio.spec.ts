@@ -71,7 +71,7 @@ describe("audio capability module", () => {
     expect(sent).toEqual([
       buildCommand("microphone", false, c),
       buildCommand("speaker", true, c),
-      { kind: "set-param", param: 1230, value: 40, channel: 3 },
+      { kind: "set-param", stationAccount: true, param: 1230, value: 40, channel: 3 },
     ]);
   });
 
@@ -145,12 +145,13 @@ describe("audio capability module", () => {
       const { acts, sent } = bind<AudioActions>("audio", doorbellCtx);
       expect(acts.setRingtoneVolume).toBeDefined();
       await acts.setRingtoneVolume!(50);
-      expect(sent).toEqual([{ kind: "set-param", param: 1708, value: 50, channel: 2 }]);
+      expect(sent).toEqual([{ kind: "set-param", stationAccount: true, param: 1708, value: 50, channel: 2 }]);
     });
 
     it("buildCommand('ringtoneVolume') is gated on the doorbell capability", () => {
       expect(buildCommand("ringtoneVolume", 90, doorbellCtx)).toMatchObject({
         kind: "set-param",
+        stationAccount: true,
         param: 1708,
         value: 90,
       });

@@ -8,7 +8,7 @@
  */
 import { asBool, isStationSerial } from "../../core/util.js";
 import { encodeVarint, RawDpWriter } from "../../core/raw-dp-writer.js";
-import { aiotDp, setJson, setJsonRaw, setPayload, setScalar, setStationScalar } from "./access.js";
+import { aiotDp, setJson, setPayload } from "./access.js";
 import type { AvailabilityContext, CommandContext } from "./types.js";
 import { reflectCommand, type Command, type LiveFrames, type SessionFrame } from "../../core/contracts.js";
 import type { ThingMember } from "./thing-description.js";
@@ -666,7 +666,8 @@ function nativeCommand(
 }
 
 /**
- * The session command a `p2p` frame is, its tokens filled by `fill`. Refused where the SDK cannot send it as
+ * The session command a `p2p` frame is, its tokens filled by `fill`, with the device's admin account id as esiotkit's
+ * sender quotes it (never `stationAccount`). Refused where the SDK cannot send it as
  * the app does: a session other than the device's own (the default the client selects), a 1350 raw-params
  * frame (`params.cmd` 1003), or a 1700 live-start (`extValue` > 0).
  */
@@ -719,16 +720,17 @@ function sessionCommand(
     } as Command;
   }
   if (counter || frame.unzipParams) return undefined;
-  if (object && frame.body === "json") return setJsonRaw(cmd, object, c, header);
+  if (object && frame.body === "json") return { kind: "set-json-raw", cmd, data: object, channel: header };
   if (frame.seal) return undefined;
   if (frame.body === "json1700" && (object || typeof filled === "number"))
     return setJson(sub, object ?? (filled as number), c);
   if (frame.body === "native")
     return nativeCommand(frame, object, isStationSerial(ctx.serial ?? "") ? 255 : ctx.channel);
   if (scalar === undefined) return undefined;
-  if (frame.body === "groupA") return setScalar(cmd, scalar, c);
-  if (frame.body === "pair") return setScalar(cmd, scalar, c, "int-pair");
-  if (frame.body === "groupB") return setStationScalar(cmd, scalar, header);
+  if (frame.body === "groupA") return { kind: "set-param", param: cmd, value: scalar, channel: c.channel };
+  if (frame.body === "pair")
+    return { kind: "set-param", param: cmd, value: scalar, channel: c.channel, form: "int-pair" };
+  if (frame.body === "groupB") return { kind: "p2p-station-scalar", cmd, value: scalar, channel: header };
   return undefined;
 }
 

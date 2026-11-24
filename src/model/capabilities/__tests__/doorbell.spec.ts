@@ -55,6 +55,7 @@ describe("doorbell capability module", () => {
     it("mechanicalChimeSwitch on → set-param 'direct-binary' scalar for 1703", () => {
       expect(buildCommand("mechanicalChimeSwitch", true, ctx(2))).toEqual({
         kind: "set-param",
+        stationAccount: true,
         param: DOORBELL_CMD.MECHANICAL_CHIME_SWITCH,
         value: 1,
         channel: 2,
@@ -64,6 +65,7 @@ describe("doorbell capability module", () => {
     it("mechanicalChimeSwitch off → value 0, same shape", () => {
       expect(buildCommand("mechanicalChimeSwitch", false, ctx(2))).toEqual({
         kind: "set-param",
+        stationAccount: true,
         param: DOORBELL_CMD.MECHANICAL_CHIME_SWITCH,
         value: 0,
         channel: 2,
@@ -73,6 +75,7 @@ describe("doorbell capability module", () => {
     it("wdrSwitch on/off → same 136-byte direct-binary shape for 1704, on ctx.channel (not hardcoded)", () => {
       expect(buildCommand("wdrSwitch", true, ctx(3))).toEqual({
         kind: "set-param",
+        stationAccount: true,
         param: DOORBELL_CMD.WDR_SWITCH,
         value: 1,
         channel: 3,
@@ -171,6 +174,7 @@ describe("doorbell capability module", () => {
     it("chimeSwitch on/off → direct-binary scalar for 1702, on ctx.channel", () => {
       expect(buildCommand("chimeSwitch", true, ctx(2))).toEqual({
         kind: "set-param",
+        stationAccount: true,
         param: DOORBELL_CMD.CHIME_SWITCH,
         value: 1,
         channel: 2,

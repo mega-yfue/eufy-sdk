@@ -3,7 +3,7 @@ import { createDecipheriv, createECDH } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RtcCallSdp } from "../call.js";
-import { buildStringBody } from "../../p2p/write-commands.js";
+import { buildDirectBinaryBody, buildStringBody } from "../../p2p/write-commands.js";
 import { RtcCommandRouter, type RtcLiveRoute } from "../command-router.js";
 import type { RtcCommandCounter, RtcDataChannel } from "../data-channel.js";
 import type { IceAgent } from "../ice.js";
@@ -59,6 +59,7 @@ const ROUTE: RtcLiveRoute = {
   stationSn: "T9000P0000000000",
   attached: true,
   adminUserId: "synthetic-admin",
+  stationAccountId: "synthetic-station",
   did: "SYNTH-000000-AAAAA",
   lic: "SYNLIC",
   host: "192.0.2.1",
@@ -151,6 +152,7 @@ describe("RtcCommandRouter on the native layers", () => {
     });
     await router.dispatchCommand(ROUTE, { kind: "set-json-raw", cmd: 1271, data: { t: 1 }, channel: 3 });
     await router.dispatchCommand(ROUTE, { kind: "set-json-raw", cmd: 1255, data: { t: 2 }, channel: 3 });
+    await router.dispatchCommand(ROUTE, { kind: "set-param", param: 1230, value: 4, channel: 3, stationAccount: true });
     expect(data.command.mock.calls).toEqual([
       [1035, Buffer.concat([u32(3, 1), account]), 3],
       [1235, Buffer.concat([u32(7), account]), 255],
@@ -160,6 +162,7 @@ describe("RtcCommandRouter on the native layers", () => {
       [1201, u32(6, 4), 255],
       [1271, JSON.stringify({ account_id: "synthetic-admin", t: 1 }), 3],
       [1255, JSON.stringify({ account_id: "synthetic-admin", t: 2 }), 255],
+      [1230, buildDirectBinaryBody(4, "synthetic-station", 3), 3],
     ]);
     router.close();
   });

@@ -428,6 +428,7 @@ describe("camera capability module", () => {
     it("imageFlipped → an 'auto' scalar for ROTATE_IMAGE (1207), 1=flipped/0=normal", () => {
       expect(buildCommand("imageFlipped", true, ctx(2))).toEqual({
         kind: "set-param",
+        stationAccount: true,
         param: CAMERA_CMD.ROTATE_IMAGE,
         value: 1,
         channel: 2,

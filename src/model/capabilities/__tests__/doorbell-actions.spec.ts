@@ -26,7 +26,7 @@ describe("doorbell actions", () => {
     const { acts, sent } = doorbellOf();
     // Caller says they already have a stream open → skip engagement, just dispatch.
     await acts.playQuickResponse!(2, { engage: false });
-    expect(sent).toEqual([{ kind: "set-param", param: 1706, value: 2, channel: 3 }]);
+    expect(sent).toEqual([{ kind: "set-param", stationAccount: true, param: 1706, value: 2, channel: 3 }]);
   });
 
   it("playQuickResponse THROWS when engage is requested but no stream comes up (no silent success)", async () => {

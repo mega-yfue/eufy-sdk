@@ -376,6 +376,8 @@ export type Command =
         channel: number;
         /** How long the device's answer is awaited, never resent, where the app bounds the request itself. */
         answerMs?: number;
+        /** The station record's member account id in place of the admin's, as on `set-param`. */
+        stationAccount?: true;
       }
     /**
      * The app's native string body (`[u16 int][u16 0][u8 channel][value][account_id]`) on the station channel 255,

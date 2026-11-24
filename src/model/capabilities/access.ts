@@ -16,9 +16,19 @@ import type { Command } from "../../core/contracts.js";
  * @module model/capabilities/access
  */
 
+/**
+ * The ids these builders write that the app sends through its legacy direct sender (`ZmediaUtil`), whose account
+ * id is the station's member one: their commands state `stationAccount`.
+ */
+const LEGACY_SENDER = new Set([
+  1011, 1145, 1207, 1210, 1230, 1235, 1246, 1249, 1250, 1251, 1255, 1271, 1276, 1400, 1401, 1403, 1410, 1507, 1609,
+  1610, 1702, 1703, 1704, 1706, 1708,
+]);
+const legacy = (id: number) => LEGACY_SENDER.has(id) && { stationAccount: true as const };
+
 /** Set a scalar (integer) param: the group-A body, or the bare `[channel][value]` pair with `"int-pair"`. */
 export function setScalar(param: number, value: number, ctx: CommandContext, form?: "int-pair"): Command {
-  return { kind: "set-param", param, value, channel: ctx.channel, ...(form && { form }) };
+  return { kind: "set-param", param, value, channel: ctx.channel, ...(form && { form }), ...legacy(param) };
 }
 
 /**
@@ -39,7 +49,7 @@ export function setJson(param: number, data: Record<string, unknown> | number, c
  * alarm-delay config 1255, which rides the station broadcast channel 255, not `ctx.channel`).
  */
 export function setJsonRaw(cmd: number, data: Record<string, unknown>, ctx: CommandContext, channel?: number): Command {
-  return { kind: "set-json-raw", cmd, data, channel: channel ?? ctx.channel };
+  return { kind: "set-json-raw", cmd, data, channel: channel ?? ctx.channel, ...legacy(cmd) };
 }
 
 /**
@@ -65,7 +75,7 @@ export function setPayload(
  * HomeBase's own controls on the station broadcast channel 255 (alarm/speaker volume 1235).
  */
 export function setStationScalar(cmd: number, value: number, channel: number, answerMs?: number): Command {
-  return { kind: "p2p-station-scalar", cmd, value, channel, answerMs };
+  return { kind: "p2p-station-scalar", cmd, value, channel, answerMs, ...legacy(cmd) };
 }
 
 /**
