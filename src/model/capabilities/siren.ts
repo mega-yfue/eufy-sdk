@@ -1,7 +1,8 @@
-import { coerceEnumValue, enumLabels, isStationSerial } from "../../core/util.js";
+import { asBool, coerceEnumValue, enumLabels, isStationSerial } from "../../core/util.js";
 import { HOMEBASE_TYPES, isHomeBase } from "../device-family.js";
+import { BATTERY_PARAM } from "./battery.js";
 import { setPayload, setStationScalar } from "./access.js";
-import { bundled, thingWrite } from "./bundle.js";
+import { bundled, thingRead, thingWrite } from "./bundle.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
 import type { AvailabilityContext, CapabilityModule, CommandContext } from "./types.js";
 import type { Command } from "../../core/contracts.js";
@@ -92,13 +93,73 @@ function alarmWrite(payload: string, ctx: CommandContext, key = payload): Comman
   return ctx.things?.properties.set_alarm_type ? thingWrite("set_alarm_type", payload, ctx, key) : undefined;
 }
 
+/** The live view's alarm types: 0 sound, 1 light, 2 sound and light, 3 HomeBase sound. */
+const alarmTypes = (ctx: AvailabilityContext) =>
+  ctx.things?.properties.set_alarm_type?.members.map((m) => Number(m.value)) ?? [];
+
+/** The live view's alarm types as an argument: one, or a list `kind` cannot state. */
+const ALARM_TYPES_ARG = {
+  name: "types",
+  kind: "enum",
+  description:
+    "One alarm type the device lists, or a list of them: 0 sound, 1 light, 2 sound and light, 3 HomeBase sound.",
+} as const;
+
 /**
- * The live view's alarm (`AlarmActionHandler`): Gson's `AlarmModel(open, type)`, the `AlarmType` sound only (0) on a
- * camera, HomeBase sound (3) on a station. None on a sensor-codec siren, which has no live view.
+ * The live view's alarm: one `{open, type}` per type on this device's own `set_alarm_type`, sound (0) with light
+ * (1) sent as one 2; a station sends only its HomeBase sound (3). None on a sensor-codec siren, which has no live view.
  */
-function liveAlarm(open: boolean, ctx: CommandContext): Command | undefined {
-  if (isSensorCodec(ctx)) return undefined;
-  return alarmWrite(JSON.stringify({ open, type: isStationSerial(ctx.serial ?? "") ? 3 : 0 }), ctx);
+function liveAlarm(open: boolean, types: readonly number[], ctx: CommandContext): (Command | undefined)[] {
+  if (isSensorCodec(ctx)) return [];
+  const set = new Set(types.filter((t) => t === 3 || !isStationSerial(ctx.serial ?? "")));
+  const final = set.has(0) && set.has(1) ? new Set([2, ...[...set].filter((t) => t > 1)]) : set;
+  return [...final].map((type) => alarmWrite(JSON.stringify({ open, type }), ctx));
+}
+
+/** Whether `identifier` reads on: an undescribed one counts as on, a described one with no value as off. */
+function readsOn(identifier: string, ctx: CommandContext): boolean {
+  return !ctx.things?.properties[identifier] || asBool(thingRead(identifier, ctx, (p) => ctx.paramValue?.(p)));
+}
+
+/** The description's `player_model_config` `config.low_battery_threshold`, 6 where it states none. */
+function lowBatteryThreshold(ctx: CommandContext): number {
+  try {
+    const config = JSON.parse(thingRead("player_model_config", ctx, () => undefined) ?? "{}").config;
+    const n = Number.parseInt(String(config?.low_battery_threshold), 10);
+    return Number.isNaN(n) ? 6 : n;
+  } catch {
+    return 6;
+  }
+}
+
+/**
+ * Whether a battery device describing `battery_value` has its level (1101) under its low-battery threshold; a level
+ * it does not report counts as 0.
+ */
+function lowBattery(ctx: CommandContext): boolean {
+  const raw = (p: number) => ctx.paramValue?.(p);
+  if (!asBool(thingRead("device_is_battery_device", ctx, raw)) || !ctx.things?.properties.battery_value) return false;
+  return Number(raw(BATTERY_PARAM.BATTERY) ?? 0) < lowBatteryThreshold(ctx);
+}
+
+/**
+ * The live view's alarm for `types`, each one the description's `set_alarm_type` lists; starting refuses a low battery,
+ * sound (0, 2) needs `speaker_on_off` on and light (1, 2) `spotlight_status`, as the app refuses otherwise.
+ */
+function liveAlarmFor(open: boolean, type: number | readonly number[], ctx: CommandContext): Command[] {
+  const types = typeof type === "number" ? [type] : type;
+  const listed = alarmTypes(ctx);
+  if (!types.length || types.some((t) => !listed.includes(t)))
+    throw new Error(`siren: alarm types must be some of ${listed.join("/")}`);
+  if (open && lowBattery(ctx)) throw new Error("siren: the battery is low");
+  if (open && types.some((t) => t === 0 || t === 2) && !readsOn("speaker_on_off", ctx))
+    throw new Error("siren: the speaker is off");
+  if (open && types.some((t) => t === 1 || t === 2) && !readsOn("spotlight_status", ctx))
+    throw new Error("siren: the light is off");
+  const cmds = liveAlarm(open, types, ctx);
+  if (!cmds.length || cmds.some((c) => c === undefined))
+    throw new Error(`siren: this device's bundle sends no alarm of type ${types.join("/")}`);
+  return cmds as Command[];
 }
 
 /** The hubs the app's `isHBDevice` counts by serial, less its `isHB3` (T8030), which plays no preview. */
@@ -117,12 +178,9 @@ function testAlarm(ctx: CommandContext): Command | undefined {
   return alarmWrite(JSON.stringify(preview), ctx, JSON.stringify({ ...preview, nick_name: "$input.nick_name" }));
 }
 
-/**
- * The stop: a sensor siren's ringing stop (`IndoorStopAlarmIndicator`), the unquoted text the app sends, else the
- * live view's alarm closed.
- */
+/** A sensor siren's ringing stop, the unquoted text the app sends. */
 function stopAlarm(ctx: CommandContext): Command | undefined {
-  return isSensorCodec(ctx) ? alarmWrite("{open:false,forTest:false}", ctx) : liveAlarm(false, ctx);
+  return isSensorCodec(ctx) ? alarmWrite("{open:false,forTest:false}", ctx) : undefined;
 }
 
 /**
@@ -239,21 +297,33 @@ export const SIREN_MEMBERS = {
     (ctx) => testAlarm(ctx) !== undefined,
   ),
   /** Sound the alarm as the live view does: the bundle's `time_out` (30 s), no duration of the host's. */
-  trigger: method(
-    ({ ctx, sink }) =>
-      () =>
-        sink.dispatch(liveAlarm(true, ctx)!),
-    "Sound the alarm as the app's live view does; it stops itself after the device's time-out.",
-    (ctx) => liveAlarm(true, ctx) !== undefined,
-  ),
-  /** Stop a sounding alarm as the app does. */
-  stop: method(
-    ({ ctx, sink }) =>
-      () =>
-        sink.dispatch(stopAlarm(ctx)!),
-    "Manually stop a sounding alarm.",
-    (ctx) => stopAlarm(ctx) !== undefined,
-  ),
+  trigger: {
+    ...method(
+      ({ ctx, sink }) =>
+        async (types: number | readonly number[]) => {
+          for (const cmd of liveAlarmFor(true, types, ctx)) await sink.dispatch(cmd);
+        },
+      "Sound the alarm types given (0 sound, 1 light, 2 both, 3 HomeBase sound; the ones the device lists) as the " +
+        "app's live view does; it stops itself after the device's time-out.",
+      (ctx) => liveAlarm(true, alarmTypes(ctx), ctx).some(Boolean),
+    ),
+    args: [ALARM_TYPES_ARG],
+    writeDomainFor: alarmTypes,
+  },
+  /** Stop a sounding alarm as the app does: a sensor siren's ringing stop, else the live view's `types` closed. */
+  stop: {
+    ...method(
+      ({ ctx, sink }) =>
+        async (types: number | readonly number[] = []) => {
+          const sensor = stopAlarm(ctx);
+          for (const cmd of sensor ? [sensor] : liveAlarmFor(false, types, ctx)) await sink.dispatch(cmd);
+        },
+      "Manually stop a sounding alarm; a live-view alarm takes the types its trigger sounded.",
+      (ctx) => stopAlarm(ctx) !== undefined || liveAlarm(false, alarmTypes(ctx), ctx).some(Boolean),
+    ),
+    args: [{ ...ALARM_TYPES_ARG, optional: true }],
+    writeDomainFor: alarmTypes,
+  },
 } as const satisfies Members;
 
 /**

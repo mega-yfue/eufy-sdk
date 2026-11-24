@@ -141,6 +141,18 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
       paramIds: new Set([61008, 1825]),
       things: alarm("T90R0", ["0"]),
     });
+    const t8170 = describeSiren({
+      channel: 2,
+      codec: "camera",
+      deviceType: 9,
+      model: "T8170",
+      serial: "T8170P0000000001",
+      homeBaseAttached: true,
+      stationSerial: "T8010P0000000009",
+      capabilities: new Set(["siren"]),
+      paramIds: new Set(),
+      things: alarm("T8170", ["0", "1", "2", "3"]),
+    });
     const unverified = describeSiren({
       channel: 0,
       codec: "camera",
@@ -158,7 +170,9 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
       "trigger",
       "stop",
     ]);
-    expect(homeBase.actions.find((action) => action.name === "trigger")?.args).toEqual([]);
+    const argsOf = (name: string) => t8170.actions.find((action) => action.name === name)?.args;
+    expect(argsOf("trigger")).toEqual([expect.objectContaining({ name: "types", kind: "enum", values: [0, 1, 2, 3] })]);
+    expect(argsOf("stop")).toEqual([expect.objectContaining({ values: [0, 1, 2, 3], optional: true })]);
     expect(camera.reads).toEqual([]);
     expect(camera.actions.map((action) => action.name)).toEqual(["trigger", "stop"]);
     expect(standalone.reads.map((read) => read.accessor)).toEqual(["active", "volume"]);

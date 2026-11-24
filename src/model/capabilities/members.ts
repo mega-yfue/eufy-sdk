@@ -373,6 +373,8 @@ export interface MethodMember<F> {
    * arguments unstated, and a nullary one has them derived (see `describe`).
    */
   args?: readonly ActionArgSpec[];
+  /** The values its first argument takes on this device — see {@link ValueMember.writeDomainFor}. */
+  writeDomainFor?: ValueMember["writeDomainFor"];
   /**
    * This member ANSWERS rather than ACTS: a sub-API namespace (`ptz.preset()`) or a live query whose
    * returned value is the whole point (`lock.getAutoLockState()`).
@@ -883,9 +885,16 @@ function describeWrite(name: string, m: ValueMember, reported: boolean, ctx: Ava
  * arguments without being a control at all. Both leave the arguments unstated;
  * `action-specs.spec.ts` holds every stated required argument against the same arity.
  */
-function describe(description: string, fn: unknown, m: { args?: readonly ActionArgSpec[]; answers?: true }): unknown {
+function describe(
+  description: string,
+  fn: unknown,
+  m: Pick<MethodMember<unknown>, "args" | "answers" | "writeDomainFor">,
+  ctx?: AvailabilityContext,
+): unknown {
   const built = fn as (...a: never[]) => unknown;
-  const args = m.args ?? (built.length || m.answers ? undefined : []);
+  const values = ctx && m.writeDomainFor?.(ctx);
+  const stated = values ? m.args?.map((a, i) => (i === 0 ? { values, ...a } : a)) : m.args;
+  const args = stated ?? (built.length || m.answers ? undefined : []);
   return describedAction({ form: "momentary", description, args }, built);
 }
 
@@ -1018,7 +1027,7 @@ export function bindMembers<M extends Members>(members: M, deps: MemberDeps): Su
       continue;
     }
     if ("method" in m) {
-      if (installs(m, ctx)) out[name] = describe(m.description, m.method(deps), m);
+      if (installs(m, ctx)) out[name] = describe(m.description, m.method(deps), m, ctx);
       continue;
     }
     if ("action" in m) {
