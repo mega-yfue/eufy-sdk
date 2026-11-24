@@ -340,6 +340,7 @@ describe("battery capability module", () => {
       } as never).getProperty("powerSource")?.value;
     expect(of("T8171", "-505")).toBe(0);
     expect(of("T8171", "0")).toBe(1);
+    expect(of("T8170", "-505"), 'its bundle builds PowerChargeModeParser("v2")').toBe(0);
     expect(of("T8140", "-505"), "everyone else keeps 1293").toBe(1);
   });
 
