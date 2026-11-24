@@ -106,6 +106,16 @@ describe("secure-MQTT client id", () => {
     expect(clientIds()[0]).not.toBe(clientIds()[1]);
   });
 
+  it("asks the security certificate again when the cached one is refused, as the app's force refresh", async () => {
+    const eufy = makeClient({ openudid: "a".repeat(16) });
+    const fresh = vi.spyOn((eufy as any).mega, "getUserMqttInfo").mockResolvedValue({ ...CREDS, private_key: "NEW" });
+    connect.mockRejectedValueOnce(new Error("certificate refused")).mockResolvedValue(undefined);
+
+    await bringUp(eufy, "eufy_security");
+    expect(fresh).toHaveBeenCalledWith("eufy_security", true);
+    expect(constructedWith.at(-1).credentials.private_key).toBe("NEW");
+  });
+
   it("rejects a failed connect without announcing it, and asks again under its own id", async () => {
     const eufy = makeClient({ openudid: "a".repeat(16) });
     const connected = vi.fn();

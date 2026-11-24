@@ -20,6 +20,7 @@ import {
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { RegionShard } from "../transport/http/mega-client.js";
+import type { SecureMqttCredentials } from "../transport/mqtt/secure-mqtt.js";
 import type { RtcToken } from "../transport/rtc/signal-client.js";
 
 /**
@@ -47,6 +48,10 @@ export interface PersistedSession {
   securityDomain?: string;
   /** `estimate_domain`'s `product_domains.eufy_home`, the app's Home category host. */
   homeDomain?: string;
+  /** `estimate_domain`'s `domain`, the app's Basic host, cached with the session as the app caches it. */
+  megaDomain?: string;
+  /** The security certificate `register/iot` last issued, cached per account as the app caches it. */
+  securityMqtt?: SecureMqttCredentials;
   openudid: string;
   /** This install's reported device model + media user-agent, generated once and reused. */
   phoneModel?: string;

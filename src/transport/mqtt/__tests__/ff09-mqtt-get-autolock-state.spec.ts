@@ -51,12 +51,12 @@ function decodeEnvelope(body: string): { op: number; time: number; trans: Decode
   return { op: parseInt(trans.payload.lock_payload.slice(14, 18), 16) & 0x3fff, time: trans.payload.time, trans };
 }
 
-function makeRouter(plain: Buffer, opts: { noReply?: boolean } = {}) {
+function makeRouter(plain: Buffer, opts: { noReply?: boolean; deviceType?: number } = {}) {
   const dev = {
     sn: SN,
     category: "eufy_security",
     model: "T85D0",
-    raw: { device_new_pn: "T85D0" },
+    raw: { device_new_pn: "T85D0", device_type: opts.deviceType },
   } as unknown as EufyDevice;
   const router = new MqttCommandRouter({
     mega: {} as any,
@@ -113,6 +113,13 @@ describe("MqttCommandRouter.getAutoLockState (ff09-mqtt read-only GET)", () => {
       scheduleStartTime: [22, 30],
       scheduleEndTime: [6, 15],
     });
+  });
+
+  it("refuses a lock the app drives on its ZX broker, publishing nothing on the security certificate", async () => {
+    const plain = buildResponsePlain({ enabled: true, delaySeconds: 1, isSchedule: false, start: [0, 0], end: [0, 0] });
+    const { router, fakeMqtt } = makeRouter(plain, { deviceType: 184 });
+    await expect(router.getAutoLockState(SN, { adminUserId: ADMIN, deviceSn: SN })).rejects.toThrow(/ZX MQTT broker/);
+    expect(fakeMqtt.publish).not.toHaveBeenCalled();
   });
 
   it("throws if the GET reply never arrives", async () => {
