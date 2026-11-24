@@ -185,8 +185,11 @@ function nativeReport(signal: InboundSignal): Record<string, unknown> | undefine
   return report?.code === 0 ? report : undefined;
 }
 
-/** The `ff09` opcode that adds a keypad code, and the envelope `apiCommand` the app sends a C33's commands under. */
-const ADD_PASSCODE = { code: 0x24, apiCommand: 6012 } as const;
+/**
+ * The `ff09` opcodes that add a keypad code and read one back by its password id (QUERY_PW, the code in `a1`), and
+ * the envelope `apiCommand` the app sends a C33's commands under.
+ */
+const ADD_PASSCODE = { code: 0x24, readBack: 0x27, apiCommand: 6012 } as const;
 
 /** The cloud schedule the app records for a permanent code. */
 const PERMANENT_SCHEDULE = JSON.stringify({
@@ -201,7 +204,9 @@ const PERMANENT_SCHEDULE = JSON.stringify({
  * stores the code under it and answers the code's password id in `a1`, and the cloud records that id in
  * upper-case hex. The frame's fields are the code in ASCII, user type `4`, start date `00000000`, end date
  * `ffffffff`, every weekday `7f`, `00:00` to no end time `ffff`, `0`, the name, the short id and validity `0`.
- * A failure after the user is created names it; a lock refusal leaves it holding no code, as the app does.
+ * An add the lock does not answer in time is read back under the short id, the password id the lock answers an
+ * add with: the code there completes the add. A failure after the user is created names it, and what the lock may
+ * hold; a lock refusal leaves it holding no code, as the app does.
  */
 async function addPasscode(
   users: DeviceUserDirectory,
@@ -212,7 +217,7 @@ async function addPasscode(
   if (!/^\d+$/.test(passcode)) throw new Error("lock.addPasscode: a passcode is digits only");
   const shortUserId = await users.addUser(name);
   const remains = `cloud user ${shortUserId} remains`;
-  const reply = await exchange(ADD_PASSCODE.code, ADD_PASSCODE.apiCommand, [
+  const passwordId = await exchange(ADD_PASSCODE.code, ADD_PASSCODE.apiCommand, [
     Buffer.from(passcode, "ascii"),
     Buffer.from([4]),
     Buffer.from([0, 0, 0, 0]),
@@ -224,13 +229,24 @@ async function addPasscode(
     Buffer.from(name, "utf8"),
     Buffer.from(shortUserId, "hex"),
     Buffer.from([0]),
-  ]).catch((e: Error) => {
-    throw new Error(`lock.addPasscode: ${e.message} (${remains})`, { cause: e });
-  });
-  if (reply.status !== 0) throw new Error(`lock.addPasscode: device result ${reply.status} (${remains})`);
-  const id = reply.fields.get(0xa1);
-  if (id?.length !== 2) throw new Error(`lock.addPasscode: the reply carries no password id (${remains})`);
-  const passwordId = id.toString("hex").toUpperCase();
+  ]).then(
+    (reply) => {
+      if (reply.status !== 0) throw new Error(`lock.addPasscode: device result ${reply.status} (${remains})`);
+      const id = reply.fields.get(0xa1);
+      if (id?.length !== 2) throw new Error(`lock.addPasscode: the reply carries no password id (${remains})`);
+      return id.toString("hex").toUpperCase();
+    },
+    async (e: Error) => {
+      const held = await exchange(ADD_PASSCODE.readBack, ADD_PASSCODE.apiCommand, [
+        Buffer.from(shortUserId, "hex"),
+      ]).catch(() => undefined);
+      if (held?.status === 0 && held.fields.get(0xa1)?.toString("ascii") === passcode) return shortUserId.toUpperCase();
+      const lock = held
+        ? `holds no such code under ${shortUserId}`
+        : `may hold it under ${shortUserId}, answering no read-back`;
+      throw new Error(`lock.addPasscode: ${e.message}; the lock ${lock} (${remains})`, { cause: e });
+    },
+  );
   await users.savePassword(shortUserId, passwordId, PERMANENT_SCHEDULE).catch((e: Error) => {
     throw new Error(
       `lock.addPasscode: code ${passwordId} of user ${shortUserId} is on the lock, not in the cloud: ${e.message}`,
