@@ -423,6 +423,7 @@ export class EufyMega extends EventEmitter {
       logger: opts.logger,
       ffmpegPath: opts.ffmpegPath,
       onError: (e) => this.reportError(e),
+      onFrame: (stationSn, f) => this.onP2PFrame(stationSn, f),
     });
     this.mqtt = new MqttCommandRouter({
       mega: this.mega,
@@ -1302,10 +1303,19 @@ export class EufyMega extends EventEmitter {
    * to `undefined`. The distinction the caller might want (terminal "no RTSP" vs a transient "session
    * not warm yet") is not drawn here yet; a caller that retries on `undefined` recovers from the
    * transient case. The read window is a fixed 30 s, the app's own URL read bound — deliberately not
-   * caller-tunable.
+   * caller-tunable. A camera whose 1145 goes over the station's RTC route is read there, as the app's request is.
    */
   async reportedRtspUrl(sn: string): Promise<string | undefined> {
-    return this.p2p.readReportedRtspUrl(sn);
+    if (!this.registry.list().length) await this.getDevices().catch(() => undefined);
+    const raw = this.stationOf(sn).target?.raw as { device_channel?: unknown } | undefined;
+    const channel = typeof raw?.device_channel === "number" ? raw.device_channel : 0;
+    const route = this.rtcRouteFor(sn, { cmd: 1145, sub: 0, channel });
+    if (!route) return this.p2p.readReportedRtspUrl(sn);
+    if (route.attached && this.registry.serialForFrame(route.stationSn, channel) !== sn) return undefined;
+    return this.rtc.readRtspUrl(route, channel).catch((e: unknown) => {
+      this.opts.logger?.debug(`[rtc] ${sn} live RTSP URL read failed`, e);
+      return undefined;
+    });
   }
 
   /**

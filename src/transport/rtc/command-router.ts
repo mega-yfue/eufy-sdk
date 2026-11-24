@@ -22,6 +22,7 @@
 import { createECDH, randomInt } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
+  CommandResultError,
   LiveSnapshotUnavailableError,
   type Command,
   type TalkbackHandle,
@@ -33,6 +34,10 @@ import {
 } from "../../core/contracts.js";
 import type { Logger } from "../../core/logger.js";
 import { abortable } from "../abortable.js";
+import { P2PDataType, parseDataFrameHeader } from "../p2p/codec.js";
+import { CommandType } from "../p2p/commands.js";
+import { decodeFrame } from "../p2p/frame.js";
+import type { P2PFrame } from "../p2p/p2p-session.js";
 import { captureSnapshotFromShared } from "../p2p/media.js";
 import {
   CMD_DATABASE,
@@ -77,7 +82,11 @@ export interface RtcRoute {
 }
 
 /** A live frame with the `rtc_type` its bundle parser gave it (`rtcSendRoute`, absent 0). */
-export type RtcLiveFrame = SessionFrame & { rtcSendRoute?: number };
+export type RtcLiveFrame = SessionFrame & {
+  rtcSendRoute?: number;
+  /** The request window its bundle descriptor states (`timeout`, ms), within which the app's request must succeed. */
+  timeoutMs?: number;
+};
 
 /** The camera a live view is for, on its station's route. */
 export interface RtcLiveRoute extends RtcRoute {
@@ -104,6 +113,8 @@ export interface RtcCommandRouterDeps {
   onError?: (e: Error) => void;
   /** ffmpeg for the live still (`ffmpeg` on PATH by default). */
   ffmpegPath?: string;
+  /** Each station notify off the data channel, read as a P2P frame is: the app hands both to one receiver. */
+  onFrame?: (stationSn: string, frame: P2PFrame) => void;
   /** The native layers, replaceable in a spec. */
   layers?: { signal?: (o: RtcSignalOptions) => RtcSignalClient; priv1?: typeof priv1; pmIce?: typeof pmIce };
 }
@@ -154,6 +165,9 @@ const NATIVE_GROUPS: Record<string, readonly number[]> = {
 const nativeGroup = (id: number) => Object.keys(NATIVE_GROUPS).find((g) => NATIVE_GROUPS[g]!.includes(id));
 const JSON_ON_DEVICE_CHANNEL = [1204, 1271, 1350];
 
+/** A reply's code as the app's `ack_processor_process_response` reads it: its first int32, 0 for an empty body. */
+const replyCode = (reply: Buffer) => (reply.length >= 4 ? reply.readInt32LE(0) : 0);
+
 const u32s = (...v: number[]) => Buffer.from(new Uint32Array(v.map((x) => x >>> 0)).buffer);
 
 /**
@@ -178,13 +192,15 @@ export class RtcCommandRouter {
    * Send a command as the app's RTC sender frames it: `set-payload` as `1350` ({@link setPayloadJson}), `set-json` as
    * `1700` `{commandType, data}`, both on 255 for the station and the device's channel for an attached one; the native
    * kinds by their id's group in {@link NATIVE_GROUPS}. Refused: a kind or id the app's RTC sender does not frame, a
-   * lock-sealed payload, a payload with a header counter. Answers `true` once the frame is written, awaiting no
-   * reply, as the app counts an RTC write done.
+   * lock-sealed payload, a payload with a header counter. Answers `true` on the station's reply, as the app's RTC
+   * bridge waits for it (`ack_reader_get_ack`): its first int32 is the code, and a non-zero one rejects with a
+   * {@link CommandResultError}, as does no reply within the data channel's wait.
    */
   async dispatchCommand(route: RtcRoute, cmd: Command): Promise<boolean> {
     const { id, body, channel } = this.frame(route, cmd);
     const data = await this.dataChannel(route);
-    void data.command(id, body, channel).catch(() => undefined);
+    const code = replyCode(await data.command(id, body, channel));
+    if (code !== 0) throw new CommandResultError(route.stationSn, id, code, 20_000);
     return true;
   }
 
@@ -261,7 +277,7 @@ export class RtcCommandRouter {
     this.lastTransaction = Math.max(Date.now(), this.lastTransaction + 1);
     const transaction = String(this.lastTransaction);
     const payload = { cmd: DB_QUERY.FULL_TABLE, table, payload: fullTableQuery(), transaction };
-    return this.read(route, CMD_DATABASE, payload, opts, (body) => {
+    return this.readJson(route, CMD_DATABASE, payload, opts, (body) => {
       if (String(body.transaction) !== transaction) return undefined;
       if (typeof body.mIntRet === "number" && body.mIntRet !== 0)
         throw new Error(`rtc: ${route.stationSn} refused ${table}: ${body.msg ?? body.mIntRet} (${body.mIntRet})`);
@@ -275,9 +291,27 @@ export class RtcCommandRouter {
     filePath: string,
     opts: { timeoutMs?: number; signal?: AbortSignal } = {},
   ): Promise<Buffer> {
-    return this.read(route, CMD_DATABASE_IMAGE, [{ file: filePath }], opts, (body) =>
+    return this.readJson(route, CMD_DATABASE_IMAGE, [{ file: filePath }], opts, (body) =>
       body.file === filePath && typeof body.content === "string" ? Buffer.from(body.content, "base64") : undefined,
     );
+  }
+
+  /**
+   * Read a camera's live RTSP URL as the app's URL read goes over RTC: one publish switch `1145` value 1 on the
+   * camera's channel, answered on the data channel, settled by the station's notify on that channel under `1145` or
+   * `1146` (`isNotifyMatches`) carrying the `rtsp://` text; a refusal ends it. Bounded by `timeoutMs` (30 s).
+   */
+  readRtspUrl(
+    route: RtcRoute,
+    channel: number,
+    opts: { timeoutMs?: number; signal?: AbortSignal } = {},
+  ): Promise<string> {
+    const nas = [CommandType.CMD_NAS_SWITCH, CommandType.CMD_NAS_TEST];
+    const send = () => this.dispatchCommand(route, { kind: "set-param", param: nas[0]!, value: 1, channel });
+    return this.read(route, nas, send, { timeoutMs: 30_000, ...opts }, (body, head) => {
+      const url = body.toString("latin1").split("\0")[0]!;
+      return head[12] === channel && url.startsWith("rtsp://") ? url : undefined;
+    });
   }
 
   /**
@@ -313,7 +347,7 @@ export class RtcCommandRouter {
 
   /**
    * Talk to a camera as the app's RTC player does, inside its live view: once the view shows video, `start_intercom`
-   * goes out, and once it succeeds (its `ANKE` answer, or its write on the data channel) one 20 ms Opus packet per
+   * goes out, and once it succeeds (its `ANKE` answer, or its answer on the data channel) one 20 ms Opus packet per
    * write follows on the view's PM call ({@link RtcPmLiveStream.sendAudio}), paced by {@link Talkback}; audio before
    * that is dropped, as the app's mic track stays off. A failed start is reported as `error` and leaves the talkback
    * open and silent, as the app's player sits in its Failed state: `stop_intercom` goes out only when it is stopped or
@@ -448,6 +482,9 @@ export class RtcCommandRouter {
               counter: st.counter,
               answered: () => (st.fails = 0),
             }));
+        placed.on("notify", (_cmd, body, head) =>
+          this.deps.onFrame?.(sn, decodeFrame(sn, parseDataFrameHeader(head), body, body, P2PDataType.DATA)),
+        );
         placed.once("close", () => {
           if (st.data === placed) st.data = undefined;
           const n = st.fails++;
@@ -467,31 +504,51 @@ export class RtcCommandRouter {
     }
   }
 
-  /** Send a `1350` with inner `cmd` on the station channel and answer the first notify of `cmd` that `pick` claims. */
-  private async read<T>(
+  /** Send a `1350` with inner `cmd` on the station channel and answer the first JSON notify of `cmd` that `pick` claims. */
+  private async readJson<T>(
     route: RtcRoute,
     cmd: number,
     payload: unknown,
     opts: { timeoutMs?: number; signal?: AbortSignal },
     pick: (body: Record<string, unknown>) => T | undefined,
   ): Promise<T> {
+    const json = setPayloadJson(cmd, payload, { accountId: this.accountId(route), channel: STATION_CHANNEL });
+    const send = (data: RtcDataChannel) => data.command(1350, json, STATION_CHANNEL).catch(() => undefined);
+    return this.read(route, [cmd], send, opts, (body) => {
+      try {
+        return pick(JSON.parse(body.toString()) as Record<string, unknown>);
+      } catch (e) {
+        if (e instanceof SyntaxError) return undefined;
+        throw e;
+      }
+    });
+  }
+
+  /** Arm a wait on the station's notifies under `cmds`, then `send`; answer the first one `pick` claims. */
+  private async read<T>(
+    route: RtcRoute,
+    cmds: readonly number[],
+    send: (data: RtcDataChannel) => Promise<unknown>,
+    opts: { timeoutMs?: number; signal?: AbortSignal },
+    pick: (body: Buffer, head: Buffer) => T | undefined,
+  ): Promise<T> {
+    const cmd = cmds[0];
     const timeoutMs = opts.timeoutMs ?? DB_TABLE_TIMEOUT_MS;
     const signal = AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(opts.signal ? [opts.signal] : [])]);
     const data = await this.dataChannel(route, opts.signal);
-    const json = setPayloadJson(cmd, payload, { accountId: this.accountId(route), channel: STATION_CHANNEL });
     return new Promise<T>((resolve, reject) => {
       const settle = (fn: () => void) => {
         data.off("notify", onNotify).off("close", onClose);
         signal.removeEventListener("abort", onAbort);
         fn();
       };
-      const onNotify = (id: number, body: Buffer) => {
-        if (id !== cmd) return;
+      const onNotify = (id: number, body: Buffer, head: Buffer) => {
+        if (!cmds.includes(id)) return;
         try {
-          const value = pick(JSON.parse(body.toString()) as Record<string, unknown>);
+          const value = pick(body, head);
           if (value !== undefined) settle(() => resolve(value));
         } catch (e) {
-          if (!(e instanceof SyntaxError)) settle(() => reject(e));
+          settle(() => reject(e));
         }
       };
       const onClose = () =>
@@ -506,7 +563,7 @@ export class RtcCommandRouter {
         );
       data.on("notify", onNotify).once("close", onClose);
       signal.addEventListener("abort", onAbort, { once: true });
-      data.command(1350, json, STATION_CHANNEL).catch(() => undefined);
+      send(data).catch((e: unknown) => settle(() => reject(e)));
     });
   }
 
@@ -628,9 +685,9 @@ export class RtcCommandRouter {
           : cmd === 1004 && (type || solo);
     const send = async () => {
       try {
-        const d = st.data?.connected ? st.data : await this.dataChannel(route);
-        void d.command(cmd, body, header, flag).catch(() => undefined);
-        return true;
+        const window = frame.timeoutMs ? AbortSignal.timeout(frame.timeoutMs) : undefined;
+        const d = st.data?.connected ? st.data : await this.dataChannel(route, window);
+        return replyCode(await abortable(d.command(cmd, body, header, flag), window)) === 0;
       } catch (e) {
         this.deps.logger?.warn(`[rtc] ${sn} live ${cmd} over the data channel: ${String(e)}`);
         return false;

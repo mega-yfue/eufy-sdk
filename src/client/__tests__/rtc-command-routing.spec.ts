@@ -167,6 +167,22 @@ describe("native RTC routing off is_connect_webrtc", () => {
       expect(internals.rtcRouteFor(hub)).toBeUndefined();
     });
 
+    it("reads a listed child's RTSP URL over RTC on its channel and an unlisted one's over P2P", async () => {
+      const { internals } = fixture("T8030", sub('["T8425"]'));
+      const readRtsp = internals as unknown as {
+        rtc: { readRtspUrl(route: RtcRoute, channel: number): Promise<string> };
+        p2p: { readReportedRtspUrl(sn: string): Promise<string | undefined> };
+        reportedRtspUrl(sn: string): Promise<string | undefined>;
+      };
+      const rtc = vi.spyOn(readRtsp.rtc, "readRtspUrl").mockResolvedValue("rtsp://u:p@192.0.2.9/live0");
+      const p2p = vi.spyOn(readRtsp.p2p, "readReportedRtspUrl").mockResolvedValue(undefined);
+      await expect(readRtsp.reportedRtspUrl(CAMERA)).resolves.toBe("rtsp://u:p@192.0.2.9/live0");
+      expect(rtc).toHaveBeenCalledExactlyOnceWith(route(true), 3);
+      internals.registry.devices[1]!.model = "T8223";
+      await readRtsp.reportedRtspUrl(CAMERA);
+      expect(p2p).toHaveBeenCalledExactlyOnceWith(CAMERA);
+    });
+
     it("keeps every command on P2P when no child model is listed", async () => {
       const { internals, rtc, p2p } = fixture("T8030", sub('["T8223"]'));
       await internals.routeCommand(CAMERA, command);

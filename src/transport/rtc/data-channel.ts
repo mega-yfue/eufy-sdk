@@ -164,8 +164,8 @@ interface Pending {
 }
 
 export interface RtcDataChannelEvents {
-  /** A station notify: its command id and (decrypted) body. */
-  notify: [cmd: number, body: Buffer];
+  /** A station notify: its command id, (decrypted) body and 16-byte `XZYH` header. */
+  notify: [cmd: number, body: Buffer, head: Buffer];
   /** A message of another element type (2 file, 4 playback, 7 stream, 0x62, 0x63). */
   link: [type: number, data: Buffer];
   close: [];
@@ -226,15 +226,15 @@ export class RtcDataChannel extends EventEmitter<RtcDataChannelEvents> {
 
   /**
    * Send a command on the data channel, the app's route for all but its RTCP-bound live commands, as
-   * {@link commandFrame} (sealed with {@link cmdGcm}); resolves with the reply body, rejects after 20 s (35 s for a
-   * 1350 whose `cmd` is 6236). `flag` is header byte 14.
+   * {@link commandFrame} (sealed with {@link cmdGcm}); resolves with the reply body, rejects after 20 s (35 s for 1060
+   * and for a 1350 whose `cmd` is 6236, as `ack_reader_get_ack` waits). `flag` is header byte 14.
    */
   command(cmd: number, body: string | Buffer, channel = 0, flag = 0): Promise<Buffer> {
     if (!this.connected) return Promise.reject(new Error("rtc data channel not connected"));
     const frame = commandFrame(cmd, body, channel, this.seal, flag);
     for (let o = 0; o < frame.length; o += CHUNK)
       this.kcps[0]!.send(wrtcLink(CMD, frame.subarray(o, o + CHUNK), this.opts.multi));
-    const long = cmd === 1350 && jsonCmd(String(body)) === 6236;
+    const long = cmd === 1060 || (cmd === 1350 && jsonCmd(String(body)) === 6236);
     return new Promise((resolve, reject) => {
       const p: Pending = {
         cmd,
@@ -324,7 +324,7 @@ export class RtcDataChannel extends EventEmitter<RtcDataChannelEvents> {
       return;
     }
     const plain = head[10] === GCM_VERSION ? (body.length > 28 ? gcmOpen(this.key, body) : undefined) : body;
-    if (plain) this.emit("notify", cmd, Buffer.from(plain));
+    if (plain) this.emit("notify", cmd, Buffer.from(plain), Buffer.from(head));
   }
 }
 
