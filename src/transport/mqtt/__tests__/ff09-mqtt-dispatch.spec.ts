@@ -4,7 +4,7 @@ import { MqttCommandRouter } from "../command-router.js";
 import type { EufyDevice } from "../../../core/types.js";
 
 /**
- * `MqttCommandRouter.dispatchCommand` on the `ff09-actuate` intent — no live broker: the `securityTransport` dep
+ * `MqttCommandRouter.dispatchCommand` on the `ff09-actuate` intent — no live broker: the `secureTransport` dep
  * hands back a fake, device resolution comes from the injected `listDevices`, and the "MQTT connection" is a
  * bare EventEmitter standing in for `SecureMqtt` (publish is a no-op; `message`
  * events are emitted manually to simulate a device `/res` reply). Fake timers drive the ack-wait
@@ -33,7 +33,7 @@ function makeRouter(
     ensureDevices: async () => {},
     onCommandAck: (info) => acks.push(info),
     onError: () => {},
-    securityTransport: async () => fakeMqtt as any,
+    secureTransport: async () => fakeMqtt as any,
   });
 
   const cmd = {

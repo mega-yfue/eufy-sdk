@@ -64,7 +64,7 @@ function makeRouter(plain: Buffer, opts: { noReply?: boolean } = {}) {
     ensureDevices: async () => {},
     onCommandAck: () => {},
     onError: () => {},
-    securityTransport: async () => fakeMqtt as any,
+    secureTransport: async () => fakeMqtt as any,
   });
 
   const fakeMqtt = new EventEmitter() as EventEmitter & {

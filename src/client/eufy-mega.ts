@@ -434,37 +434,23 @@ export class EufyMega extends EventEmitter {
       },
       onCommandAck: (info) => this.emit("commandAck", info as EufyMegaEventMap["commandAck"][0]),
       onError: (e) => this.reportError(e),
-      // The `a2` account id an `eufy_life` DP frame embeds — the owning member's `admin_user_id`,
-      // falling back to the logged-in account's user id (the confirmed script path does the same).
+      // The user id a lock's `mqtt-dp` frame embeds — the owning member's `admin_user_id`, falling back to the
+      // logged-in account's user id.
       resolveAccountId: (dev) => adminUserIdOf(dev.raw) ?? this.mega.auth?.userId ?? "",
       // Fetch + parse a gallery effect from the HTTP catalogue into the serializable spec. The catalogue
       // lives in the http layer (transport/http/light-catalog); the mqtt router owns the frame bytes.
       resolvePreset: (presetId) => resolveLightEffectHttp(this.mega, presetId),
       /**
-       * Publish over the persistent transport for THIS device's credential scope — one connection per
-       * product line carrying both legs, as the app does. The `eufy_life` credential grants the
-       * command leg as well as the reports.
-       *
-       * Uses an already-installed transport directly rather than awaiting the bring-up memo, because
-       * the path is re-entrant: bringing a scope up subscribes its devices and sends their
-       * realtime-init commands, which publish back through here on that same scope. Awaiting the memo
-       * would have that publish wait on the bring-up waiting on it. The transport is installed before
-       * subscribing begins and publishing needs no subscription, so the direct path is safe.
+       * The persistent transport for one credential scope — one connection per product line carrying both
+       * legs, as the app does — once its bring-up has subscribed every device, so a command's answer is never
+       * published before its topic is subscribed. A realtime-init sent during that bring-up waits here
+       * without holding it, since the bring-up does not await it.
        */
-      securityTransport: async () => {
-        await this.ensureMqttStarted("eufy_security");
-        const transport = this.transports.get("eufy_security");
-        if (!(transport instanceof SecureMqtt)) throw new Error("the eufy_security MQTT stack is not connected");
-        return transport;
-      },
-      publishSecure: async (dev, topic, body) => {
-        const scope = mqttScopeFor(dev);
-        if (!this.transports.has(scope)) await this.ensureMqttStarted(scope);
+      secureTransport: async (scope) => {
+        await this.ensureMqttStarted(scope);
         const transport = this.transports.get(scope);
         if (!transport) throw new Error(`secure-MQTT transport not connected for scope "${scope}"`);
-        await transport.publish(topic, typeof body === "function" ? body((transport as SecureMqtt).id) : body, {
-          qos: 1,
-        });
+        return transport as SecureMqtt;
       },
     });
     this.tuya = new TuyaCommandRouter({ allowUnverified: this.opts.tuyaAllowUnverified });
@@ -523,7 +509,7 @@ export class EufyMega extends EventEmitter {
   /**
    * The single entry point that installs the persistent secure-MQTT transport for one credential
    * scope — used by BOTH the auto-realtime bring-up ({@link ensureRealtime}) and an on-demand light-DP
-   * publish (the router's `publishSecure`, wired in the constructor). Memoised per scope on
+   * publish (the router's `secureTransport`, wired in the constructor). Memoised per scope on
    * {@link mqttReady} so the two can't race into two connections: whoever calls first starts it, the
    * other awaits the same promise. Resolves only once {@link startMqtt} has `connect()`-ed, the
    * transport is installed, and every device on that scope is subscribed — so a publish that awaits it
@@ -1953,6 +1939,8 @@ export class EufyMega extends EventEmitter {
    * A device is recorded in that transport's {@link mqttSubscribed} entry before its subscribe is awaited,
    * whatever the outcome, so a pass running alongside or after skips it: each device is attempted once
    * per transport.
+   * Its realtime-init is not awaited: a light's answer can take up to its 15 s wait, which must not hold the
+   * scope's bring-up.
    *
    * A Tuya clean-line device (`eufy_home_tuya`) is not subscribed: its state lives on the Tuya cloud,
    * and the broker refuses its `eufy_home` topics on every credential.
@@ -1967,7 +1955,7 @@ export class EufyMega extends EventEmitter {
         // The app names a topic's product by `snToPn`; the security stack's category is `eufy_security`.
         const pnDevice = await this.mqtt.withPn(d);
         await transport.subscribeDevice(scope === "eufy_security" ? { ...pnDevice, category: scope } : pnDevice);
-        await this.sendRealtimeInit(d.sn);
+        void this.sendRealtimeInit(d.sn).catch((e) => this.reportError(e));
       } catch (e) {
         this.reportError(e);
       }

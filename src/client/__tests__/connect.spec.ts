@@ -520,29 +520,18 @@ describe("EufyMega auto-realtime", () => {
     expect(c.mqtt.mock.calls.map((a) => a[0])).toEqual(["eufy_life"]);
   });
 
-  it("a publish issued while its own scope is coming up does not deadlock", async () => {
-    // Bringing a scope up subscribes its devices and sends their realtime-init commands, which publish
-    // back on that same scope. If publishSecure awaited the bring-up memo it would wait on the bring-up
-    // that is waiting on it — a hang, not a failure, so this is guarded explicitly.
+  it("a realtime-init still waiting on its device's answer does not hold the bring-up", async () => {
     const c = makeClient({ mqtt: 1, category: "eufy_life" });
-    const published: string[] = [];
-    const transport = Object.assign(new EventEmitter(), {
-      subscribeDevice: vi.fn(async () => {
-        await (c.eufy as any).mqtt.deps.publishSecure({ category: "eufy_life" }, "cmd/x/req", "{}");
-      }),
-      publish: vi.fn(async (t: string) => void published.push(t)),
-      disconnect: vi.fn(async () => {}),
-    });
-    c.mqtt.mockResolvedValue(transport);
-
+    (c.eufy as any).sendRealtimeInit = () => new Promise(() => {});
+    c.mqtt.mockResolvedValue(
+      Object.assign(new EventEmitter(), { subscribeDevice: vi.fn(async () => {}), disconnect: vi.fn(async () => {}) }),
+    );
     await expect(
       Promise.race([
         (c.eufy as any).ensureRealtime(),
-        new Promise((_, rej) => setTimeout(() => rej(new Error("deadlocked")), 2000)),
+        new Promise((_, rej) => setTimeout(() => rej(new Error("held")), 2000)),
       ]),
     ).resolves.toMatchObject({ state: "ready" });
-    expect(published).toEqual(["cmd/x/req"]);
-    expect(c.mqtt).toHaveBeenCalledOnce(); // reused the in-flight transport, didn't open a second
   });
 
   it("a disconnect racing the bring-up leaves no MQTT transport behind", async () => {

@@ -1,7 +1,9 @@
+import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Command } from "../../../core/contracts.js";
 import type { EufyDevice } from "../../../core/types.js";
 import { dpColorFields } from "../dp-color.js";
+import { buildDpFrame } from "../dp-codec.js";
 import { MqttCommandRouter } from "../command-router.js";
 
 const ACCOUNT_ID = "0".repeat(40);
@@ -63,7 +65,7 @@ describe("0x0206 custom-colour field serialization", () => {
 describe("MqttCommandRouter custom-colour dispatch", () => {
   afterEach(() => vi.useRealTimers());
 
-  it("publishes one full 0x0206 frame and acknowledges only after publish", async () => {
+  it("sends one full 0x0206 frame under the own user id and is done on the light's answer", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(0x01020304 * 1000));
     const dev = {
@@ -74,56 +76,112 @@ describe("MqttCommandRouter custom-colour dispatch", () => {
       deviceClass: "light",
       api: "mega",
       realtime: "smqtt",
-      raw: { device_new_pn: "T8L02" },
+      raw: { device_new_pn: "T8L02", member: { admin_user_id: "2".repeat(40) } },
     } as EufyDevice;
-    let releasePublish!: () => void;
-    const published = new Promise<void>((resolve) => (releasePublish = resolve));
-    const publishSecure = vi.fn(
-      (_dev: EufyDevice, _topic: string, _body: string | ((clientId: string) => string)): Promise<void> => published,
-    );
+    const mqtt = Object.assign(new EventEmitter(), { id: "client-1", publish: vi.fn(async () => {}) });
     const acks: Record<string, unknown>[] = [];
     const router = new MqttCommandRouter({
-      mega: {} as never,
+      mega: { auth: { userId: ACCOUNT_ID } } as never,
       listDevices: () => [dev],
       ensureDevices: async () => {},
-      resolveAccountId: () => ACCOUNT_ID,
-      publishSecure,
+      secureTransport: async () => mqtt as never,
       onCommandAck: (info) => acks.push(info),
       onError: () => {},
     });
 
     const dispatched = router.dispatchCommand(DEVICE_SN, colorCommand());
     await vi.advanceTimersByTimeAsync(0);
-    expect(publishSecure).toHaveBeenCalledOnce();
-    expect(acks).toHaveLength(0);
+    expect(mqtt.publish).toHaveBeenCalledOnce();
 
-    const [, topic, build] = publishSecure.mock.calls[0]!;
-    const body = typeof build === "function" ? build("client-1") : build;
+    const [topic, body] = mqtt.publish.mock.calls[0] as unknown as [string, string];
     expect(topic).toBe(`cmd/eufy_life/T8L02/${DEVICE_SN}/req`);
-    const outer = JSON.parse(body) as { head: { cmd: number }; payload: string };
+    const outer = JSON.parse(body) as { head: { cmd: number; cmd_status: number }; payload: string };
     const inner = JSON.parse(outer.payload) as { data: string };
-    expect(outer.head.cmd).toBe(17);
+    expect(outer.head).toMatchObject({ cmd: 17, cmd_status: 1 });
     expect(Buffer.from(inner.data, "base64").toString("hex")).toBe(
       "ff097d000300020206a10404030201a22830303030303030303030303030303030303030303030303030303030303030303030303030303030" +
         "a302264ea4020000a50105a60601ff00000000a70b0a00010203040506070809a80164a9050000000000aa0100ab020000" +
         "ac04ffffffffad0100ae0100af0100b0010045",
     );
 
-    releasePublish();
-    await dispatched;
+    const answer = (cmd: number) => ({
+      topic: `cmd/eufy_life/T8L02/${DEVICE_SN}/app/res`,
+      raw: {
+        head: { cmd: 16 },
+        payload: JSON.stringify({
+          data: Buffer.from(JSON.stringify({ data: buildDpFrame(cmd, "", []).toString("hex") })).toString("base64"),
+        }),
+      },
+    });
+    mqtt.emit("message", answer(0x0204));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(acks).toHaveLength(0);
+    mqtt.emit("message", answer(0x0a06));
+    await expect(dispatched).resolves.toBe(true);
     expect(acks).toEqual([{ sn: DEVICE_SN, kind: "mqtt-dp-color", cmdCode: 0x0206, acked: true }]);
+  });
+
+  /** A router over one T8L02 and a fake light stack. */
+  const lightRouter = () => {
+    const dev = { sn: DEVICE_SN, model: "T8L02", category: "eufy_life", raw: { device_new_pn: "T8L02" } } as EufyDevice;
+    const mqtt = Object.assign(new EventEmitter(), { id: "client-1", publish: vi.fn(async () => {}) });
+    const router = new MqttCommandRouter({
+      mega: { auth: { userId: ACCOUNT_ID } } as never,
+      listDevices: () => [dev],
+      ensureDevices: async () => {},
+      secureTransport: async () => mqtt as never,
+      onCommandAck: () => {},
+      onError: () => {},
+    });
+    return { router, mqtt };
+  };
+
+  it("is not done when the light does not answer within 15 s, and is not sent again", async () => {
+    vi.useFakeTimers();
+    const { router, mqtt } = lightRouter();
+    const dispatched = router.dispatchCommand(DEVICE_SN, colorCommand());
+    await vi.advanceTimersByTimeAsync(15_000);
+    await expect(dispatched).resolves.toBe(false);
+    expect(mqtt.publish).toHaveBeenCalledOnce();
+  });
+
+  it("is done on the last package of a split answer, not the first", async () => {
+    vi.useFakeTimers();
+    const { router, mqtt } = lightRouter();
+    const part = (index: number) => {
+      const body = Buffer.from([0xff, 0x09, 0, 0, 0x03, 0x00, 0x02, 0x8a, 0x06, index, 0x00]);
+      body.writeUInt16LE(body.length + 1, 2);
+      const frame = Buffer.concat([body, Buffer.from([body.reduce((x, y) => x ^ y, 0)])]);
+      return {
+        topic: `cmd/eufy_life/T8L02/${DEVICE_SN}/app/res`,
+        raw: {
+          head: { cmd: 16 },
+          payload: JSON.stringify({
+            data: Buffer.from(JSON.stringify({ data: frame.toString("hex") })).toString("base64"),
+          }),
+        },
+      };
+    };
+    let done: boolean | undefined;
+    void router.dispatchCommand(DEVICE_SN, colorCommand()).then((r) => (done = r));
+    await vi.advanceTimersByTimeAsync(0);
+    mqtt.emit("message", part(0x12));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(done).toBeUndefined();
+    mqtt.emit("message", part(0x22));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(done).toBe(true);
   });
 
   it("rejects malformed transport intent without publishing or acknowledging", async () => {
     const dev = { sn: DEVICE_SN, model: "T8L02", category: "eufy_life", raw: { device_new_pn: "T8L02" } } as EufyDevice;
-    const publishSecure = vi.fn();
+    const secureTransport = vi.fn();
     const onCommandAck = vi.fn();
     const router = new MqttCommandRouter({
       mega: {} as never,
       listDevices: () => [dev],
       ensureDevices: async () => {},
-      resolveAccountId: () => ACCOUNT_ID,
-      publishSecure,
+      secureTransport,
       onCommandAck,
       onError: () => {},
     });
@@ -131,7 +189,7 @@ describe("MqttCommandRouter custom-colour dispatch", () => {
     await expect(router.dispatchCommand(DEVICE_SN, colorCommand({ segmentCount: 0 }))).rejects.toThrow(
       /segment count/i,
     );
-    expect(publishSecure).not.toHaveBeenCalled();
+    expect(secureTransport).not.toHaveBeenCalled();
     expect(onCommandAck).not.toHaveBeenCalled();
   });
 });
