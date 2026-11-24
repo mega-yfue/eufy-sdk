@@ -8,6 +8,8 @@ import { EufyMega } from "../eufy-mega.js";
 const STANDALONE = "T85V0K0000000000";
 const ATTACHED = "T85V0K0000000001";
 const S330 = "T8531K0000000000";
+// An E330 that reports device_type LOCK_8531 (189) rather than LOCK_8530.
+const S330_189 = "T8531K0000000001";
 const HUB = "T8010P0000000000";
 const ADMIN = "0000000000000000000000000000000000000000";
 
@@ -40,6 +42,13 @@ describe("video lock ff09 routing", () => {
       { sn: STANDALONE, model: "T85V0", api: "mega", p2pDid: "XXXXXXX-000000-XXXXX", raw: raw(STANDALONE) },
       { sn: ATTACHED, model: "T85V0", api: "mega", p2pDid: "XXXXXXX-000001-XXXXX", raw: raw(HUB) },
       { sn: S330, model: "T8531", api: "mega", p2pDid: "XXXXXXX-000002-XXXXX", raw: raw(S330, DeviceType.LOCK_8530) },
+      {
+        sn: S330_189,
+        model: "T8531",
+        api: "mega",
+        p2pDid: "XXXXXXX-000003-XXXXX",
+        raw: raw(S330_189, DeviceType.LOCK_8531),
+      },
     ] as EufyDevice[];
     const mqtt = vi.spyOn(internals.mqtt, "dispatchCommand").mockResolvedValue();
     const p2p = vi.spyOn(internals.p2p, "dispatchCommand").mockResolvedValue();
@@ -63,10 +72,12 @@ describe("video lock ff09 routing", () => {
 
     await internals.routeCommand(STANDALONE, unlock(STANDALONE));
     await internals.routeCommand(S330, unlock(S330));
+    await internals.routeCommand(S330_189, unlock(S330_189));
     await internals.ff09SettingsReaderFor(STANDALONE, ctx(STANDALONE))!.getAutoLockState();
     expect(mqtt.mock.calls).toEqual([
       [STANDALONE, unlock(STANDALONE)],
       [S330, unlock(S330)],
+      [S330_189, unlock(S330_189)],
     ]);
     expect(mqttRead).toHaveBeenCalledExactlyOnceWith(STANDALONE, { adminUserId: ADMIN, deviceSn: STANDALONE });
 
