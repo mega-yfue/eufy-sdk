@@ -8,7 +8,7 @@ import { LOCK_COMMAND_CODE, CMD_TRANSFER_PAYLOAD } from "../../ff09.js";
 
 /**
  * `MqttCommandRouter.dispatchCommand` on the `ff09-autolock` intent (behind `dev.lock()?.setAutoLock`)
- * — no live broker: the `securityTransport` dep hands back a fake, device resolution comes from the injected
+ * — no live broker: the `secureTransport` dep hands back a fake, device resolution comes from the injected
  * `listDevices`, and the "MQTT connection" is a bare EventEmitter standing in for `SecureMqtt`, same style
  * as `ff09-mqtt-dispatch.spec.ts`. The `publish` mock inspects each outbound envelope (GET vs SET, by
  * opcode) and, for the GET, emits a synthetic-but-correctly-encrypted device reply built with the
@@ -79,7 +79,7 @@ function makeRouter(opts: { delay: number; a7: number; a8: number; currentlyEnab
     ensureDevices: async () => {},
     onCommandAck: (info) => acks.push(info),
     onError: () => {},
-    securityTransport: async () => fakeMqtt as any,
+    secureTransport: async () => fakeMqtt as any,
   });
 
   const fakeMqtt = new EventEmitter() as EventEmitter & {
@@ -200,7 +200,7 @@ describe("MqttCommandRouter.dispatchCommand (ff09-autolock)", () => {
       ensureDevices: async () => {},
       onCommandAck: () => {},
       onError: () => {},
-      securityTransport: async () => fakeMqtt as any,
+      secureTransport: async () => fakeMqtt as any,
     });
     const fakeMqtt = new EventEmitter() as EventEmitter & {
       id: string;
@@ -235,7 +235,7 @@ describe("MqttCommandRouter.dispatchCommand (ff09-autolock)", () => {
       ensureDevices: async () => {},
       onCommandAck: (info) => acks.push(info),
       onError: () => {},
-      securityTransport: async () => fakeMqtt as any,
+      secureTransport: async () => fakeMqtt as any,
     });
     const fakeMqtt = new EventEmitter() as EventEmitter & {
       id: string;

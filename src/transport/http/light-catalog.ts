@@ -178,7 +178,7 @@ export async function listAiSceneRecommendations(
 /**
  * Fetch a gallery effect by exact catalog `lightId` and parse it into the {@link DpPresetSpec} the
  * MQTT router serializes — the "Auto inside setEffect" resolution. Matches the EXACT id (never
- * substitutes a neighbour — the DP write is fire-and-forget). Only effects with directly-serializable
+ * substitutes a neighbour — the write is done on the light's answer whatever its status byte says). Only effects with directly-serializable
  * `params.layer` data are supported; flat/grouped entries throw a clear error rather than emit a guess.
  */
 export async function resolveLightEffect(mega: MegaHttpClient, lightId: number): Promise<DpPresetSpec> {

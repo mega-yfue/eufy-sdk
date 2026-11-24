@@ -28,7 +28,7 @@ function lockRouter(member: { admin_user_id: string } | null = { admin_user_id: 
     onCommandAck: (info) => acks.push(info),
     onError: () => {},
     resolveAccountId: () => accountId,
-    securityTransport: async () => mqtt as any,
+    secureTransport: async () => mqtt as any,
   });
   return { router, mqtt, acks };
 }

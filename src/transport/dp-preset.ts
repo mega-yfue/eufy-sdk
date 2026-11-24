@@ -150,9 +150,9 @@ export function rgbcwBlock(hex: string): Buffer | null {
  * `[0,0]`, since a field the catalog omits genuinely has no value to pack.
  *
  * Each component goes through {@link b8}, so a value the cloud stringified is accepted and a value of
- * an unreversed SHAPE throws instead of collapsing to zero. That distinction matters here: this is a
- * fire-and-forget write, so a silently zeroed range would be advertised `buildable` and then reported
- * as sent while the light ignored it.
+ * an unreversed SHAPE throws instead of collapsing to zero. That distinction matters here: the write is done
+ * on the light's answer whatever its status byte says, so a silently zeroed range would be advertised
+ * `buildable` and then reported as applied while the light ignored it.
  */
 function rangeBytes2(v: unknown): [number, number] {
   if (v === undefined || v === null) return [0, 0];
@@ -164,7 +164,7 @@ function rangeBytes2(v: unknown): [number, number] {
  * reverse-engineering validated, but some nature/moods effects carry a `[min,max]` pair in one of
  * these slots (e.g. `interval_value: [1,1]`), and how the app packs that into the fixed-width header
  * is NOT reversed. Silently collapsing the pair to a byte would ship a mis-packed frame that the light
- * ignores while the fire-and-forget write reports success — worse than failing. Refuse it, exactly as
+ * ignores while the write reports success on its answer — worse than failing. Refuse it, exactly as
  * {@link layerTrailer} bails on an unknown layer type, until a capture pins the packing down.
  */
 export const b8 = (v: unknown): number => {

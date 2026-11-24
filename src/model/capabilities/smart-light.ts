@@ -207,7 +207,8 @@ function presetCommand(lightId: number): Command {
  * effect frame is **per-family**: across the `T8L0x` line the layer blobs differ (extra trailing
  * fields, colour fields at different widths) and the RGBCW mixing constants were derived from
  * T8L02 alone. `setEffect` is gated to these; on any other family member it throws rather
- * than send T8L02's bytes (a fire-and-forget wire makes a mis-packed frame look like success).
+ * than send T8L02's bytes (a write is done on the light's answer whatever its status byte says, so a mis-packed
+ * frame looks like success).
  * on/off/brightness are the shared `setDeviceInfoPayloadData` frame and are NOT gated.
  *
  * Keys are normalized T-codes: `ctx.model` carries the cloud record's `device_model` verbatim, while

@@ -15,8 +15,8 @@
  * invariant.
  *
  * Every security-device command (ff09) rides the facade's long-lived `eufy_security` stack
- * ({@link MqttRouterDeps.securityTransport}), as the app's one session; `eufy_life` DP writes publish over the
- * light stack via {@link MqttRouterDeps.publishSecure}.
+ * ({@link MqttRouterDeps.secureTransport}), as the app's one session; `eufy_life` DP and `aiot-dp` writes ride
+ * their device's own stack.
  */
 import { randomBytes } from "node:crypto";
 import type { EufyDevice } from "../../core/types.js";
@@ -40,8 +40,8 @@ import {
   type Ff09TransferPayload,
 } from "../ff09.js";
 import type { SecureMqtt } from "./secure-mqtt.js";
-import { secureTopic } from "./topics.js";
-import { buildDpFrame, buildDpEnvelope, nextMsgSeq } from "./dp-codec.js";
+import { mqttScopeFor, secureTopic, type MqttScope } from "./topics.js";
+import { buildDpFrame, buildDpEnvelope, nextMsgSeq, parseDpMessage } from "./dp-codec.js";
 import { dpPresetFields, dpLevelFields, type DpPresetSpec } from "../dp-preset.js";
 import { dpColorFields } from "./dp-color.js";
 import { buildCleanDpEnvelope } from "./clean-codec.js";
@@ -253,9 +253,9 @@ export interface MqttRouterDeps {
   onCommandAck: (info: Record<string, unknown>) => void;
   onError: (err: Error) => void;
   /**
-   * The `a2` account id an `eufy_life` DP frame embeds for `dev` — the owning member's `admin_user_id`
-   * (or the session user id). Injected because it needs session state the transport doesn't hold; the
-   * router treats it opaquely. Required once any `mqtt-dp` command family can be routed.
+   * The user id a lock's `mqtt-dp` frame embeds for `dev` — the owning member's `admin_user_id` (or the
+   * session user id). Injected because it needs session state the transport doesn't hold; the router
+   * treats it opaquely.
    */
   resolveAccountId?: (dev: EufyDevice) => string;
   /**
@@ -265,15 +265,10 @@ export interface MqttRouterDeps {
    */
   resolvePreset?: (lightId: number) => Promise<DpPresetSpec>;
   /**
-   * Publish an already-built MQTT message `body` to `topic` over the facade's persistent account-wide
-   * secure-MQTT transport — the CONFIRMED `eufy_life` light-write path (the facade's `connectMQTT()` +
-   * `transport.publish`). Injected because that persistent connection is owned by the facade, not this
-   * router. Required to route
-   * `mqtt-dp`/`mqtt-dp-color`/`mqtt-dp-preset`.
+   * The facade's persistent stack for one credential scope: `eufy_security` for every ff09 command, as the app's one
+   * session, and a light's or clean-line device's own scope for its DP writes.
    */
-  publishSecure?: (dev: EufyDevice, topic: string, body: string | ((clientId: string) => string)) => Promise<void>;
-  /** The facade's long-lived `eufy_security` stack, which every ff09 command rides, as the app's one session. */
-  securityTransport?: () => Promise<SecureMqtt>;
+  secureTransport?: (scope: MqttScope) => Promise<SecureMqtt>;
 }
 
 export class MqttCommandRouter {
@@ -325,14 +320,11 @@ export class MqttCommandRouter {
       case "mqtt-json":
         return this.dispatchMqttJson(sn, cmd);
       case "mqtt-dp-preset":
-        await this.dispatchDpPreset(sn, cmd);
-        return false;
+        return this.dispatchDpPreset(sn, cmd);
       case "mqtt-dp-color":
-        await this.dispatchDpColor(sn, cmd);
-        return false;
+        return this.dispatchDpColor(sn, cmd);
       case "aiot-dp":
-        await this.dispatchAiotDp(sn, cmd);
-        return false;
+        return this.dispatchAiotDp(sn, cmd);
       default:
         // An ff09-* command reaches here for a device with no P2P endpoint or a standalone video lock.
         // `ff09-setting-toggle` (Rain Mode) has no MQTT form, so one reaching here is a routing bug; fail
@@ -391,10 +383,10 @@ export class MqttCommandRouter {
     return (await pn) || sn.slice(0, 5);
   }
 
-  /** The `eufy_security` stack every ff09 command rides. */
-  private async securityMqtt(): Promise<SecureMqtt> {
-    if (!this.deps.securityTransport) throw new Error("ff09 over MQTT: securityTransport dependency not wired");
-    return await this.deps.securityTransport();
+  /** The facade's stack for `scope` ({@link MqttRouterDeps.secureTransport}). Throws if it isn't wired. */
+  private async secureMqtt(scope: MqttScope): Promise<SecureMqtt> {
+    if (!this.deps.secureTransport) throw new Error(`${scope} over MQTT: secureTransport dependency not wired`);
+    return await this.deps.secureTransport(scope);
   }
 
   /**
@@ -426,17 +418,27 @@ export class MqttCommandRouter {
     return undefined;
   }
 
-  /** Whether `m` is `sn`'s answer to a `head.cmd` of `mqttCmdCode`: on its `/res`, `head.cmd` one below, as the app matches. */
-  private static isReply(m: { topic?: string; raw?: unknown }, sn: string, mqttCmdCode: number): boolean {
-    return !!m.topic?.endsWith(`/${sn}/res`) && (m.raw as { head?: { cmd?: unknown } })?.head?.cmd === mqttCmdCode - 1;
+  /**
+   * Whether `m` is `sn`'s answer to a `head.cmd` of `mqttCmdCode`: on its `leg` topic (`res`, a light's `app/res`),
+   * `head.cmd` one below, as the app matches.
+   */
+  private static isReply(m: { topic?: string; raw?: unknown }, sn: string, mqttCmdCode: number, leg = "res"): boolean {
+    return (
+      !!m.topic?.endsWith(`/${sn}/${leg}`) && (m.raw as { head?: { cmd?: unknown } })?.head?.cmd === mqttCmdCode - 1
+    );
   }
 
   /**
    * `sn`'s answer to `mqttCmdCode` as the app's raw MQTT response reads it: `true` for success, `false` for a
    * `head.cmd_status` from 4 to 9 (a failure), `undefined` for a message that is not the answer.
    */
-  private static answer(m: { topic?: string; raw?: unknown }, sn: string, mqttCmdCode: number): boolean | undefined {
-    if (!MqttCommandRouter.isReply(m, sn, mqttCmdCode)) return undefined;
+  private static answer(
+    m: { topic?: string; raw?: unknown },
+    sn: string,
+    mqttCmdCode: number,
+    leg = "res",
+  ): boolean | undefined {
+    if (!MqttCommandRouter.isReply(m, sn, mqttCmdCode, leg)) return undefined;
     const status = (m.raw as { head?: { cmd_status?: unknown } }).head?.cmd_status;
     return !(typeof status === "number" && status >= 4 && status <= 9);
   }
@@ -506,7 +508,7 @@ export class MqttCommandRouter {
       }),
     );
 
-    const mqtt = await this.securityMqtt();
+    const mqtt = await this.secureMqtt("eufy_security");
     const reply = await this.request(
       mqtt,
       ff09MqttTopic(dev.model, sn),
@@ -554,7 +556,7 @@ export class MqttCommandRouter {
   private async dispatchFf09Autolock(sn: string, cmd: Extract<Command, { kind: "ff09-autolock" }>): Promise<boolean> {
     const dev = await this.pnDeviceFor(sn);
 
-    const mqtt = await this.securityMqtt();
+    const mqtt = await this.secureMqtt("eufy_security");
     const topic = ff09MqttTopic(dev.model, sn);
 
     // ── 1. GET current settings, matched back by keyTime (shared with getAutoLockState — see helper). ──
@@ -641,7 +643,7 @@ export class MqttCommandRouter {
    */
   async getAutoLockState(sn: string, cmd: { adminUserId: string; deviceSn: string }): Promise<AutoLockSnapshot> {
     const dev = await this.pnDeviceFor(sn);
-    const mqtt = await this.securityMqtt();
+    const mqtt = await this.secureMqtt("eufy_security");
     const topic = ff09MqttTopic(dev.model, sn);
     const getReply = await this.fetchFf09SettingsGetReply(mqtt, topic, sn, cmd);
     return decodeFf09AutoLockSnapshot(
@@ -657,45 +659,62 @@ export class MqttCommandRouter {
   }
 
   /**
-   * The `a2` account id an `eufy_life` DP frame embeds — the owning member's `admin_user_id` (or the
-   * session user id), resolved by the injected {@link MqttRouterDeps.resolveAccountId}; `""` goes out as the app
-   * sends it. Throws if the resolver isn't wired.
+   * The user id a lock's `mqtt-dp` frame embeds, resolved by the injected {@link MqttRouterDeps.resolveAccountId};
+   * `""` goes out as the app sends it. Throws if the resolver isn't wired.
    */
   private requireAccountId(dev: EufyDevice): string {
-    if (!this.deps.resolveAccountId) {
-      throw new Error(`eufy_life DP for ${dev.sn}: resolveAccountId dependency not wired`);
-    }
+    if (!this.deps.resolveAccountId) throw new Error(`mqtt-dp for ${dev.sn}: resolveAccountId dependency not wired`);
     return this.deps.resolveAccountId(dev);
   }
 
+  /** How long the app's light commands wait for the light's answer (their `timeout`, 15 s); none is resent. */
+  private static readonly LIGHT_REPLY_TIMEOUT_MS = 15_000;
+
   /**
-   * Wrap a built DP frame in its `eufy_life` MQTT envelope and publish it to the device's `.../req`
-   * topic over the facade's persistent account-wide transport ({@link MqttRouterDeps.publishSecure}) —
-   * the CONFIRMED light-write path. Fire-and-forget: the DP wire carries no delivery ack the SDK
-   * has captured, so there's nothing to wait on here (unlike the ff09 paths above).
+   * Send one `eufy_life` DP frame as the app's light commands do and wait for the light's answer. The frame's `a2`
+   * is the signed-in user's own id, never the member's admin id. The answer arrives on `.../app/res` under
+   * `head.cmd` one below, not a failure, carrying a frame whose command matches `cmdCode` in its low 11 bits
+   * (`0x0A01` answers `0x0201`); its status byte fails nothing. A frame with the command's top bit set is one
+   * package of a split answer, and only the last package (its first payload byte's two nibbles equal, the package
+   * index reaching the count) ends the wait. `true` for that answer, `false` for a failure, `undefined` when none
+   * comes.
    */
-  private async publishDpFrame(dev: EufyDevice, sn: string, mqttCmdCode: number, frame: Buffer): Promise<void> {
-    if (!this.deps.publishSecure) {
-      throw new Error(`eufy_life DP for ${sn}: publishSecure dependency not wired`);
-    }
-    await this.deps.publishSecure(dev, secureTopic(await this.withPn(dev), "req"), (clientId) =>
-      buildDpEnvelope({ clientId, accountId: publishAccountId(dev), deviceSn: sn, mqttCmdCode, frame }),
+  private async publishDp(
+    dev: EufyDevice,
+    mqttCmdCode: number,
+    cmdCode: number,
+    fields: ReadonlyArray<{ tag: number; value: Buffer }>,
+  ): Promise<boolean | undefined> {
+    const frame = buildDpFrame(cmdCode, this.deps.mega.auth?.userId ?? "", fields);
+    const mqtt = await this.secureMqtt(mqttScopeFor(dev));
+    return this.request(
+      mqtt,
+      secureTopic(dev, "req"),
+      () =>
+        buildDpEnvelope({ clientId: mqtt.id, accountId: publishAccountId(dev), deviceSn: dev.sn, mqttCmdCode, frame }),
+      (m) => {
+        const answered = MqttCommandRouter.answer(m, dev.sn, mqttCmdCode, "app/res");
+        if (answered === false) return false;
+        const reply = answered ? parseDpMessage(m.raw) : undefined;
+        if (!reply || (reply.cmd & 0x7ff) !== cmdCode) return undefined;
+        const part = reply.fields[0]?.tag ?? 0;
+        return !(reply.cmd & 0x8000) || (part < 0x80 && part >> 4 === (part & 15)) ? true : undefined;
+      },
+      MqttCommandRouter.LIGHT_REPLY_TIMEOUT_MS,
+      0,
     );
   }
 
   /**
    * The `mqtt-dp` handler — a single `eufy_life` DP TLV write (on/off, brightness). The capability
-   * supplies the opaque `mqttCmdCode`/`cmdCode` + already-tagged scalar `fields`; this builds the frame
-   * ({@link buildDpFrame} prepends the `a1` timestamp + `a2` account id) and publishes it.
+   * supplies the opaque `mqttCmdCode`/`cmdCode` + already-tagged scalar `fields`; {@link publishDp} frames and sends it.
    */
   private async dispatchMqttDp(sn: string, cmd: Extract<Command, { kind: "mqtt-dp" }>): Promise<boolean> {
     const dev = await this.pnDeviceFor(sn);
     if (dev.category !== "eufy_life") return this.dispatchLockDp(sn, cmd);
-    const accountId = this.requireAccountId(dev);
-    const frame = buildDpFrame(cmd.cmdCode, accountId, cmd.fields);
-    await this.publishDpFrame(dev, sn, cmd.mqttCmdCode, frame);
-    this.deps.onCommandAck({ sn, kind: "mqtt-dp", cmdCode: cmd.cmdCode, acked: true });
-    return false;
+    const reply = await this.publishDp(dev, cmd.mqttCmdCode, cmd.cmdCode, cmd.fields);
+    this.deps.onCommandAck({ sn, kind: "mqtt-dp", cmdCode: cmd.cmdCode, acked: reply !== undefined });
+    return reply === true;
   }
 
   /**
@@ -716,7 +735,7 @@ export class MqttCommandRouter {
       functionType: cmd.functionType ?? 2,
     });
     const trans = this.sequenced(sn, toFf09Trans(frame));
-    const mqtt = await this.securityMqtt();
+    const mqtt = await this.secureMqtt("eufy_security");
     const reply = await this.request(
       mqtt,
       ff09MqttTopic(dev.model, sn),
@@ -744,7 +763,7 @@ export class MqttCommandRouter {
    */
   private async dispatchMqttJson(sn: string, cmd: Extract<Command, { kind: "mqtt-json" }>): Promise<boolean> {
     const dev = await this.pnDeviceFor(sn);
-    const mqtt = await this.securityMqtt();
+    const mqtt = await this.secureMqtt("eufy_security");
     const trans: MqttJsonTrans = { cmd: cmd.cmd, account_id: "", payload: cmd.payload, mValue3: 0, mChannel: 0 };
     const topic = ff09MqttTopic(dev.model, sn);
     const envelope = () =>
@@ -774,56 +793,48 @@ export class MqttCommandRouter {
     return reply === true;
   }
 
-  /** Serialize and publish one semantic RGB DP action without changing configured brightness. */
-  private async dispatchDpColor(sn: string, cmd: Extract<Command, { kind: "mqtt-dp-color" }>): Promise<void> {
+  /** Serialize and send one semantic RGB DP action without changing configured brightness. */
+  private async dispatchDpColor(sn: string, cmd: Extract<Command, { kind: "mqtt-dp-color" }>): Promise<boolean> {
     const dev = await this.pnDeviceFor(sn);
-    const accountId = this.requireAccountId(dev);
-    const fields = dpColorFields(cmd);
-    const frame = buildDpFrame(cmd.cmdCode, accountId, fields);
-    await this.publishDpFrame(dev, sn, cmd.mqttCmdCode, frame);
-    this.deps.onCommandAck({ sn, kind: "mqtt-dp-color", cmdCode: cmd.cmdCode, acked: true });
+    const reply = await this.publishDp(dev, cmd.mqttCmdCode, cmd.cmdCode, dpColorFields(cmd));
+    this.deps.onCommandAck({ sn, kind: "mqtt-dp-color", cmdCode: cmd.cmdCode, acked: reply !== undefined });
+    return reply === true;
   }
 
   /**
-   * The `aiot-dp` handler — a single DP write to a clean-line device (vacuum/mower). Builds the
-   * AIoT MQTT envelope ({@link buildCleanDpEnvelope}) and publishes fire-and-forget to the device's
-   * `cmd/eufy_home/{pn}/{sn}/req` topic over the facade's persistent transport. The clean line uses
-   * the DEFAULT credential (same as `eufy_mega` devices) — no separate MQTT connection needed; only
-   * `eufy_life` (smart lights) gets its own certificate.
+   * The `aiot-dp` handler — a single DP write to a clean-line device (vacuum/mower): the AIoT envelope
+   * ({@link buildCleanDpEnvelope}) published to the device's `cmd/eufy_home/{pn}/{sn}/req` topic over its own
+   * stack. The app reads no reply: the write is done once the publish is delivered.
    */
-  private async dispatchAiotDp(sn: string, cmd: Extract<Command, { kind: "aiot-dp" }>): Promise<void> {
+  private async dispatchAiotDp(sn: string, cmd: Extract<Command, { kind: "aiot-dp" }>): Promise<boolean> {
     const dev = await this.pnDeviceFor(sn);
     // The clean line's account id: the record's admin id when it states one, else the signed-in user's own id.
     const accountId = adminUserIdOf(dev.raw) || this.deps.mega.auth?.userId || "";
-    if (!this.deps.publishSecure) {
-      throw new Error(`aiot-dp for ${sn}: publishSecure dependency not wired`);
-    }
-    const envelope = buildCleanDpEnvelope(accountId, sn, cmd.dp, cmd.value);
-    await this.deps.publishSecure(dev, secureTopic(dev, "req"), envelope);
+    const mqtt = await this.secureMqtt(mqttScopeFor(dev));
+    await mqtt.publish(secureTopic(dev, "req"), buildCleanDpEnvelope(accountId, sn, cmd.dp, cmd.value), { qos: 1 });
     this.deps.onCommandAck({ sn, kind: "aiot-dp", dp: cmd.dp, acked: true });
+    return true;
   }
 
   /**
    * The `mqtt-dp-preset` handler — select a gallery effect by catalog id. Resolves the effect's
    * layer definition via the injected {@link MqttRouterDeps.resolvePreset} (HTTP catalog, client-
-   * owned), serializes it to the `0x020D` effect frame ({@link dpPresetFields}), and publishes it;
+   * owned), serializes it to the `0x020D` effect frame ({@link dpPresetFields}), and sends it;
    * if the catalog entry carries an overall brightness, sends the companion `0x0201` brightness frame
-   * ({@link dpLevelFields}) right after, matching the app's two-frame effect apply.
+   * ({@link dpLevelFields}) right after, matching the app's two-frame effect apply. Done when both are answered.
    */
-  private async dispatchDpPreset(sn: string, cmd: Extract<Command, { kind: "mqtt-dp-preset" }>): Promise<void> {
+  private async dispatchDpPreset(sn: string, cmd: Extract<Command, { kind: "mqtt-dp-preset" }>): Promise<boolean> {
     if (!this.deps.resolvePreset) {
       throw new Error(`mqtt-dp-preset for ${sn}: resolvePreset dependency not wired`);
     }
     const dev = await this.pnDeviceFor(sn);
-    const accountId = this.requireAccountId(dev);
     const spec = await this.deps.resolvePreset(cmd.presetId);
-    const effectFrame = buildDpFrame(cmd.cmdCode, accountId, dpPresetFields(spec));
-    await this.publishDpFrame(dev, sn, cmd.mqttCmdCode, effectFrame);
+    const replies = [await this.publishDp(dev, cmd.mqttCmdCode, cmd.cmdCode, dpPresetFields(spec))];
     if (typeof spec.brightness === "number") {
-      const brightFrame = buildDpFrame(cmd.companionCmdCode, accountId, dpLevelFields(spec.brightness));
-      await this.publishDpFrame(dev, sn, cmd.mqttCmdCode, brightFrame);
+      replies.push(await this.publishDp(dev, cmd.mqttCmdCode, cmd.companionCmdCode, dpLevelFields(spec.brightness)));
     }
-    this.deps.onCommandAck({ sn, kind: "mqtt-dp-preset", presetId: cmd.presetId, acked: true });
+    this.deps.onCommandAck({ sn, kind: "mqtt-dp-preset", presetId: cmd.presetId, acked: !replies.includes(undefined) });
+    return replies.every((r) => r === true);
   }
 }
 
