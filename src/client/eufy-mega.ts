@@ -44,6 +44,7 @@ import {
   hasRealtimeReads,
   needsRealtimeInit,
   hasProvidedAction,
+  thingValue,
 } from "../model/capabilities/index.js";
 import type { DeviceEventMap } from "../model/capabilities/index.js";
 import type { CommandContext } from "../model/capabilities/types.js";
@@ -53,7 +54,9 @@ import { type CleanRecordPage, EMPTY_CLEAN_RECORD_PAGE, parseCleanRecords } from
 import {
   commandObservation,
   commandReflection,
+  CommandResultError,
   LiveSnapshotUnavailableError,
+  StationUnreachableError,
   type Command,
   type CommandSink,
   type Ff09SettingsReader,
@@ -81,6 +84,13 @@ import { isHomeBase, isTuyaVacuum, isVideoSmartLock } from "../model/device-fami
 import { DeviceType } from "../model/device-types.js";
 import { cameraPowerTier } from "../model/capabilities/battery.js";
 import { liveFrames, rtcLiveFrames } from "../model/capabilities/bundle.js";
+import {
+  armedWithHouse,
+  armingModeCommand,
+  HOUSE_ARM_STATUS,
+  houseArmingState,
+  type ArmingMode,
+} from "../model/capabilities/arming.js";
 import { DeviceRegistry, recordString, type DeviceRecord, type ParamChange } from "./device-registry.js";
 import { PushRepeats } from "./push-repeats.js";
 import type {
@@ -88,6 +98,7 @@ import type {
   EufyMegaEvent,
   EufyMegaEventMap,
   DeviceState,
+  HouseModeResult,
   RealtimePlaneReadiness,
   RealtimeReadiness,
   StationFace,
@@ -101,6 +112,7 @@ export type {
   EufyMegaEventMap,
   AnyDeviceEvent,
   DeviceState,
+  HouseModeResult,
   RealtimePlaneReadiness,
   RealtimeReadiness,
   StationFace,
@@ -2203,6 +2215,94 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
+   * Arm a house, as the app's security page does. The house's cloud config takes the mode first
+   * (`update_home_config`, `arm_status` 1 home, 2 away, 3 disarmed); a refusal rejects and nothing is sent. The
+   * stations are then the ones its `get_home_config` names that the device list carries, else the house's own:
+   * a station or a device that is its own, `eufy_security`, not held as a guest, and not a SmartDrop, lock
+   * (bar the T8531 and T85V0), T8021, safe, tracker or chime. House `""` takes every listed device,
+   * `"shared.devices"` the ones in no house. Each one online whose 1224 (unreported: home) is not already the
+   * mode is written at once and awaited 6 s: the `1350` envelope `{mode_type, user_name}` on a platform-V2
+   * device, else the direct 1224 frame. Online is the app's `device_is_online`, which {@link Device.thingValue}
+   * reads. A station failing before its write (no `user_name` for the envelope) rejects the call before anything
+   * is sent, as the app's use case then answers no station. Resolves once all have answered, with a
+   * {@link HouseModeResult} for each station except one that refused with code 1, -3 or -133 or whose session did
+   * not connect, which the app does not report either.
+   *
+   * @param houseId a house id, a device's {@link EufyDevice.houseId}.
+   */
+  async setHouseMode(houseId: string, mode: ArmingMode): Promise<HouseModeResult[]> {
+    await this.mega.post("butler", "/app/butler/update_home_config", {
+      house_id: houseId,
+      arm_status: HOUSE_ARM_STATUS[mode],
+    });
+    const config = await this.mega.post<{ station_sns?: string[] }>("butler", "/app/butler/get_home_config", {
+      house_id: houseId,
+    });
+    const devices = this.registry.list().length ? this.registry.list() : await this.getDevices();
+    const named = devices.filter((d) => config?.station_sns?.includes(d.sn));
+    const house = houseId === "shared.devices" ? "" : houseId;
+    const inHouse = (d: EufyDevice) => houseId === "" || (d.houseId ?? "") === house;
+    const stations = named.length ? named : devices.filter((d) => inHouse(d) && armedWithHouse(d));
+    const writes = await Promise.all(
+      stations.map(async (d) => {
+        const { sn, name } = d;
+        const raw = (p: number) => this.registry.paramOf(sn, p);
+        const local = Number.parseInt(raw(1224) ?? "", 10);
+        const wire = Number.isNaN(local) ? 1 : local;
+        const ctx = await this.commandContext(sn);
+        const at = (w: number) => ({
+          sn,
+          ...(name ? { name } : {}),
+          ...houseArmingState(w, sn, raw, (id) => thingValue(id, ctx, raw)),
+        });
+        const cmd = armingModeCommand(mode, ctx);
+        const target = Number(commandReflection(cmd)?.raw);
+        const skipped: HouseModeResult = { ...at(wire), result: "skipped" };
+        if (!this.online(d) || wire === target) return async () => skipped;
+        return async (): Promise<HouseModeResult | undefined> => {
+          try {
+            return (await this.routeAndReflect(sn, cmd))
+              ? { ...at(target), result: "answered" }
+              : { ...at(wire), result: "failed" };
+          } catch (error) {
+            const unrecorded = error instanceof CommandResultError && [1, -3, -133].includes(error.code ?? 0);
+            if (unrecorded || error instanceof StationUnreachableError) return undefined;
+            return { ...at(wire), result: "failed", error };
+          }
+        };
+      }),
+    );
+    const settled = await Promise.all(writes.map((write) => write()));
+    return settled.filter((r) => r !== undefined);
+  }
+
+  /**
+   * Whether `d` is online, as the app works out `device_is_online` on every read: offline where the description
+   * lists none; in outdoor mode (6271 `"1"`) an open session to the device, else its station's 1140 reading on,
+   * or, off RTC, an open session to the station; an attached device also needs its 1131 on (unreported: a T8N00
+   * station). Without a description: 1131 `"1"`, or an open session; an attached T81A0 reporting offline takes
+   * its station's answer.
+   */
+  private online(d: EufyDevice): boolean {
+    const param = (sn: string, p: number) => this.registry.paramOf(sn, p);
+    const linked = (sn: string) => !!this.p2p.getSessions().get(sn)?.isConnected;
+    const on = (v?: string) => v === "1" || v === "true" || v === "TRUE";
+    const things = this.registry.thingsOf(d.sn);
+    if (things) {
+      if (!things.properties.device_is_online) return false;
+      if (param(d.sn, 6271) === "1") return linked(d.sn);
+      const st = d.stationSn || d.sn;
+      const hub = on(param(st, 1140)) || (!this.rtcRouteFor(st, "live") && linked(st));
+      const status = param(d.sn, 1131);
+      return st === d.sn ? hub : hub && (status === undefined ? st.startsWith("T8N00") : on(status));
+    }
+    if (param(d.sn, 1131) === "1") return true;
+    const parent =
+      d.sn.startsWith("T81A0") && d.stationSn !== d.sn && this.registry.list().find((p) => p.sn === d.stationSn);
+    return parent ? this.online(parent) : linked(d.sn);
+  }
+
+  /**
    * Restart a station: a HomeBase, or a camera-family device that is its own station.
    *
    * The restart is `RESTART_HUB` on the station's broadcast channel, so it reaches whatever owns the
@@ -2288,6 +2388,7 @@ export class EufyMega extends EventEmitter {
       updateAvailable: raw.needUpdate === true || raw.needUpdate === 1 || raw.needUpdate === "1",
       paramIds: new Set([...Object.keys(rec.params), ...Object.keys(rec.dpParams ?? {})].map(Number)),
       paramValue: (param) => rec.params[param],
+      online: () => this.online(dev),
       things: rec.things,
       capabilities: new Set(resolved.capabilities),
       // Member identity for ff09-* command devices (see core/contracts Ff09Identity).

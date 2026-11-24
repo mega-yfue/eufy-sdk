@@ -276,11 +276,11 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
    * a device reporting a value it will not accept back. No member states one today.
    */
   it("points an action at the read whose domain it accepts, rather than restating it", () => {
-    const arming = describeAll(allParams()).find((d) => d.capability === "arming")!;
-    const setMode = arming.actions.find((a) => a.name === "setMode")!;
-    expect(setMode.reflects).toBe("mode");
-    expect(arming.reads.find((r) => r.accessor === setMode.reflects)!.values).toEqual([0, 1, 2, 3, 4, 5, 6, 47, 63]);
-    expect(setMode.args![0].values).toBeUndefined();
+    const doorbell = describeAll(allParams()).find((d) => d.capability === "doorbell")!;
+    const set = doorbell.actions.find((a) => a.name === "setDingdongRingtone")!;
+    expect(set.reflects).toBe("dingdongRingtone");
+    expect(doorbell.reads.find((r) => r.accessor === set.reflects)!.values).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(set.args![0].values).toBeUndefined();
   });
 
   /** An action taking nothing SAYS so, so a caller can offer it as a plain button. */

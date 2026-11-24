@@ -253,6 +253,8 @@ export interface AvailabilityContext {
   paramIds?: ReadonlySet<number>;
   /** The raw value the device last reported for `param`, as the app's `device.params` holds it. */
   paramValue?: (param: number) => string | undefined;
+  /** Whether the device is online now, worked out from its sessions and its station's params. @internal */
+  online?: () => boolean;
   /**
    * The product's thing description, when the cloud returned one for its product code: which values each
    * named property offers on this product. Absent when not fetched — fall back to static defaults rather

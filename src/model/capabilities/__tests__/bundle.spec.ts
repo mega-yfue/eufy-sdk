@@ -654,6 +654,17 @@ describe("an identifier no member claims", () => {
     expect(dev.thingValue("voice_expulsion_switch")).toBe("0");
     expect(dev.thingValue("not_listed")).toBeUndefined();
   });
+  it("reads device_is_online as worked out live, never its description default", async () => {
+    const { device } = await over(WIRES);
+    const dev = device.Device.fromRecord("T0001P0000000000", { model: "T0001", category: "eufy_security", params: {} });
+    let online = false;
+    dev.bindActions(ctx("T0001", { things: things({ device_is_online: "bool" }), online: () => online }), {
+      dispatch: async () => undefined,
+    });
+    expect(dev.thingValue("device_is_online")).toBe("false");
+    online = true;
+    expect(dev.thingValue("device_is_online")).toBe("true");
+  });
 });
 
 test("reads a hex-encoded data point by the base64 the SDK holds it in", async () => {

@@ -1290,12 +1290,14 @@ export function thingReadback(identifier: string, value: string, ctx: Availabili
 /**
  * `identifier`'s value as the bundle reads it from the params `raw` answers: the first `>` rank with a
  * reported param, the last reported of its `+` params, mapped; the description's default when none is.
+ * `device_is_online` is worked out live ({@link AvailabilityContext.online}), never read.
  */
 export function thingRead(
   identifier: string,
   ctx: AvailabilityContext,
   raw: (param: number) => string | undefined,
 ): string | undefined {
+  if (identifier === "device_is_online") return ctx.online && String(ctx.online());
   if (javaOverridden(identifier, ctx)) return undefined;
   const read = bundleEntry(identifier, ctx)?.read;
   for (const rank of ranksOf(read)) {
