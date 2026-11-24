@@ -809,9 +809,12 @@ export class MqttCommandRouter {
   private async dispatchAiotDp(sn: string, cmd: Extract<Command, { kind: "aiot-dp" }>): Promise<boolean> {
     const dev = await this.pnDeviceFor(sn);
     // The clean line's account id: the record's admin id when it states one, else the signed-in user's own id.
-    const accountId = adminUserIdOf(dev.raw) || this.deps.mega.auth?.userId || "";
+    const uid = this.deps.mega.auth?.userId ?? "";
+    const accountId = adminUserIdOf(dev.raw) || uid;
     const mqtt = await this.secureMqtt(mqttScopeFor(dev));
-    await mqtt.publish(secureTopic(dev, "req"), buildCleanDpEnvelope(accountId, sn, cmd.dp, cmd.value), { qos: 1 });
+    const clientId = `android-${mqtt.appName ?? ""}-${uid}-eufy_android_${this.deps.mega.phoneModel}_${uid}`;
+    const envelope = buildCleanDpEnvelope(accountId, sn, cmd.dp, cmd.value, { clientId });
+    await mqtt.publish(secureTopic(dev, "req"), envelope, { qos: 1 });
     this.deps.onCommandAck({ sn, kind: "aiot-dp", dp: cmd.dp, acked: true });
     return true;
   }

@@ -120,6 +120,11 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
     return this.o.clientId ?? this.o.credentials.thing_name ?? "";
   }
 
+  /** The app scope the credentials are granted for (`app_name`), when they state one. */
+  get appName(): string | undefined {
+    return this.o.credentials.app_name;
+  }
+
   /** Connect, joining the attempt in `connecting` when one is already opening or open. */
   async connect(): Promise<void> {
     this.connecting ??= this.open().catch((error: unknown) => {

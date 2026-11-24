@@ -436,7 +436,7 @@ export class MegaHttpClient {
    */
   readonly openudid: string;
   /** The device model reported to the cloud (explicit `phoneModel`, else a stable random one). */
-  private readonly phoneModel: string;
+  readonly phoneModel: string;
   /** The `user-agent` for the media-download path (explicit `mediaUserAgent`, else derived from the model). */
   private readonly mediaUserAgent: string;
   private readonly store: SessionStore;
