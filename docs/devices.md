@@ -55,10 +55,11 @@ const stored = await dev.camera?.()?.snapshotStored?.(); // → Buffer; latest r
 const fresh = await dev.camera?.()?.snapshotLive?.(); // → { jpeg, width, height }; fresh live capture
 await dev.ptz?.()?.rotate(PtzDirection.left, 1.0); // PTZ step — see the PTZ guide
 await dev.light?.()?.setBrightness(50); // spotlight 1–100
-await dev.arming?.()?.setMode(ArmingMode.home); // guard mode
 await dev.lock?.()?.lock?.();
 await dev.lock?.()?.setAutoLock?.(true, 60); // enable, 60s delay
 await dev.lock?.()?.setRainMode?.(true); // P2P video lock only — optional accessor
+const [listed] = await eufy.getDevices();
+await eufy.setHouseMode(listed!.houseId!, ArmingMode.home); // arm the stations of a house
 ```
 
 Argument constants (`PtzDirection`, `ArmingMode`, …) are exported from the package — pass the named

@@ -69,6 +69,8 @@ export interface EufyDevice {
    * record names no member.
    */
   memberType?: number;
+  /** The house the device list places the device in (`house_id`, an id of `get_house_list`); absent where none. */
+  houseId?: string;
   /**
    * Device state data points (param_type → param_value), exactly as the cloud record carries them.
    * Raw and unnamed: the capability surface resolves these into named properties. `Device.inspect`

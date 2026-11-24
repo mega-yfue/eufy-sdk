@@ -2,7 +2,8 @@ import {
   ARMING,
   ARMING_CMD,
   ARMING_MEMBERS,
-  AlarmDelayMode,
+  armedWithHouse,
+  armingModeCommand,
   AlarmDelaySeconds,
   ArmingMode,
   type ArmingActions,
@@ -11,7 +12,8 @@ import { buildActions, buildCommand, decodeState } from "../index.js";
 import { bind } from "./bind.js";
 import type { CommandContext } from "../types.js";
 import type { MemberDeps } from "../members.js";
-import type { Command } from "../../../core/contracts.js";
+import { commandObservation, commandReflection, type Command } from "../../../core/contracts.js";
+import { parseThingsList } from "../thing-description.js";
 
 const ctx: CommandContext = {
   channel: 0,
@@ -21,9 +23,10 @@ const ctx: CommandContext = {
   capabilities: new Set(["arming"]),
   paramIds: new Set(),
   accountName: "someone+tag",
+  serial: "T8419P0000000000",
 };
 
-const noIdentityCtx: CommandContext = { channel: 0, codec: "station", paramIds: new Set() };
+const noIdentityCtx: CommandContext = { channel: 0, codec: "station", paramIds: new Set(), serial: "T8419P0000000000" };
 
 describe("arming capability module", () => {
   it("declares the capability + schema", () => {
@@ -35,89 +38,9 @@ describe("arming capability module", () => {
     expect(ARMING.detection?.evidenceParams).toContain(1224);
   });
 
-  /**
-   * away/home/disarmed are byte-exact captures (T8030, 2026-07-23); custom1 is a live confirmation
-   * (T8030, 2026-09-12) of the same frame shape with mode_type 3. The frame asserted below is the
-   * captured one either way — see ARMING_MODE_WIRE for the evidence split.
-   */
-  describe("setMode / buildCommand (wire captured live on a T8030, 2026-07-23)", () => {
-    it.each([
-      [ArmingMode.away, 0],
-      [ArmingMode.disarmed, 63],
-      [ArmingMode.home, 1],
-      [ArmingMode.custom1, 3],
-    ])("%s → set-payload cmd 1224, {mode_type:%i, user_name}, explicit mValue3:0", async (mode, modeType) => {
-      const { acts, sent } = bind<ArmingActions>("arming", ctx);
-      await acts.setMode(mode);
-      expect(sent).toEqual([
-        {
-          kind: "set-payload",
-          cmd: 1224,
-          payload: { mode_type: modeType, user_name: "someone+tag" },
-          channel: 0,
-          mValue3: 0,
-          answerMs: 6000,
-        },
-      ]);
-    });
-
-    it("buildCommand mirrors the same intent for the low-level setProperty path", () => {
-      expect(buildCommand("armingMode", "away", ctx)).toEqual({
-        kind: "set-payload",
-        cmd: 1224,
-        payload: { mode_type: 0, user_name: "someone+tag" },
-        channel: 0,
-        mValue3: 0,
-        answerMs: 6000,
-      });
-    });
-
-    it("buildCommand returns undefined for an unrelated action, and throws for an unknown mode name", () => {
-      expect(buildCommand("nope", "home", ctx)).toBeUndefined();
-      expect(() => buildCommand("armingMode", "not-a-mode", ctx)).toThrow(
-        /mode: "not-a-mode" is not a valid value \(must be one of 0\/1\/2\/3\/4\/5\/6\/47\/63\)/,
-      );
-    });
-
-    /**
-     * The five that spent a release refused. Each was qualified by sending exactly this frame and watching
-     * MODE_SWITCH come back (see `ARMING_MODE_WIRE`), so what this asserts is the promotion: the same value
-     * the getter answers now goes back out, through both entry points, on the frame that was confirmed.
-     *
-     * Both are checked because the fluent setter and the intent path share one domain check, and it was
-     * them disagreeing that put a guessed `mode_type` on a fire-and-forget wire in the first place.
-     */
-    it.each([
-      ["schedule", 2],
-      ["custom2", 4],
-      ["custom3", 5],
-      ["off", 6],
-      ["geo", 47],
-    ])("sends %s (mode_type %i) — confirmed live, no longer refused", async (name, wire) => {
-      const readCtx: CommandContext = { ...ctx, paramIds: new Set([ARMING_CMD.SET_ARMING]) };
-      const { acts, sent } = bind<ArmingActions>("arming", readCtx, {
-        read: (p) => (p === "armingMode" ? { value: wire } : undefined),
-      });
-      expect(acts.mode).toBe(wire);
-      await acts.setMode(acts.mode! as never);
-      // The frame the three byte-captured modes ride, differing only in `mode_type` — which is what the
-      // qualification established, and the reason promoting them needed no new wire.
-      expect(sent).toEqual([
-        {
-          kind: "set-payload",
-          cmd: 1224,
-          payload: { mode_type: wire, user_name: "someone+tag" },
-          channel: 0,
-          mValue3: 0,
-          answerMs: 6000,
-        },
-      ]);
-      expect(buildCommand("armingMode", name, ctx)).toMatchObject({ payload: { mode_type: wire } });
-    });
-
-    it("names every reportable mode, and offers every one of them", () => {
-      const mode = ARMING_MEMBERS.mode;
-      expect(Object.values(mode.enumValues)).toEqual([
+  describe("mode", () => {
+    it("reads all nine reported modes and writes none per device", () => {
+      expect(Object.values(ARMING_MEMBERS.mode.enumValues)).toEqual([
         "away",
         "home",
         "schedule",
@@ -128,96 +51,94 @@ describe("arming capability module", () => {
         "geo",
         "disarmed",
       ]);
-      // No `args` entry: the member's two sides agree, so `enumValues` IS the write domain (`writeDomain`
-      // falls back to it) and the argument derives from it. Stating it again would be the second
-      // declaration that has to be kept equal — `ARMING_MODE_WIRE: Record<ArmingMode, number>` is what
-      // holds the table to the union now, at compile time, so there is nothing left for a test to pin.
-      expect("args" in mode).toBe(false);
+      expect("write" in ARMING_MEMBERS.mode).toBe(false);
     });
 
-    it("setMode round-trips the wire integer the mode getter answers", async () => {
-      const readCtx: CommandContext = { ...ctx, paramIds: new Set([ARMING_CMD.SET_ARMING]) };
-      const { acts, sent } = bind<ArmingActions>("arming", readCtx, {
-        read: (name) => (name === "armingMode" ? { value: 1 } : undefined),
-      });
-      expect(acts.mode).toBe(1);
-      await acts.setMode(acts.mode!);
-      expect(sent).toEqual([
-        {
-          kind: "set-payload",
-          cmd: 1224,
-          payload: { mode_type: 1, user_name: "someone+tag" },
-          channel: 0,
-          mValue3: 0,
-          answerMs: 6000,
-        },
-      ]);
-    });
-
-    it("throws a clear error when the context has no account identity", async () => {
-      const { acts } = bind<ArmingActions>("arming", noIdentityCtx);
-      await expect(acts.setMode(ArmingMode.home)).rejects.toThrow(/missing account identity/);
-      expect(() => buildCommand("armingMode", "home", noIdentityCtx)).toThrow(/missing account identity/);
+    it("leaves the described arming_selected_mode unwritable through the generic thing path", () => {
+      const things = parseThingsList({
+        things_list: [
+          {
+            profile: { product_code: "T8030" },
+            properties: [{ identifier: "arming_selected_mode", access_mode: "RW", data_type: { type: "int" } }],
+          },
+        ],
+      })["T8030"];
+      const described: CommandContext = { ...ctx, model: "T8030", serial: "T8030P0000000000", things };
+      expect(buildCommand("arming_selected_mode", "0", described)).toBeUndefined();
     });
   });
 
   /**
-   * On a T8410C the guard mode is the direct frame the vendor app sends: outer cmd 1224 itself, `mode_type`
-   * as the scalar, the same `mode_type` integers as the envelope for every mode. Home and Away were captured
-   * from the app on 2026-10-17, and all nine modes were confirmed live; the fixture identity is synthetic.
+   * The per-station write of a house's mode: the 1350 envelope `{mode_type, user_name}` on a platform-V2
+   * device (serial prefix or device type 104/10006), else the direct 1224 frame, on channel 255 for a
+   * station serial and on the device's own channel otherwise.
    */
-  describe("setMode on a T8410C (direct 1224 frame)", () => {
-    const t8410c: CommandContext = { ...ctx, model: "T8410C" };
-
+  describe("armingModeCommand", () => {
     it.each([
       [ArmingMode.away, 0],
       [ArmingMode.home, 1],
-      [ArmingMode.schedule, 2],
-      [ArmingMode.custom1, 3],
-      [ArmingMode.custom2, 4],
-      [ArmingMode.custom3, 5],
-      [ArmingMode.off, 6],
-      [ArmingMode.geo, 47],
       [ArmingMode.disarmed, 63],
-    ])("%s on a T8410C → p2p-station-scalar cmd 1224, value %i, channel 0", async (mode, value) => {
-      const { acts, sent } = bind<ArmingActions>("arming", t8410c);
-      await acts.setMode(mode);
-      expect(sent).toEqual([{ kind: "p2p-station-scalar", cmd: 1224, value, channel: 0, answerMs: 6000 }]);
-    });
-
-    it("buildCommand gives a T8410C the same direct frame", () => {
-      expect(buildCommand("armingMode", "away", t8410c)).toEqual({
-        kind: "p2p-station-scalar",
+    ])("%s on a platform-V2 serial → set-payload cmd 1224, {mode_type:%i, user_name}", (mode, modeType) => {
+      expect(armingModeCommand(mode, ctx)).toEqual({
+        kind: "set-payload",
         cmd: 1224,
-        value: 0,
+        payload: { mode_type: modeType, user_name: "someone+tag" },
         channel: 0,
+        mValue3: 0,
         answerMs: 6000,
       });
     });
-  });
 
-  /**
-   * On a T8410 the guard mode is the same direct 1224 body on the station broadcast channel 255, sealed at
-   * the session's level, carrying the same `mode_type` integers as the envelope for every mode. All nine
-   * modes were confirmed live; the fixture identity is synthetic.
-   */
-  describe("setMode on a T8410 (direct 1224 frame, channel 255)", () => {
-    const t8410: CommandContext = { ...ctx, model: "T8410" };
+    it("takes the envelope on a V2 device type whatever its serial", () => {
+      const s350: CommandContext = { ...ctx, serial: "T8423P0000000000", deviceType: 104 };
+      expect(armingModeCommand(ArmingMode.home, s350)).toMatchObject({ kind: "set-payload", cmd: 1224 });
+    });
+
+    it("throws without an account identity on the envelope", () => {
+      expect(() => armingModeCommand(ArmingMode.home, noIdentityCtx)).toThrow(/missing account identity/);
+    });
 
     it.each([
-      [ArmingMode.away, 0],
-      [ArmingMode.home, 1],
-      [ArmingMode.schedule, 2],
-      [ArmingMode.custom1, 3],
-      [ArmingMode.custom2, 4],
-      [ArmingMode.custom3, 5],
-      [ArmingMode.off, 6],
-      [ArmingMode.geo, 47],
-      [ArmingMode.disarmed, 63],
-    ])("%s on a T8410 → p2p-station-scalar cmd 1224, value %i, channel 255, auto seal", async (mode, value) => {
-      const { acts, sent } = bind<ArmingActions>("arming", t8410);
-      await acts.setMode(mode);
-      expect(sent).toEqual([{ kind: "p2p-station-scalar", cmd: 1224, value, channel: 255, answerMs: 6000 }]);
+      ["T8030P0000000000", 3, 255],
+      ["T8410P0000000000", 0, 0],
+      ["T8113P0000000000", 2, 2],
+    ])("%s on channel %i → p2p-station-scalar cmd 1224 on channel %i, no identity needed", (serial, channel, wire) => {
+      const direct: CommandContext = { ...noIdentityCtx, serial, channel };
+      for (const [mode, value] of [
+        [ArmingMode.away, 0],
+        [ArmingMode.home, 1],
+        [ArmingMode.disarmed, 63],
+      ] as const) {
+        expect(armingModeCommand(mode, direct)).toEqual({
+          kind: "p2p-station-scalar",
+          cmd: 1224,
+          value,
+          channel: wire,
+          answerMs: 6000,
+        });
+      }
+    });
+
+    it("lands the written mode on 1224 and announces armingModeChanged", () => {
+      const cmd = armingModeCommand(ArmingMode.disarmed, ctx);
+      expect(commandReflection(cmd)).toEqual({ param: 1224, raw: "63" });
+      expect(commandObservation(cmd)).toEqual({ event: "armingModeChanged" });
+    });
+  });
+
+  describe("armedWithHouse", () => {
+    const own = { category: "eufy_security", memberType: 2 };
+    it.each([
+      ["a HomeBase", { ...own, sn: "T8010P0000000000", stationSn: "T8010P0000000000" }, true],
+      ["a camera that is its own station", { ...own, sn: "T8113P0000000000", stationSn: "T8113P0000000000" }, true],
+      ["the T8531, the lock the app arms", { ...own, sn: "T8531P0000000000", stationSn: "T8531P0000000000" }, true],
+      ["a camera on a HomeBase", { ...own, sn: "T8113P0000000000", stationSn: "T8010P0000000000" }, false],
+      ["a guest's station", { ...own, memberType: 0, sn: "T8010P0000000000", stationSn: "T8010P0000000000" }, false],
+      ["a lock", { ...own, sn: "T8520P0000000000", stationSn: "T8520P0000000000" }, false],
+      ["a SmartDrop", { ...own, sn: "T8790P0000000000", stationSn: "T8790P0000000000" }, false],
+      ["another line", { ...own, category: "eufy_home", sn: "T8113P0000000000", stationSn: "T8113P0000000000" }, false],
+    ])("%s → %s", (_name, device, armed) => {
+      expect(armedWithHouse(device)).toBe(armed);
     });
   });
 
@@ -229,16 +150,6 @@ describe("arming capability module", () => {
   it("AlarmDelaySeconds is exactly the app's own picker preset list", () => {
     expect(AlarmDelaySeconds).toEqual({ off: 0, sec15: 15, sec30: 30, sec45: 45, sec60: 60, min3: 180, min5: 300 });
   });
-
-  /**
-   * The type pin for the two mode domains. `setMode` accepts `custom1`; this command does not, because
-   * the confirmation for mode 3 was gathered on cmd 1224 and cmd 1255 has no capture carrying it and no
-   * readback. Nothing else enforces that: the narrowing is type-level, vitest does not typecheck, and
-   * `tsc --noEmit` covers this file, so merging the domains back into one union passes every runtime
-   * assertion. This line fails that merge with an unused `@ts-expect-error`.
-   */
-  // @ts-expect-error custom1 is confirmed on cmd 1224 only — the alarm-delay domain excludes it
-  void ((): AlarmDelayMode => ArmingMode.custom1)();
 
   describe("setAlarmDelayConfig (wire captured live on a T8030, 2026-07-23)", () => {
     const config = {
@@ -258,7 +169,7 @@ describe("arming capability module", () => {
 
     it("→ set-json-raw cmd 1255, bare plaintext (no 1350/1700 envelope), pinned to station ch 255", async () => {
       const { acts, sent } = bind<ArmingActions>("arming", ctx);
-      await acts.setAlarmDelayConfig(AlarmDelayMode.away, config);
+      await acts.setAlarmDelayConfig(ArmingMode.away, config);
       expect(sent).toEqual([
         {
           kind: "set-json-raw",
@@ -285,7 +196,7 @@ describe("arming capability module", () => {
 
     it("maps every ArmingMode name to its captured mode_id", async () => {
       const { acts, sent } = bind<ArmingActions>("arming", ctx);
-      await acts.setAlarmDelayConfig(AlarmDelayMode.home, config);
+      await acts.setAlarmDelayConfig(ArmingMode.home, config);
       const cmd = sent[0] as Extract<Command, { kind: "set-json-raw" }>;
       expect(cmd.data.mode_id).toBe(1);
     });
@@ -293,7 +204,7 @@ describe("arming capability module", () => {
     it("channel 255 is PINNED — independent of ctx.channel, not just coincidentally matching it", async () => {
       const oddCtx: CommandContext = { ...ctx, channel: 7 };
       const { acts, sent } = bind<ArmingActions>("arming", oddCtx);
-      await acts.setAlarmDelayConfig(AlarmDelayMode.away, config);
+      await acts.setAlarmDelayConfig(ArmingMode.away, config);
       const cmd = sent[0] as Extract<Command, { kind: "set-json-raw" }>;
       expect(cmd.channel).toBe(255);
     });
@@ -303,7 +214,7 @@ describe("arming capability module", () => {
       // Deliberately malformed at runtime (a caller ignoring/bypassing types) — missing countDownAlarm,
       // so alarmDelayCommand() throws synchronously reading `.channelList` off `undefined`.
       const malformed = {} as any;
-      await expect(acts.setAlarmDelayConfig(AlarmDelayMode.away, malformed)).rejects.toThrow();
+      await expect(acts.setAlarmDelayConfig(ArmingMode.away, malformed)).rejects.toThrow();
       expect(sent).toEqual([]);
     });
   });
@@ -386,16 +297,16 @@ describe("arming capability module", () => {
 
     it("reads a device's flag per mode and channel, and nothing for an unlisted channel or table", () => {
       const { acts } = bind<ArmingActions>("arming", t8010, { read });
-      expect(acts.deviceNotification!(AlarmDelayMode.home, 0)).toBe(true);
-      expect(acts.deviceNotification!(AlarmDelayMode.home, 1)).toBe(false);
-      expect(acts.deviceNotification!(AlarmDelayMode.away, 1)).toBe(true);
-      expect(acts.deviceNotification!(AlarmDelayMode.home, 33)).toBeUndefined();
-      expect(bind<ArmingActions>("arming", t8010).acts.deviceNotification!(AlarmDelayMode.home, 0)).toBeUndefined();
+      expect(acts.deviceNotification!(ArmingMode.home, 0)).toBe(true);
+      expect(acts.deviceNotification!(ArmingMode.home, 1)).toBe(false);
+      expect(acts.deviceNotification!(ArmingMode.away, 1)).toBe(true);
+      expect(acts.deviceNotification!(ArmingMode.home, 33)).toBeUndefined();
+      expect(bind<ArmingActions>("arming", t8010).acts.deviceNotification!(ArmingMode.home, 0)).toBeUndefined();
     });
 
     it("writes the whole table back with only that channel's flag 0x08 changed", async () => {
       const { acts, sent } = bind<ArmingActions>("arming", t8010, { read });
-      await acts.setDeviceNotification!(AlarmDelayMode.home, 1, true);
+      await acts.setDeviceNotification!(ArmingMode.home, 1, true);
       const { account_id: _account, ...expected } = homeTable;
       expect(sent).toEqual([
         {
@@ -412,15 +323,15 @@ describe("arming capability module", () => {
           },
         },
       ]);
-      await acts.setDeviceNotification!(AlarmDelayMode.away, 1, false);
+      await acts.setDeviceNotification!(ArmingMode.away, 1, false);
       expect(sent[1]).toMatchObject({ data: { mode_id: 0, devices: [{ device_channel: 1, action: 0x00000001 }] } });
     });
 
     it("rejects, sending nothing, without a table listing the channel", async () => {
       const unlisted = bind<ArmingActions>("arming", t8010, { read });
-      await expect(unlisted.acts.setDeviceNotification!(AlarmDelayMode.home, 33, true)).rejects.toThrow();
+      await expect(unlisted.acts.setDeviceNotification!(ArmingMode.home, 33, true)).rejects.toThrow();
       const noTable = bind<ArmingActions>("arming", t8010);
-      await expect(noTable.acts.setDeviceNotification!(AlarmDelayMode.home, 1, true)).rejects.toThrow();
+      await expect(noTable.acts.setDeviceNotification!(ArmingMode.home, 1, true)).rejects.toThrow();
       expect([...unlisted.sent, ...noTable.sent]).toEqual([]);
     });
 
@@ -432,8 +343,8 @@ describe("arming capability module", () => {
 
     it("builds a second write on the first while the reported table lags", async () => {
       const { acts, sent } = bind<ArmingActions>("arming", t8010, { read });
-      await acts.setDeviceNotification!(AlarmDelayMode.home, 0, false);
-      await acts.setDeviceNotification!(AlarmDelayMode.home, 17, false);
+      await acts.setDeviceNotification!(ArmingMode.home, 0, false);
+      await acts.setDeviceNotification!(ArmingMode.home, 17, false);
       expect(sent[1]).toMatchObject({
         data: {
           devices: [
@@ -450,13 +361,13 @@ describe("arming capability module", () => {
       try {
         let reported = { value: homeTable, ts: 0 };
         const { acts, sent } = bind<ArmingActions>("arming", t8010, { read: () => reported });
-        await acts.setDeviceNotification!(AlarmDelayMode.home, 1, true);
+        await acts.setDeviceNotification!(ArmingMode.home, 1, true);
         vi.setSystemTime(20_000);
-        await acts.setDeviceNotification!(AlarmDelayMode.home, 17, false);
+        await acts.setDeviceNotification!(ArmingMode.home, 17, false);
         expect(sent[1]).toMatchObject({ data: { devices: [{}, { action: 0x01000029 }, { action: 0x01000000 }] } });
         vi.setSystemTime(40_000);
         reported = { value: homeTable, ts: 35_000 };
-        await acts.setDeviceNotification!(AlarmDelayMode.home, 0, false);
+        await acts.setDeviceNotification!(ArmingMode.home, 0, false);
         expect(sent[2]).toMatchObject({ data: { devices: [{ action: 0x01000001 }, { action: 0x01000021 }, {}] } });
       } finally {
         vi.useRealTimers();
@@ -476,8 +387,8 @@ describe("arming capability module", () => {
           arming: ArmingActions;
         }
       ).arming;
-      await expect(acts.setDeviceNotification!(AlarmDelayMode.home, 0, false)).rejects.toThrow("p2p timeout");
-      await acts.setDeviceNotification!(AlarmDelayMode.home, 17, false);
+      await expect(acts.setDeviceNotification!(ArmingMode.home, 0, false)).rejects.toThrow("p2p timeout");
+      await acts.setDeviceNotification!(ArmingMode.home, 17, false);
       expect(sent[1]).toMatchObject({ data: { devices: [{ action: 0x01000009 }, {}, { action: 0x01000000 }] } });
     });
   });

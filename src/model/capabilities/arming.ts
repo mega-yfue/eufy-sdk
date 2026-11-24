@@ -1,66 +1,28 @@
-import { enumLabels } from "../../core/util.js";
+import { enumLabels, isStationSerial, jsonObject } from "../../core/util.js";
+import { DeviceType } from "../device-types.js";
 import { describeDevice, setJsonRaw, setPayload, setStationScalar } from "./access.js";
-import { accepts, method, propertiesOf, type Members, type Surface } from "./members.js";
+import { method, propertiesOf, type Members, type Surface } from "./members.js";
 import type { CapabilityModule, CapabilityStateReader, CommandContext, InboundSignal } from "./types.js";
 import { CusPushAlarmType, CusPushEvent } from "../push-events.js";
-import type { Command } from "../../core/contracts.js";
+import { observeCommand, reflectCommand, type Command } from "../../core/contracts.js";
+import type { EufyDevice } from "../../core/types.js";
 
 /** The station broadcast channel the HomeBase's own controls ride (not a device channel). */
 const STATION_CHANNEL = 255;
 
 /**
- * The guard modes `setMode` can SET — every mode a station reports. `ArmingMode` is both the const value-object (`ArmingMode.home`) and the union type of its
- * values, so callers pass the named constant: `setMode(ArmingMode.home)`.
- *
- * The domain of `setMode` (cmd 1224) alone. The alarm-delay write (cmd 1255) carries its own mode integer
- * on a separate wire and takes {@link AlarmDelayMode}, which stays NARROWER — a mode integer on one
- * command says nothing about the other.
- *
- * A mode belongs here only once its write is confirmed, because a fire-and-forget
- * wire makes a wrong mode look exactly like success.
- * The union is also what `ARMING_MODE_WIRE` is keyed by, so the table cannot name a mode this does not.
+ * The guard modes a house is armed in, and the modes the alarm-delay write (cmd 1255) takes a `mode_id` for.
+ * `ArmingMode` is both the const value-object (`ArmingMode.home`) and the union type of its values.
  */
 export const ArmingMode = {
   /** Armed — full protection, nobody home (wire value 0). */
   away: "away",
   /** Armed for occupancy — reduced/perimeter protection while home (wire value 1). */
   home: "home",
-  /** Scheduled — the station follows the timetable configured in the app (wire value 2). */
-  schedule: "schedule",
-  /** Custom 1 — a user-defined posture configured in the app (wire value 3). */
-  custom1: "custom1",
-  /** Custom 2 — a user-defined posture configured in the app (wire value 4). */
-  custom2: "custom2",
-  /** Custom 3 — a user-defined posture configured in the app (wire value 5). */
-  custom3: "custom3",
-  /** Off — the station's alarm system is switched off entirely (wire value 6). */
-  off: "off",
-  /** Geofenced — the station follows the app's location-based rules (wire value 47). */
-  geo: "geo",
   /** Disarmed — no alarms; sensors still report state (wire value 63). */
   disarmed: "disarmed",
 } as const;
 export type ArmingMode = (typeof ArmingMode)[keyof typeof ArmingMode];
-
-/**
- * The modes the alarm-delay write (cmd 1255) accepts a `mode_id` for — the three guard modes whose wire
- * integer is known on that command.
- *
- * A domain of its own, because the two mode integers ride different commands: `setMode` writes `mode_type`
- * on cmd 1224, and cmd 1255 carries `mode_id`. Neither wire validates the integer, so each union IS its
- * command's gate. `custom1` is known on 1224 only;
- * 1255 has no known frame carrying mode 3, and no known GET to read one back — the app's own replies
- * `{count:0,data:null}` — so it is absent here. Narrower than {@link ArmingMode} by exactly that value.
- */
-export const AlarmDelayMode = {
-  /** Armed — full protection, nobody home (wire value 0). */
-  away: "away",
-  /** Armed for occupancy — reduced/perimeter protection while home (wire value 1). */
-  home: "home",
-  /** Disarmed — no alarms; sensors still report state (wire value 63). */
-  disarmed: "disarmed",
-} as const;
-export type AlarmDelayMode = (typeof AlarmDelayMode)[keyof typeof AlarmDelayMode];
 
 /**
  * The P2P **feature-command ids** this arming capability drives. Capability-owned wire vocabulary
@@ -69,12 +31,8 @@ export type AlarmDelayMode = (typeof AlarmDelayMode)[keyof typeof AlarmDelayMode
  */
 export const ARMING_CMD = {
   /**
-   * Guard/arming mode (app `GUARD_MODE`). `1350` SET_PAYLOAD, cmd 1224 (SAME id as the read param),
-   * mChannel 0, explicit mValue3:0, `payload:{mode_type:<int>, user_name:<string>}`. All nine
-   * {@link ARMING_MODE_WIRE} values are settable; each write is answered by a MODE_SWITCH push.
-   *
-   * A T8410C and a T8410 take the mode as a direct frame instead of this envelope; see
-   * {@link DIRECT_ARMING_MODELS} and {@link BROADCAST_ARMING_MODELS}.
+   * Guard/arming mode (app `GUARD_MODE`), the same id as the read param. Written per station by
+   * {@link armingModeCommand}, the `1350` envelope or the direct frame.
    */
   SET_ARMING: 1224,
   /** The station's guard-mode notify: its first int32 is the mode it now holds, which the app lands on 1224. */
@@ -122,7 +80,7 @@ const DEVICE_NOTIFY_FLAG = 0x08;
  * The guard modes whose device notification is read and written. `custom1` (wire 3) is reported on a
  * standalone camera's own param 1148.
  */
-export type DeviceNotificationMode = Extract<ArmingMode, "home" | "away" | "custom1">;
+export type DeviceNotificationMode = "home" | "away" | "custom1";
 
 /**
  * The standalone cameras that take their own Device Control write: cmd 1255 to the camera itself with only
@@ -132,23 +90,38 @@ export type DeviceNotificationMode = Extract<ArmingMode, "home" | "away" | "cust
 const STANDALONE_ACTION_MODELS: ReadonlySet<string> = new Set(["T8170", "T8171"]);
 
 /**
- * The models whose guard-mode write is the direct frame: outer command 1224 itself at level 2, body
- * `u32 LE mode_type ‖ admin account id zero-padded to 128 bytes` (the `p2p-station-scalar` frame), rather
- * than the `1350` set-payload envelope, which a T8410C answers with result -103 at both level 1 and
- * level 2. The camera answers this frame on outer 1224 with result 0 and reports the requested mode on
- * param 1224; all nine modes in {@link ARMING_MODE_WIRE} are written.
+ * The serial prefixes the app counts as platform V2: a guard-mode write to one of them is the `1350`
+ * set-payload envelope, to any other device the direct frame (see {@link armingCommand}).
  */
-const DIRECT_ARMING_MODELS: ReadonlySet<string> = new Set(["T8410C"]);
+const PLATFORM_V2_PREFIXES = [
+  "T8419",
+  "T8416",
+  "T8417",
+  "T8W11",
+  "T8124R",
+  "T8170",
+  "T8171",
+  "T8214",
+  "T8223",
+  "T8224",
+  "T8425",
+  "T8426",
+  "T8531",
+  "T85V0",
+  "T8600",
+  "T86P2",
+  "T8134",
+  "T8B00",
+];
 
-/**
- * The models whose guard-mode write is the direct frame on the station broadcast channel 255
- * ({@link STATION_CHANNEL}): the same 132-byte body as
- * {@link DIRECT_ARMING_MODELS}. A standalone T8410's session is level-1, and it leaves the `1350` set-payload
- * envelope unapplied: the write is sent, and param 1224 keeps the old mode. This frame applies on a
- * level-1 session, and the camera's own 1103 report carries the new mode on param 1151; all nine
- * modes in {@link ARMING_MODE_WIRE} are written.
- */
-const BROADCAST_ARMING_MODELS: ReadonlySet<string> = new Set(["T8410"]);
+/** Whether the app counts the device as platform V2: its serial prefix, or its device type. */
+function isPlatformV2(ctx: CommandContext): boolean {
+  return (
+    PLATFORM_V2_PREFIXES.some((p) => ctx.serial?.startsWith(p)) ||
+    ctx.deviceType === DeviceType.INDOOR_PT_CAMERA_S350 ||
+    ctx.deviceType === DeviceType.INDOOR_8W11
+  );
+}
 
 /** The standalone cameras whose own flags are read: the two above plus the three that stay read only. */
 const STANDALONE_READ_MODELS: ReadonlySet<string> = new Set([...STANDALONE_ACTION_MODELS, "T8400", "T8442", "T8410"]);
@@ -175,21 +148,10 @@ function actionTable(read: CapabilityStateReader, mode: DeviceNotificationMode):
 }
 
 /**
- * Guard-mode name → the wire's `mode_type` integer, for every mode a station may REPORT. Fixed (not
- * model-dependent) — the single source of truth {@link ARMING_MODE_LABELS} (the `armingMode`
- * PropertySpec's `enumValues`) derives from.
- *
- * Read and write are the same nine, so this table is the whole domain in
- * both directions — {@link SETTABLE_MODES} and {@link ARMING_MODE_LABELS} are both derived from it rather
- * than listed again. {@link AlarmDelayMode}, the domain cmd 1255 takes, is a SEPARATE decision on a
- * separate wire and stays at its three: never widen it because `setMode` gained a mode.
- *
- * **The names and integers are the V6 app's own** (`SecurityGuardConstants`, mirrored by `GuardConstant`),
- * so the mapping is APK ground truth rather than a borrowed label. Every value is accepted on
- * {@link ARMING_CMD.SET_ARMING} and answered by MODE_SWITCH; the client emits `armingModeChanged` only once
- * 1224 moves, so a refused, unanswered or repeated write produces silence.
+ * Guard-mode name → the `mode_type` integer a station reports on 1224, the V6 app's own names and integers
+ * (`SecurityGuardConstants`). The `armingMode` getter's labels; {@link ArmingMode} names the three written.
  */
-const ARMING_MODE_WIRE: Record<ArmingMode, number> = {
+const ARMING_MODE_WIRE = {
   away: 0,
   home: 1,
   schedule: 2,
@@ -199,7 +161,7 @@ const ARMING_MODE_WIRE: Record<ArmingMode, number> = {
   off: 6,
   geo: 47,
   disarmed: 63,
-};
+} as const;
 
 /**
  * The `armingMode` PropertySpec's `enumValues` (wire int → label) — derived from
@@ -207,44 +169,115 @@ const ARMING_MODE_WIRE: Record<ArmingMode, number> = {
  */
 const ARMING_MODE_LABELS: Record<number, string> = enumLabels(ARMING_MODE_WIRE);
 
-/**
- * The SETTABLE mode a caller named, from EITHER vocabulary: the name (`"away"`) or the wire integer the
- * `mode` getter answers (`0`). A mode the station can report but not accept resolves to nothing, and the
- * derived setter refuses it.
- *
- * The getter's value has to be settable back. Matching names alone made `setMode(dev.arming().mode)`
- * refuse every time, with a generated message that listed as valid exactly the integer it had just
- * rejected — the getter publishes {@link ARMING_MODE_LABELS}, keyed by wire value, as its own domain.
- */
-function armingModeOf(v: boolean | number | string): ArmingMode | undefined {
-  const name = String(v);
-  if (name in ArmingMode) return name as ArmingMode;
-  const wire = Number(v);
-  return (Object.values(ArmingMode) as ArmingMode[]).find((m) => ARMING_MODE_WIRE[m] === wire);
-}
-
 /** How long the app waits for the station's answer to a guard-mode write, per device and never resent. */
 const ARMING_ANSWER_MS = 6_000;
 
 /**
- * Build the {@link ARMING_CMD.SET_ARMING} write intent, or throw if the context has no account
- * identity. `user_name` is `ctx.accountName`, the account's nick name the app writes there. The answer is
- * awaited {@link ARMING_ANSWER_MS}.
+ * Build the {@link ARMING_CMD.SET_ARMING} write intent, awaited {@link ARMING_ANSWER_MS}. A platform-V2
+ * device ({@link isPlatformV2}) takes the `1350` set-payload envelope `{mode_type, user_name}`, `user_name`
+ * being `ctx.accountName`, the account's nick name; it throws without one. Any other device takes the
+ * direct frame: outer command 1224 itself, body `u32 LE mode_type ‖ admin account id zero-padded to 128
+ * bytes`, on the station broadcast channel 255 for a station serial, else on the device's own channel. A write
+ * answered with success lands the mode on 1224 and announces `armingModeChanged`, as the app applies it locally.
+ * @internal
  */
-function armingCommand(mode: ArmingMode, ctx: CommandContext): Command {
+export function armingModeCommand(mode: ArmingMode, ctx: CommandContext): Command {
+  const value = ARMING_MODE_WIRE[mode];
+  if (!isPlatformV2(ctx)) {
+    const channel = isStationSerial(ctx.serial ?? "") ? STATION_CHANNEL : ctx.channel;
+    return applied(setStationScalar(ARMING_CMD.SET_ARMING, value, channel, ARMING_ANSWER_MS), value);
+  }
   if (!ctx.accountName) {
     throw new Error(`arming: missing account identity (user_name) [${describeDevice(ctx)}]`);
   }
-  const model = ctx.model ?? "";
-  const value = ARMING_MODE_WIRE[mode];
-  if (BROADCAST_ARMING_MODELS.has(model)) {
-    return setStationScalar(ARMING_CMD.SET_ARMING, value, STATION_CHANNEL, ARMING_ANSWER_MS);
-  }
-  if (DIRECT_ARMING_MODELS.has(model)) {
-    return setStationScalar(ARMING_CMD.SET_ARMING, value, ctx.channel, ARMING_ANSWER_MS);
-  }
   const payload = { mode_type: value, user_name: ctx.accountName };
-  return setPayload(ARMING_CMD.SET_ARMING, payload, ctx, 0, undefined, ARMING_ANSWER_MS);
+  return applied(setPayload(ARMING_CMD.SET_ARMING, payload, ctx, 0, undefined, ARMING_ANSWER_MS), value);
+}
+
+/** The event a moved 1224 announces, on a write's answer or the station's notify. */
+const MODE_CHANGED = "armingModeChanged";
+
+/** `cmd` with the mode it leaves on 1224 and the event a moved mode announces. */
+function applied(cmd: Command, value: number): Command {
+  return observeCommand(reflectCommand(cmd, { param: ARMING_CMD.SET_ARMING, raw: String(value) }), {
+    event: MODE_CHANGED,
+  });
+}
+
+/**
+ * The serial prefixes the app never arms with its house: SmartDrop, locks other than the T8531 and T85V0, the
+ * T8021, safes, trackers and chimes.
+ */
+const UNARMED_PREFIXES = [
+  "T8790",
+  "T8510",
+  "T8520",
+  "T8500",
+  "T8501",
+  "T8503",
+  "T8502",
+  "T8504",
+  "T8530",
+  "T8506",
+  "T85L0",
+  "T85D0",
+  "T85D2",
+  "T85F0",
+  "T85F1",
+  "T85P0",
+  "T85P1",
+  "T8021",
+  "T7400",
+  "T7401",
+  "T7402",
+  "T87B0",
+  "T87B1",
+  "T87B2",
+  "T87B4",
+  "T87B5",
+  "T8740",
+  "T8028",
+  "T8026",
+];
+
+/**
+ * Whether the app arms `device` with its house when the house's config names no station: a station or a
+ * device that is its own, of the `eufy_security` category, not shared to this account as a guest
+ * (`memberType` 0), and not one of the {@link UNARMED_PREFIXES}. @internal
+ */
+export function armedWithHouse(device: Pick<EufyDevice, "sn" | "stationSn" | "category" | "memberType">): boolean {
+  return (
+    (isStationSerial(device.sn) || device.stationSn === device.sn) &&
+    device.category === "eufy_security" &&
+    device.memberType !== 0 &&
+    !UNARMED_PREFIXES.some((p) => device.sn.startsWith(p))
+  );
+}
+
+/** The `arm_status` the house's cloud config takes for each {@link ArmingMode}. @internal */
+export const HOUSE_ARM_STATUS: Record<ArmingMode, number> = { home: 1, away: 2, disarmed: 3 };
+
+/**
+ * A station's guard mode `wire` as its `armingMode` label, and that mode's arm delay in seconds as the app reads
+ * it for the house result: param 1171 (home) or 1172 (away), else 0; on a T9000 the `count_down_arm.delay_time`
+ * of its `arming_get_alarm_away_mode` property for away, `arming_get_alarm_home_mode` for any other. @internal
+ */
+export function houseArmingState(
+  wire: number,
+  sn: string,
+  raw: (param: number) => string | undefined,
+  thing: (identifier: string) => string | undefined,
+): { mode: string; armDelay: number } {
+  const delay = sn.startsWith("T9000")
+    ? (
+        jsonObject(thing(`arming_get_alarm_${wire === 0 ? "away" : "home"}_mode`))?.count_down_arm as
+          Record<string, unknown> | undefined
+      )?.delay_time
+    : wire === 1 || wire === 0
+      ? raw(wire === 1 ? 1171 : 1172)
+      : undefined;
+  const armDelay = Number.parseInt(String(delay), 10);
+  return { mode: ARMING_MODE_LABELS[wire] ?? String(wire), armDelay: Number.isNaN(armDelay) ? 0 : armDelay };
 }
 
 /**
@@ -311,7 +344,7 @@ export type AlarmDelayConfig = {
  * `ctx.channel` (which resolves to 0 for a station context) — the frame rides channel
  * 255 explicitly, same as every other station-scoped bare/scalar write in the router.
  */
-function alarmDelayCommand(mode: AlarmDelayMode, config: AlarmDelayConfig, ctx: CommandContext): Command {
+function alarmDelayCommand(mode: ArmingMode, config: AlarmDelayConfig, ctx: CommandContext): Command {
   const data = {
     mode_id: ARMING_MODE_WIRE[mode],
     count_down_alarm: {
@@ -373,19 +406,9 @@ export type ArmingActions = Surface<typeof ARMING_MEMBERS>;
  */
 export const ARMING_MEMBERS = {
   /**
-   * Read and write are the same nine modes, so `enumValues` is the whole domain: `writeDomain` falls back
-   * to it, and the derived setter, the refusal message and the offered argument all read from that one
-   * declaration. A member states an `args` entry only where the two sides DIFFER. See
-   * {@link ARMING_MODE_WIRE} for the per-value evidence.
-   *
-   * `armingCommand` may also throw synchronously (missing account identity) and `bindMembers` turns that
-   * into a rejection, so the builder stays plain.
-   *
-   * The setter takes either vocabulary — see `armingModeOf` — because the getter answers the wire integer,
-   * and a value a caller just read has to be one it can write back.
-   *
-   * A write the station answers with success lands the mode on 1224, as the app applies the mode locally once
-   * the answer arrives, and announces `armingModeChanged` where the mode moved.
+   * The guard mode the station reports on 1224, one of the nine {@link ARMING_MODE_WIRE} labels. Read only:
+   * a mode is written for a whole house, by `setHouseMode`. Claims `arming_selected_mode`, which the
+   * products' bundles read from 1224, so nothing writes it per device.
    */
   mode: {
     param: ARMING_CMD.SET_ARMING,
@@ -393,19 +416,9 @@ export const ARMING_MEMBERS = {
     type: "enum",
     kind: "enum",
     enumValues: ARMING_MODE_LABELS,
-    description:
-      "Guard mode (param 1224 = GUARD_MODE). Reads and SETS all " +
-      "9 modes the app defines — away/home/schedule/custom1/custom2/custom3/off/geo/disarmed; " +
-      "each write is answered by a MODE_SWITCH push.",
-    observation: {
-      event: "armingModeChanged",
-      reflects: (value) => ({ param: ARMING_CMD.SET_ARMING, expected: ARMING_MODE_WIRE[armingModeOf(value)!] }),
-    },
-    write: (v, ctx) => {
-      const mode = armingModeOf(v);
-      return mode ? armingCommand(mode, ctx) : undefined;
-    },
-    ...accepts<ArmingMode>(),
+    thing: ["arming_selected_mode"],
+    observation: { event: MODE_CHANGED, reflects: () => undefined },
+    description: "Guard mode (param 1224 = GUARD_MODE): away/home/schedule/custom1/custom2/custom3/off/geo/disarmed.",
   },
 
   /**
@@ -416,14 +429,12 @@ export const ARMING_MEMBERS = {
    * this mode — there is no known GET to fetch it automatically, and a wrong guess here can silently
    * misconfigure which sensors arm/trigger for real.
    *
-   * Takes {@link AlarmDelayMode}, not {@link ArmingMode}: a delay is configurable only for a mode whose
-   * integer is known on THIS command, and `custom1` is known on cmd 1224 only. The frame carries
-   * that integer in `mode_id` with no runtime validation and no readback, so a mode outside this union
-   * would be a guess.
+   * Takes an {@link ArmingMode}: the frame carries its integer in `mode_id` with no runtime validation and
+   * no readback.
    */
   setAlarmDelayConfig: method(
     ({ ctx, sink }) =>
-      (mode: AlarmDelayMode, config: AlarmDelayConfig): Promise<void> => {
+      (mode: ArmingMode, config: AlarmDelayConfig): Promise<void> => {
         try {
           return sink.dispatch(alarmDelayCommand(mode, config, ctx));
         } catch (e) {
@@ -504,9 +515,8 @@ function decodeAlarmPhase(signal: InboundSignal): Record<string, unknown> {
 }
 
 /**
- * `arming` — guard/arming mode. `armingMode` (see {@link ARMING_CMD.SET_ARMING}) reads and writes
- * all 9 modes — the {@link ArmingMode} union is the whole set.
- * The alarm-delay write (cmd 1255) is unaffected and keeps its narrower {@link AlarmDelayMode}.
+ * `arming` — guard/arming mode. `armingMode` (see {@link ARMING_CMD.SET_ARMING}) reads the station's mode;
+ * a house's stations are armed together, see {@link armingModeCommand}.
  */
 export const ARMING: CapabilityModule = {
   capability: "arming",
@@ -517,7 +527,7 @@ export const ARMING: CapabilityModule = {
   // arming surface as part of its baseline.
   detection: { evidenceParams: [ARMING_CMD.SET_ARMING], codecs: ["station"] },
   ownedByStation: true,
-  emits: ["armingModeChanged"],
+  emits: [MODE_CHANGED],
   /**
    * Station-scoped push events. The hub reports the alarm lifecycle on the generic `CusPushEvent`
    * channel, so these ids are shared with other families and resolve by capability (see the barrel's

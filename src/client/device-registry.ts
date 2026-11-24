@@ -31,6 +31,12 @@ export function recordString(raw: Record<string, unknown>, key: string): string 
   return typeof v === "string" && v ? v : undefined;
 }
 
+/** The house a listed device is in: its record's `house_id`, else the house the list was asked for. */
+function houseOf(raw: { house_id?: unknown }, body: { house_id?: string }): { houseId?: string } {
+  const houseId = typeof raw.house_id === "string" && raw.house_id ? raw.house_id : body.house_id;
+  return houseId ? { houseId } : {};
+}
+
 /** The device-record shape {@link EufyMega.getDevice}/`commandContext` resolve a serial to. */
 export interface DeviceRecord {
   deviceType?: number;
@@ -303,7 +309,7 @@ export class DeviceRegistry {
     // get_devs_list is quirkily house-scoped: the bare {} call returns a set
     // that the per-house calls may NOT, and vice-versa. Query {} AND every
     // house_id, then merge + dedupe by serial.
-    const bodies: Array<object> = [{}];
+    const bodies: Array<{ house_id?: string }> = [{}];
     let partial = false;
     try {
       const houses = await this.mega.post<{ house_infos?: Array<{ house_id: string }> }>(
@@ -350,6 +356,7 @@ export class DeviceRegistry {
           ...(typeof raw.device_channel === "number" ? { channel: raw.device_channel } : {}),
           p2pDid: raw.p2p_did,
           ...(typeof raw.member?.member_type === "number" ? { memberType: raw.member.member_type } : {}),
+          ...houseOf(raw, body),
           params,
           paramUpdatedAt,
           lastSeenMs: newest(lastSeenMsOf(paramUpdatedAt), prior.get(raw.device_sn)),
