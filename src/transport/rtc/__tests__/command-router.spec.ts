@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RtcCallSdp } from "../call.js";
 import { buildDirectBinaryBody, buildStringBody } from "../../p2p/write-commands.js";
-import { RtcCommandRouter, type RtcLiveRoute } from "../command-router.js";
+import { RtcCommandRouter, type RtcCommandRouterDeps, type RtcLiveRoute } from "../command-router.js";
 import type { RtcCommandCounter, RtcDataChannel } from "../data-channel.js";
 import type { IceAgent } from "../ice.js";
 import type { RtcSignalClient, RtcSignalOptions } from "../signal-client.js";
@@ -79,7 +79,7 @@ const CALL: RtcCallSdp = {
 };
 
 /** Fake native layers: a signal client that logs in at once, a connected data channel, a connected PM ICE. */
-function layers() {
+function layers(onFrame?: RtcCommandRouterDeps["onFrame"]) {
   const signal = Object.assign(new EventEmitter(), {
     start: vi.fn(async () => void queueMicrotask(() => signal.emit("login", "contact"))),
     call: vi.fn(() => ({ uuid: "pm-call", ...CALL })),
@@ -88,7 +88,7 @@ function layers() {
   });
   const data = Object.assign(new EventEmitter(), {
     connected: true,
-    command: vi.fn(async () => Buffer.alloc(0)),
+    command: vi.fn(async (_cmd: number, _body?: unknown, _channel?: number, _flag?: number) => Buffer.alloc(0)),
     close: vi.fn(),
   });
   const agent = Object.assign(new EventEmitter(), { connected: true, write: vi.fn(), close: vi.fn() });
@@ -100,12 +100,21 @@ function layers() {
   const router = new RtcCommandRouter({
     userId: () => "synthetic-user",
     appId: "0123456789abcdef",
+    onFrame,
     layers: { signal: () => signal as unknown as RtcSignalClient, priv1, pmIce },
   });
   return { router, signal, data, agent, priv1, pmIce };
 }
 
 const u32 = (...v: number[]) => Buffer.from(new Uint32Array(v).buffer);
+/** A notify's 16-byte `XZYH` header for `cmd` on `channel`. */
+const head = (cmd: number, channel: number) => {
+  const h = Buffer.alloc(16);
+  h.write("XZYH");
+  h.writeUInt16LE(cmd, 4);
+  h[12] = channel;
+  return h;
+};
 
 afterEach(() => vi.useRealTimers());
 
@@ -122,14 +131,44 @@ describe("RtcCommandRouter on the native layers", () => {
     router.close();
   });
 
-  /** The app counts an RTC write done when its frame is written; it waits for no reply. */
-  it("answers a write done once its frame is written, without the station's reply", async () => {
+  /** The app's RTC bridge waits for the station's reply under the command id; its first int32 is the code. */
+  it("answers a write on the station's reply and rejects a non-zero code", async () => {
     const { router, data } = layers();
-    data.command.mockReturnValue(new Promise(() => {}));
-    await expect(router.dispatchCommand(ROUTE, { kind: "set-param", param: 1035, value: 1, channel: 3 })).resolves.toBe(
-      true,
-    );
-    expect(data.command).toHaveBeenCalledOnce();
+    const cmd = { kind: "set-param", param: 1145, value: 1, channel: 3 } as const;
+    data.command.mockResolvedValueOnce(u32(0)).mockResolvedValueOnce(Buffer.from(new Int32Array([-1]).buffer));
+    await expect(router.dispatchCommand(ROUTE, cmd)).resolves.toBe(true);
+    await expect(router.dispatchCommand(ROUTE, cmd)).rejects.toMatchObject({ commandId: 1145, code: -1 });
+    router.close();
+  });
+
+  it("reads the RTSP URL from the 1145 notify on the camera's channel, after an answered 1145 value 1", async () => {
+    const { router, data } = layers();
+    data.command.mockImplementation(async () => {
+      queueMicrotask(() => {
+        data.emit("notify", 1145, Buffer.from("rtsp://u:p@192.0.2.9/live1\0"), head(1145, 4));
+        data.emit("notify", 1146, Buffer.from("rtsp://u:p@192.0.2.9/live0\0"), head(1146, 3));
+      });
+      return u32(0);
+    });
+    await expect(router.readRtspUrl(ROUTE, 3)).resolves.toBe("rtsp://u:p@192.0.2.9/live0");
+    expect(data.command).toHaveBeenCalledExactlyOnceWith(1145, buildDirectBinaryBody(1, "synthetic-admin", 3), 3);
+    data.command.mockResolvedValue(Buffer.from(new Int32Array([-1]).buffer));
+    await expect(router.readRtspUrl(ROUTE, 3)).rejects.toMatchObject({ code: -1 });
+    router.close();
+  });
+
+  it("hands every station notify on the data channel to the inbound path as a P2P frame, its params lifted", async () => {
+    const onFrame = vi.fn();
+    const { router, data } = layers(onFrame);
+    await router.dispatchCommand(ROUTE, { kind: "set-param", param: 1035, value: 1, channel: 3 });
+    const json = { cmd: 1351, payload: { params: [{ dev_type: 3, param_type: 1145, param_value: 1 }] } };
+    data.emit("notify", 1351, Buffer.from(JSON.stringify(json) + "\0"), head(1351, 3));
+    data.emit("notify", 1145, Buffer.from("rtsp://u:p@192.0.2.9/live0\0"), head(1145, 3));
+    expect(onFrame.mock.calls.map(([sn, f]) => [sn, f.commandId, f.channel, f.params])).toEqual([
+      [ROUTE.stationSn, 1351, 3, { 1145: "1" }],
+      [ROUTE.stationSn, 1145, 3, undefined],
+    ]);
+    expect(onFrame.mock.calls[1]![1].data.toString()).toBe("rtsp://u:p@192.0.2.9/live0\0");
     router.close();
   });
 
@@ -356,6 +395,18 @@ describe("RtcCommandRouter on the native layers", () => {
     fresh.router.close();
   });
 
+  it("fails a data-channel live start its station leaves unanswered once its descriptor's request window ends", async () => {
+    const sn = "T8223P0000000000";
+    const { router, data } = layers();
+    data.command.mockReturnValue(new Promise(() => {}));
+    const live = { start: { ...SOLO_LIVE!.start, rtcSendRoute: 0, timeoutMs: 50 }, stop: SOLO_LIVE!.stop };
+    const route = { ...ROUTE, stationSn: sn, cameraSn: sn, attached: false, channel: 0, version: 3375, live };
+    const consumer = await router.mediaProviderFor(route).live();
+    const failed = new Promise<Error>((r) => consumer.on("error", r));
+    await expect(failed).resolves.toBeInstanceOf(Error);
+    router.close();
+  });
+
   it("routes a T8030 child's live frames on the station's context: 1700 over ANKE above 3742, its route-0 stop on the data channel", async () => {
     const hub = "T8030P0000000000";
     const live = { start: { ...SOLO_LIVE!.start, rtcSendRoute: 0 }, stop: { ...SOLO_LIVE!.stop, rtcSendRoute: 0 } };
@@ -454,6 +505,28 @@ describe("RtcCommandRouter on the native layers", () => {
     expect(data.command).not.toHaveBeenCalled();
     await talk.stop();
     await vi.waitFor(() => expect(data.command).toHaveBeenCalledWith(1006, u32(3), 3, 0));
+    router.close();
+  });
+
+  it("fails start_intercom on the data channel when the station answers it non-zero, as the native bridge reads it", async () => {
+    const { router, agent, data } = layers();
+    data.command.mockImplementation(async (cmd: number) => (cmd === 1005 ? u32(0xffffffff) : Buffer.alloc(0)));
+    const talkStart = { cmd: 1005, body: "native", payload: {}, layout: "u32-ch" } as const;
+    const talkStop = { cmd: 1006, body: "native", payload: {}, layout: "u32-ch" } as const;
+    const opening = router.mediaProviderFor({ ...ROUTE, version: 4000, live: { ...NVR_LIVE!, talkStart, talkStop } })
+      .talkback!();
+    await vi.waitFor(() => expect(agent.write).toHaveBeenCalled());
+    const idr = Buffer.alloc(22);
+    idr.writeUInt32BE(0x80e30001);
+    idr.writeUInt32BE(9000, 4);
+    idr[12] = 0x65;
+    idr.writeBigUInt64LE(BigInt(Date.now()), 13);
+    idr[21] = 3;
+    agent.emit("data", idr);
+    const talk = await opening;
+    const failed = new Promise<Error>((r) => talk.on("error", r));
+    expect((await failed).message).toContain("did not take start_intercom");
+    await talk.stop();
     router.close();
   });
 

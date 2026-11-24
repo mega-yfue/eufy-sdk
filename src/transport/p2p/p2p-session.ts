@@ -65,7 +65,8 @@ import {
   parseRelayTo,
   readNullTerminatedString,
 } from "./codec.js";
-import { commandName, CommandType } from "./commands.js";
+import { CommandType } from "./commands.js";
+import { decodeFrame } from "./frame.js";
 import { renderFrame, setPayloadJson } from "./write-commands.js";
 import { traceLiveStart, type LiveTrace } from "./live-trace.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
@@ -233,16 +234,8 @@ interface RetainedDatagram {
 }
 /** CMD_SET_PAYLOAD (1350) wraps a JSON command; CMD_DATABASE_IMAGE (1308) is the image reply. */
 const CMD_SET_PAYLOAD = 1350;
-/** CMD_NOTIFY_PAYLOAD (1351) — the station's unsolicited JSON notification. */
-const CMD_NOTIFY_PAYLOAD = 1351;
 /** The longest command answer whose body the app's `zx_p2p_get_exec_result` reads a code from. */
 const RESULT_BODY_MAX = 132;
-/**
- * CMD_CAMERA_INFO — params as a root-level array. On a camera's channel it is that camera's OWN report; on
- * {@link STATION_CHANNEL} a HomeBase answers with its whole table, every entry's `dev_type` naming the
- * channel it belongs to.
- */
-const CMD_CAMERA_INFO = 1103;
 
 /** Serial prefixes the app's native `isStation` names: such a session takes the level-1 key at sign mode <= 0. */
 const LEVEL1_AT_SIGN0_PREFIXES = ["T8001", "T8002", "T8010", "T8030", "T8021", "T8025"];
@@ -303,53 +296,6 @@ export interface P2PSessionConfig {
   userId?: string;
   /** Diagnostics sink. Omit for silence. */
   logger?: Logger;
-}
-
-/**
- * Lift a notify payload's `params` array into a `param_type → param_value` map, or `undefined` when
- * the payload isn't one.
- *
- * A station volunteers an attached device's state as `[{dev_type, param_type, param_value}, …]`, and
- * those `param_type` ids are the cloud record's own — so this is a format unwrap, not an
- * interpretation. Entries missing an id or a value are skipped rather than stored as `"undefined"`.
- *
- * Two frames are read this way, each in ONE shape, because the caller lands these as the reporting device's
- * params — which widens the evidence its typed reads are gated on, so a reply that merely happens to carry an
- * array must not be mistaken for a device reporting its own state. A station's notify nests an attached
- * device's array under `payload`; a camera's own `CMD_CAMERA_INFO` puts it at the root. Reading each only in
- * its measured shape is what keeps the distinction. A `CMD_CAMERA_INFO` answered on {@link STATION_CHANNEL}
- * is the station's per-channel table and is read by {@link channelReport} instead.
- */
-function paramReport(payload: unknown): Record<number, string> | undefined {
-  const list = (payload as { params?: unknown } | undefined)?.params;
-  if (!Array.isArray(list)) return undefined;
-  const out: Record<number, string> = {};
-  for (const entry of list) {
-    const p = entry as { param_type?: unknown; param_value?: unknown };
-    if (typeof p?.param_type !== "number" || p.param_value == null) continue;
-    out[p.param_type] = String(p.param_value);
-  }
-  return Object.keys(out).length ? out : undefined;
-}
-
-/**
- * Split a station's `CMD_CAMERA_INFO` table into one `param_type → param_value` map per channel, or
- * `undefined` when the payload carries no entry naming one.
- *
- * A HomeBase answers on {@link STATION_CHANNEL} with every attached camera's params in one root array, each
- * entry's `dev_type` naming the channel it belongs to and 255 naming the station. Flattened, each id keeps
- * whichever channel came last, so no camera reads its own state from it.
- */
-function channelReport(payload: unknown): Record<number, Record<number, string>> | undefined {
-  const list = (payload as { params?: unknown } | undefined)?.params;
-  if (!Array.isArray(list)) return undefined;
-  const out: Record<number, Record<number, string>> = {};
-  for (const entry of list) {
-    const p = entry as { dev_type?: unknown; param_type?: unknown; param_value?: unknown };
-    if (typeof p?.dev_type !== "number" || typeof p.param_type !== "number" || p.param_value == null) continue;
-    (out[p.dev_type] ??= {})[p.param_type] = String(p.param_value);
-  }
-  return Object.keys(out).length ? out : undefined;
 }
 
 /**
@@ -2094,33 +2040,8 @@ export class P2PSession extends EventEmitter {
     } else if (header.commandId === CMD_DATABASE) {
       this.emit("dbChunk", { stationSn: this.cfg.stationSn, text: payload.toString("latin1") });
     }
-    const frame: P2PFrame = {
-      ...header,
-      stationSn: this.cfg.stationSn,
-      commandName: commandName(header.commandId),
-      dataType,
-      data,
-      raw: payload,
-    };
-    // CMD_NOTIFY_PAYLOAD-style frames carry a NUL-terminated JSON document.
+    const frame = decodeFrame(this.cfg.stationSn, header, data, payload, dataType);
     const text = readNullTerminatedString(data);
-    if (text.startsWith("{")) {
-      try {
-        frame.json = JSON.parse(text);
-      } catch {
-        /* not JSON */
-      }
-      const stationTable = header.commandId === CMD_CAMERA_INFO && header.channel === STATION_CHANNEL;
-      const byChannel = stationTable ? channelReport(frame.json) : undefined;
-      const reported =
-        header.commandId === CMD_NOTIFY_PAYLOAD
-          ? paramReport(frame.json?.payload)
-          : header.commandId === CMD_CAMERA_INFO && !stationTable
-            ? paramReport(frame.json)
-            : undefined;
-      if (byChannel) frame.channelParams = byChannel;
-      if (reported) frame.params = reported;
-    }
     // CMD_NAS_SWITCH (1145) is the RTSP publish switch, but the station also pushes it BACK as a data
     // frame whose string payload is the camera's full authoritative rtsp://user:pass@ip/path — the
     // credentials it enforces right now, regenerated on every publish toggle (the cloud record lags a

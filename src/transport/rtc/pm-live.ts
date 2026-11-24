@@ -156,7 +156,7 @@ export class Anke {
 
 /**
  * A live command as the app's RTC sender frames it: its id, body, header channel and header byte 14; `send` when the
- * sender routes it over the data channel instead, where the app checks no answer: `true` once written.
+ * sender routes it over the data channel instead, where the native bridge waits for its answer: `true` on code 0.
  */
 export interface RtcLiveCommand {
   cmd: number;

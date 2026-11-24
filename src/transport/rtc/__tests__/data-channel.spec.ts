@@ -192,6 +192,26 @@ describe("RtcDataChannel commands", () => {
     }
   });
 
+  it("waits 35 s for a 1060's reply and 20 s for any other, as ack_reader_get_ack does", async () => {
+    vi.useFakeTimers();
+    try {
+      const sent: Buffer[] = [];
+      const ch = new RtcDataChannel((d) => sent.push(d), { multi: false, key: KEY, gcm: false });
+      ch.connected = true;
+      open.push(ch);
+      const long = vi.fn();
+      const short = vi.fn();
+      ch.command(1060, "{}").catch(long);
+      ch.command(1103, "{}").catch(short);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect([long.mock.calls.length, short.mock.calls.length]).toEqual([0, 1]);
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(long).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("gates the command GCM by model and firmware as the app does", () => {
     expect([cmdGcm("T9000P0000000000", 4099), cmdGcm("T9000P0000000000", 4100)]).toEqual([false, true]);
     expect([cmdGcm("T8N00P0000000000", 1150), cmdGcm("T8N00P0000000000", 1205)]).toEqual([true, false]);

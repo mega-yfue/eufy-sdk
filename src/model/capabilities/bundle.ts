@@ -49,6 +49,8 @@ export interface BundleFrame extends SessionFrame {
   session?: Readonly<Record<string, string>>;
   /** An `rtcLive` frame's `rtc_type`: fixed (absent 0), or 1 from version `from` of the device's or parent's firmware. */
   rtcSendRoute?: number | { from: string; of: "own" | "parent" };
+  /** A live frame's request window: its P2P descriptor's `timeout` in ms, where it states one. */
+  timeoutMs?: number;
   dp?: number;
   value?: unknown;
   /** A data point's value per value of the input `key` (the bundle's own table, `fanToString[speed]`). */
@@ -506,7 +508,7 @@ export function rtcLiveFrames(
 }
 
 /** A live frame with the `rtc_type` its bundle parser gave it (`rtcSendRoute`, absent 0). */
-type RtcLiveFrame = SessionFrame & { rtcSendRoute?: number };
+type RtcLiveFrame = SessionFrame & { rtcSendRoute?: number; timeoutMs?: number };
 
 /** A read of a hex-encoded data point, its map keyed by the base64 the SDK holds the point in. */
 const base64Keys = (read: BundleRead): BundleRead => ({
