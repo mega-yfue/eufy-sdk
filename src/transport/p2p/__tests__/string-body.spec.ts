@@ -12,6 +12,10 @@ describe("buildStringBody (SET_TIME_ZONE 1215, SET_HUB_NAME 1216, SET_DEVICE_NAM
     expect(body.subarray(133, 133 + acct.length).toString("ascii")).toBe(acct);
   });
 
+  it("leads with the sender's int argument (the 1414 switch)", () => {
+    expect(buildStringBody(0, "", "a", 1).readUInt32LE(0)).toBe(1);
+  });
+
   it("truncates an over-long name", () => {
     const nameField = buildStringBody(0, "x".repeat(200), "a").subarray(5, 133).toString("ascii");
     expect(nameField.replace(/\0+$/, "").length).toBe(127);
