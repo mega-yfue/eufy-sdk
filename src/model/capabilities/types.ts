@@ -272,6 +272,8 @@ export interface AvailabilityContext {
   homeBaseAttached?: boolean;
   /** Serial of the covering station, when the device record names one. */
   stationSerial?: string;
+  /** The zone on the device's own record (`time_zone`), which `timezone_set` reads when param 1215 is unreported. */
+  deviceTimezone?: string;
 }
 
 export interface CommandContext extends AvailabilityContext {
@@ -279,6 +281,8 @@ export interface CommandContext extends AvailabilityContext {
   timezone?: string;
   /** Device channel (0 for standalone, `device_channel` on a HomeBase). */
   channel: number;
+  /** The {@link AvailabilityContext.stationSerial} record's `device_channel`, 0 where it states none. */
+  stationChannel?: number;
   /** eufy DeviceType, when known. */
   deviceType?: number;
   /** Model / T-code, when known. */

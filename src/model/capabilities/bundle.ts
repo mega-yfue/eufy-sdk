@@ -13,6 +13,7 @@ import type { AvailabilityContext, CommandContext } from "./types.js";
 import { reflectCommand, type Command, type LiveFrames, type SessionFrame } from "../../core/contracts.js";
 import type { ThingMember } from "./thing-description.js";
 import DATA from "./bundle-wires.generated.json" with { type: "json" };
+import TIMEZONES from "./timezones.json" with { type: "json" };
 
 /**
  * One frame a product's settings bundle answers a write with, by the transport it rides:
@@ -310,6 +311,34 @@ type RawOf = (param: number) => string | undefined;
 /** Whether the app writes and reads `identifier` on this product in its own Java, so the bundle's data does not. */
 const javaOverridden = (identifier: string, ctx: AvailabilityContext): boolean =>
   bundleEntry(identifier, ctx)?.override === "java";
+
+/** The app's zone table, `id → [POSIX rule, sn]`, in its order. */
+const ZONES = TIMEZONES as unknown as Readonly<Record<string, readonly [rule: string, sn: string]>>;
+
+/**
+ * `timezone_set` as the app's own code writes it: the id sent as `<rule>|1.<sn>|<id>` (`""` for an id not
+ * in its table), through `timezone_set_redirect` where the description lists it, else in a 1215 string body
+ * with the station's member account id, on 255 under a station, else on the parent's channel.
+ */
+function timezoneWrite(id: string, ctx: CommandContext): Command | undefined {
+  const zone = ZONES[id];
+  const value = zone ? `${zone[0]}|1.${zone[1]}|${id}` : "";
+  if (ctx.things?.properties.timezone_set_redirect) return thingWrite("timezone_set_redirect", value, ctx);
+  const channel = isStationSerial(ctx.stationSerial ?? ctx.serial ?? "") ? 255 : (ctx.stationChannel ?? ctx.channel);
+  return { kind: "p2p-string", cmd: 1215, value, channel, stationAccount: true };
+}
+
+/** A reported zone as the app maps it to an id: by its `|1.` sn, else its rule or id, else its last `|` part. */
+function timezoneRead(s: string): string {
+  const sn = s.split("|1.")[1]?.split("|")[0];
+  const last = s.includes("/") ? s.split("|").at(-1) : undefined;
+  const entries = Object.entries(ZONES);
+  const hit =
+    entries.find(([, [, n]]) => n === sn) ??
+    entries.find(([id, [rule]]) => rule === s || id === s) ??
+    entries.find(([id]) => id === last);
+  return hit?.[0] ?? s;
+}
 
 /**
  * The param of each identifier the app's legacy floodlight light settings (opened for T8420, T8420X, T8423 and
@@ -1012,6 +1041,7 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
  * frame where the value carries the host's own field (`$input.nick_name`): the row the bundle answered for it.
  */
 export function thingWrite(identifier: string, value: string, ctx: CommandContext, key = value): Command | undefined {
+  if (identifier === "timezone_set") return timezoneWrite(value, ctx);
   const floodlight = floodlightParam(identifier, ctx);
   if (floodlight) return floodlightWrite(floodlight, value, ctx);
   if (javaOverridden(identifier, ctx)) return undefined;
@@ -1329,6 +1359,7 @@ function structOf(value: string): { paramType: number; param: Record<string, unk
 
 /** The raw value `param` (by default the first the bundle reads) holds for `identifier`'s `value`. */
 export function thingReadback(identifier: string, value: string, ctx: AvailabilityContext, param?: number) {
+  if (identifier === "timezone_set") return { param: 1215, raw: value };
   const floodlight = floodlightParam(identifier, ctx);
   if (floodlight === 1409) return { param: 1409, raw: String(LIGHT_TIMER[Number(value)]) };
   if (floodlight === 1414) return { param: 1414, raw: value };
@@ -1354,6 +1385,10 @@ export function thingRead(
   ctx: AvailabilityContext,
   raw: (param: number) => string | undefined,
 ): string | undefined {
+  if (identifier === "timezone_set") {
+    const s = raw(1215) ?? ctx.deviceTimezone;
+    return s === undefined ? undefined : timezoneRead(s);
+  }
   if (identifier === "device_is_online") return ctx.online && String(ctx.online());
   const floodlight = floodlightParam(identifier, ctx);
   const own = floodlight === undefined ? undefined : raw(floodlight);

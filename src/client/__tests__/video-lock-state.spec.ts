@@ -17,6 +17,7 @@ const roster = [
       device_type: 55,
       parent_sn: HUB,
       device_channel: 7,
+      time_zone: "device-own-zone",
       member: { admin_user_id: "device-admin", member_user_id: "synthetic-member", short_user_id: "0002" },
     },
   },
@@ -98,7 +99,9 @@ describe("video lock status integration", () => {
       adminUserId: "device-admin",
       shortUserId: "0002",
       stationSerial: HUB,
+      stationChannel: 0,
       timezone: "reported-vendor-zone",
+      deviceTimezone: "device-own-zone",
     });
     expect(ctx.accountName).toBe("test");
     const dev = await client.getDevice(SN);

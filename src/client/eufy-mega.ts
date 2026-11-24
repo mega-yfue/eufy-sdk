@@ -2357,7 +2357,9 @@ export class EufyMega extends EventEmitter {
         : undefined;
     return {
       channel,
+      stationChannel: typeof parentRaw?.device_channel === "number" ? parentRaw.device_channel : 0,
       timezone: recordString(parentRaw ?? {}, "time_zone"),
+      deviceTimezone: recordString(raw, "time_zone"),
       codec: resolved.codec,
       deviceType: rec.deviceType,
       model: rec.model,
