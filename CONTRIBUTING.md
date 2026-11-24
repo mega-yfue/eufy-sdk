@@ -107,9 +107,10 @@ your branch  ──PR──▶  beta-1.2.0  ──every push──▶  npm 1.2.0
                       beta-1.2.0  ──PR──▶  main  ──tag v1.2.0──▶  npm 1.2.0
 ```
 
-The intent is that code ships as an installable prerelease before it ships as a stable one. If the
-beta branch for your target release does not exist yet, create it from `main` — but note that **every
-push to it triggers a publish**, so it is a staging branch, not a scratchpad. Each of those publishes
+The intent is that code ships as an installable prerelease before it ships as a stable one. Beta
+branches live in this repository and maintainers cut them from `main`; a fork's branch named
+`beta-X.Y.Z` is still a feature branch and is refused like one. **Every push to a beta triggers a
+publish**, so it is a staging branch, not a scratchpad. Each of those publishes
 waits for a maintainer to approve the deployment, so nothing leaves for npm unattended; a run sitting
 at "waiting" is that, not a stuck job.
 

@@ -57,8 +57,16 @@ jobs:
         id: source
         env:
           HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         run: |
           set -euo pipefail
+
+          # A fork names its branches freely, so neither exemption below means anything from one.
+          if [ "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]; then
+            echo "$HEAD_REF comes from the fork $HEAD_REPO — not allowed."
+            echo "allowed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           case "$HEAD_REF" in
             dependabot/*)
@@ -85,29 +93,31 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           NUMBER: ${{ github.event.pull_request.number }}
           HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         run: |
           set -euo pipefail
           cat > comment.md <<'INTRO'
           ## This pull request cannot merge into `main`
 
-          Only a `beta-X.Y.Z` branch can. Every change reaches `main` through a prerelease that was
-          published and installed first, so the code behind a stable release is never code that shipped
-          for the first time at that moment.
+          Only a `beta-X.Y.Z` branch of this repository can; a fork branch with that name is not one.
+          Every change reaches `main` through a prerelease that was published and installed first, so
+          the code behind a stable release is never code that shipped for the first time at that moment.
 
-          **Nothing here is lost.** Two ways forward, whichever suits you:
+          **Nothing here is lost.** Point it at the open beta branch instead, whichever way suits you:
 
           - **Move the base and reopen.** Reopen this pull request, then use **Edit** next to the title and
-            change the base to the beta branch for the release you are aiming at. The commits, the
-            discussion and any reviews stay on it.
-          - **Open a fresh one** against that beta branch.
+            change the base to the open beta branch. The commits, the discussion and any reviews stay on it.
+          - **Open a fresh one** against that beta branch, from a branch with any name.
 
-          If the beta branch does not exist yet, create it from `main`. Every push to it publishes an
-          installable `X.Y.Z-beta.N`, and when the release is ready that branch is what opens a pull
-          request against `main`.
-
-          Thank you for the contribution — this is about routing, not about the change itself.
           INTRO
-          printf '\n<sub>Closed automatically because the source branch was `%s`.</sub>\n' "$HEAD_REF" >> comment.md
+          beta=$(gh api --paginate "repos/$GITHUB_REPOSITORY/branches" --jq '.[].name | select(test("^beta-"))' | sort -V | tail -1)
+          if [ -n "$beta" ]; then
+            printf 'The open beta branch is `%s`.\n' "$beta" >> comment.md
+          else
+            echo 'No beta branch is open right now; ask here and a maintainer will cut one.' >> comment.md
+          fi
+          printf '\nThank you for the contribution — this is about routing, not about the change itself.\n' >> comment.md
+          printf '\n<sub>Closed automatically because the source branch was `%s` from `%s`.</sub>\n' "$HEAD_REF" "$HEAD_REPO" >> comment.md
           gh pr comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body-file comment.md
           gh pr close "$NUMBER" --repo "$GITHUB_REPOSITORY"
 
