@@ -403,7 +403,10 @@ export class MegaHttpClient {
   tuya?: TuyaCommandRouter;
   /** `product_domains.eufy_home` of the last `estimate_domain` reply, the app's Home category host. */
   private homeDomain?: string;
-  private bootstrapDomain?: string;
+  /** `domain` of the last `estimate_domain` reply, the app's Basic host (`mega-…`, or one host for everything). */
+  private megaDomain?: string;
+  /** The security certificate `register/iot` last issued, cached with the session (see {@link getUserMqttInfo}). */
+  private securityMqtt?: SecureMqttCredentials;
   private sessionKey?: SessionEntry;
   /** Per-host ECDH session keys for non-mega gateways (e.g. eufylife) keyed by host. */
   private readonly sessionKeys = new Map<string, SessionEntry>();
@@ -511,6 +514,8 @@ export class MegaHttpClient {
     this.region = saved.region;
     this.securityDomain = saved.securityDomain;
     this.homeDomain = saved.homeDomain;
+    this.megaDomain = saved.megaDomain;
+    this.securityMqtt = saved.securityMqtt;
     this.auth_ = {
       userId: saved.userId,
       accountUserId: saved.accountUserId,
@@ -626,13 +631,13 @@ export class MegaHttpClient {
    */
   private async httpPost(
     url: string,
-    body: string | object,
+    body: string | object | undefined,
     headers: Record<string, string>,
   ): Promise<{ status: number; data: unknown }> {
     const res = await fetch(url, {
       method: "POST",
       headers,
-      body: typeof body === "string" ? body : JSON.stringify(body),
+      body: body === undefined || typeof body === "string" ? body : JSON.stringify(body),
       signal: AbortSignal.timeout(20_000),
     });
     return { status: res.status, data: parseMaybeJson(await res.text()) };
@@ -655,7 +660,7 @@ export class MegaHttpClient {
     const blob = JSON.stringify(d);
     if (blob.includes("-eu-") || domain.includes("-eu-")) this.region = "eu-pr";
     else if (blob.includes("-us-") || domain.includes("-us-")) this.region = "us-pr";
-    if (domain && !domain.startsWith("mega-")) this.bootstrapDomain = domain;
+    if (domain) this.megaDomain = domain;
     this.logger.debug("[mega] region:", this.region, "domain:", domain);
   }
 
@@ -677,7 +682,9 @@ export class MegaHttpClient {
       const cached = this.sessionKeys.get(targetHost!);
       if (cached && Date.now() - cached.createdAt < 12 * 3600_000) return cached;
     }
-    const host = isEufylife ? targetHost! : (this.bootstrapDomain ?? `app-openapi-${this.region}.eufy.com`);
+    // A `mega-` domain fans out per module (`app-openapi-…` here); any other domain is the one host for all.
+    const single = this.megaDomain && !this.megaDomain.startsWith("mega-") ? this.megaDomain : undefined;
+    const host = isEufylife ? targetHost! : (single ?? `app-openapi-${this.region}.eufy.com`);
     // Joined, not duplicated: every call that finds the key gone at once waits on the one exchange. The token is
     // part of the key because an exchange started before a login is bound to no user, and login re-exchanges
     // precisely to get one that is.
@@ -723,7 +730,8 @@ export class MegaHttpClient {
   }
 
   /**
-   * Signed + encrypted POST. Content-type auto-falls-back (text/plain ↔ json).
+   * Signed + encrypted POST. Content-type auto-falls-back (text/plain ↔ json). A `null` body sends none: no
+   * content-type, and the signature over the timestamp and nonce alone, as the app sends a body-less call.
    *
    * `retry` is this method's own bookkeeping across the two recoveries it performs on itself — a re-exchanged
    * session key, and a re-login — so each is attempted once per call. A caller leaves it out.
@@ -740,7 +748,7 @@ export class MegaHttpClient {
     // Remembered because a rejection can arrive after another call has already replaced the session, and the
     // two cases need opposite handling: replace a token that is still held, use one that is already fresh.
     const sentToken = authed ? this.auth_?.authToken : undefined;
-    const encBody = encryptBody(JSON.stringify(body ?? {}), entry.shareKey);
+    const encBody = body === null ? undefined : encryptBody(JSON.stringify(body ?? {}), entry.shareKey);
     // The gateway wants a specific Content-Type per host and 4416s ("signature
     // invalid") on the wrong one — so we probe, then REMEMBER the winner per host
     // to avoid re-probing (and the resulting noise/double-requests) next time.
@@ -749,25 +757,33 @@ export class MegaHttpClient {
     const cached = this.contentTypeByHost.get(host);
     const wantsText = path.includes("/passport/") || host.includes(".eufylife.com");
     const preferred = cached ?? (wantsText ? "text/plain" : "application/json");
-    const order = preferred === "text/plain" ? ["text/plain", "application/json"] : ["application/json", "text/plain"];
+    const order =
+      encBody === undefined
+        ? [undefined]
+        : preferred === "text/plain"
+          ? ["text/plain", "application/json"]
+          : ["application/json", "text/plain"];
 
     let last: { code?: number; msg?: string; status?: number } | undefined;
     for (const contentType of order) {
       const headers: Record<string, string> = {
         ...this.baseHeaders(),
-        "content-type": contentType,
-        ...signedHeaders(entry, encBody),
+        ...(contentType && { "content-type": contentType }),
+        ...signedHeaders(entry, encBody ?? ""),
         "x-replay-info": "replay",
         // Per-call header overrides (e.g. app-name=eufy_security to request a security-scoped
         // MQTT cert on an existing eufy_mega session — see EufyMega.getUserMqttInfo).
         ...headerOverrides,
       };
+      // The app's request pipeline mirrors `app-tab` and `Category` into each other when only one is set.
+      const tab = headers["app-tab"] || headers.category;
+      if (tab) Object.assign(headers, { "app-tab": headers["app-tab"] || tab, category: headers.category || tab });
       if (authed) Object.assign(headers, this.authTokenHeaders());
       const res = await this.httpPost(`https://${host}${path}`, encBody, headers);
       const env = res.data as ApiEnvelope<unknown>;
       if (res.status === 200 && env?.code === 0) {
         if (authed) this.noteSessionWorking();
-        this.contentTypeByHost.set(host, contentType); // remember what worked
+        if (contentType) this.contentTypeByHost.set(host, contentType); // remember what worked
         if (typeof env.data === "string" && env.data.length > 0) {
           const pt = decryptBody(env.data, entry.shareKey).toString("utf-8");
           try {
@@ -1347,14 +1363,28 @@ export class MegaHttpClient {
   /**
    * The per-user secure-MQTT certificate, as the app asks for it per stack: `eufy_security` is
    * `POST app/mqtt/register/iot` and `eufy_life` is `POST app/devicemanage/get_user_mqtt_info`, both on the
-   * Basic (`mega-`) host with `app-tab: <scope>`; without a scope, the clean line's headerless
-   * `get_user_mqtt_info`.
+   * Basic host (`estimate_domain`'s `domain`, persisted) with `app-tab: <scope>`; without a scope, the clean line's headerless
+   * `get_user_mqtt_info`. Both are sent without a body, as the app sends them.
+   *
+   * The security certificate is kept with the session as the app caches it: the cached one is answered first,
+   * a fresh one replaces it, and a failed `register/iot` falls back to it. `fresh` skips the cached one, as the
+   * app's force refresh does.
    */
-  getUserMqttInfo(scope?: "eufy_security" | "eufy_life"): Promise<SecureMqttCredentials> {
+  async getUserMqttInfo(scope?: "eufy_security" | "eufy_life", fresh = false): Promise<SecureMqttCredentials> {
     if (!scope) return this.post<SecureMqttCredentials>("devicemanage", "/app/devicemanage/get_user_mqtt_info", {});
-    const path = scope === "eufy_security" ? "/app/mqtt/register/iot" : "/app/devicemanage/get_user_mqtt_info";
-    const basic = this.bootstrapDomain ?? `mega-${this.region}.eufy.com`;
-    return this.postSigned<SecureMqttCredentials>(basic, path, {}, true, {}, { "app-tab": scope });
+    const basic = this.megaDomain ?? `mega-${this.region}.eufy.com`;
+    const ask = (path: string) =>
+      this.postSigned<SecureMqttCredentials>(basic, path, null, true, {}, { "app-tab": scope });
+    if (scope === "eufy_life") return ask("/app/devicemanage/get_user_mqtt_info");
+    if (this.securityMqtt && !fresh) return this.securityMqtt;
+    try {
+      this.securityMqtt = await ask("/app/mqtt/register/iot");
+      this.persist();
+      return this.securityMqtt;
+    } catch (e) {
+      if (this.securityMqtt) return this.securityMqtt;
+      throw e;
+    }
   }
 
   /** The app's `PushManager.uploadToken` body: the push token, also as `voip_token`. */
@@ -1981,6 +2011,8 @@ export class MegaHttpClient {
       countryCode: this.cfg.countryCode,
       securityDomain: this.securityDomain,
       homeDomain: this.homeDomain,
+      megaDomain: this.megaDomain,
+      securityMqtt: this.securityMqtt,
       openudid: this.openudid,
       phoneModel: this.phoneModel,
       mediaUserAgent: this.mediaUserAgent,

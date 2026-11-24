@@ -1864,12 +1864,16 @@ export class EufyMega extends EventEmitter {
         `${randomUUID().replace(/-/g, "")}${creds.endpoint_addr.replace(/-/g, "")}`;
       return await this.connectMqtt(creds, { clientId, backoff: { minS: 0.001, maxS: 0.001, attempts: 3 } });
     }
-    return await this.connectMqtt(creds, {
-      clientId: `android-${creds.app_name ?? scope}-${creds.user_id ?? auth.userId}-${this.mega.openudid}`,
-      keepaliveS: 300,
-      backoff: { minS: 4, maxS: 64, attempts: 10 },
-      resubscribeMs: 5000,
-    });
+    const connect = (c: SecureMqttCredentials) =>
+      this.connectMqtt(c, {
+        clientId: `android-${c.app_name ?? scope}-${c.user_id ?? auth.userId}-${this.mega.openudid}`,
+        keepaliveS: 300,
+        backoff: { minS: 4, maxS: 64, attempts: 10 },
+        resubscribeMs: 5000,
+      });
+    if (scope !== "eufy_security") return await connect(creds);
+    // The security certificate may be the cached one: refused, it is asked again, as the app's force refresh does.
+    return await connect(creds).catch(async () => connect(await this.mega.getUserMqttInfo(scope, true)));
   }
 
   /**

@@ -263,6 +263,9 @@ function lockServiceEnvelope(
   });
 }
 
+/** The lock device types the app puts on its ZX broker rather than on the security certificate's. */
+const ZX_MQTT_DEVICE_TYPES = [51, 53, 54, 58, 180, 184];
+
 /**
  * The facade-side dependencies the router needs. It owns the command wire logic, but defers device-list access + lifecycle event fan-out to the client (which owns
  * the typed EventEmitter).
@@ -360,11 +363,21 @@ export class MqttCommandRouter {
     }
   }
 
-  /** Resolve a serial to its loaded device record (loading the device list if needed). */
+  /**
+   * Resolve a serial to its loaded device record (loading the device list if needed). A lock of a device type the
+   * app drives on its separate ZX broker (`ssl://security-mqtt[-eu].eufylife.com:8789`, user/password login) is
+   * refused: that broker is not this one, and the app never puts those locks on the security certificate.
+   */
   private async deviceFor(sn: string): Promise<EufyDevice> {
     if (!this.deps.listDevices().length) await this.deps.ensureDevices();
     const dev = this.deps.listDevices().find((d) => d.sn === sn);
     if (!dev) throw new Error(`device ${sn} not found`);
+    const type = (dev.raw as { device_type?: number } | undefined)?.device_type;
+    if (type !== undefined && ZX_MQTT_DEVICE_TYPES.includes(type)) {
+      throw new Error(
+        `device ${sn} (device type ${type}) rides the app's ZX MQTT broker, which this SDK does not speak`,
+      );
+    }
     return dev;
   }
 
