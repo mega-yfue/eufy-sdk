@@ -107,21 +107,6 @@
  *    See {@link decryptFf09Frame} + {@link parseFf09SettingsResponse}.
  *  - **The T8531 speaks the same GET/SET frame over P2P** (same key derivation, same TLV layout). See
  *    `transport/p2p/command-router.ts`'s `sendFf09Autolock`.
- *
- * ## Rain Mode (T8531 — a SECOND, shorter `SET_SETTINGS` shape)
- *
- * Same `apiCommand`/`commandCode` pair as the auto-lock SET above (6015/52), but a genuinely different,
- * SHORTER plaintext: `[A1 time]
- * [A2 adminUserId][A3 1B settingId][A4 1B value]`, nothing past `A4` (no `A5`-`A9` at all). `A3` here
- * is NOT the unconfirmed constant from the full-blob write above — it's a setting-id SELECTOR (`0x07`
- * for Rain Mode), making this a compact single-setting write rather than a read-modify-write of a fixed
- * blob. Because it doesn't touch any field besides the one being set, it's a pure blind write — no GET
- * pass needed first. See {@link FF09_SETTING_ID} + {@link buildFf09SettingToggleFrame}. The `A3`
- * selector addresses at least 14 T8531 settings — the app's own `smartLockSetParamsDataParse` gives the
- * id→setting map; `RAIN_MODE` is the only one whose frame comes from the app's wire, and 6 more
- * (one-touch lock/scramble/wifi/enable-log/privacy/one-touch-rear) are wired but THROW "wire unverified"
- * until each clears that bar — see {@link FF09_SETTING_ID} for the full id list. See
- * `transport/p2p/command-router.ts`'s `sendFf09SettingToggle`.
  */
 
 import { createCipheriv, createDecipheriv } from "node:crypto";
@@ -494,85 +479,6 @@ export function buildFf09SettingsFrame(input: Ff09SettingsFrameInput): Ff09Frame
     Buffer.from([0x00]), // A9 — observed constant, semantics unconfirmed
   ];
   const plain = zeroPadToBlock(writeTlv(tlvFields));
-  return assembleFf09Frame(
-    LOCK_COMMAND_CODE.SET_SETTINGS,
-    LOCK_API_COMMAND.SET_SETTINGS,
-    plain,
-    adminUserId,
-    deviceSn,
-    keyTime,
-    seqNum,
-  );
-}
-
-/**
- * Setting-id selectors for the COMPACT single-setting `SET_SETTINGS` write ({@link
- * buildFf09SettingToggleFrame}) — a SHORTER TLV than the full-blob write ({@link buildFf09SettingsFrame},
- * which always sends `A3=0x00` plus all of `A4`-`A9` together for auto-lock). On the T8531 a Rain Mode
- * toggle is just `[A1 time][A2 adminUserId][A3=0x07][A4 0/1]` — nothing past `A4`, and `A3` here is a
- * setting-id SELECTOR rather than an unconfirmed constant. The app's own JS maps the full selector enum
- * (≥14 settings); `RAIN_MODE` is the only one whose frame comes from the app's wire, the other 6 ids
- * below ship throwing "wire unverified" until theirs does. See the module doc's "Rain Mode" section.
- *
- * NOT consulted by {@link buildFf09SettingToggleFrame} or anything else on the production path — the
- * wire byte actually comes from the `Command`'s opaque `settingId` field, sourced from `model/`'s OWN
- * copy (`lock.ts`'s `LOCK_SETTING_ID.RAIN_MODE`, per the capability↔transport decorrelation rule this
- * module's doc already covers). This constant is layer-local wire vocab for THIS file's own callers/
- * spec only — it documents the value but carries no production reference, so it can't structurally
- * catch the two copies drifting apart; see `lock.ts`'s doc for that caveat.
- */
-export const FF09_SETTING_ID = {
-  /** One-touch lock toggle. Named by the app's own JS; its frame is not from the app's wire. */
-  ONE_TOUCH_LOCK: 1,
-  /** Scramble-passcode toggle. Named by the app's own JS; its frame is not from the app's wire. */
-  SCRAMBLE_PASSCODE: 3,
-  /** Wifi-status toggle. Named by the app's own JS; its frame is not from the app's wire. */
-  WIFI_STATUS: 5,
-  /** Event-log-enable toggle. Named by the app's own JS; its frame is not from the app's wire. */
-  ENABLE_LOG: 6,
-  /** Rain Mode toggle on the T8531 video lock. `A4` = 0 off / 1 on. */
-  RAIN_MODE: 7,
-  /** Privacy-mode toggle. Named by the app's own JS; its frame is not from the app's wire. */
-  PRIVACY_MODE: 9,
-  /** One-touch rear-lock toggle. Named by the app's own JS; its frame is not from the app's wire. */
-  ONE_TOUCH_REAR_LOCK: 11,
-} as const;
-
-export interface Ff09SettingToggleFrameInput {
-  /** The lock owner's account id (`member.admin_user_id`, 40 hex chars) — drives the key + `A2`. */
-  adminUserId: string;
-  /** The lock's serial number — the AES IV (zero-padded to 16). */
-  deviceSn: string;
-  /** Which setting this write targets — the `A3` field. See {@link FF09_SETTING_ID}. */
-  settingId: number;
-  /** The new value — the `A4` field (0/1). */
-  value: boolean;
-  /** Override the unix-seconds stamp (testing / byte-exact reproduction). Default = now. */
-  unixTime?: number;
-  /** Override the key-time nonce OR'd into `unixTime` (testing). Default = a random 0..99. */
-  nonce?: number;
-  /** Override the envelope `seq_num` (testing). Default = `unixTime`. */
-  seqNum?: number;
-}
-
-/**
- * Build the settings **SET** frame using the COMPACT single-setting shape (`LOCK_COMMAND_CODE.SET_SETTINGS`,
- * same opcode as {@link buildFf09SettingsFrame}) — plaintext is just `[A1 time][A2 adminUserId]
- * [A3 1B settingId][A4 1B value]`, no `A5`-`A9` at all. Unlike the full-blob write, this is a pure blind
- * write — no GET-then-preserve is needed since it doesn't touch any field the device isn't being told to
- * change. See the module doc's "Rain Mode" section + {@link FF09_SETTING_ID}.
- */
-export function buildFf09SettingToggleFrame(input: Ff09SettingToggleFrameInput): Ff09Frame {
-  const { adminUserId, deviceSn, settingId, value } = input;
-  const { unixTime, keyTime, seqNum } = resolveFf09Identity(deviceSn, input.unixTime, input.nonce, input.seqNum);
-  const plain = zeroPadToBlock(
-    writeTlv([
-      u32le(unixTime),
-      Buffer.from(adminUserId, "ascii"),
-      Buffer.from([settingId & 0xff]),
-      Buffer.from([value ? 1 : 0]),
-    ]),
-  );
   return assembleFf09Frame(
     LOCK_COMMAND_CODE.SET_SETTINGS,
     LOCK_API_COMMAND.SET_SETTINGS,

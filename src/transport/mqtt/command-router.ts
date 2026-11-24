@@ -92,8 +92,8 @@ const publishAccountId = (dev: EufyDevice): string => adminUserIdOf(dev.raw) ?? 
  * Wrap a built ff09 frame in the MQTT `trans` envelope as the app's MQTT channel builds it: `cmd` and the
  * payload's `apiCommand` both `TRANSFER_PAYLOAD` (1940), `account_id` empty, `mValue3`/`mChannel` 0.
  */
-function toFf09Trans(frame: Ff09Frame): Ff09Trans {
-  const payload = { ...ff09TransferPayload(frame), apiCommand: CMD_TRANSFER_PAYLOAD };
+function toFf09Trans(frame: Ff09Frame, apiCommand: number = CMD_TRANSFER_PAYLOAD): Ff09Trans {
+  const payload = { ...ff09TransferPayload(frame), apiCommand };
   return { cmd: CMD_TRANSFER_PAYLOAD, account_id: "", payload, mValue3: 0, mChannel: 0 };
 }
 
@@ -158,37 +158,34 @@ interface Ff09SettingsResponseTrans {
  * throw, so the caller's message-listener loop keeps waiting instead of crashing.
  */
 function parseFf09SettingsResponseTrans(raw: unknown): Ff09SettingsResponseTrans | undefined {
-  if (!raw || typeof raw !== "object") return undefined;
-  const outerPayload = (raw as Record<string, unknown>).payload;
-  if (typeof outerPayload !== "string") return undefined;
-
-  let transB64: unknown;
-  try {
-    transB64 = (JSON.parse(outerPayload) as Record<string, unknown>).trans;
-  } catch {
-    return undefined;
-  }
-  if (typeof transB64 !== "string") return undefined;
-
-  let inner: unknown;
-  try {
-    inner = JSON.parse(Buffer.from(transB64, "base64").toString("utf-8"));
-  } catch {
-    return undefined;
-  }
-  if (!inner || typeof inner !== "object") return undefined;
-  const obj = inner as Record<string, unknown>;
-  if (typeof obj.cmd !== "number") return undefined;
-  const payload = obj.payload;
-  if (!payload || typeof payload !== "object") return undefined;
-  const p = payload as Record<string, unknown>;
+  const t = transOf(raw);
+  const p = t?.payload;
   if (
+    !t ||
+    !p ||
     typeof p.dev_sn !== "string" ||
     typeof p.lock_payload !== "string" ||
     (typeof p.time !== "string" && typeof p.time !== "number")
   )
     return undefined;
-  return { cmd: obj.cmd, payload: { dev_sn: p.dev_sn, lock_payload: p.lock_payload, time: p.time } };
+  return { cmd: t.cmd, payload: { dev_sn: p.dev_sn, lock_payload: p.lock_payload, time: p.time } };
+}
+
+/** A message's decoded `trans` (`raw.payload` JSON → base64 `trans` → JSON) with a numeric `cmd`, else `undefined`. */
+function transOf(raw: unknown): { cmd: number; payload?: Record<string, unknown> } | undefined {
+  const outerPayload = (raw as Record<string, unknown> | undefined)?.payload;
+  if (typeof outerPayload !== "string") return undefined;
+  try {
+    const transB64 = (JSON.parse(outerPayload) as Record<string, unknown>).trans;
+    if (typeof transB64 !== "string") return undefined;
+    const obj = JSON.parse(Buffer.from(transB64, "base64").toString("utf-8")) as Record<string, unknown> | null;
+    if (typeof obj?.cmd !== "number") return undefined;
+    const payload =
+      obj.payload && typeof obj.payload === "object" ? (obj.payload as Record<string, unknown>) : undefined;
+    return { cmd: obj.cmd, payload };
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -235,6 +232,35 @@ export function buildFf09MqttEnvelope(input: {
     sign_code: 0,
   };
   return JSON.stringify({ head, payload });
+}
+
+/**
+ * The envelope the lock's own MQTT settings service publishes: `{head, payload}`, `payload` = `{account_id,
+ * device_sn, trans: base64(trans)}` and nothing else, `cmd_status` 2 (no ack asked).
+ */
+function lockServiceEnvelope(
+  clientId: string,
+  accountId: string,
+  deviceSn: string,
+  cmd: number,
+  trans: unknown,
+): string {
+  const head = {
+    version: "1.0.0.1",
+    client_id: clientId,
+    sess_id: randomBytes(2).toString("hex"),
+    msg_seq: nextMsgSeq(),
+    seed: randomBytes(16).toString("hex"),
+    timestamp: Math.floor(Date.now() / 1000),
+    cmd_status: 2,
+    cmd,
+    sign_code: 0,
+  };
+  const transB64 = Buffer.from(JSON.stringify(trans), "utf-8").toString("base64");
+  return JSON.stringify({
+    head,
+    payload: JSON.stringify({ account_id: accountId, device_sn: deviceSn, trans: transB64 }),
+  });
 }
 
 /**
@@ -326,10 +352,7 @@ export class MqttCommandRouter {
       case "aiot-dp":
         return this.dispatchAiotDp(sn, cmd);
       default:
-        // An ff09-* command reaches here for a device with no P2P endpoint or a standalone video lock.
-        // `ff09-setting-toggle` (Rain Mode) has no MQTT form, so one reaching here is a routing bug; fail
-        // loud rather than guess a shape that is not known to exist. Same for any non-ff09 or non-aiot-dp
-        // kind (the facade routes those to P2P).
+        // Any other kind is a routing bug (the facade routes those to P2P): fail loud.
         throw new Error(
           `MqttCommandRouter received an unroutable command (${cmd.kind}) for ${sn} — the facade sink should ` +
             `only route ff09-actuate/ff09-autolock/aiot-dp here`,
@@ -641,8 +664,12 @@ export class MqttCommandRouter {
    * A pure GET, no SET: reuses {@link fetchFf09SettingsGetReply}, then decrypts
    * + decodes fields `a1`-`a5` per `transport/ff09.ts`'s response tag map.
    */
-  async getAutoLockState(sn: string, cmd: { adminUserId: string; deviceSn: string }): Promise<AutoLockSnapshot> {
+  async getAutoLockState(
+    sn: string,
+    cmd: { adminUserId: string; deviceSn: string; lockService?: boolean },
+  ): Promise<AutoLockSnapshot> {
     const dev = await this.pnDeviceFor(sn);
+    if (cmd.lockService) return decodeFf09AutoLockSnapshot(parseFf09SettingsResponse(await this.lockServiceRead(dev)));
     const mqtt = await this.secureMqtt("eufy_security");
     const topic = ff09MqttTopic(dev.model, sn);
     const getReply = await this.fetchFf09SettingsGetReply(mqtt, topic, sn, cmd);
@@ -724,6 +751,7 @@ export class MqttCommandRouter {
    */
   private async dispatchLockDp(sn: string, cmd: Extract<Command, { kind: "mqtt-dp" }>): Promise<boolean> {
     const dev = await this.pnDeviceFor(sn);
+    if (cmd.lockService) return this.lockServiceWrite(dev, cmd);
     const frame = buildFf09TlvFrame({
       cmdCode: cmd.cmdCode,
       fields: cmd.fields,
@@ -756,6 +784,96 @@ export class MqttCommandRouter {
   }
 
   /**
+   * A settings write as the lock's own MQTT settings service sends it: where `preserve` asks, a settings read first
+   * (opcode 53 under apiCommand 6016) whose reply supplies those tags' bytes as the next fields, then the write under
+   * the command's `apiCommand`; each once, its answer awaited `timeoutS` ({@link lockServiceRequest}). Done on a
+   * result code 0, the first byte of the answer.
+   */
+  private async lockServiceWrite(dev: EufyDevice, cmd: Extract<Command, { kind: "mqtt-dp" }>): Promise<boolean> {
+    const timeoutMs = (cmd.timeoutS ?? 5) * 1000;
+    let fields = cmd.fields;
+    if (cmd.preserve) {
+      const reply = parseFf09SettingsResponse(await this.lockServiceRead(dev, timeoutMs));
+      const next = (fields.at(-1)?.tag ?? 0xa2) + 1;
+      fields = [
+        ...fields,
+        ...cmd.preserve.map((t, i) => {
+          const value = typeof t === "number" ? reply.fields.get(t) : t;
+          if (!value)
+            throw new Error(`mqtt-dp for ${dev.sn}: the lock reports no settings field 0x${Number(t).toString(16)}`);
+          return { tag: next + i, value };
+        }),
+      ];
+    }
+    const answer = await this.lockServiceRequest(
+      dev,
+      { ...cmd, fields },
+      cmd.apiCommand ?? CMD_TRANSFER_PAYLOAD,
+      timeoutMs,
+    );
+    this.deps.onCommandAck({ sn: dev.sn, kind: "mqtt-dp", cmdCode: cmd.cmdCode, acked: answer !== undefined });
+    return answer?.[0] === 0;
+  }
+
+  /** The lock's settings read through its own MQTT settings service: opcode 53 under apiCommand 6016; throws on no answer. */
+  private async lockServiceRead(dev: EufyDevice, timeoutMs = 20_000): Promise<Buffer> {
+    const read = { kind: "mqtt-dp", mqttCmdCode: 9, cmdCode: 53, fields: [] } as const;
+    const answer = await this.lockServiceRequest(dev, read, 6016, timeoutMs);
+    if (!answer) throw new Error(`lock service for ${dev.sn}: no settings read answer within ${timeoutMs}ms`);
+    return answer;
+  }
+
+  /**
+   * One `ff09` frame through the lock's own MQTT settings service: `{account_id, device_sn, trans}`, the trans
+   * `{cmd 1940, mChannel 0, mValue3 0, payload {apiCommand, lock_payload, seq_num, time}}`, no ack asked, sent once.
+   * The answer is `sn`'s `head.cmd` 8 trans of the same `cmd` whose frame carries the request's opcode and whose `time`
+   * is the request's (a reply stating none is taken); its decrypted bytes, `undefined` when none comes.
+   */
+  private async lockServiceRequest(
+    dev: EufyDevice,
+    cmd: Extract<Command, { kind: "mqtt-dp" }>,
+    apiCommand: number,
+    timeoutMs: number,
+  ): Promise<Buffer | undefined> {
+    const sn = dev.sn;
+    const adminUserId = adminUserIdOf(dev.raw) ?? "";
+    const frame = buildFf09TlvFrame({
+      cmdCode: cmd.cmdCode,
+      fields: cmd.fields,
+      userId: this.requireAccountId(dev),
+      adminUserId,
+      deviceSn: sn,
+      encrypt: cmd.encrypt ?? true,
+      subVersion: cmd.subVersion ?? 3,
+      functionType: cmd.functionType ?? 2,
+    });
+    const { payload } = this.sequenced(sn, toFf09Trans(frame, apiCommand));
+    const trans = { cmd: CMD_TRANSFER_PAYLOAD, mChannel: 0, mValue3: 0, payload };
+    const mqtt = await this.secureMqtt("eufy_security");
+    const envelope = () => lockServiceEnvelope(mqtt.id, publishAccountId(dev), sn, cmd.mqttCmdCode, trans);
+    return this.request(
+      mqtt,
+      ff09MqttTopic(dev.model, sn),
+      envelope,
+      (m) => {
+        if (!MqttCommandRouter.isReply(m, sn, cmd.mqttCmdCode)) return undefined;
+        const reply = parseFf09SettingsResponseTrans(m.raw);
+        if (reply?.cmd !== CMD_TRANSFER_PAYLOAD) return undefined;
+        const keyTime = ff09ReplyKeyTime(reply.payload.time);
+        const op = parseInt(reply.payload.lock_payload.slice(14, 18), 16) & 0x7ff;
+        if (keyTime === undefined || op !== cmd.cmdCode || (keyTime > 0 && keyTime !== payload.time)) return undefined;
+        try {
+          return decryptFf09Frame({ lockPayload: reply.payload.lock_payload, keyTime, adminUserId, deviceSn: sn });
+        } catch {
+          return undefined;
+        }
+      },
+      timeoutMs,
+      0,
+    );
+  }
+
+  /**
    * A `type: "json"` MQTT write, as the app's `sendRequestWithJson`: `{cmd, account_id: "", payload, mValue3: 0,
    * mChannel: 0}`, its escaped quotes undone, base64 in the security envelope under `head.cmd = mqttCmdCode` on the
    * device's `eufy_security` topic; no `ff09`, no seal. A reply is waited for (and the request sent again) when the
@@ -764,8 +882,24 @@ export class MqttCommandRouter {
   private async dispatchMqttJson(sn: string, cmd: Extract<Command, { kind: "mqtt-json" }>): Promise<boolean> {
     const dev = await this.pnDeviceFor(sn);
     const mqtt = await this.secureMqtt("eufy_security");
-    const trans: MqttJsonTrans = { cmd: cmd.cmd, account_id: "", payload: cmd.payload, mValue3: 0, mChannel: 0 };
     const topic = ff09MqttTopic(dev.model, sn);
+    if (cmd.lockService) {
+      const trans = { cmd: cmd.cmd, mChannel: 0, mValue3: 0, payload: cmd.payload };
+      const result = await this.request(
+        mqtt,
+        topic,
+        () => lockServiceEnvelope(mqtt.id, publishAccountId(dev), sn, cmd.mqttCmdCode, trans),
+        (m) => {
+          const t = MqttCommandRouter.isReply(m, sn, cmd.mqttCmdCode) ? transOf(m.raw) : undefined;
+          return t?.cmd === cmd.cmd && typeof t.payload?.result === "number" ? t.payload.result : undefined;
+        },
+        (cmd.timeoutS ?? 5) * 1000,
+        0,
+      );
+      this.deps.onCommandAck({ sn, kind: "mqtt-json", cmd: cmd.cmd, acked: result !== undefined });
+      return result === 0;
+    }
+    const trans: MqttJsonTrans = { cmd: cmd.cmd, account_id: "", payload: cmd.payload, mValue3: 0, mChannel: 0 };
     const envelope = () =>
       buildFf09MqttEnvelope({
         trans,

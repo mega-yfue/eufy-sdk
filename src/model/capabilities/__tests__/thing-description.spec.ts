@@ -1,4 +1,10 @@
-import { conditionsPass, parseThingsList, resolveThing } from "../thing-description.js";
+import {
+  conditionsPass,
+  parseThingsList,
+  resolveThing,
+  type ThingDescription,
+  type ThingFacts,
+} from "../thing-description.js";
 import { readFileSync } from "node:fs";
 import { resolvedEnum } from "../members.js";
 
@@ -370,6 +376,79 @@ describe("resolveThing", () => {
     expect(at("3.3.6.0")).toBeDefined();
     expect(at("3.3.6.0")?.defaultValue).toBeUndefined();
     expect(at("3.4.0.0")?.defaultValue).toBe("1");
+  });
+});
+
+describe("resolveThing leaves out what the app's own lock screens hide", () => {
+  const lock = (code: string, ...identifiers: string[]) =>
+    parseThingsList({
+      things_list: [
+        {
+          profile: { product_code: code },
+          properties: identifiers.map((identifier) => ({ identifier, access_mode: "RW", data_type: { type: "bool" } })),
+        },
+      ],
+    })[code]!;
+  const shows = (td: ThingDescription, identifier: string, facts: ThingFacts) =>
+    identifier in resolveThing(td, facts).properties;
+  const HB = "T8010P0000000000";
+
+  it("T8531 rain mode from MCU 1.2.1.6, a Java string compare", () => {
+    const td = lock("T8531", "smart_lock_rain_mode_switch");
+    const own = (rootfs: string) => ({
+      serial: "T8531P0000000000",
+      stationSerial: "T8531P0000000000",
+      record: { ai_kernel_version: "v2", ai_algor_version: "x1", ai_rootfs_version: rootfs },
+    });
+    expect(shows(td, "smart_lock_rain_mode_switch", own("5"))).toBe(false);
+    expect(shows(td, "smart_lock_rain_mode_switch", own("6"))).toBe(true);
+    const behind = (mcu: string) => ({ serial: "T8531P0000000000", stationSerial: HB, params: { 6621: mcu } });
+    expect(shows(td, "smart_lock_rain_mode_switch", behind("1.2.1.10"))).toBe(false);
+    expect(shows(td, "smart_lock_rain_mode_switch", behind("1.2.2.0"))).toBe(true);
+  });
+
+  it("T85V0 radar rain mode from sub firmware 0.2.4.7, behind a station on 3.6.9.2, numerically", () => {
+    const td = lock("T85V0", "device_rain_mode");
+    const at = (sec: string, station?: string) => ({
+      serial: "T85V0P0000000000",
+      stationSerial: station ? HB : "T85V0P0000000000",
+      stationFirmwareVersion: station,
+      record: { sec_sw_version: sec },
+    });
+    expect(shows(td, "device_rain_mode", at("v0.2.4.10"))).toBe(true);
+    expect(shows(td, "device_rain_mode", at("0.2.4.6"))).toBe(false);
+    expect(shows(td, "device_rain_mode", at("0.2.4.7", "3.6.9.1"))).toBe(false);
+    expect(shows(td, "device_rain_mode", at("0.2.4.7", "3.6.10.0"))).toBe(true);
+  });
+
+  it("T85V0 rear screen from firmware 1.1.3.5 on param 6492, below it by serial", () => {
+    const td = lock("T85V0", "smart_lock_set_back_screen");
+    const at = (firmwareVersion: string, serial = "T85V0P0000000000", on?: string) =>
+      shows(td, "smart_lock_set_back_screen", { serial, firmwareVersion, params: on ? { 6492: on } : {} });
+    expect(at("1.1.3.4")).toBe(true);
+    expect(at("1.1.3.4", "T85V0P9000000000")).toBe(false);
+    expect(at("1.1.3.5")).toBe(false);
+    expect(at("1.1.3.5", "T85V0P0000000000", "1")).toBe(true);
+    const live = lock("T85V0", "device_live_view_switch");
+    expect(shows(live, "device_live_view_switch", { serial: "T85V0P0000000000", firmwareVersion: "1.1.3.5" })).toBe(
+      false,
+    );
+  });
+
+  it("T8530 loitering detection behind the stations that carry it, else from firmware 1.1.4.0 behind 3.2.0.8h", () => {
+    const td = lock("T8530", "detection_loitering_detection_switch");
+    const at = (stationSerial: string, firmwareVersion = "", stationFirmwareVersion = "") =>
+      shows(td, "detection_loitering_detection_switch", {
+        serial: "T8530P0000000000",
+        stationSerial,
+        firmwareVersion,
+        stationFirmwareVersion,
+      });
+    expect(at("T8030P0000000000")).toBe(true);
+    expect(at("T8530P0000000000", "1.1.4.0")).toBe(false);
+    expect(at(HB, "1.1.4.0", "3.2.0.8")).toBe(false);
+    expect(at(HB, "1.1.4.0", "3.2.0.8h")).toBe(true);
+    expect(at(HB, "1.1.3.9", "3.2.0.8h")).toBe(false);
   });
 });
 

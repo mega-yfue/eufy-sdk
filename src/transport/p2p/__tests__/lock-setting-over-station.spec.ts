@@ -123,3 +123,50 @@ describe("a v4 lock setting over its station", () => {
     expect(session.sendSetPayload).not.toHaveBeenCalled();
   });
 });
+
+/** A setting sent over the device's last answer (`toSetLockParam` of the cached 1959 read): its fields, the payload's over them. */
+describe("a set-payload over the device's answer", () => {
+  it("sends each base field from the payload, else the answer, else its default", async () => {
+    const session = connectedSession(true) as FakeP2PSession & { sendSetPayload: ReturnType<typeof vi.fn> };
+    session.sendSetPayload = vi.fn(() => true);
+    const lockSn = "T8530P0000000000";
+    const record = (sn: string, channel: number, parent?: string) => ({
+      sn,
+      stationSn: parent ?? sn,
+      channel,
+      p2pDid: "XXXXXXX-000000-XXXXX",
+      raw: { device_channel: channel, parent_sn: parent, member: { admin_user_id: ADMIN } },
+    });
+    const router = new P2PCommandRouter({
+      mega: { auth: { userId: ADMIN } } as unknown as P2PRouterDeps["mega"],
+      listDevices: () => [record(STATION_SN, 0), record(lockSn, 3, STATION_SN)] as never,
+      ensureDevices: async () => {},
+      onConnect: () => {},
+      onClose: () => {},
+      onError: () => {},
+      onLevel2Ready: () => {},
+      onFrame: () => {},
+    });
+    (router as unknown as { manager: { register(sn: string, s: unknown): void } }).manager.register(
+      STATION_SN,
+      session,
+    );
+    const query = vi.spyOn(router, "p2pQuery").mockResolvedValue({ isAutoLock: 1, lockVolume: 1, rainMode: 1 });
+    void router.dispatchCommand(lockSn, {
+      kind: "set-payload",
+      cmd: 1958,
+      payload: { paramType: 6505, lockVolume: 2 },
+      channel: 3,
+      mValue3: 0,
+      base: { query: 1959, fields: { paramType: 0, isAutoLock: 0, lockVolume: 0, privacyModel: 1 } },
+    });
+    await vi.waitFor(() => expect(session.sendSetPayload).toHaveBeenCalledTimes(1));
+    expect(query).toHaveBeenCalledWith(lockSn, 1959);
+    expect(session.sendSetPayload.mock.calls[0]![1]).toEqual({
+      paramType: 6505,
+      isAutoLock: 1,
+      lockVolume: 2,
+      privacyModel: 1,
+    });
+  });
+});

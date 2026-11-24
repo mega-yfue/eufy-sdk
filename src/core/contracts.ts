@@ -349,6 +349,8 @@ export type Command =
         /** How long the device's answer is awaited, never resent, where the app bounds the request itself. */
         answerMs?: number;
         stationAccount?: true;
+        /** The payload over these fields of the device's answer to 1350 query `query`, each its default where it lacks one. */
+        base?: { query: number; fields: Readonly<Record<string, number | string>> };
         /**
          * A lock setting over its station (v2): the transport builds the params as the app's `handleV2Payload`,
          * `{lock_payload, seq_num, apiCommand, time}`, the `ff09` frame of these fields for the lock.
@@ -411,7 +413,6 @@ export type Command =
      */
     | ({ kind: "doorlock-pass-through-actuate" } & Omit<Ff09Identity, "adminUserId">)
     | { kind: "ff09-autolock"; adminUserId: string; deviceSn: string; enabled: boolean; delaySeconds?: number }
-    | { kind: "ff09-setting-toggle"; adminUserId: string; deviceSn: string; settingId: number; value: boolean }
     // `mqtt-dp` — an `eufy_life` secure-MQTT "DP" TLV write (smart lights + kin). The capability supplies
     // its own opaque `mqttCmdCode` (the outer envelope's dispatch id) + `cmdCode` (the feature id whose
     // low byte is the frame subtype) + already-tagged scalar `fields`; the router does ONLY the generic
@@ -428,6 +429,15 @@ export type Command =
         subVersion?: number;
         functionType?: number;
         encrypt?: boolean;
+        /**
+         * Sent as the lock's own MQTT settings service does: no ack asked, no broker fields, sent once, done on the
+         * lock's result code 0 (the first byte of its answer, matched on opcode and `time`).
+         */
+        lockService?: boolean;
+        /** The `trans` payload's `apiCommand` (1940 when it states none). */
+        apiCommand?: number;
+        /** Read tags whose bytes follow `fields`, read off the lock first, or bytes as given (lock service). */
+        preserve?: readonly (number | Buffer)[];
         /** The descriptor's `timeout`, seconds: how long the app waits for the reply (5 s when it states none). */
         timeoutS?: number;
         /** The descriptor's `retryCount`: sends again while no reply comes (1 when it states none). */
@@ -441,6 +451,8 @@ export type Command =
         payload: unknown;
         /** The descriptor's `needAck`; the reply is waited for unless it is `false`. */
         needAck?: boolean;
+        /** Sent as the lock's own MQTT settings service does, done on its answer's `payload.result` 0. */
+        lockService?: boolean;
         timeoutS?: number;
         retryCount?: number;
       }

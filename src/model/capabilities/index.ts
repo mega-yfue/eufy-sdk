@@ -813,7 +813,7 @@ export interface DeviceActionMap {
   audio: AudioActions;
   /** Battery/power: power source, working mode, and the custom-mode clip/interval/auto-stop settings. */
   battery: BatteryActions;
-  /** Smart lock: `lock()`/`unlock()` + verified `setRainMode`/`setAutoLock`. The 6 source-confirmed-but-uncaptured setting toggles are ABSENT until captured (present method ⇒ wire verified). */
+  /** Smart lock: `lock()`/`unlock()` + `setAutoLock`. The 6 source-confirmed-but-uncaptured setting toggles are ABSENT until captured (present method ⇒ wire verified). */
   lock: LockActions;
   /** Siren: reads `active`, `volume`, `alarmDuration`, `doNotDisturb`; writes `setVolume`, `setAlarmDuration`, `test`, `stop` (config setters present when the param is reported). No direct "sound the alarm" wire — a real alarm is driven by the `arming` system; `test` is the on-demand trigger. */
   siren: SirenActions;

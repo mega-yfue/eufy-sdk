@@ -161,6 +161,13 @@ export const isAiotVacuum = (ctx: FamilyContext): boolean => ctx.category !== "e
  */
 export const isTuyaVacuum = (ctx: FamilyContext): boolean => ctx.category === "eufy_home_tuya";
 
+/**
+ * A lock whose own settings go over secure MQTT when it is its own station and over P2P behind one, its lock frames
+ * too: T8531, T8532, T85M0, T85M1, T85V0. Keyed on the product, as the app picks a lock's settings by its serial.
+ */
+export const settingsOverMqttWhenStandalone = (model: string | undefined): boolean =>
+  /^T85(3[12]|M[01]|V0)/.test(model ?? "");
+
 /** Video Smart Lock S330, identified by its distinct cloud device type. */
 export const isVideoSmartLock = (ctx: FamilyContext): boolean => ctx.deviceType === DeviceType.LOCK_8530;
 
