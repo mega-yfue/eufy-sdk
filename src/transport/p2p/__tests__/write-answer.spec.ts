@@ -151,14 +151,23 @@ describe("a level-2 setting write settles on the device's answer", () => {
     expect(fresh.sendStringPayloadCommand).toHaveBeenCalledTimes(1);
   });
 
-  it("rejects with no code when the device never answers", async () => {
+  it("rejects with the native read's timeout code when the device stays silent for 20 s", async () => {
     vi.useFakeTimers();
     const { router } = station();
     const outcome = router.dispatchCommand(DEVICE_SN, write).catch((e: unknown) => e);
-    await vi.advanceTimersByTimeAsync(30_000);
-    const error = await outcome;
-    expect(error).toBeInstanceOf(CommandResultError);
-    expect(error).toMatchObject({ commandId: PARAM, code: undefined, timeoutMs: 30_000 });
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(await outcome).toMatchObject({ commandId: PARAM, code: -3 });
+  });
+
+  it("ends the read with -133 at the 20th answer under another command", async () => {
+    const { router, session } = station();
+    session.sendBytes.mockImplementationOnce(() => {
+      queueMicrotask(() => {
+        for (let i = 0; i < 20; i++) session.emit("commandResult", { code: 0, channel: CHANNEL, commandId: 1700 });
+      });
+      return true;
+    });
+    await expect(router.dispatchCommand(DEVICE_SN, write)).rejects.toMatchObject({ code: -133 });
   });
 });
 
@@ -251,7 +260,7 @@ describe("an acknowledged send", () => {
   });
 });
 
-describe("one command in flight per device", () => {
+describe("one command in flight per station", () => {
   const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
   it("holds the next command for the same device until the first is answered", async () => {
@@ -268,13 +277,46 @@ describe("one command in flight per device", () => {
     await expect(second).resolves.toBe(true);
   });
 
-  it("runs another device's command while one is in flight", async () => {
+  it("holds the station's own command behind one for a camera it hosts", async () => {
+    vi.useFakeTimers();
     const { router, session } = station();
     void router.dispatchCommand(DEVICE_SN, write).catch(() => {});
-    const other = router.dispatchCommand(STATION_SN, { kind: "p2p-station-scalar", cmd: 1235, value: 1, channel: 255 });
-    await vi.waitFor(() => expect(session.sendBytes).toHaveBeenCalledTimes(2));
+    const own = router.dispatchCommand(STATION_SN, { kind: "p2p-station-scalar", cmd: 1235, value: 1, channel: 255 });
+    await vi.advanceTimersByTimeAsync(19_999);
+    expect(session.sendBytes).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1); // the camera's read gives up, the station's command goes
+    expect(session.sendBytes).toHaveBeenCalledTimes(2);
     session.emit("commandResult", { code: 0, channel: 255, commandId: 1235 });
-    await expect(other).resolves.toBe(true);
+    await expect(own).resolves.toBe(true);
+  });
+
+  it("resolves an unread command once sent, the station held until its answer", async () => {
+    const { router, session } = station();
+    await expect(router.rebootStation(DEVICE_SN)).resolves.toBeUndefined();
+    const next = router.dispatchCommand(DEVICE_SN, write);
+    await flush();
+    expect(session.sendBytes).toHaveBeenCalledTimes(1);
+    session.emit("commandResult", { code: 0, channel: 255, commandId: 1034 });
+    await vi.waitFor(() => expect(session.sendBytes).toHaveBeenCalledTimes(2));
     session.emit("commandResult", { code: 0, channel: CHANNEL, commandId: PARAM });
+    await expect(next).resolves.toBe(true);
+  });
+
+  it("hands a request down every 500 ms without a result, and drops one still queued past its deadline", async () => {
+    vi.useFakeTimers();
+    const { router, session } = station();
+    const guard = { kind: "p2p-station-scalar", cmd: 1224, value: 63, channel: 255, answerMs: 6_000 } as const;
+    // Twelve silent writes hand the request queue on at 500 ms each: the 6 s guard is handed down at 6 s, in time,
+    // and a thirteenth write ahead of it would hold it past its deadline.
+    for (let i = 0; i < 12; i++) void router.dispatchCommand(DEVICE_SN, { ...write, param: PARAM + i }).catch(() => {});
+    const inTime = router.dispatchCommand(DEVICE_SN, guard).catch((e: unknown) => e);
+    void router.dispatchCommand(DEVICE_SN, { ...write, param: PARAM + 12 }).catch(() => {});
+    const late = router.dispatchCommand(DEVICE_SN, guard).catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(400_000);
+    expect(await inTime).toMatchObject({ code: undefined, timeoutMs: 6_000 });
+    expect(await late).toMatchObject({ code: undefined, timeoutMs: 6_000 });
+    const sent = session.sendBytes.mock.calls.map((c) => c[2]);
+    expect(sent.filter((c) => c === 1224)).toHaveLength(1); // the handed-down one still goes, after the calls ahead
+    expect(sent).toHaveLength(14);
   });
 });

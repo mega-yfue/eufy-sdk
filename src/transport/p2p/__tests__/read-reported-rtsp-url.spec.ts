@@ -3,7 +3,6 @@ import { buildDirectBinaryBody } from "../write-commands.js";
 import { connectedSession, routerWithSession, ACCOUNT_ID, DEVICE_SN, type FakeP2PSession } from "./session-fixtures.js";
 
 const CMD_NAS_SWITCH = 1145;
-const CMD_NAS_TEST = 1146;
 
 interface FakeSession extends FakeP2PSession {
   sendBytes: ReturnType<typeof vi.fn>;
@@ -20,19 +19,38 @@ function session(hasLevel2Key: boolean): FakeSession {
 }
 
 describe("P2PCommandRouter.readReportedRtspUrl", () => {
-  it("provokes the publish switch and the livestream, then returns the pushed URL", async () => {
+  it("sends the publish switch alone and returns the pushed URL before the switch's answer, as the app does", async () => {
     vi.useFakeTimers();
     try {
-      const s = session(false);
+      const s = connectedSession(false) as FakeSession;
+      s.sendBytes = vi.fn(() => true); // the station never answers the switch
       const router = routerWithSession(s);
       const read = router.readReportedRtspUrl(DEVICE_SN);
-      await vi.advanceTimersByTimeAsync(500); // both provokes have gone out, the test after the switch's answer
-
-      expect(s.sendBytes).toHaveBeenCalledWith(buildDirectBinaryBody(1, ACCOUNT_ID, 1), 1, CMD_NAS_SWITCH);
-      expect(s.sendBytes).toHaveBeenCalledWith(buildDirectBinaryBody(1, ACCOUNT_ID, 1), 1, CMD_NAS_TEST);
-
+      await vi.advanceTimersByTimeAsync(500);
       s.emit("rtspUrl", { channel: 1, url: "rtsp://u:p@host/live0" });
       await expect(read).resolves.toBe("rtsp://u:p@host/live0");
+
+      await vi.advanceTimersByTimeAsync(60_000); // past the switch's answer window: nothing follows it
+      expect(s.sendBytes.mock.calls).toEqual([[buildDirectBinaryBody(1, ACCOUNT_ID, 1), 1, CMD_NAS_SWITCH]]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resolves undefined and leaves no listener when the station refuses the switch", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = connectedSession(false) as FakeSession;
+      s.sendBytes = vi.fn((_body: Buffer, channel: number, commandId: number) => {
+        queueMicrotask(() => s.emit("commandResult", { code: -1, channel, commandId }));
+        return true;
+      });
+      const router = routerWithSession(s);
+      const read = router.readReportedRtspUrl(DEVICE_SN);
+      await vi.advanceTimersByTimeAsync(500); // well inside the read deadline
+
+      await expect(read).resolves.toBeUndefined();
+      expect(s.listenerCount("rtspUrl")).toBe(0);
     } finally {
       vi.useRealTimers();
     }

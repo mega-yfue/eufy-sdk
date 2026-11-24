@@ -2124,8 +2124,10 @@ export class P2PSession extends EventEmitter {
     // CMD_NAS_SWITCH (1145) is the RTSP publish switch, but the station also pushes it BACK as a data
     // frame whose string payload is the camera's full authoritative rtsp://user:pass@ip/path — the
     // credentials it enforces right now, regenerated on every publish toggle (the cloud record lags a
-    // cycle). A host adopting a running stream reads the URL from here; the command router provokes it.
-    if (header.commandId === CommandType.CMD_NAS_SWITCH && text.startsWith("rtsp://")) {
+    // cycle). A host adopting a running stream reads the URL from here; the command router provokes it. The app's
+    // request takes its notify under the command or the next one (`KmmP2PClient.isNotifyMatches`), so 1146 too.
+    const nas = header.commandId === CommandType.CMD_NAS_SWITCH || header.commandId === CommandType.CMD_NAS_TEST;
+    if (nas && text.startsWith("rtsp://")) {
       this.emit("rtspUrl", { channel: header.channel, url: text });
     }
     // CMD_DATABASE_IMAGE reply: { file, content:<base64 image> } → emit decoded bytes.
