@@ -126,8 +126,8 @@ const LEGACY_PING_MS: ReadonlyArray<readonly [string, number]> = [
  */
 export const P2P_STATION_WAITS = { connect: CONNECT_TIMEOUT_MS } as const;
 
-/** How long a station's live RTSP URL push is awaited — the connect wait and the URL wait together. */
-const RTSP_URL_READ_TIMEOUT_MS = 12_000;
+/** How long a station's live RTSP URL push is awaited — the connect wait and the URL wait together (the app's 30 s). */
+const RTSP_URL_READ_TIMEOUT_MS = 30_000;
 
 /**
  * How a level-2 setting write is settled on the device's answer, as the vendor app's P2P request does by
@@ -136,6 +136,23 @@ const RTSP_URL_READ_TIMEOUT_MS = 12_000;
  * under 10 s from the first send.
  */
 const WRITE_ANSWER = { timeoutMs: 30_000, retries: 1, retryWindowMs: 10_000, retryCodes: [1, 20] } as const;
+
+/**
+ * How the app's native call reads a command's answer (`zx_p2p_get_exec_result`): each channel-0 frame is awaited up
+ * to 20 s (35 s for commands 1001, 1003, 1054 and 1060); a silent wait ends with `PPCS_TIME_OUT` (-3), and the 20th
+ * frame under another command id with -133.
+ */
+const NATIVE_ANSWER = {
+  frameMs: 20_000,
+  longFrameMs: 35_000,
+  longCmds: [1001, 1003, 1054, 1060],
+  frames: 20,
+  silentCode: -3,
+  exhaustedCode: -133,
+} as const;
+
+/** How long the app's request queue holds a station after a hand-down without the call's result (`KmmP2PClient`). */
+const REQUEST_SLOT_MS = 500;
 
 /**
  * How long a talkback waits for an audio frame, counted from the first frame of either kind its media session
@@ -325,8 +342,13 @@ export class P2PCommandRouter {
 
   /** Per parent serial, the app's ping task: pinging until `until` (`Infinity` during live), begun at `since`. */
   private readonly pings = new Map<string, { until: number; since: number; timer: ReturnType<typeof setInterval> }>();
-  /** The answered command in flight per {@link serializeAnswered} key, which the next one for that key waits on. */
+  /** The call in flight per station ({@link serializeAnswered}), which the next one for that station waits on. */
   private readonly answeredQueue = new Map<string, Promise<void>>();
+  /** Per station serial, the request queue {@link enqueueRequest} hands down from. */
+  private readonly requestQueues = new Map<
+    string,
+    { running: boolean; pending: { enqueuedAt: number; timeoutMs: number; run: (release: () => void) => void }[] }
+  >();
 
   constructor(private readonly deps: P2PRouterDeps) {
     this.manager = new SessionManager({
@@ -1463,16 +1485,16 @@ export class P2PCommandRouter {
 
   /**
    * Read the camera's LIVE authoritative RTSP URL — host, path, and the credentials it enforces
-   * RIGHT NOW — by writing the publish switch `CMD_NAS_SWITCH` (idempotent when already on, and never
-   * touching the credentials themselves, so a NAS/NVR consuming the stream elsewhere is undisturbed)
-   * plus `CMD_NAS_TEST` to start the livestream, then awaiting the `rtspUrl` event `P2PSession` emits
-   * for a matching-channel `CMD_NAS_SWITCH` push. This is the only source of the freshly-generated
-   * credentials: the vendor app regenerates them on every publish toggle and the cloud record lags.
+   * RIGHT NOW — as the vendor app's URL read does: one publish switch `CMD_NAS_SWITCH` on (idempotent when
+   * already on, and never touching the credentials themselves, so a NAS/NVR consuming the stream elsewhere is
+   * undisturbed), settled by the `rtspUrl` event `P2PSession` emits for a matching-channel `CMD_NAS_SWITCH` push.
+   * This is the only source of the freshly-generated credentials: the station regenerates them on every
+   * publish toggle and the cloud record lags.
    *
-   * The provokes are read by that push, not by their answers. Both go through {@link resolveScalarParam} and queue
-   * on the device as every command does ({@link sendAnswered}), the test after the switch's answer.
+   * The push settles the read whether or not the switch's answer has come; a refusal ends it. The switch
+   * queues on the device as every command does ({@link sendAnswered}).
    *
-   * A single channel-filtered listener is armed BEFORE the provokes and torn down on either outcome,
+   * A single channel-filtered listener is armed BEFORE the switch and torn down on either outcome,
    * so a fast push cannot fall in a re-arm gap and a station that never answers leaks nothing. The
    * station is shared by every channel (a HomeBase multiplexes its attached cameras over one session),
    * so a push for another camera is filtered out rather than resolving this read.
@@ -1480,7 +1502,7 @@ export class P2PCommandRouter {
    * Bounded by {@link RTSP_URL_READ_TIMEOUT_MS}: the abort covers `resolveSession`'s connect wait and
    * the URL wait. The device/station resolution ahead of them relies on its own HTTP timeouts.
    *
-   * `undefined` on any failure: no route, or no matching push before the deadline.
+   * `undefined` on any failure: no route, a refused switch, or no matching push before the deadline.
    */
   async readReportedRtspUrl(sn: string): Promise<string | undefined> {
     const log = this.deps.logger ?? noopLogger;
@@ -1489,21 +1511,16 @@ export class P2PCommandRouter {
     const { signal } = controller;
     try {
       const { session, channel } = await this.resolveSession(sn, { signal });
-      // Arm the wait BEFORE provoking, so a push that arrives between the two writes is not lost.
+      // Arm the wait BEFORE the switch, so a push that beats its answer is not lost.
       const url = this.awaitRtspUrl(session, channel, signal);
-      // Do not block the read on the provokes: it returns as soon as the push arrives (or the deadline aborts).
-      // The publish switch alone does not elicit the push; the livestream test paired with it does.
-      for (const cmd of [CommandType.CMD_NAS_SWITCH, CommandType.CMD_NAS_TEST]) {
-        void this.resolveScalarParam(sn, cmd, 1, false, false).catch((e) =>
-          log.debug(`[p2p] ${sn} RTSP provoke ${cmd} failed`, e),
-        );
-      }
-      return await url;
+      const answer = this.resolveScalarParam(sn, CommandType.CMD_NAS_SWITCH, 1);
+      return await Promise.race([url, answer.then(() => url)]);
     } catch (e) {
       log.debug(`[p2p] ${sn} live RTSP URL read ${signal.aborted ? "timed out" : "failed"}`, e);
       return undefined;
     } finally {
       clearTimeout(timer);
+      controller.abort(); // a refused switch leaves the URL wait armed
     }
   }
 
@@ -1796,8 +1813,8 @@ export class P2PCommandRouter {
   }
 
   /**
-   * Run `work` once every answered command already queued under `key` has settled. An answer carries no
-   * correlation id, so commands whose answers could be mistaken for each other share a key.
+   * Run `work` once every command already queued under `key` has settled: the app's per-station call queue
+   * (`P2PDispatcher`, one running call per station serial), which a native call holds until its answer is read.
    */
   private serializeAnswered<T>(key: string, work: () => Promise<T>): Promise<T> {
     const previous = this.answeredQueue.get(key) ?? Promise.resolve();
@@ -1814,28 +1831,51 @@ export class P2PCommandRouter {
   }
 
   /**
-   * Send one command and hold the device's slot until its answer, as the vendor app runs one request at a time
-   * per device sn (`KmmP2PClient.enqueueRequest`, the slot freed by `releaseAndEnqueueNext` on answer or
-   * timeout): the next command for `sn` waits. The command goes once ({@link P2PSession.sendAcknowledged}).
-   * Its answer is the {@link P2PSession} `commandResult` under its own command id (the app matches nothing else),
-   * read with {@link WRITE_ANSWER}, as `SingleRequestForP2P.doSingleRequest` applies a write only once
-   * `KmmP2pResponse.isSuccess`. Code `0` answers `true`; a code from 1 to 20 is resent once within the retry
-   * window; any other code, or no answer by the deadline, rejects with a {@link CommandResultError}. A frame
-   * under the same command id and channel that carries no code (JSON, or a reply the decrypt could not open)
-   * is not the answer.
+   * Hand `run` down when the station's request slot frees, as the app's request queue does (`P2PRequestDeliver`,
+   * one request per station serial): `run` gets `release`, and the slot also frees {@link REQUEST_SLOT_MS} after
+   * the hand-down. A request still queued past its own deadline (`enqueuedAt` + `timeoutMs`) is dropped.
+   */
+  private enqueueRequest(station: string, enqueuedAt: number, timeoutMs: number, run: (release: () => void) => void) {
+    const queue = this.requestQueues.get(station) ?? { running: false, pending: [] };
+    this.requestQueues.set(station, queue);
+    queue.pending.push({ enqueuedAt, timeoutMs, run });
+    const next = (): void => {
+      if (queue.running) return;
+      let request = queue.pending.shift();
+      while (request && Date.now() - request.enqueuedAt > request.timeoutMs) request = queue.pending.shift();
+      if (!request) return void this.requestQueues.delete(station);
+      queue.running = true;
+      let released = false;
+      const release = (): void => {
+        if (released) return;
+        released = true;
+        clearTimeout(timer);
+        queue.running = false;
+        next();
+      };
+      const timer = setTimeout(release, REQUEST_SLOT_MS);
+      request.run(release);
+    };
+    next();
+  }
+
+  /**
+   * Send one command and settle it on the device's answer, through the app's two per-station queues: the request
+   * queue ({@link enqueueRequest}) hands it down, the call queue ({@link serializeAnswered}) sends it once
+   * ({@link P2PSession.sendAcknowledged}) and reads its answer as the app's native call does ({@link readAnswer}),
+   * holding the station until then. The request settles within {@link WRITE_ANSWER}'s deadline counted from
+   * here, as `KmmP2PClient.request` bounds its wait, while the call goes on reading in the station's queue.
    *
-   * `unread` resolves once the command is sent, the slot still held until the answer or the deadline; its
-   * refusal or timeout is logged at debug only. `answerMs` replaces the deadline and drops the resend, as the
-   * app bounds a request it times itself.
+   * Code `0` answers `true`; a code from 1 to 20 is resent once while under 10 s from the hand-down, the resend
+   * queued behind the station's calls; any other code, or no answer by the deadline, rejects with a
+   * {@link CommandResultError}, as `SingleRequestForP2P.doSingleRequest` applies a write only once
+   * `KmmP2pResponse.isSuccess`.
    *
-   * The answer names the channel and command id and nothing else, so an answer arriving after its command
-   * timed out settles the next one under the same pair. The device answers a sequence once, however many
-   * copies of it arrive, and repeats that answer under its own sequence until acknowledged; {@link P2PSession}
-   * drops the repeats.
+   * `unread` resolves once the command is sent; its refusal or timeout is logged at debug only. `answerMs`
+   * replaces the deadline and drops the resend, as the app bounds a request it times itself.
    *
-   * Absent `resolved`, the session is resolved here. A session that closed before an attempt —
-   * between its resolution and the send, or across a retry — is resolved afresh, waiting for its connect, and
-   * the attempt goes on the new one.
+   * Absent `resolved`, the session is resolved here. A session that closed before a call is resolved afresh,
+   * waiting for its connect, and the call goes on the new one.
    *
    * @param send sends the command once on the session it is given; `false` is a command that was never sent.
    */
@@ -1849,38 +1889,78 @@ export class P2PCommandRouter {
   ): Promise<boolean | void> {
     const { timeoutMs, retries, retryWindowMs, retryCodes } =
       answerMs === undefined ? WRITE_ANSWER : { ...WRITE_ANSWER, timeoutMs: answerMs, retries: 0 };
+    const station = resolved?.parentSn ?? this.stationKeyOf(sn);
     let dispatched!: () => void;
     const sent = new Promise<void>((resolve) => (dispatched = resolve));
-    const answered = this.serializeAnswered(sn, async () => {
-      const started = Date.now();
-      let r = resolved ?? (await this.resolveSession(sn));
-      for (let tries = 0; ; tries++) {
-        if (r.session.isClosed) r = await this.resolveSession(sn);
-        const target = r;
-        const code = await this.awaitReply<number>(
-          target.session,
-          timeoutMs,
-          () => new CommandResultError(sn, commandId, undefined, timeoutMs),
-          () => {
-            if (!target.session.sendAcknowledged(() => send(target) !== false)) {
-              throw new Error(`command ${commandId} for ${sn} was never sent (session not connected)`);
-            }
-            dispatched();
-          },
-          (done) => ({
-            result: (r) => r.commandId === commandId && done(r.code),
-          }),
-        );
-        if (code === 0) return true;
-        const retryable = code >= retryCodes[0] && code <= retryCodes[1] && tries < retries;
-        if (!retryable || Date.now() - started >= retryWindowMs) {
-          throw new CommandResultError(sn, commandId, code, timeoutMs);
-        }
-      }
+    const answered = new Promise<boolean>((resolve, reject) => {
+      const deadline = setTimeout(() => reject(new CommandResultError(sn, commandId, undefined, timeoutMs)), timeoutMs);
+      const settle = (outcome: () => void): void => {
+        clearTimeout(deadline);
+        outcome();
+      };
+      this.enqueueRequest(station, Date.now(), timeoutMs, (release) => {
+        const started = Date.now();
+        const call = (tries: number): void => {
+          this.serializeAnswered(station, async () => {
+            let r = resolved ?? (await this.resolveSession(sn));
+            if (r.session.isClosed) r = await this.resolveSession(sn);
+            const target = r;
+            return this.readAnswer(target.session, commandId, () => {
+              if (!target.session.sendAcknowledged(() => send(target) !== false)) {
+                throw new Error(`command ${commandId} for ${sn} was never sent (session not connected)`);
+              }
+              dispatched();
+            });
+          }).then(
+            (code) => {
+              const retryable = code >= retryCodes[0] && code <= retryCodes[1] && tries < retries;
+              if (retryable && Date.now() - started < retryWindowMs) return call(tries + 1);
+              release();
+              settle(() =>
+                code === 0 ? resolve(true) : reject(new CommandResultError(sn, commandId, code, timeoutMs)),
+              );
+            },
+            (e) => {
+              release();
+              settle(() => reject(e));
+            },
+          );
+        };
+        call(0);
+      });
     });
     if (!unread) return answered;
     answered.catch((e) => (this.deps.logger ?? noopLogger).debug(`[p2p] ${sn} command ${commandId} unread`, e));
     return Promise.race([answered, sent]).then(() => undefined);
+  }
+
+  /**
+   * Send, then read the answer as the app's native call does (`zx_p2p_get_exec_result`): channel-0 frames one
+   * at a time, each awaited up to {@link NATIVE_ANSWER}'s frame wait; the first under `commandId` is the answer
+   * (its {@link P2PSession} `commandResult` code). A silent wait ends with `-3`, the 20th frame under another
+   * id with `-133`.
+   */
+  private async readAnswer(session: P2PSession, commandId: number, send: () => void): Promise<number> {
+    const { frameMs, longFrameMs, longCmds, frames, silentCode, exhaustedCode } = NATIVE_ANSWER;
+    const waitMs = (longCmds as readonly number[]).includes(commandId) ? longFrameMs : frameMs;
+    const silent = new Error("silent");
+    let others = 0;
+    return this.awaitReply<number>(
+      session,
+      waitMs,
+      () => silent,
+      send,
+      (done, expire) => ({
+        result: (r) => {
+          if (r.commandId === commandId) return done(r.code);
+          if (++others >= frames) return done(exhaustedCode);
+          expire(waitMs, () => done(silentCode));
+        },
+      }),
+    ).catch((e) => {
+      if (e === silent) return silentCode;
+      throw e;
+    });
   }
 
   /**

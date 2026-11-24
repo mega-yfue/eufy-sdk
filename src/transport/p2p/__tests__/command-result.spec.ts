@@ -46,3 +46,22 @@ describe("P2P frame — command result", () => {
     expect(results(1300, int32(0), 1)).toEqual([]);
   });
 });
+
+describe("P2P frame — RTSP URL push", () => {
+  /** The app's URL read takes its notify under the publish switch or the command after it. */
+  it("reads the URL pushed under 1145 or 1146, and nothing under another command", () => {
+    const urls = (commandId: number) => {
+      const session = new P2PSession({ stationSn: STATION_SN, p2pDid: P2P_DID });
+      const seen: string[] = [];
+      session.on("rtspUrl", (e: { url: string }) => seen.push(e.url));
+      const body = Buffer.from("rtsp://u:p@host/live0\0");
+      (session as unknown as { handleFrame(h: unknown, p: Buffer, d: number): void }).handleFrame(
+        { commandId, channel: 3, signCode: 0, bytesToRead: body.length },
+        body,
+        1,
+      );
+      return seen;
+    };
+    expect([urls(1145), urls(1146), urls(1147)]).toEqual([["rtsp://u:p@host/live0"], ["rtsp://u:p@host/live0"], []]);
+  });
+});
