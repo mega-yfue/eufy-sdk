@@ -88,7 +88,11 @@ describe("authenticated ECC decoder dispatch", () => {
     }
   });
 
-  it("decodes with the P-256 key the session's start offered when none is supplied, own session or attached", () => {
+  // The router sends the start as a request, after `start()` returns (`P2PLiveStreamPlayer.play` through the queue).
+  it.each([
+    ["sent at once", undefined],
+    ["sent as a later request", (_f: unknown, send: () => void) => Promise.resolve().then(send)],
+  ])("decodes with the P-256 key the session's start offered when none is supplied, %s", async (_, request) => {
     const cam = camera();
     const session = new FakeP2PSession() as FakeP2PSession & { mediaEccPrivateKey?: Buffer };
     const send = session.sendFrame.bind(session);
@@ -96,10 +100,11 @@ describe("authenticated ECC decoder dispatch", () => {
       send(frame, channel);
       session.mediaEccPrivateKey = cam.privateKey;
     };
-    const live = new LiveStream(session as unknown as P2PSession, { channel: 0, frames: LIVE_FRAMES });
+    const live = new LiveStream(session as unknown as P2PSession, { channel: 0, frames: LIVE_FRAMES, request });
     const video = vi.fn();
     live.on("video", video);
     live.start();
+    await Promise.resolve();
     const plain = Buffer.concat([START_CODE, Buffer.from([0x65, 9])]);
     try {
       session.push(encryptedFrame(cam.publicKey, randomBytes(32), plain));

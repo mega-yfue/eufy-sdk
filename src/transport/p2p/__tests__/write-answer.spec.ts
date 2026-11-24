@@ -71,6 +71,15 @@ describe("a level-2 setting write settles on the device's answer", () => {
     await expect(router.dispatchCommand(DEVICE_SN, write)).rejects.toMatchObject({ code: -108 });
   });
 
+  // `PPCS_Read` on a closed session fails at once; the station's next request, a live start's stop, is not held 20 s.
+  it("ends the read with -13 when the session closes before the answer", async () => {
+    const { router, session } = station();
+    const write1 = router.dispatchCommand(DEVICE_SN, write);
+    await vi.waitFor(() => expect(session.sendBytes).toHaveBeenCalledOnce());
+    session.emit("close");
+    await expect(write1).rejects.toMatchObject({ code: -13 });
+  });
+
   it("resends once on a code the vendor app retries", async () => {
     const { router, session } = station(5, 0);
     await router.dispatchCommand(DEVICE_SN, write);

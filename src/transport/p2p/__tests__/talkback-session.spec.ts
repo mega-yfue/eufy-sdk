@@ -36,20 +36,29 @@ const TALK = {
   stop: { cmd: 1006, body: "native", payload: {}, layout: "u32-ch" },
 };
 
-function fakeSink(opts: { startOk?: boolean } = {}): TalkbackSink & {
+function fakeSink(opts: { startOk?: boolean; startCode?: number } = {}): TalkbackSink & {
   started: number[];
   stopped: number[];
   frames: Array<[number, Buffer]>;
   emitGap(seq: number): void;
+  isClosed: boolean;
+  isConnected: boolean;
+  sendAcknowledged(send: () => boolean): boolean;
 } {
   const gaps = new EventEmitter();
   return {
     started: [],
     stopped: [],
     frames: [],
+    // As a session the router's request queue drives: each frame answered 0 under its command.
+    isClosed: false,
+    isConnected: true,
+    sendAcknowledged: (send) => send(),
     sendFrame(frame, channel) {
       if (frame === TALK.start && opts.startOk === false) throw new Error("not connected");
       (frame === TALK.stop ? this.stopped : this.started).push(channel);
+      const code = frame === TALK.start ? (opts.startCode ?? 0) : 0;
+      queueMicrotask(() => gaps.emit("commandResult", { commandId: frame.cmd, code, channel }));
     },
     sendAudioFrame(channel, frame) {
       this.frames.push([channel, frame]);
@@ -678,9 +687,10 @@ describe("Talkback wiring installed by the router", () => {
       audio?: LiveAudioFrame | null;
       model?: string | null;
       parentSn?: string;
+      startCode?: number;
     } = {},
   ) {
-    const sink = fakeSink();
+    const sink = fakeSink({ startCode: opts.startCode });
     const consumer = new EventEmitter() as EventEmitter & { stop: ReturnType<typeof vi.fn> };
     consumer.stop = vi.fn();
     const records = opts.model === null ? [] : [{ sn: "T8000P0000000000", model: opts.model ?? "T8410C" } as never];
@@ -808,10 +818,22 @@ describe("Talkback wiring installed by the router", () => {
     expect(sink.started).toEqual([]);
   });
 
+  it("sends no audio and reports an error when the station refuses start_intercom, as the app's speaker fails", async () => {
+    const { router, sink } = routerWithFakeSource({ startCode: -1 });
+    const talk = await router.mediaProviderFor("T8000P0000000000").talkback!();
+    const failed = new Promise<Error>((resolve) => talk.on("error", resolve));
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await failed).message).toMatch(/did not take start_intercom/);
+    talk.write(Buffer.concat([adtsFrame(64), adtsFrame(64)]));
+    await vi.advanceTimersByTimeAsync(AAC_FRAME_MS * 4);
+    expect(sink.frames).toEqual([]);
+  });
+
   it("opens an aac-eld talkback for a camera that sends aac-eld", async () => {
     const { router, sink } = routerWithFakeSource({ audio: ELD_AUDIO });
     const talk = await router.mediaProviderFor("T8000P0000000000").talkback!();
     expect(talk.codec).toBe("aac-eld");
+    await vi.advanceTimersByTimeAsync(0); // start_intercom answered: the mic opens
     talk.write(eldUnit(120));
     vi.advanceTimersByTime(ELD_UNIT_MS);
     expect(sink.frames).toHaveLength(1);

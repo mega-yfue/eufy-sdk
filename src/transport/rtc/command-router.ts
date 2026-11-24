@@ -82,11 +82,7 @@ export interface RtcRoute {
 }
 
 /** A live frame with the `rtc_type` its bundle parser gave it (`rtcSendRoute`, absent 0). */
-export type RtcLiveFrame = SessionFrame & {
-  rtcSendRoute?: number;
-  /** The request window its bundle descriptor states (`timeout`, ms), within which the app's request must succeed. */
-  timeoutMs?: number;
-};
+export type RtcLiveFrame = SessionFrame & { rtcSendRoute?: number };
 
 /** The camera a live view is for, on its station's route. */
 export interface RtcLiveRoute extends RtcRoute {

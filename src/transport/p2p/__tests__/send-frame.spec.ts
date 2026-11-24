@@ -136,4 +136,10 @@ describe("sendFrame", () => {
     expect(frame().plain).toEqual(Buffer.from([4, 0, 0, 0]));
     expect((session as unknown as { unackedCommands: Map<number, Buffer> }).unackedCommands.size).toBe(1);
   });
+
+  it("sends once and retains when the router's request wraps it in its own acknowledged send", () => {
+    const { session } = connected();
+    expect(session.sendAcknowledged(() => (session.sendFrame(STOP_1350, 4), true))).toBe(true);
+    expect((session as unknown as { unackedCommands: Map<number, Buffer> }).unackedCommands.size).toBe(1);
+  });
 });

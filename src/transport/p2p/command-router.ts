@@ -23,6 +23,7 @@ import type {
   AbortableCall,
   LiveAudioFrame,
   LiveFrames,
+  SessionFrame,
   TalkbackCodec,
   TalkbackHandle,
 } from "../../core/contracts.js";
@@ -75,7 +76,7 @@ import {
   type SessionManagerOpts,
 } from "./session-manager.js";
 import { openReadableFromConsumer } from "./readable-egress.js";
-import { Talkback } from "./talkback.js";
+import { Talkback, type TalkbackSink } from "./talkback.js";
 import { FragmentRecording } from "./fragment-recording.js";
 import { traceLiveStart, type LiveTrace } from "./live-trace.js";
 import { stationChannels, stationOf } from "./station-channels.js";
@@ -140,7 +141,8 @@ const WRITE_ANSWER = { timeoutMs: 30_000, retries: 1, retryWindowMs: 10_000, ret
 /**
  * How the app's native call reads a command's answer (`zx_p2p_get_exec_result`): each channel-0 frame is awaited up
  * to 20 s (35 s for commands 1001, 1003, 1054 and 1060); a silent wait ends with `PPCS_TIME_OUT` (-3), and the 20th
- * frame under another command id with -133.
+ * frame under another command id with -133. A session that closes under the read ends it at once with the PPCS
+ * error `PPCS_Read` returns, `ERROR_PPCS_SESSION_CLOSED_TIMEOUT` (-13), as the SDK closes a silent session.
  */
 const NATIVE_ANSWER = {
   frameMs: 20_000,
@@ -149,6 +151,7 @@ const NATIVE_ANSWER = {
   frames: 20,
   silentCode: -3,
   exhaustedCode: -133,
+  closedCode: -13,
 } as const;
 
 /** How long the app's request queue holds a station after a hand-down without the call's result (`KmmP2PClient`). */
@@ -1063,7 +1066,8 @@ export class P2PCommandRouter {
     sn: string,
     opts: { encoder?: AacEncoder } & SharedSourceHints = {},
   ): Promise<TalkbackHandle> {
-    const { session, parentSn, channel } = await this.resolveSession(sn);
+    const resolved = await this.resolveSession(sn);
+    const { session, parentSn, channel } = resolved;
     const { talkStart, talkStop } = this.liveFramesOf(sn, parentSn);
     if (!talkStart || !talkStop) throw new Error(`talkback: ${sn} has no talkback in its product's bundle`);
     const logger = this.deps.logger ?? noopLogger;
@@ -1075,7 +1079,27 @@ export class P2PCommandRouter {
       );
     }
     let consumer: Consumer | undefined;
-    const talk = new Talkback(session, {
+    // The app opens the mic once `start_intercom` succeeds (`LiveMediaSpeaker.startSpeak`): audio before it is dropped.
+    let speaking = false;
+    const request = this.liveRequest(sn, resolved);
+    const sink: TalkbackSink = {
+      sendFrame: (frame, ch) => {
+        const sent = request(frame, () => session.sendFrame(frame, ch), frame !== talkStart);
+        if (frame !== talkStart) return void sent.catch(() => undefined);
+        sent.then(
+          () => (speaking = true),
+          (e: unknown) => {
+            const err = new Error(`talkback: ${sn} did not take start_intercom`, { cause: e });
+            if (talk.listenerCount("error")) talk.emit("error", err);
+            else logger.warn?.(err.message);
+          },
+        );
+      },
+      sendAudioFrame: (ch, frame) => speaking && session.sendAudioFrame(ch, frame),
+      on: (event, listener) => session.on(event, listener),
+      off: (event, listener) => session.off(event, listener),
+    };
+    const talk: Talkback = new Talkback(sink, {
       channel,
       start: talkStart,
       stop: talkStop,
@@ -1146,9 +1170,8 @@ export class P2PCommandRouter {
    * reuse branch, so a reuse frees the station as a cold start does.
    */
   async sharedLiveSourceFor(sn: string, opts: SharedLiveOpts = {}): Promise<SharedLiveSource> {
-    const { session, parentSn, channel, accountId, homeBaseAttached } = await this.resolveSession(sn, {
-      signal: opts.signal,
-    });
+    const resolved = await this.resolveSession(sn, { signal: opts.signal });
+    const { session, parentSn, channel, accountId, homeBaseAttached } = resolved;
     const frames = this.liveFramesOf(sn, parentSn);
     const key = `${parentSn}:${channel}`;
     let source = this.liveSources.get(key);
@@ -1160,7 +1183,7 @@ export class P2PCommandRouter {
       this.warnIgnoredLiveOpts(key, opts);
       return source;
     }
-    const build = { sn, key, frames, channel, accountId, homeBaseAttached, opts };
+    const build = { sn, key, frames, channel, accountId, homeBaseAttached, opts, resolved };
     if (!(this.deps.sessionPerCamera && homeBaseAttached)) {
       this.releaseLingeringSiblings(parentSn, channel);
       return this.buildLiveSource(build, session, parentSn);
@@ -1185,11 +1208,13 @@ export class P2PCommandRouter {
       accountId: string;
       homeBaseAttached: boolean;
       opts: SharedLiveOpts;
+      resolved: ResolvedSession;
     },
     session: P2PSession,
     sessionKey: string,
   ): SharedLiveSource {
     const { sn, key, frames, channel, accountId, homeBaseAttached, opts } = build;
+    const request = this.liveRequest(sn, { ...build.resolved, session });
     const logger = this.deps.logger ?? noopLogger;
     const source = new SharedLiveSource({
       makeStream: () =>
@@ -1200,6 +1225,7 @@ export class P2PCommandRouter {
           homeBaseAttached,
           eccPrivateKey: opts.eccPrivateKey,
           entryType: opts.entryType,
+          request,
           logger,
         }),
       lingerMs: opts.lingerMs,
@@ -1872,7 +1898,8 @@ export class P2PCommandRouter {
    * `KmmP2pResponse.isSuccess`.
    *
    * `unread` resolves once the command is sent; its refusal or timeout is logged at debug only. `answerMs`
-   * replaces the deadline and drops the resend, as the app bounds a request it times itself.
+   * replaces the deadline and drops the resend, as the app bounds a request it times itself; `windowMs`, a bundle
+   * descriptor's `timeout`, replaces the deadline alone.
    *
    * Absent `resolved`, the session is resolved here. A session that closed before a call is resolved afresh,
    * waiting for its connect, and the call goes on the new one.
@@ -1886,9 +1913,11 @@ export class P2PCommandRouter {
     resolved?: ResolvedSession,
     unread = false,
     answerMs?: number,
+    windowMs?: number,
   ): Promise<boolean | void> {
+    const answer = answerMs === undefined ? WRITE_ANSWER : { ...WRITE_ANSWER, timeoutMs: answerMs, retries: 0 };
     const { timeoutMs, retries, retryWindowMs, retryCodes } =
-      answerMs === undefined ? WRITE_ANSWER : { ...WRITE_ANSWER, timeoutMs: answerMs, retries: 0 };
+      windowMs === undefined ? answer : { ...answer, timeoutMs: windowMs };
     const station = resolved?.parentSn ?? this.stationKeyOf(sn);
     let dispatched!: () => void;
     const sent = new Promise<void>((resolve) => (dispatched = resolve));
@@ -1904,6 +1933,8 @@ export class P2PCommandRouter {
           this.serializeAnswered(station, async () => {
             let r = resolved ?? (await this.resolveSession(sn));
             if (r.session.isClosed) r = await this.resolveSession(sn);
+            // `P2PConnectInterceptor`: a request whose station is not connected connects first, inside the request.
+            if (!r.session.isConnected) await this.awaitConnected(r.session, r.parentSn);
             const target = r;
             return this.readAnswer(target.session, commandId, () => {
               if (!target.session.sendAcknowledged(() => send(target) !== false)) {
@@ -1935,13 +1966,32 @@ export class P2PCommandRouter {
   }
 
   /**
+   * Live and talkback frames as the app's requests send them (`P2PLiveStreamLoader.open`, `LiveMediaSpeaker`): through
+   * the station's request queue, a start answered within its descriptor's window (`timeoutMs`, else the default),
+   * a stop `unread`, as the app's close does not await its result. `send` writes on `r`'s session, so a frame whose
+   * session was replaced before its turn is not sent.
+   */
+  private liveRequest(sn: string, r: ResolvedSession) {
+    return (frame: SessionFrame, send: () => void, unread: boolean) =>
+      this.sendAnswered(
+        sn,
+        frame.cmd ?? 0,
+        (t) => (t.session === r.session ? send() : false),
+        r,
+        unread,
+        undefined,
+        frame.timeoutMs,
+      );
+  }
+
+  /**
    * Send, then read the answer as the app's native call does (`zx_p2p_get_exec_result`): channel-0 frames one
    * at a time, each awaited up to {@link NATIVE_ANSWER}'s frame wait; the first under `commandId` is the answer
    * (its {@link P2PSession} `commandResult` code). A silent wait ends with `-3`, the 20th frame under another
-   * id with `-133`.
+   * id with `-133`, a close of the session with `-13`.
    */
   private async readAnswer(session: P2PSession, commandId: number, send: () => void): Promise<number> {
-    const { frameMs, longFrameMs, longCmds, frames, silentCode, exhaustedCode } = NATIVE_ANSWER;
+    const { frameMs, longFrameMs, longCmds, frames, silentCode, exhaustedCode, closedCode } = NATIVE_ANSWER;
     const waitMs = (longCmds as readonly number[]).includes(commandId) ? longFrameMs : frameMs;
     const silent = new Error("silent");
     let others = 0;
@@ -1956,6 +2006,7 @@ export class P2PCommandRouter {
           if (++others >= frames) return done(exhaustedCode);
           expire(waitMs, () => done(silentCode));
         },
+        close: () => done(closedCode),
       }),
     ).catch((e) => {
       if (e === silent) return silentCode;
@@ -1977,7 +2028,11 @@ export class P2PCommandRouter {
     read: (
       done: (outcome: T) => void,
       expire: (ms: number, onExpiry: () => void) => void,
-    ) => { result?: (r: { code: number; channel: number; commandId: number }) => void; data?: (f: P2PFrame) => void },
+    ) => {
+      result?: (r: { code: number; channel: number; commandId: number }) => void;
+      data?: (f: P2PFrame) => void;
+      close?: () => void;
+    },
   ): Promise<T> {
     return new Promise((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1985,6 +2040,7 @@ export class P2PCommandRouter {
         if (timer) clearTimeout(timer);
         if (listeners.result) session.off("commandResult", listeners.result);
         if (listeners.data) session.off("data", listeners.data);
+        if (listeners.close) session.off("close", listeners.close);
         outcome();
       };
       const expire = (ms: number, onExpiry: () => void): void => {
@@ -1994,6 +2050,7 @@ export class P2PCommandRouter {
       const listeners = read((outcome) => settle(() => resolve(outcome)), expire);
       if (listeners.result) session.on("commandResult", listeners.result);
       if (listeners.data) session.on("data", listeners.data);
+      if (listeners.close) session.on("close", listeners.close);
       expire(timeoutMs, () => settle(() => reject(timeout())));
       try {
         send();

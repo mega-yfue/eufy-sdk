@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { LIVE_FRAMES } from "./live-source-fixtures.js";
 import { P2PCommandRouter } from "../command-router.js";
 import type { P2PSession } from "../p2p-session.js";
-import { connectedSession } from "./session-fixtures.js";
+import { answeredSendFrame, connectedSession } from "./session-fixtures.js";
 
 const STATION = "T8000P0000000000";
 const CAMERA = "T8000P0000000001";
@@ -12,7 +12,7 @@ function session() {
   const fake = connectedSession(true);
   return Object.assign(fake, {
     isClosed: false,
-    sendFrame: vi.fn(),
+    sendFrame: answeredSendFrame(fake),
     close: vi.fn(async () => {
       fake.emit("close");
     }),
@@ -59,7 +59,7 @@ describe("a cached pull when its P2P path is replaced", () => {
     const oldSource = await router.sharedLiveSourceFor(CAMERA);
     const oldConsumer = oldSource.attach();
     oldConsumer.detach();
-    expect(starts(first)).toBe(1);
+    await vi.waitFor(() => expect(starts(first)).toBe(1));
     const siblingKey = `${STATION}:2`;
     const sibling = { dispose: vi.fn(), state: "live", consumerCount: 1 };
     const internals = router as unknown as {
@@ -76,7 +76,7 @@ describe("a cached pull when its P2P path is replaced", () => {
     expect(sibling.dispose, "a sibling rides the same closed session").toHaveBeenCalledOnce();
     expect(internals.liveSources.has(siblingKey)).toBe(false);
     const newConsumer = newSource.attach();
-    expect(starts(replacement)).toBe(1);
+    await vi.waitFor(() => expect(starts(replacement)).toBe(1));
     newConsumer.detach();
     newSource.dispose();
   });
