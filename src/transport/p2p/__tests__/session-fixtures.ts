@@ -62,6 +62,13 @@ export function connectedSession(hasLevel2Key = true): FakeP2PSession {
   return session;
 }
 
+/** A `sendFrame` the fake station answers `code` (0) under the frame's command, as a station answers a live start or stop. */
+export function answeredSendFrame(session: EventEmitter, code = 0) {
+  return vi.fn((frame: { cmd?: number }, channel: number) =>
+    queueMicrotask(() => session.emit("commandResult", { commandId: frame.cmd, code, channel })),
+  );
+}
+
 /**
  * A session that has not connected, and does not while a spec waits on it.
  *

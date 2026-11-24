@@ -1153,9 +1153,11 @@ export class P2PSession extends EventEmitter {
    * each index once). Every {@link DRW_RESEND_MS} the oldest retained datagram, and only that one, goes again
    * byte-identically (`thread_recv_DRW` moves the head of the channel's unacked queue back to ready), until a
    * `DRWAck` lists it. The device answers a sequence once, however many copies arrive, and `onData` drops the
-   * repeats of that answer by their sequence. Answers what `send` answered.
+   * repeats of that answer by their sequence. Answers what `send` answered. A call within another's `send` leaves
+   * its datagrams to the outer one.
    */
   sendAcknowledged(send: () => boolean): boolean {
+    if (this.capturedCommands) return send();
     this.capturedCommands = [];
     let sent: boolean;
     let captured: Buffer[];

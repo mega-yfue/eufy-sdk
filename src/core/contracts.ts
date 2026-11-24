@@ -768,6 +768,8 @@ export interface SessionFrame {
   layout?: number | string;
   mValue3?: number;
   counter?: string;
+  /** The request window its bundle descriptor states (`timeout`, ms), within which the app's request must succeed. */
+  timeoutMs?: number;
 }
 
 /**

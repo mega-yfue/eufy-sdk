@@ -21,7 +21,7 @@ import { AccessUnitAssembler, VideoFrameDecoder } from "./video.js";
 import { sniffAnnexbCodec } from "./annexb.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { traceLiveStart, type LiveTrace } from "./live-trace.js";
-import type { LiveAudioFrame, LiveFrames, LiveVideoFrame, VideoCodec } from "../../core/contracts.js";
+import type { LiveAudioFrame, LiveFrames, LiveVideoFrame, SessionFrame, VideoCodec } from "../../core/contracts.js";
 import {
   AUDIO_CODECS,
   AUDIO_HEADER_LEN,
@@ -78,6 +78,11 @@ export interface LiveStreamOptions {
    * HomeBase's session, which tags its media with the camera's channel, and this stream takes only its own.
    */
   homeBaseAttached?: boolean;
+  /**
+   * Sends a start or stop as the app's request does, `send` writing it: the start answered, its result only logged,
+   * the stop `unread`. Without it both are written straight to the session.
+   */
+  request?: (frame: SessionFrame, send: () => void, unread: boolean) => Promise<unknown>;
   /** Diagnostics sink. Omit for silence. */
   logger?: Logger;
 }
@@ -133,16 +138,28 @@ export class LiveStream extends EventEmitter {
     this.session.on("data", this.handler);
     this.session.on("videoGap", this.videoGapHandler);
     this.sendStart();
-    const eccPrivateKey = this.opts.eccPrivateKey ?? this.session.mediaEccPrivateKey;
-    if (eccPrivateKey) this.decoder = new VideoFrameDecoder(eccPrivateKey);
     this.emit("start");
     return this;
   }
 
   private sendStart(): void {
-    const { frames, accountId, entryType } = this.opts;
-    try {
+    const { frames, accountId, entryType, request } = this.opts;
+    // The session makes the P-256 pair as the start goes out, so the decoder is keyed once it has gone.
+    const send = () => {
       this.session.sendFrame(frames.start, this.channel, accountId, frames.ability, entryType);
+      const eccPrivateKey = this.opts.eccPrivateKey ?? this.session.mediaEccPrivateKey;
+      if (eccPrivateKey) this.decoder = new VideoFrameDecoder(eccPrivateKey);
+    };
+    if (request) {
+      // The app's P2P player only reports the start's result (`P2PLiveStreamPlayer.play`: `SendCommandResult`) and
+      // plays whatever arrives meanwhile; the warm-up deadline ends a start that brings nothing.
+      request(frames.start, send, false).catch((e: unknown) =>
+        this.logger.debug(`[live] start failed: ${e instanceof Error ? e.message : e}`),
+      );
+      return;
+    }
+    try {
+      send();
     } catch (e) {
       // Non-fatal: the session may be mid-reconnect; the warm-up deadline ends a start that never went.
       this.logger.debug(`[live] start deferred (session not ready): ${e instanceof Error ? e.message : e}`);
@@ -157,7 +174,9 @@ export class LiveStream extends EventEmitter {
     this.session.off("videoGap", this.videoGapHandler);
     this.awaitingKeyframeAfterGap = false;
     try {
-      this.session.sendFrame(this.opts.frames.stop, this.channel, this.opts.accountId);
+      const send = () => this.session.sendFrame(this.opts.frames.stop, this.channel, this.opts.accountId);
+      if (this.opts.request) void this.opts.request(this.opts.frames.stop, send, true).catch(() => undefined);
+      else send();
     } catch (e) {
       this.logger.debug(`[live] stop ignored: ${e instanceof Error ? e.message : e}`);
     }
