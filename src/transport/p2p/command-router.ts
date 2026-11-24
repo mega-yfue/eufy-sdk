@@ -743,14 +743,23 @@ export class P2PCommandRouter {
     switch (cmd.kind) {
       // ── Intents — the transport picks the encryption level (see resolveScalarParam / setJson). ──
       case "set-param":
-        return (await this.resolveScalarParam(sn, cmd.param, cmd.value, cmd.form === "int-pair")) === true;
+        return (
+          (await this.resolveScalarParam(
+            sn,
+            cmd.param,
+            cmd.value,
+            cmd.form === "int-pair",
+            true,
+            cmd.stationAccount,
+          )) === true
+        );
       case "set-json":
         return (
           (await this.routeControl(sn, P2P_ENVELOPE.CONTROL_PAYLOAD, { commandType: cmd.param, data: cmd.data })) ===
           true
         );
       case "set-json-raw":
-        await this.sendJsonRaw(sn, cmd.cmd, cmd.data, cmd.channel);
+        await this.sendJsonRaw(sn, cmd.cmd, cmd.data, cmd.channel, cmd.stationAccount);
         return false;
       case "set-payload":
         return (
@@ -773,8 +782,12 @@ export class P2PCommandRouter {
         return (await this.sendIntString(sn, cmd.cmd, cmd.value, cmd.valueSub, cmd.channel, cmd.form)) === true;
       case "p2p-string":
         return (
-          (await this.sendNativeBody(sn, cmd.cmd, 255, (accountId) =>
-            buildStringBody(cmd.channel, cmd.value, accountId),
+          (await this.sendNativeBody(
+            sn,
+            cmd.cmd,
+            255,
+            (accountId) => buildStringBody(cmd.channel, cmd.value, accountId, cmd.int),
+            cmd.stationAccount,
           )) === true
         );
       case "ff09-actuate":
@@ -1439,10 +1452,10 @@ export class P2PCommandRouter {
   /**
    * A scalar `set-param` write: the app's group-A body `[u32 channel][u32 value][account_id → 128]`, or the bare
    * `[u32 channel][u32 value]` for `pair`, sealed by the session. `answered` settles it on the device's answer
-   * ({@link sendAnswered}); without it the write resolves once sent.
+   * ({@link sendAnswered}); without it the write resolves once sent. `station` sends the station's member account id.
    */
-  private resolveScalarParam(sn: string, param: number, value: number, pair = false, answered = true) {
-    return this.sendDirectBinary(sn, param, value, answered, pair);
+  private resolveScalarParam(sn: string, param: number, value: number, pair = false, answered = true, station = false) {
+    return this.sendDirectBinary(sn, param, value, answered, pair, station);
   }
 
   /**
@@ -1602,12 +1615,13 @@ export class P2PCommandRouter {
     value: number,
     answered: boolean,
     pair = false,
+    station = false,
   ): Promise<boolean | void> {
     return this.sendAnswered(
       sn,
       outerCmd,
-      ({ session, channel, accountId }) => {
-        const full = buildDirectBinaryBody(value, accountId, channel);
+      ({ session, channel, accountId, zmediaAccountId }) => {
+        const full = buildDirectBinaryBody(value, station ? zmediaAccountId : accountId, channel);
         return session.sendBytes(pair ? full.subarray(0, 8) : full, channel, outerCmd);
       },
       undefined,
@@ -1640,15 +1654,19 @@ export class P2PCommandRouter {
 
   /**
    * A native body (the string body {@link buildStringBody}, the bare int pair) on header `channel`, sealed by the
-   * session and settled on the device's answer ({@link sendAnswered}). `body` gets the account id.
+   * session and settled on the device's answer ({@link sendAnswered}). `body` gets the account id, the station's
+   * member one with `station`.
    */
   private sendNativeBody(
     sn: string,
     cmd: number,
     channel: number,
     body: (accountId: string) => Buffer,
+    station = false,
   ): Promise<boolean | void> {
-    return this.sendAnswered(sn, cmd, ({ session, accountId }) => session.sendBytes(body(accountId), channel, cmd));
+    return this.sendAnswered(sn, cmd, ({ session, accountId, zmediaAccountId }) =>
+      session.sendBytes(body(station ? zmediaAccountId : accountId), channel, cmd),
+    );
   }
 
   private async sendIntString(
@@ -1679,19 +1697,26 @@ export class P2PCommandRouter {
    * exactly `{account_id,...data}`, sealed by the session. Reversed from a live
    * capture of the app's own SET_SNOOZE_TIME (1271) frame — see `param-dictionary.ts`'s `1271` entry
    * (`snoozeTime`); the alarm-delay config (1255, `arming.ts`'s `ARMING_CMD.SET_ALL_ACTION`) reuses
-   * the same bare-JSON shape.
+   * the same bare-JSON shape. `station` sends the station's member account id.
    */
   private async sendJsonRaw(
     sn: string,
     outerCmd: number,
     data: Record<string, unknown>,
     channel: number,
+    station = false,
   ): Promise<void> {
     await this.sendAnswered(
       sn,
       outerCmd,
-      ({ session, accountId }) =>
-        session.sendStringPayloadCommand(outerCmd, withUser({ account_id: accountId, ...data }, accountId), channel),
+      ({ session, accountId: admin, zmediaAccountId }) => {
+        const accountId = station ? zmediaAccountId : admin;
+        return session.sendStringPayloadCommand(
+          outerCmd,
+          withUser({ account_id: accountId, ...data }, accountId),
+          channel,
+        );
+      },
       undefined,
       true,
     );

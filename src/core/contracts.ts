@@ -317,10 +317,12 @@ const COMMAND_OBSERVATION = Symbol("command-observation");
 export type Command =
   /**
    * The app's group-A scalar body `[u32 channel][u32 value][account_id → 128]`, or with `"int-pair"` the bare
-   * `[u32 channel][u32 value]`; the transport injects the account id and the session seals it.
+   * `[u32 channel][u32 value]`; the transport injects the account id and the session seals it. On this, `set-json-raw`
+   * and `p2p-string`, `stationAccount` sends the station record's member account id, the one the app's legacy direct
+   * senders send, in place of the device record's `admin_user_id`.
    */
   (
-    | { kind: "set-param"; param: number; value: number; form?: "int-pair"; channel: number }
+    | { kind: "set-param"; param: number; value: number; form?: "int-pair"; channel: number; stationAccount?: true }
     /** `data` is a number where the bundle sends `param_data`. */
     | { kind: "set-json"; param: number; data: Record<string, unknown> | number; channel: number }
     // `set-json-raw` differs from `set-json` in ONE way: the wire's outer P2P command IS `cmd` itself
@@ -331,6 +333,7 @@ export type Command =
         cmd: number;
         data: Record<string, unknown>;
         channel: number;
+        stationAccount?: true;
       }
     | {
         kind: "set-payload";
@@ -375,11 +378,11 @@ export type Command =
         answerMs?: number;
       }
     /**
-     * The app's native string body (`[u32 0][u8 channel][value][account_id]`) on the station channel 255,
-     * `channel` the device's own: a rename (1216, 1217) or a time zone (1215). The transport injects the
-     * account id and the session seals it.
+     * The app's native string body (`[u16 int][u16 0][u8 channel][value][account_id]`) on the station channel 255,
+     * `channel` the device's own, `int` 0 unless given: a rename (1216, 1217), a time zone (1215) or a sunrise
+     * switch (1414). The transport injects the account id and the session seals it.
      */
-    | { kind: "p2p-string"; cmd: number; value: string; channel: number }
+    | { kind: "p2p-string"; cmd: number; value: string; channel: number; int?: number; stationAccount?: true }
     /** P2P int-plus-string frame; the transport injects the authenticated account id string. */
     | {
         kind: "p2p-int-string";

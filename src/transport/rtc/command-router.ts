@@ -213,7 +213,10 @@ export class RtcCommandRouter {
       }
       case "p2p-string": {
         if (nativeGroup(cmd.cmd) !== "G") break;
-        const body = Buffer.concat([buildStringBody(cmd.channel, cmd.value, this.accountId(route)), eccPublicHex()]);
+        const body = Buffer.concat([
+          buildStringBody(cmd.channel, cmd.value, this.accountId(route), cmd.int),
+          eccPublicHex(),
+        ]);
         return { id: cmd.cmd, body, channel: STATION_CHANNEL };
       }
       case "p2p-int-string": {

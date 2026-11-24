@@ -311,6 +311,52 @@ type RawOf = (param: number) => string | undefined;
 const javaOverridden = (identifier: string, ctx: AvailabilityContext): boolean =>
   bundleEntry(identifier, ctx)?.override === "java";
 
+/**
+ * The param of each identifier the app's legacy floodlight light settings (opened for T8420, T8420X, T8423 and
+ * T8424) write in Java while their bundles send nothing: `timer_for_lights` 1409, `spotlight_schedule_switch` 1414,
+ * `spotlight_schedule_config` 1404.
+ */
+const floodlightParam = (identifier: string, ctx: AvailabilityContext): number | undefined =>
+  ["T8420", "T8420X", "T8423", "T8424"].includes(ctx.model ?? "") ? FLOODLIGHT_PARAMS[identifier] : undefined;
+const FLOODLIGHT_PARAMS: Readonly<Record<string, number>> = {
+  timer_for_lights: 1409,
+  spotlight_schedule_switch: 1414,
+  spotlight_schedule_config: 1404,
+};
+
+/** `timer_for_lights`' UI values as the seconds the app sends and reads on 1409, an unknown read as the first. */
+const LIGHT_TIMER = [30, 60, 180, 300, 900];
+
+/** The schedule `{loop}` a host writes, as the app's `schedules`: each day a `{day}`, `once` empty. */
+const floodlightSchedules = (value: string) => {
+  const loop = parse(value)?.loop;
+  return Array.isArray(loop) ? { loop: weekDays(loop), once: [] } : undefined;
+};
+
+/**
+ * A legacy floodlight write ({@link floodlightParam}) as the app sends it, with the station's member account id: the
+ * timer's seconds as a scalar on the device channel; the schedule as `{account_id, schedules}` JSON on 255; the
+ * sunrise switch in the string body with the reported 1415 `lat`/`lng` as `{"lat": "…","lng": "…"}` (`""` without
+ * one, which an enabling write refuses) and the switch as its int, channel 0.
+ */
+function floodlightWrite(param: number, value: string, ctx: CommandContext): Command | undefined {
+  const seconds = LIGHT_TIMER[Number(value)];
+  const schedules = floodlightSchedules(value);
+  const stationAccount = true;
+  if (param === 1409)
+    return seconds === undefined
+      ? undefined
+      : { kind: "set-param", param, value: seconds, channel: ctx.channel, stationAccount };
+  if (param === 1404)
+    return schedules && { kind: "set-json-raw", cmd: param, data: { schedules }, channel: 255, stationAccount };
+  const at = parse(ctx.paramValue?.(1415));
+  const [lat, lng] = [at?.lat, at?.lng].map((x) => parseFloat(String(x)));
+  const java = (n: number) => (Number.isInteger(n) ? n.toFixed(1) : String(n));
+  const place = Number.isFinite(lat) && Number.isFinite(lng) ? `{"lat": "${java(lat!)}","lng": "${java(lng!)}"}` : "";
+  if (value === "1" && !place) return undefined;
+  return { kind: "p2p-string", cmd: 1414, value: place, channel: 0, int: value === "1" ? 1 : 0, stationAccount };
+}
+
 /** A read's `>` ranks, each its `+`-joined params. */
 const ranksOf = (read: BundleRead | undefined): number[][] =>
   read?.order ? read.order.split(">").map((rank) => rank.split("+").map(Number)) : [];
@@ -966,6 +1012,8 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
  * frame where the value carries the host's own field (`$input.nick_name`): the row the bundle answered for it.
  */
 export function thingWrite(identifier: string, value: string, ctx: CommandContext, key = value): Command | undefined {
+  const floodlight = floodlightParam(identifier, ctx);
+  if (floodlight) return floodlightWrite(floodlight, value, ctx);
   if (javaOverridden(identifier, ctx)) return undefined;
   // A `{paramType, param}` lock settings write (JSON): its frame is the paramType's, its marks the param's fields.
   const struct = structOf(value);
@@ -1281,6 +1329,15 @@ function structOf(value: string): { paramType: number; param: Record<string, unk
 
 /** The raw value `param` (by default the first the bundle reads) holds for `identifier`'s `value`. */
 export function thingReadback(identifier: string, value: string, ctx: AvailabilityContext, param?: number) {
+  const floodlight = floodlightParam(identifier, ctx);
+  if (floodlight === 1409) return { param: 1409, raw: String(LIGHT_TIMER[Number(value)]) };
+  if (floodlight === 1414) return { param: 1414, raw: value };
+  if (floodlight) {
+    const schedules = floodlightSchedules(value);
+    return (
+      schedules && { param: 1404, raw: Buffer.from(JSON.stringify({ account_id: "", schedules })).toString("base64") }
+    );
+  }
   const read = bundleEntry(identifier, ctx)?.read;
   param ??= ranksOf(read)[0]?.[0];
   const raw = read && param !== undefined ? rawOn(read, param, value) : undefined;
@@ -1298,6 +1355,14 @@ export function thingRead(
   raw: (param: number) => string | undefined,
 ): string | undefined {
   if (identifier === "device_is_online") return ctx.online && String(ctx.online());
+  const floodlight = floodlightParam(identifier, ctx);
+  const own = floodlight === undefined ? undefined : raw(floodlight);
+  if (own !== undefined && floodlight === 1409) return String(Math.max(0, LIGHT_TIMER.indexOf(Number(own))));
+  if (own !== undefined && floodlight === 1414) return String(own === "1");
+  if (own !== undefined && floodlight === 1404) {
+    const loop = objectOf(objectOf(decoded(own))?.schedules)?.loop;
+    return JSON.stringify({ loop: Array.isArray(loop) ? loop : [] });
+  }
   if (javaOverridden(identifier, ctx)) return undefined;
   const read = bundleEntry(identifier, ctx)?.read;
   for (const rank of ranksOf(read)) {
