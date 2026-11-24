@@ -152,9 +152,9 @@ interface BundleWires {
   live?: Grouped<Grouped<{ start: number; stop: number; talkStart?: number; talkStop?: number }>>;
   /**
    * The same for the app's RTC player, whose `open_live_stream` input is its own (`RtcLivePlayerBridge`): `start` the
-   * single-camera page, `startTB` / `startPip` a camera's lens pages where the frame differs.
+   * single-camera page, `startTB` a camera's lens page where the frame differs.
    */
-  rtcLive?: Grouped<Grouped<{ start: number; stop: number; startTB?: number; startPip?: number }>>;
+  rtcLive?: Grouped<Grouped<{ start: number; stop: number; startTB?: number }>>;
 }
 
 const BUNDLE_WIRES = DATA as unknown as BundleWires;
