@@ -157,12 +157,14 @@ function recordSetting(param: number, value: number, ctx: CommandContext): Comma
  * PoE-powered cameras behind a T8N00 with no cell; a hardware run in #437 showed the S4 stream cut
  * 55 s after its first video frame by the inherited battery budget (45 s plus 10 s grace). T8P10 (PoE
  * E41) is the same, confirmed on owned hardware behind a T8N00: it reported a 100% battery, a cell
- * temperature and a solar read it cannot have.
+ * temperature and a solar read it cannot have. T8416 (Indoor Cam S350) has no battery and runs from a
+ * 5 V USB-C supply according to the vendor's product pages; a HomeBase 3-attached unit reported the
+ * sentinels 1101=100 and 1138=30, which surfaced as a battery level and a cell temperature that never move.
  *
  * The same list decides the live-media and P2P-session power tier through {@link cameraPowerTier}: a
  * budget on a mains camera is not cheap once it kills a continuous stream every minute.
  */
-const MAINS_CAMERA_MODELS = ["T8425", "T8419", "T8410", "T84A1", "T8423", "T8E00", "T8P00", "T8P10"] as const;
+const MAINS_CAMERA_MODELS = ["T8425", "T8419", "T8410", "T84A1", "T8423", "T8E00", "T8P00", "T8P10", "T8416"] as const;
 
 /**
  * Power tier of a camera for its live-media budget and standalone P2P session: `"battery"` only when it
