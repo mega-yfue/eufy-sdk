@@ -1,4 +1,4 @@
-import { frameCommand, qualityOf, thingRead, thingWrite, type BundleFrame } from "../bundle.js";
+import { frameCommand, qualityOf, thingRead, thingReadback, thingWrite, type BundleFrame } from "../bundle.js";
 import { parseThingsList, type ThingDescription } from "../thing-description.js";
 import { power } from "./bundle-fixture.js";
 import type { CommandContext } from "../types.js";
@@ -764,6 +764,76 @@ describe("the regenerated data's forms", () => {
       },
     });
     expect(sent({ index: 0 }), "no pots: the bundle throws").toBeUndefined();
+  });
+
+  it("writes the T8425/T8426 out-of-view zone as the app's Java: 1350/6266, x1000 rounded, truncated on delete, cached on 6266", () => {
+    const pots = [
+      {
+        points: [
+          { x: 0.1004, y: 0.2006 },
+          { x: 0.5, y: 0.2006 },
+          { x: 0.5, y: 0.9 },
+        ],
+      },
+    ];
+    const id = "detection_range_area_activityzone_config";
+    const zone = (value: object, model = "T8426") => thingWrite(id, JSON.stringify(value), ctx(model));
+    const polygen = (points: object[]) => ({ isDetectZone: true, isEditable: false, isSaved: true, points });
+    expect(zone({ index: 2, pots })).toEqual({
+      kind: "set-payload",
+      cmd: 6266,
+      payload: {
+        activezone: {
+          polygens: [
+            polygen([
+              { x: 100, y: 201 },
+              { x: 500, y: 201 },
+              { x: 500, y: 900 },
+            ]),
+          ],
+        },
+        index: 2,
+      },
+      channel: 3,
+      stationAccount: true,
+    });
+    expect(zone({ index: 2, pots, delete: true })).toMatchObject({
+      payload: {
+        activezone: {
+          polygens: [
+            polygen([
+              { x: 100, y: 200 },
+              { x: 500, y: 200 },
+              { x: 500, y: 900 },
+            ]),
+          ],
+        },
+      },
+    });
+    expect(zone({ index: 2, pots }, "T8214"), "a product whose screen does not send it").toBeUndefined();
+    const cached = thingReadback(id, JSON.stringify({ index: 0, pots: [] }), ctx("T8425"));
+    expect(cached).toEqual({ param: 6266, raw: Buffer.from('{"polygens":[],"zonecount":0}').toString("base64") });
+  });
+
+  it("reads the T8425/T8426 out-of-view zones off 6266 as the app's list, each position as the write's {index, pots}", () => {
+    const id = "detection_range_area_activityzone_config";
+    const pot = { isDetectZone: true, isEditable: false, isSaved: true, points: [{ x: 100, y: 250 }] };
+    const list = [
+      { position: 1, active: [pot], privacy: [] },
+      { position: 3, active: [] },
+    ];
+    const read = (v: unknown, model = "T8425") =>
+      thingRead(id, ctx(model), (p) => (p === 6266 ? Buffer.from(JSON.stringify(v)).toString("base64") : undefined));
+    expect(read(list)).toBe(
+      JSON.stringify([
+        { index: 1, pots: [{ points: [{ x: 0.1, y: 0.25 }] }] },
+        { index: 3, pots: [] },
+      ]),
+    );
+    expect(read({ polygens: [pot], zonecount: 1 }), "the object the app caches on its own answer is no list").toBe(
+      "[]",
+    );
+    expect(read(list, "T8214")).toBeUndefined();
   });
 
   it("writes an unpacked zone as the ZoneInfo itself, spread in the data (T8214 1700/6042)", () => {

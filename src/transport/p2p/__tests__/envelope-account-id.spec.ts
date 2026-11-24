@@ -60,7 +60,7 @@ describe("the P2P envelope account id, per app sender", () => {
     expect(session.sendBytes).toHaveBeenCalledWith(buildDirectBinaryBody(0, STATION_ADMIN), 255, 1034);
   });
 
-  it("is the station's member rule on a scalar, string body or bare JSON stating stationAccount", async () => {
+  it("is the station's member rule on a scalar, string body, bare JSON or 1350 envelope stating stationAccount", async () => {
     const stationAccount = true;
     const sent = async (cmd: Parameters<ReturnType<typeof harness>["router"]["dispatchCommand"]>[1]) => {
       const { session, router } = harness();
@@ -77,6 +77,8 @@ describe("the P2P envelope account id, per app sender", () => {
       JSON.stringify({ account_id: STATION_ADMIN }),
       255,
     );
+    const envelope = await sent({ kind: "set-payload", cmd: 6266, payload: {}, channel: 1, stationAccount });
+    expect(envelope.sendSetPayload.mock.calls[0]![2]).toMatchObject({ accountId: STATION_ADMIN, channel: 1 });
   });
 
   /** esiotkit's `?:` falls back on a missing member only: a stated `""` goes out as is. */

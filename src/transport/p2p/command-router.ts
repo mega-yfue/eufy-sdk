@@ -774,6 +774,7 @@ export class P2PCommandRouter {
             cmd.unzip,
             cmd.counter,
             cmd.answerMs,
+            cmd.stationAccount,
           )) === true
         );
       case "p2p-station-scalar":
@@ -1745,11 +1746,19 @@ export class P2PCommandRouter {
     unzip = false,
     counter?: "bump" | "current",
     answerMs?: number,
+    station = false,
   ): Promise<boolean | void> {
     return this.sendAnswered(
       sn,
       P2P_ENVELOPE.SET_PAYLOAD,
-      ({ session, accountId }) => session.sendSetPayload(cmd, payload, { accountId, channel, mValue3, unzip, counter }),
+      ({ session, accountId, zmediaAccountId }) =>
+        session.sendSetPayload(cmd, payload, {
+          accountId: station ? zmediaAccountId : accountId,
+          channel,
+          mValue3,
+          unzip,
+          counter,
+        }),
       resolved,
       !answered,
       answerMs,

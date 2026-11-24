@@ -201,7 +201,7 @@ export class RtcCommandRouter {
         if (cmd.lock || cmd.counter) break;
         const { channel, mValue3, unzip } = cmd;
         const body = setPayloadJson(cmd.cmd, cmd.payload, {
-          accountId: this.accountId(route),
+          accountId: this.accountId(route, cmd.stationAccount),
           channel,
           mValue3,
           unzip,

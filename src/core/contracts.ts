@@ -317,9 +317,9 @@ const COMMAND_OBSERVATION = Symbol("command-observation");
 export type Command =
   /**
    * The app's group-A scalar body `[u32 channel][u32 value][account_id → 128]`, or with `"int-pair"` the bare
-   * `[u32 channel][u32 value]`; the transport injects the account id and the session seals it. On this, `set-json-raw`
-   * and `p2p-string`, `stationAccount` sends the station record's member account id, the one the app's legacy direct
-   * senders send, in place of the device record's `admin_user_id`.
+   * `[u32 channel][u32 value]`; the transport injects the account id and the session seals it. On this, `set-json-raw`,
+   * `set-payload` and `p2p-string`, `stationAccount` sends the station record's member account id, the one the app's
+   * legacy direct senders send, in place of the device record's `admin_user_id`.
    */
   (
     | { kind: "set-param"; param: number; value: number; form?: "int-pair"; channel: number; stationAccount?: true }
@@ -348,6 +348,7 @@ export type Command =
         counter?: "bump" | "current";
         /** How long the device's answer is awaited, never resent, where the app bounds the request itself. */
         answerMs?: number;
+        stationAccount?: true;
         /**
          * A lock setting over its station (v2): the transport builds the params as the app's `handleV2Payload`,
          * `{lock_payload, seq_num, apiCommand, time}`, the `ff09` frame of these fields for the lock.
