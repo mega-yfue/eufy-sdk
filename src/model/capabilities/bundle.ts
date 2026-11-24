@@ -386,6 +386,53 @@ function floodlightWrite(param: number, value: string, ctx: CommandContext): Com
   return { kind: "p2p-string", cmd: 1414, value: place, channel: 0, int: value === "1" ? 1 : 0, stationAccount };
 }
 
+const isOutOfViewZone = (identifier: string, ctx: AvailabilityContext) =>
+  identifier === "detection_range_area_activityzone_config" && ["T8425", "T8426"].includes(ctx.model ?? "");
+
+/**
+ * The out-of-view zones as that screen reads the cached 6266 (a list of `{position, active, privacy}`): each
+ * position's `active` polygons as the `{index, pots}` the write takes, points back to 0–1; `[]` where it holds no list.
+ */
+function outOfViewZoneRead(own: string): string {
+  const list = decoded(own);
+  if (!Array.isArray(list)) return "[]";
+  try {
+    return JSON.stringify(
+      list.map((e: { position: unknown; active: { points: Point[] }[] }) => ({
+        index: e.position,
+        pots: e.active.map((p) => ({ points: p.points.map((q) => ({ x: q.x / 1000, y: q.y / 1000 })) })),
+      })),
+    );
+  } catch {
+    return "[]";
+  }
+}
+
+/**
+ * `detection_range_area_activityzone_config` as the app's legacy out-of-view zone screen (T8425, T8426) writes it in
+ * Java while the bundle sends nothing: `{index, pots}`, `index` the out-of-view position and each point 0–1 of the
+ * video frame, as `{index, polygens}` with the points x1000, rounded, or truncated with `delete: true` (the polygons
+ * left once one is deleted); `undefined` for anything else.
+ */
+function outOfViewZone(identifier: string, value: string, ctx: AvailabilityContext) {
+  if (!isOutOfViewZone(identifier, ctx)) return undefined;
+  const v = parse(value);
+  if (!v || !Number.isInteger(v.index) || !Array.isArray(v.pots)) return undefined;
+  const k = (n: unknown) => Math.trunc(1000 * Number(n) + (v.delete === true ? 0 : 0.5));
+  try {
+    const polygens = (v.pots as { points: Row[] }[]).map((p) => ({
+      isDetectZone: true,
+      isEditable: false,
+      isSaved: true,
+      points: p.points.map((q) => ({ x: k(q.x), y: k(q.y) })),
+    }));
+    const finite = polygens.every((p) => p.points.every((q) => Number.isFinite(q.x) && Number.isFinite(q.y)));
+    return finite ? { index: v.index as number, polygens } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** A read's `>` ranks, each its `+`-joined params. */
 const ranksOf = (read: BundleRead | undefined): number[][] =>
   read?.order ? read.order.split(">").map((rank) => rank.split("+").map(Number)) : [];
@@ -1046,6 +1093,12 @@ export function thingWrite(identifier: string, value: string, ctx: CommandContex
   if (identifier === "timezone_set") return timezoneWrite(value, ctx);
   const floodlight = floodlightParam(identifier, ctx);
   if (floodlight) return floodlightWrite(floodlight, value, ctx);
+  const zone = outOfViewZone(identifier, value, ctx);
+  // Sent as 1350/6266 on the device channel with the station's member account id.
+  if (zone) {
+    const payload = { activezone: { polygens: zone.polygens }, index: zone.index };
+    return { kind: "set-payload", cmd: 6266, payload, channel: ctx.channel, stationAccount: true };
+  }
   if (javaOverridden(identifier, ctx)) return undefined;
   // A `{paramType, param}` lock settings write (JSON): its frame is the paramType's, its marks the param's fields.
   const struct = structOf(value);
@@ -1371,6 +1424,12 @@ export function thingReadback(identifier: string, value: string, ctx: Availabili
       schedules && { param: 1404, raw: Buffer.from(JSON.stringify({ account_id: "", schedules })).toString("base64") }
     );
   }
+  // The out-of-view zone the app caches on 6266 on its answer: `{polygens, zonecount}`.
+  const zone = outOfViewZone(identifier, value, ctx);
+  if (zone) {
+    const raw = JSON.stringify({ polygens: zone.polygens, zonecount: zone.polygens.length });
+    return { param: 6266, raw: Buffer.from(raw).toString("base64") };
+  }
   const read = bundleEntry(identifier, ctx)?.read;
   param ??= ranksOf(read)[0]?.[0];
   const raw = read && param !== undefined ? rawOn(read, param, value) : undefined;
@@ -1400,6 +1459,8 @@ export function thingRead(
     const loop = objectOf(objectOf(decoded(own))?.schedules)?.loop;
     return JSON.stringify({ loop: Array.isArray(loop) ? loop : [] });
   }
+  const zones = raw(6266);
+  if (zones !== undefined && isOutOfViewZone(identifier, ctx)) return outOfViewZoneRead(zones);
   if (javaOverridden(identifier, ctx)) return undefined;
   const read = bundleEntry(identifier, ctx)?.read;
   for (const rank of ranksOf(read)) {

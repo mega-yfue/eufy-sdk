@@ -153,6 +153,13 @@ describe("RtcCommandRouter on the native layers", () => {
     await router.dispatchCommand(ROUTE, { kind: "set-json-raw", cmd: 1271, data: { t: 1 }, channel: 3 });
     await router.dispatchCommand(ROUTE, { kind: "set-json-raw", cmd: 1255, data: { t: 2 }, channel: 3 });
     await router.dispatchCommand(ROUTE, { kind: "set-param", param: 1230, value: 4, channel: 3, stationAccount: true });
+    await router.dispatchCommand(ROUTE, {
+      kind: "set-payload",
+      cmd: 6266,
+      payload: {},
+      channel: 3,
+      stationAccount: true,
+    });
     expect(data.command.mock.calls).toEqual([
       [1035, Buffer.concat([u32(3, 1), account]), 3],
       [1235, Buffer.concat([u32(7), account]), 255],
@@ -163,6 +170,7 @@ describe("RtcCommandRouter on the native layers", () => {
       [1271, JSON.stringify({ account_id: "synthetic-admin", t: 1 }), 3],
       [1255, JSON.stringify({ account_id: "synthetic-admin", t: 2 }), 255],
       [1230, buildDirectBinaryBody(4, "synthetic-station", 3), 3],
+      [1350, JSON.stringify({ account_id: "synthetic-station", cmd: 6266, mChannel: 3, mValue3: 0, payload: {} }), 3],
     ]);
     router.close();
   });
