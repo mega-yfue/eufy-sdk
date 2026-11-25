@@ -22,10 +22,11 @@ export interface ThingCatalog {
         readonly unit?: string;
         readonly options?: readonly (readonly [value: string, label: string])[];
         /**
-         * Per option value, the value the device stores for it (the description's `associatedValue`), where the
-         * products' descriptions name one. Two options of one variant can share a label and differ here.
+         * Per option value, the value the device stores for it (the description's `associatedValue`, a bound
+         * member's `wireValue`), where the description names one. Two options of one variant can share a label and
+         * differ here; products storing other values are another variant.
          */
-        readonly raw?: Readonly<Record<string, string>>;
+        readonly wireValues?: Readonly<Record<string, string>>;
         readonly products: readonly string[];
       }[]
     >

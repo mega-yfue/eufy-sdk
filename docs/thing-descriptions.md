@@ -43,9 +43,8 @@ Identifier families: security products use plain names (`nightvision_type`, `led
 `@mega-yfue/eufy-sdk/catalog` exports `catalog` (type `ThingCatalog`): every product's described properties,
 generated with the bundle wires from the same corpus (`catalog.source`). Under `catalog.properties[identifier]`
 each distinct variant lists `type`, `access`, `min` / `max` / `step` / `unit` when stated, `options`
-(`[value, label]` pairs in the description's order, the label its text or key verbatim), `raw` (each option's
-`associatedValue`, the value the device stores for it, where the descriptions name one; added by
-`scripts/dev/catalog-raw.ts`) and its `products`. It is
+(`[value, label]` pairs in the description's order, the label its text or key verbatim), `wireValues` (each option's
+`associatedValue`, the value the device stores for it, where the description names one) and its `products`. It is
 build-time data for declaring controls ahead of a device; the SDK's runtime never loads it. A bound device's
 `dev.describe()` and its members' enum values stay the authority on what that device offers.
 
