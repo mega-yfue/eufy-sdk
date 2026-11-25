@@ -521,10 +521,12 @@ export class P2PSession extends EventEmitter {
   private audioRetransmitTimer?: ReturnType<typeof setInterval>;
   private lastPongData?: Buffer;
   /**
-   * When the selected peer last answered outbound P2P traffic on this connection.
+   * When the selected peer was last heard on this connection: a PONG, an ACK or a DATA datagram from the
+   * connected address.
    *
-   * Each answer also emits `peerAnswer` with this time: a PONG or an ACK from the connected address is the
-   * station replying on this connection now, which a heartbeat draws every {@link HEARTBEAT_MS}.
+   * A PONG or an ACK also emits `peerAnswer` with this time: it is the station replying on this connection
+   * now, which a heartbeat draws every {@link HEARTBEAT_MS}. DATA does not, since a media stream delivers
+   * hundreds of datagrams a second.
    */
   private lastPeerAt?: number;
   /** Whether the silence has already been stated, so it is traced once per connection rather than per read. */
@@ -642,10 +644,11 @@ export class P2PSession extends EventEmitter {
   readonly traceId = `station-${++traceSequence}`;
 
   /**
-   * How long this connection's path has been silent, or nothing where it has never answered.
+   * How long this connection's path has been silent, or nothing where it has never been heard.
    *
-   * PONG and ACK from the selected peer prove the path answers outbound traffic. `undefined` means no such reply
-   * has arrived since connection, so silence alone does not establish a stale path.
+   * PONG and ACK from the selected peer prove the path answers outbound traffic, and DATA from it proves the
+   * path still carries the peer. `undefined` means none has arrived since connection, so silence alone does
+   * not establish a stale path.
    */
   get pathSilentMs(): number | undefined {
     return this.lastPeerAt === undefined ? undefined : Date.now() - this.lastPeerAt;
@@ -654,8 +657,8 @@ export class P2PSession extends EventEmitter {
   /**
    * Whether this path can still be committed to, on the evidence the heartbeat gives.
    *
-   * False where selected-peer replies arrived and then stopped for {@link PATH_SILENCE_MS}. A connection with
-   * no post-connect reply is not known to be dead, so it answers true.
+   * False where selected-peer traffic arrived and then stopped for {@link PATH_SILENCE_MS}. A connection with
+   * none since connect is not known to be dead, so it answers true.
    *
    * Traces the silence once per connection, on the read that first observes it.
    */
@@ -1220,10 +1223,11 @@ export class P2PSession extends EventEmitter {
     if (!socket) return;
     const fromConnectedPeer =
       this.connected && this.connectAddress?.host === rinfo.address && this.connectAddress.port === rinfo.port;
-    if (fromConnectedPeer && (hasHeader(msg, ResponseMessageType.PONG) || hasHeader(msg, ResponseMessageType.ACK))) {
+    const answer = hasHeader(msg, ResponseMessageType.PONG) || hasHeader(msg, ResponseMessageType.ACK);
+    if (fromConnectedPeer && (answer || hasHeader(msg, ResponseMessageType.DATA))) {
       this.lastPeerAt = Date.now();
       this.pathStaleTraced = false;
-      this.emit("peerAnswer", this.lastPeerAt);
+      if (answer) this.emit("peerAnswer", this.lastPeerAt);
     }
     if (!hasHeader(msg, ResponseMessageType.DATA)) {
       this.logger.debug(
@@ -1362,11 +1366,6 @@ export class P2PSession extends EventEmitter {
 
   /**
    * One heartbeat tick: PING the connected peer, or close the session once its path has stopped answering.
-   *
-   * {@link pathAnswering} is false only where the peer answered and then went silent for
-   * {@link PATH_SILENCE_MS}, so a connection that never answered keeps its heartbeat. Closing emits `close`,
-   * which is what releases the session's owner to open another: a silent path is never held open for the
-   * next command to find.
    */
   private heartbeat(): void {
     if (!this.pathAnswering) {

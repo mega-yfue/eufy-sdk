@@ -146,16 +146,8 @@ describe("a session's heartbeat", () => {
     const closed = vi.fn();
     built.on("close", closed);
     const beat = () => (built as unknown as { heartbeat: () => void }).heartbeat();
-    return { internals, send, closed, beat };
+    return { built, internals, send, closed, beat };
   }
-
-  it("pings a path that is answering", () => {
-    const { internals, send, closed, beat } = beating();
-    internals.lastPeerAt = Date.now() - 1_000;
-    beat();
-    expect(send).toHaveBeenCalledTimes(1);
-    expect(closed).not.toHaveBeenCalled();
-  });
 
   it("keeps pinging a path that has not answered since connection", () => {
     const { send, closed, beat } = beating();
@@ -169,5 +161,15 @@ describe("a session's heartbeat", () => {
     internals.lastPeerAt = Date.now() - 16_000;
     beat();
     await vi.waitFor(() => expect(closed).toHaveBeenCalledTimes(1));
+  });
+
+  it("keeps a session whose peer still sends DATA after its replies stopped", () => {
+    const { built, internals, send, closed, beat } = beating();
+    (built as unknown as { onData: () => void }).onData = vi.fn();
+    internals.lastPeerAt = Date.now() - 16_000;
+    receive(built, ResponseMessageType.DATA, "203.0.113.1");
+    beat();
+    expect(closed).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledTimes(1);
   });
 });
