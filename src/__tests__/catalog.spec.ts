@@ -15,6 +15,11 @@ describe("things catalog subpath", () => {
       ["101", "night_vision_infrared"],
       ["102", "night_vision_infrared"],
     ]);
+    expect(setOf("T8410")?.raw, "101 and 102 share a label and store different values").toEqual({
+      "100": "0",
+      "101": "3",
+      "102": "1",
+    });
     expect(setOf("T8416")?.options).toEqual([
       ["101", "night_vision_infrared"],
       ["102", "night_vision_infrared"],
