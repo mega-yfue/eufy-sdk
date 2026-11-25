@@ -231,6 +231,23 @@ describe("arming capability module", () => {
     });
   });
 
+  /**
+   * A standalone T8442 takes the same direct 1224 body on channel 255 as a T8410, sealed at the session's
+   * level. Home and Away were confirmed live; the fixture identity is synthetic.
+   */
+  describe("setMode on a T8442 (direct 1224 frame, channel 255)", () => {
+    const t8442: CommandContext = { ...ctx, model: "T8442" };
+
+    it.each([
+      [ArmingMode.away, 0],
+      [ArmingMode.home, 1],
+    ])("%s on a T8442 → p2p-station-scalar cmd 1224, value %i, channel 255, auto seal", async (mode, value) => {
+      const { acts, sent } = bind<ArmingActions>("arming", t8442);
+      await acts.setMode(mode);
+      expect(sent).toEqual([{ kind: "p2p-station-scalar", cmd: 1224, value, channel: 255, form: "auto" }]);
+    });
+  });
+
   it("ARMING_CMD names the wire ids (no bare literals)", () => {
     expect(ARMING_CMD.SET_ARMING).toBe(1224);
     expect(ARMING_CMD.SET_ALL_ACTION).toBe(1255);
