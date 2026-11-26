@@ -165,6 +165,64 @@ describe("pmIce", () => {
   });
 });
 
+describe("pmIce on the station's own answer", () => {
+  it("takes a CALL 200 with no Trying and candidate-only INFOs as the remote description under the call's own credentials", async () => {
+    const sent: { socket: Socket; p: RtcPacket }[] = [];
+    const send = Socket.prototype.send;
+    vi.spyOn(Socket.prototype, "send").mockImplementation(function (this: Socket, msg: unknown, ...rest: unknown[]) {
+      const p = parseRtcDatagram(msg as Buffer);
+      if (p) sent.push({ socket: this, p });
+      else (send as (...a: unknown[]) => void).apply(this, [msg, ...rest]);
+    } as never);
+    const client = new RtcSignalClient({ sn: SN, did: "XXXXXXX-000000-XXXXX", lic: "AAAAAA", host: "127.0.0.1" });
+    client.sessionKey = KEY;
+    closers.push(() => client.close());
+    const call = client.call(6);
+    const agent = pmIce(client, call);
+    const peer = new IceAgent(call.ufrag, call.pwd);
+    closers.push(
+      () => agent.close(),
+      () => peer.close(),
+    );
+    const station = (kind: number, status: number, json: object) => {
+      const h = rtcHeader({ kind, sn: SN, seq: 42, route: 9, ts: TS });
+      h[14] = status ? 1 : 0;
+      h.writeUInt16LE(status, 16);
+      h[18] = 1;
+      const body = callBody(call.uuid, "station", rtcEncrypt(Buffer.from(JSON.stringify(json)), KEY, TS));
+      sent[0]!.socket.emit("message", wrapRtcPacket(rtcPacket(h, 7, body)));
+    };
+    const infos = () =>
+      sent
+        .filter((s) => s.p.header.readUInt16LE(4) === 4 && s.p.header[14] === 0)
+        .map(({ p }) => JSON.parse(strip(rtcDecrypt(p.body.subarray(76), KEY, p.header.readUInt32LE(8)))) as object);
+
+    peer.on("candidate", (c) => station(4, 0, { candidate: c }));
+    station(2, 200, {
+      account: "0".repeat(32),
+      addr: "192.0.2.20",
+      call_type: "scall",
+      eufy_app_id: "0123456789abcdef",
+      eufy_from_contact: "station",
+      eufy_network_type: 1,
+      eufy_p2p_type: "priv_p2p",
+      eufy_video_format: 0,
+      ftv: 20,
+      port: 50000,
+      sdp_info: Buffer.alloc(86).toString("base64"),
+      srflx: "192.0.2.21",
+      turn: {},
+    });
+    const connected = once(agent, "connected");
+    await vi.waitFor(() => expect(infos().length).toBeGreaterThan(1));
+    const [answer, cand] = infos() as [{ sdp: string }, { candidate: string }];
+    expect(JSON.parse(answer.sdp)).toHaveProperty("ice-ufrag", `a=ice-ufrag:${call.ufrag}\r`);
+    peer.addRemoteCandidate(cand.candidate);
+    await peer.start(call.ufrag, call.pwd);
+    await connected;
+  });
+});
+
 describe("priv1", () => {
   it("trades file_candidate INFOs until acked, sends the local sdp, connects as ICE-controlling and nominates", async () => {
     const sent: { socket: Socket; p: RtcPacket }[] = [];

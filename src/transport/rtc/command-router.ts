@@ -650,7 +650,9 @@ export class RtcCommandRouter {
 
   /**
    * One live view on a fresh PM call; its ICE closes and the call hangs up when the view stops or fails. A camera with
-   * lenses opens its lens page (`startTB`), or with a `view` the single-camera page on that lens.
+   * lenses opens its lens page (`startTB`), or with a `view` the single-camera page on that lens. The station's answer
+   * sets the remote description ({@link pmIce} `ownSdp`) except on a T8223 at 3319 or below and a T8224 below 3420,
+   * whose INFO `sdp` does, as `WebrtcApp_Event_RtcTrying` gates it.
    */
   private pmStream(
     route: RtcLiveRoute,
@@ -660,7 +662,9 @@ export class RtcCommandRouter {
     view?: number,
   ): RtcPmLiveStream {
     const call = st.signal.call(RtcCallType.PM);
-    const agent = (this.deps.layers?.pmIce ?? pmIce)(st.signal, call);
+    const sn = route.stationSn;
+    const ownSdp = !/^T822[34]/.test(sn) || route.version > (sn.startsWith("T8223") ? 3319 : 3419);
+    const agent = (this.deps.layers?.pmIce ?? pmIce)(st.signal, call, ownSdp);
     const stream = new RtcPmLiveStream(agent, {
       call,
       gcm: mediaGcm(route.stationSn, route.version),

@@ -354,21 +354,30 @@ export function turnServer(turn: unknown, port?: number): TurnServer | undefined
 }
 
 /**
- * The PM call's media ICE wired to its signalling as the app wires its peer: the station's 100 Trying `turn` is the
- * ICE server; its INFO `sdp` (`ice-u` / `ice-p` lines) is the remote description, answered at once by an INFO `sdp`
- * of {@link pmAnswer}, then gathering starts; each local candidate goes out as an INFO `candidate` (byte 44 = 1) and
- * each station candidate is added; connected ends the CALL repeat.
+ * The PM call's media ICE wired to its signalling as the app wires its peer: the station's 100 Trying (or a 200 without
+ * one) `turn` is the ICE server. With `ownSdp` that answer also sets the remote description, the app's own template
+ * under the call's own `sdp_info` ufrag and pwd (`WebrtcApp_Event_RtcTrying` → `WebrtcApp_SetEventDeviceSDP`); without
+ * it the station's INFO `sdp` (`ice-u` / `ice-p` lines) does. The first remote description is answered at once by an
+ * INFO `sdp` of {@link pmAnswer}, then gathering starts; each local candidate goes out as an INFO `candidate` (byte 44
+ * = 1) and each station candidate is added; connected ends the CALL repeat.
  */
-export function pmIce(signal: RtcSignalClient, call: { uuid: string } & RtcCallSdp): IceAgent {
+export function pmIce(signal: RtcSignalClient, call: { uuid: string } & RtcCallSdp, ownSdp = true): IceAgent {
   const agent = new IceAgent(call.ufrag, call.pwd);
   const value = (line = "") => line.slice(line.indexOf(":") + 1).trim();
+  let answered = false;
+  const answer = (ufrag: string, pwd: string) => {
+    if (answered) return;
+    answered = true;
+    signal.info(call.uuid, { sdp: pmAnswer(call.ufrag, call.pwd, call.audio) });
+    void agent.start(ufrag, pwd);
+  };
   const onTrying = (uuid: string, turn: unknown) => {
-    if (uuid === call.uuid) agent.turn = turnServer(turn);
+    if (uuid !== call.uuid) return;
+    agent.turn = turnServer(turn);
+    if (ownSdp) answer(call.ufrag, call.pwd);
   };
   const onSdp = (uuid: string, sdp: Record<string, string>) => {
-    if (uuid !== call.uuid) return;
-    signal.info(uuid, { sdp: pmAnswer(call.ufrag, call.pwd, call.audio) });
-    void agent.start(value(sdp["ice-u"]), value(sdp["ice-p"]));
+    if (uuid === call.uuid) answer(value(sdp["ice-u"]), value(sdp["ice-p"]));
   };
   const onCandidate = (uuid: string, line: string) => {
     if (uuid === call.uuid) agent.addRemoteCandidate(line);

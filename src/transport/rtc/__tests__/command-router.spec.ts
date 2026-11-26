@@ -292,13 +292,30 @@ describe("RtcCommandRouter on the native layers", () => {
     expect(counter.word).toBe(0x01020304);
     const consumer = await router.mediaProviderFor(ROUTE).live();
     expect(signal.call).toHaveBeenCalledExactlyOnceWith(6);
-    expect(pmIce).toHaveBeenCalledOnce();
+    expect(pmIce.mock.calls).toEqual([[signal, expect.objectContaining({ uuid: "pm-call" }), true]]);
     expect(agent.write).toHaveBeenCalled();
     expect(counter.word).toBe(0x01020305);
     consumer.stop();
     router.close();
     expect(agent.close).toHaveBeenCalled();
     expect(signal.hangup).toHaveBeenCalledWith("pm-call");
+  });
+
+  it("lets the station's answer set the PM remote description but on a T8223 to 3319 and a T8224 below 3420", async () => {
+    const own = [];
+    for (const [stationSn, version] of [
+      ["T8223P0000000000", 3319],
+      ["T8223P0000000000", 3320],
+      ["T8224P0000000000", 3419],
+      ["T8224P0000000000", 3420],
+    ] as const) {
+      const { router, pmIce } = layers();
+      const consumer = await router.mediaProviderFor({ ...ROUTE, stationSn, version }).live();
+      own.push((pmIce.mock.calls[0] as unknown[])[2]);
+      consumer.stop();
+      router.close();
+    }
+    expect(own).toEqual([false, true, false, true]);
   });
 
   /** The `XZYH` command of the ANKE frame in the `i`th APP packet the PM agent wrote, opened under the PM key. */
