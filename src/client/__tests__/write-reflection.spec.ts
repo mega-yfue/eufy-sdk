@@ -67,18 +67,22 @@ describe("a write the device answered", () => {
 });
 
 describe("a write carrying a next command", () => {
-  it("routes the next one after it", async () => {
+  it("routes the next one only once the device answered the first with success", async () => {
     const sent: Command[] = [];
     const eufy = new EufyMega({ email: "t@example.com", password: "x" });
     const target = eufy as never as {
       routeCommand: (sn: string, cmd: Command) => Promise<boolean>;
       commandSinkFor(sn: string): { dispatch(cmd: Command): Promise<void> };
     };
-    target.routeCommand = async (_sn, cmd) => (sent.push(cmd), false);
+    let answers = false;
+    target.routeCommand = async (_sn, cmd) => (sent.push(cmd), answers);
     const next: Command = { kind: "set-param", param: 1045, value: 1, channel: 0 };
     const first: Command = { kind: "set-json", param: 6014, data: { value: 1 }, channel: 0, next };
     await target.commandSinkFor(SENSOR).dispatch(first);
-    expect(sent).toEqual([first, next]);
+    expect(sent, "refused or unanswered").toEqual([first]);
+    answers = true;
+    await target.commandSinkFor(SENSOR).dispatch(first);
+    expect(sent).toEqual([first, first, next]);
   });
   it("calls the cloud after it only once the device answered it with success", async () => {
     const sent: Command[] = [];

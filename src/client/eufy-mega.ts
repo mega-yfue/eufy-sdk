@@ -1039,16 +1039,16 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * Route a command, then the `next` one it carries (a cloud call only once the device answered the command
-   * with success, as the app calls `update_device_info` after a rename it saw succeed), and, when it did, land
-   * the value it now holds under the param its member reads ({@link commandReflection}) through the realtime
+   * Route a command, then the `next` one it carries once the device answered the command with success, as the
+   * app's `multipleRequest` sends each frame after the one before succeeded and stops at the first failure, and,
+   * when it did, land the value it now holds under the param its member reads ({@link commandReflection}) through the realtime
    * path, so the getter reads it and `propertyChanged` announces it as for any report, and the event its
    * {@link commandObservation} names announces the value only where it moved. A write sent unread,
    * refused or unanswered changes nothing here. Answers whether the device answered with success.
    */
   private async routeAndReflect(sn: string, cmd: Command): Promise<boolean> {
     const answered = await this.routeCommand(sn, cmd);
-    if (cmd.next && (cmd.next.kind !== "cloud-request" || answered)) await this.routeAndReflect(sn, cmd.next);
+    if (cmd.next && answered) await this.routeAndReflect(sn, cmd.next);
     if (!answered) return false;
     const reflected = commandReflection(cmd);
     const event = commandObservation(cmd)?.event;
