@@ -107,7 +107,7 @@ describe("IceAgent TURN", () => {
 });
 
 describe("pmIce", () => {
-  it("answers the station sdp, trades candidates by INFO, connects to a loopback peer and ends the CALL repeat", async () => {
+  it("answers the station sdp where the station sends one, trades candidates by INFO, connects to a loopback peer and ends the CALL repeat", async () => {
     const sent: { socket: Socket; p: RtcPacket }[] = [];
     const send = Socket.prototype.send;
     vi.spyOn(Socket.prototype, "send").mockImplementation(function (this: Socket, msg: unknown, ...rest: unknown[]) {
@@ -119,7 +119,7 @@ describe("pmIce", () => {
     client.sessionKey = KEY;
     closers.push(() => client.close());
     const call = client.call(6);
-    const agent = pmIce(client, call);
+    const agent = pmIce(client, call, false);
     const peer = new IceAgent("peer", "q".repeat(22));
     closers.push(
       () => agent.close(),
@@ -166,7 +166,7 @@ describe("pmIce", () => {
 });
 
 describe("pmIce on the station's own answer", () => {
-  it("takes a CALL 200 with no Trying and candidate-only INFOs as the remote description under the call's own credentials", async () => {
+  it("takes a CALL 200 with no Trying and candidate-only INFOs as the remote description under the call's own credentials, and sends no sdp", async () => {
     const sent: { socket: Socket; p: RtcPacket }[] = [];
     const send = Socket.prototype.send;
     vi.spyOn(Socket.prototype, "send").mockImplementation(function (this: Socket, msg: unknown, ...rest: unknown[]) {
@@ -214,12 +214,12 @@ describe("pmIce on the station's own answer", () => {
       turn: {},
     });
     const connected = once(agent, "connected");
-    await vi.waitFor(() => expect(infos().length).toBeGreaterThan(1));
-    const [answer, cand] = infos() as [{ sdp: string }, { candidate: string }];
-    expect(JSON.parse(answer.sdp)).toHaveProperty("ice-ufrag", `a=ice-ufrag:${call.ufrag}\r`);
+    await vi.waitFor(() => expect(infos().length).toBeGreaterThan(0));
+    const [cand] = infos() as [{ candidate: string }];
     peer.addRemoteCandidate(cand.candidate);
     await peer.start(call.ufrag, call.pwd);
     await connected;
+    expect(infos().every((i) => !("sdp" in i))).toBe(true);
   });
 });
 
