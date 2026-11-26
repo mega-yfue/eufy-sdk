@@ -148,8 +148,9 @@ describe("every write of the shipped data, as the member identifiers send it", (
     (_, r) => {
       const ctx = contextOf(r);
       const value = r.type === "bool" ? r.value === "1" : /^-?\d+$/.test(r.value) ? Number(r.value) : r.value;
-      // A cached field without a fallback, its param unreported: the app's frame needs the device record.
-      const unfilled = /"\$param:[^"?]*"/.test(JSON.stringify(r.frame));
+      // A cached field without a fallback, or of a param whose parser throws without it, its param unreported: the
+      // app's frame needs the device record.
+      const unfilled = /"\$param:([^"?]*|1710[^"]*)"/.test(JSON.stringify(r.frame));
       expect(thingWrite(r.identifier, r.value, ctx)).toEqual(unfilled ? undefined : expected(r.frame, value, ctx));
     },
   );
