@@ -329,3 +329,49 @@ describe("one command in flight per station", () => {
     expect(sent).toHaveLength(14);
   });
 });
+
+describe("a write whose bundle descriptor reads its result from the notify (`ResultFrom.Notify`)", () => {
+  const notified = { kind: "set-payload", cmd: 2100, payload: { transaction: "42" }, channel: CHANNEL } as const;
+  const notify = { ...notified, notify: { cmd: 1351, subCmd: 2100 } } as const;
+
+  /** A station answering each 1350 with `code` on the device channel, then pushing `then` frames. */
+  function notifying(code: number, ...then: object[]) {
+    const session = Object.assign(connectedSession(), {
+      sendSetPayload: vi.fn(() => {
+        queueMicrotask(() => {
+          session.emit("commandResult", { code, channel: CHANNEL, commandId: 1350 });
+          for (const f of then) session.emit("data", { channel: CHANNEL, ...f });
+        });
+        return true;
+      }),
+    });
+    return routerWithSession(session);
+  }
+
+  it("succeeds on the 1351 notify after a 0 answer, matched by its transaction or its sub-command", async () => {
+    await expect(
+      notifying(0, { commandId: 1351, json: { cmd: 9, payload: { transaction: "42" } } }).dispatchCommand(
+        DEVICE_SN,
+        notify,
+      ),
+    ).resolves.toBe(true);
+    await expect(
+      notifying(0, { commandId: 1351, json: { cmd: 2100, payload: {} } }).dispatchCommand(DEVICE_SN, notify),
+    ).resolves.toBe(true);
+  });
+
+  it("takes a 0 answer with no notify as -40302 by the deadline, a 0 answer alone without a notify key", async () => {
+    vi.useFakeTimers();
+    const pending = notifying(0, { commandId: 1351, json: { cmd: 2101, payload: {} } })
+      .dispatchCommand(DEVICE_SN, notify)
+      .catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(await pending).toMatchObject({ commandId: 1350, code: -40302 });
+    vi.useRealTimers();
+    await expect(notifying(0).dispatchCommand(DEVICE_SN, notified)).resolves.toBe(true);
+  });
+
+  it("rejects a non-zero answer at once", async () => {
+    await expect(notifying(-108).dispatchCommand(DEVICE_SN, notify)).rejects.toMatchObject({ code: -108 });
+  });
+});

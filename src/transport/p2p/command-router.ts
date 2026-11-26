@@ -138,6 +138,51 @@ const RTSP_URL_READ_TIMEOUT_MS = 30_000;
  */
 const WRITE_ANSWER = { timeoutMs: 30_000, retries: 1, retryWindowMs: 10_000, retryCodes: [1, 20] } as const;
 
+/** `ESCodeCmd.TIMEOUT_NOTIFY`: the device answered `0` and no matching notify came within the request's window. */
+const NOTIFY_TIMEOUT = -40302;
+
+/** A JSON object of a notify, `{}` for anything else. */
+const objectOf = (x: unknown): Record<string, unknown> =>
+  x && typeof x === "object" && !Array.isArray(x) ? (x as Record<string, unknown>) : {};
+
+/**
+ * Whether `f` is the notify a `ResultFrom.Notify` request waits for, as `KmmP2PClient.isNotifyMatches` reads the map
+ * `AndroidP2PReceiver` builds: `cmd` the frame's command, `subCmd` and `payload` a 1351's JSON `cmd` and `payload`
+ * (0 and `{}` otherwise), `payload.payload` the payload's own, or another frame's JSON. The request's `transaction`
+ * in `payload` or `payload.payload` matches at once. Otherwise: a 1306 naming another transaction does not; the
+ * channel must be the request's (255 for a request on 0) unless `ignoreChannel` or the frame is 1039; the command
+ * `notify.cmd` or the one after it; `notify.subCmd`, where set, `subCmd` or `payload.cmd` (for a 1351 request
+ * always, else where either is set); the request's `payloadCmd`, where set, `payload.payload.cmd` or `payload.cmd`
+ * where either is set.
+ */
+function notifyMatches(
+  f: P2PFrame,
+  key: {
+    cmd: number;
+    subCmd: number;
+    channel: number;
+    transaction?: unknown;
+    payloadCmd?: unknown;
+    ignoreChannel: boolean;
+  },
+): boolean {
+  const pushed = f.commandId === CommandType.CMD_NOTIFY_PAYLOAD;
+  const payload = pushed ? objectOf(f.json?.payload) : {};
+  const inner = pushed ? objectOf(payload.payload) : objectOf(f.json);
+  const sub = pushed ? Number(f.json?.cmd) || 0 : 0;
+  const [cmd, innerCmd] = [Number(payload.cmd) || 0, Number(inner.cmd) || 0];
+  const tx = key.transaction === undefined ? undefined : String(key.transaction);
+  if (tx !== undefined && (String(payload.transaction) === tx || String(inner.transaction) === tx)) return true;
+  if (f.commandId === 1306 && inner.transaction && String(inner.transaction) !== tx) return false;
+  const channel = key.ignoreChannel || f.commandId === 1039 || f.channel === key.channel;
+  if (!channel && !(key.channel === 0 && f.channel === STATION_CHANNEL)) return false;
+  if (f.commandId !== key.cmd && f.commandId !== key.cmd + 1) return false;
+  const named = key.cmd === CommandType.CMD_NOTIFY_PAYLOAD || sub || cmd;
+  if (key.subCmd && named && key.subCmd !== sub && key.subCmd !== cmd) return false;
+  const p = Number(key.payloadCmd) || 0;
+  return !(p && (innerCmd || cmd) && p !== innerCmd && p !== cmd);
+}
+
 /**
  * How the app's native call reads a command's answer (`zx_p2p_get_exec_result`): each channel-0 frame is awaited up
  * to 20 s (35 s for commands 1001, 1003, 1054 and 1060); a silent wait ends with `PPCS_TIME_OUT` (-3), and the 20th
@@ -828,6 +873,7 @@ export class P2PCommandRouter {
             cmd.counter,
             cmd.answerMs,
             cmd.stationAccount,
+            cmd.notify,
           )) === true
         );
       case "p2p-station-scalar":
@@ -1811,7 +1857,11 @@ export class P2PCommandRouter {
     counter?: "bump" | "current",
     answerMs?: number,
     station = false,
+    notify?: { cmd: number; subCmd: number },
   ): Promise<boolean | void> {
+    const fields = Array.isArray(payload) ? {} : (payload as Record<string, unknown>);
+    const single = (r: ResolvedSession) =>
+      r.parentSn === sn && !this.deps.listDevices().some((d) => d.sn !== sn && d.stationSn === sn);
     return this.sendAnswered(
       sn,
       P2P_ENVELOPE.SET_PAYLOAD,
@@ -1826,6 +1876,16 @@ export class P2PCommandRouter {
       resolved,
       !answered,
       answerMs,
+      undefined,
+      notify &&
+        ((f, r) =>
+          notifyMatches(f, {
+            ...notify,
+            channel,
+            transaction: fields.transaction,
+            payloadCmd: fields.cmd,
+            ignoreChannel: single(r),
+          })),
     );
   }
 
@@ -1922,6 +1982,11 @@ export class P2PCommandRouter {
    * Absent `resolved`, the session is resolved here. A session that closed before a call is resolved afresh,
    * waiting for its connect, and the call goes on the new one.
    *
+   * With `notify` (`ResultFrom.Notify`, `KmmP2PClient.dealP2PCallback`), a `0` answer is provisional: the request
+   * succeeds on the first frame `notify` accepts from the send on, whatever the answer, and rejects with
+   * {@link NOTIFY_TIMEOUT} when an answer came and no such frame by the deadline; the station's queue is released on
+   * the answer, as the app's is.
+   *
    * @param send sends the command once on the session it is given; `false` is a command that was never sent.
    */
   private sendAnswered(
@@ -1932,6 +1997,7 @@ export class P2PCommandRouter {
     unread = false,
     answerMs?: number,
     windowMs?: number,
+    notify?: (f: P2PFrame, r: ResolvedSession) => boolean,
   ): Promise<boolean | void> {
     const answer = answerMs === undefined ? WRITE_ANSWER : { ...WRITE_ANSWER, timeoutMs: answerMs, retries: 0 };
     const { timeoutMs, retries, retryWindowMs, retryCodes } =
@@ -1940,9 +2006,16 @@ export class P2PCommandRouter {
     let dispatched!: () => void;
     const sent = new Promise<void>((resolve) => (dispatched = resolve));
     const answered = new Promise<boolean>((resolve, reject) => {
-      const deadline = setTimeout(() => reject(new CommandResultError(sn, commandId, undefined, timeoutMs)), timeoutMs);
+      let replied = false;
+      let unhear = (): void => {};
+      const deadline = setTimeout(
+        () =>
+          settle(() => reject(new CommandResultError(sn, commandId, replied ? NOTIFY_TIMEOUT : undefined, timeoutMs))),
+        timeoutMs,
+      );
       const settle = (outcome: () => void): void => {
         clearTimeout(deadline);
+        unhear();
         outcome();
       };
       this.enqueueRequest(station, Date.now(), timeoutMs, (release) => {
@@ -1954,6 +2027,14 @@ export class P2PCommandRouter {
             // `P2PConnectInterceptor`: a request whose station is not connected connects first, inside the request.
             if (!r.session.isConnected) await this.awaitConnected(r.session, r.parentSn);
             const target = r;
+            if (notify) {
+              unhear();
+              const on = (f: P2PFrame): void => {
+                if (notify(f, target)) settle(() => resolve(true));
+              };
+              target.session.on("data", on);
+              unhear = () => target.session.off("data", on);
+            }
             return this.readAnswer(target.session, commandId, () => {
               if (send(target) === false) {
                 throw new Error(`command ${commandId} for ${sn} was never sent (session not connected)`);
@@ -1965,6 +2046,7 @@ export class P2PCommandRouter {
               const retryable = code >= retryCodes[0] && code <= retryCodes[1] && tries < retries;
               if (retryable && Date.now() - started < retryWindowMs) return call(tries + 1);
               release();
+              if (code === 0 && notify) return void (replied = true);
               settle(() =>
                 code === 0 ? resolve(true) : reject(new CommandResultError(sn, commandId, code, timeoutMs)),
               );

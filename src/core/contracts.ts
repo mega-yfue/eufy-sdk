@@ -349,6 +349,11 @@ export type Command =
         /** How long the device's answer is awaited, never resent, where the app bounds the request itself. */
         answerMs?: number;
         stationAccount?: true;
+        /**
+         * The notify that confirms a `0` answer, the bundle descriptor's `notifyCmd`/`notifySubCmd` under
+         * `resultFrom` Notify: such an answer is provisional, and the write succeeds on that notify alone.
+         */
+        notify?: { cmd: number; subCmd: number };
         /** The payload over these fields of the device's answer to 1350 query `query`, each its default where it lacks one. */
         base?: { query: number; fields: Readonly<Record<string, number | string>> };
         /**

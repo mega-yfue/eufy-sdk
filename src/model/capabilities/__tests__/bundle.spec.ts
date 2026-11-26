@@ -95,6 +95,18 @@ describe("frameCommand", () => {
       mValue3: 0,
     });
   });
+  it("carries a json1350 frame's notify, the one that confirms its 0 answer", () => {
+    const frame: BundleFrame = {
+      cmd: 1350,
+      body: "json1350",
+      channel: "$channel",
+      payload: { transaction: "$now" },
+      subCmd: 9502,
+      mValue3: 0,
+      notify: { cmd: 1351, subCmd: 9502 },
+    };
+    expect(frameCommand(frame, "1", ctx("T8162"))).toMatchObject({ cmd: 9502, notify: { cmd: 1351, subCmd: 9502 } });
+  });
   it("sends a json1700 frame in the 1700 wrapper, and the frame after it as next", () => {
     const frame: BundleFrame = {
       cmd: 1700,

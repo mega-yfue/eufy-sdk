@@ -78,6 +78,8 @@ export interface BundleFrame extends SessionFrame {
   preserve?: readonly number[];
   /** P2P 1350: the station record's member account id in place of the admin's. */
   stationAccount?: true;
+  /** P2P 1350: the notify that confirms a `0` answer (`resultFrom` Notify). */
+  notify?: { cmd: number; subCmd: number };
   /** P2P 1350: the payload over these fields of the device's answer to query `query`, each its default where it lacks one. */
   base?: { query: number; fields: Readonly<Record<string, number | string>> };
   next?: BundleFrame[];
@@ -965,7 +967,10 @@ function sessionCommand(
   const counter = frame.counter === "bump" || frame.counter === "current" ? frame.counter : undefined;
   if (frame.counter !== undefined && !counter) return undefined;
   if (frame.body === "json1350" && (object || Array.isArray(filled))) {
-    const command = setPayload(sub, (object ?? filled) as readonly unknown[], c, frame.mValue3, header);
+    const command = {
+      ...setPayload(sub, (object ?? filled) as readonly unknown[], c, frame.mValue3, header),
+      ...(frame.notify && { notify: frame.notify }),
+    };
     if (frame.lock) {
       const l = frame.lock;
       if (l.version === 4) {
