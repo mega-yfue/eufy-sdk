@@ -121,6 +121,7 @@ describe("MqttCommandRouter.dispatchCommand (ff09-autolock)", () => {
   afterEach(() => vi.useRealTimers());
 
   it("GETs current settings then SETs, changing only A4/A5 and preserving A7/A8 read from the GET reply", async () => {
+    vi.setSystemTime(1_700_000_000_000);
     const { router, publishedBodies } = makeRouter({ delay: 59, a7: 11, a8: 22, currentlyEnabled: false });
 
     const cmd = {
@@ -140,7 +141,9 @@ describe("MqttCommandRouter.dispatchCommand (ff09-autolock)", () => {
       CMD_TRANSFER_PAYLOAD,
       CMD_TRANSFER_PAYLOAD,
     ]);
-    expect([get.trans.payload.seq_num, set.trans.payload.seq_num], "a per-device counter").toEqual([1, 2]);
+    expect([get.trans.payload.seq_num, set.trans.payload.seq_num], "a per-device counter from unix seconds").toEqual([
+      1_700_000_001, 1_700_000_002,
+    ]);
 
     // Decode the SET frame's TLV to check the actual bytes sent — A4=enable(1), A5=delay(200 LE),
     // A7/A8 = the GET reply's a4/a5 values (11, 22), not hardcoded/guessed.

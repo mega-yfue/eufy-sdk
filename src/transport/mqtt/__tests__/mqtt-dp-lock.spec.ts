@@ -53,6 +53,7 @@ describe("a bundle mqtt-dp write to a lock", () => {
   } as const;
 
   it("seals the bundle's TLV in an ff09 frame under head.cmd = mqttCmdCode", async () => {
+    vi.setSystemTime(1_700_000_000_000);
     const { router, mqtt } = lockRouter();
     const p = router.dispatchCommand(SN, { ...write, subVersion: 3, functionType: 2, encrypt: true });
     await vi.advanceTimersByTimeAsync(10_000);
@@ -63,7 +64,7 @@ describe("a bundle mqtt-dp write to a lock", () => {
     expect(trans).toMatchObject({
       cmd: CMD_TRANSFER_PAYLOAD,
       account_id: "",
-      payload: { apiCommand: CMD_TRANSFER_PAYLOAD, seq_num: 1 },
+      payload: { apiCommand: CMD_TRANSFER_PAYLOAD, seq_num: 1_700_000_001 },
     });
     expect(frame.subarray(0, 2)).toEqual(Buffer.from([0xff, 0x09]));
     expect(frame.subarray(4, 9)).toEqual(Buffer.from([0x03, 0x00, 0x02, 0x40, 0x23]));

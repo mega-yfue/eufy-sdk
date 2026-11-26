@@ -303,7 +303,10 @@ export interface MqttRouterDeps {
 export class MqttCommandRouter {
   private readonly deps: MqttRouterDeps;
   private readonly logger: Logger;
-  /** The last `seq_num` sent per serial, counted per device as the app's `SecuritySeqNumManager` does. */
+  /**
+   * The last `seq_num` sent per serial, as the app's `SecuritySeqNumManager` and `ESLSeqNumManager` keep it: a serial
+   * with none sent counts from the current unix seconds.
+   */
   private readonly seqNums = new Map<string, number>();
   constructor(deps: MqttRouterDeps) {
     this.deps = deps;
@@ -312,7 +315,7 @@ export class MqttCommandRouter {
 
   /** `trans` carrying this device's next `seq_num`. */
   private sequenced(sn: string, trans: Ff09Trans): Ff09Trans {
-    const seq = (this.seqNums.get(sn) ?? 0) + 1;
+    const seq = (this.seqNums.get(sn) ?? Math.floor(Date.now() / 1000)) + 1;
     this.seqNums.set(sn, seq);
     return { ...trans, payload: { ...trans.payload, seq_num: seq } };
   }
