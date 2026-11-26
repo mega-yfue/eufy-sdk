@@ -453,6 +453,7 @@ export class EufyMega extends EventEmitter {
         await this.ensureMqttStarted(scope);
         const transport = this.transports.get(scope);
         if (!transport) throw new Error(`secure-MQTT transport not connected for scope "${scope}"`);
+        (transport as SecureMqtt).restart();
         return transport as SecureMqtt;
       },
     });
@@ -1978,6 +1979,7 @@ export class EufyMega extends EventEmitter {
       this.mqttScopesInUse().map(async (scope) => {
         const transport = this.transports.get(scope);
         try {
+          (transport as SecureMqtt | undefined)?.restart();
           await (transport ? this.subscribeMqttDevices(scope, transport) : this.ensureMqttStarted(scope));
         } catch (e) {
           this.reportError(e);

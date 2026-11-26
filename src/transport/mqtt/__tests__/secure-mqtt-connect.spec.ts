@@ -91,6 +91,23 @@ describe("SecureMqtt.connect — reconnect lifecycle", () => {
     expect(client.options.reconnectPeriod).toBe(4000);
   });
 
+  it("restarts a client its backoff gave up on, with a fresh attempt count, and only then", async () => {
+    const m = new SecureMqtt({ credentials: CREDS, backoff: { minS: 0.001, maxS: 0.001, attempts: 3 } });
+    const p = m.connect();
+    const client = Object.assign(await nextClient(fakeClients), { reconnect: vi.fn() });
+    client.emit("connect");
+    await p;
+    m.restart();
+    expect(client.reconnect, "connected: nothing to restart").not.toHaveBeenCalled();
+    for (let i = 0; i < 4; i++) client.emit("reconnect");
+    expect(client.end).toHaveBeenCalledWith(true);
+    m.restart();
+    m.restart();
+    expect(client.reconnect).toHaveBeenCalledOnce();
+    for (let i = 0; i < 3; i++) client.emit("reconnect");
+    expect(client.end).toHaveBeenCalledOnce();
+  });
+
   describe("one connection per instance", () => {
     it("joins an in-flight connect instead of opening a second client under the same id", async () => {
       const m = new SecureMqtt({ credentials: CREDS });

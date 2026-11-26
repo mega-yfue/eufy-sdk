@@ -462,6 +462,7 @@ describe("EufyMega auto-realtime", () => {
     const transport = Object.assign(new EventEmitter(), {
       subscribeDevice: vi.fn(async (_: EufyDevice) => {}),
       disconnect: vi.fn(async () => {}),
+      restart: vi.fn(),
     });
     c.mqtt.mockResolvedValue(transport);
     (c.eufy as any).getMqttDevices.mockReturnValue([first]);
@@ -470,6 +471,7 @@ describe("EufyMega auto-realtime", () => {
     await (c.eufy as any).pollOnce();
 
     expect(c.mqtt.mock.calls.map((a) => a[0])).toEqual(["default"]);
+    expect(transport.restart, "the device-list refresh revives a stack that gave up").toHaveBeenCalledOnce();
     expect(transport.subscribeDevice.mock.calls.map(([d]) => d.sn)).toEqual(["M1", "M2"]);
   });
 
