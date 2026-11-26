@@ -48,6 +48,25 @@ describe("the last thing description of each product", () => {
   });
 });
 
+describe("the get_things_list request", () => {
+  it("is the app's GetThingListRequest with its defaults, asking for a gzipped reply", async () => {
+    const store = new MemorySessionStore();
+    const mega = client(store, async () => ({ things_list: [] }));
+    await mega.getThingsList(["T8410"], { T8410: 7 });
+    expect((mega as unknown as { post: ReturnType<typeof vi.fn> }).post).toHaveBeenCalledWith(
+      "things",
+      "/app/things/get_things_list",
+      {
+        product_codes: ["T8410"],
+        code_time_map: { T8410: 7 },
+        rn_bundle_version: "9.9.9.9",
+        use_network_version: true,
+      },
+      { "x-accept-encoding": "gzip" },
+    );
+  });
+});
+
 describe("the RTC signalling login of each station", () => {
   it("persists with the session and comes back on the next run", () => {
     const store = new MemorySessionStore();

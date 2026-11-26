@@ -301,6 +301,9 @@ function houseInvite(transaction: string, houseId: string, fields: Record<string
 /** The app's `isClean`: the Home categories whose shares run on the Home host's `v1/share/active/*`. */
 const isHomeCategory = (category: string) => category === "eufy_home" || category === "eufy_home_tuya";
 
+/** The header the app's `ThingNetApi.getTDBySnList` and `HouseNetApi.getDeviceList` carry: a gzipped reply is welcome. */
+const GZIP = { "x-accept-encoding": "gzip" } as const;
+
 /** The app's `Digest.c(password, "SHA256")`: the lower-case SHA-256 hex of the trimmed password. */
 const sha256Hex = (password: string) => createHash("sha256").update(password.trim(), "utf8").digest("hex");
 
@@ -975,7 +978,8 @@ export class MegaHttpClient {
    * Fetch the **thing descriptions** of the given product codes from the mega `things` service: per
    * product, every named property with its type and offered values, its actions and events. The v6 app
    * fetches the same list for the products an account holds and reads each setting's options from it.
-   * Product-level data, not account data. `codeTimeMap` names, per product code, the `update_time` of the
+   * Product-level data, not account data. The body is the app's `GetThingListRequest` with its defaults
+   * (`rn_bundle_version` `9.9.9.9`, `use_network_version`), asking for a gzipped reply. `codeTimeMap` names, per product code, the `update_time` of the
    * description already held: a product whose description has not changed since comes back with that
    * `update_time` and no properties, one that has (or is not named) comes back in full. Returns the raw
    * `data`.
@@ -989,10 +993,17 @@ export class MegaHttpClient {
   ): Promise<T> {
     const code = (t: unknown) => (t as { profile?: { product_code?: unknown } })?.profile?.product_code;
     try {
-      const data = await this.post<{ things_list?: unknown }>("things", "/app/things/get_things_list", {
-        product_codes: productCodes,
-        code_time_map: codeTimeMap,
-      });
+      const data = await this.post<{ things_list?: unknown }>(
+        "things",
+        "/app/things/get_things_list",
+        {
+          product_codes: productCodes,
+          code_time_map: codeTimeMap,
+          rn_bundle_version: "9.9.9.9",
+          use_network_version: true,
+        },
+        GZIP,
+      );
       const fresh = (Array.isArray(data?.things_list) ? data.things_list : []).filter(
         (t) => (t as { properties?: unknown[] })?.properties?.length,
       );

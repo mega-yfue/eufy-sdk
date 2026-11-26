@@ -5,14 +5,15 @@ import { SessionExpiredError, type MegaHttpClient } from "../../transport/http/m
  * A minimal fake `MegaHttpClient` — only the methods DeviceRegistry calls. `post` is routed by path so
  * one fake serves house-list + devs-list.
  */
-type PostFn = (service: string, path: string, body?: unknown) => Promise<any>;
+type PostFn = (service: string, path: string, body?: unknown, headers?: Record<string, string>) => Promise<any>;
 function fakeMega(opts: {
   post: PostFn;
   getDeviceRelationList?: () => Promise<any>;
   getThingsList?: (codes: readonly string[]) => Promise<any>;
 }): MegaHttpClient {
   return {
-    post: (service: string, path: string, body?: unknown) => opts.post(service, path, body),
+    post: (service: string, path: string, body?: unknown, headers?: Record<string, string>) =>
+      opts.post(service, path, body, headers),
     getDeviceRelationList: () => (opts.getDeviceRelationList ?? (async () => Promise.reject(new Error("not faked"))))(),
     getThingsList: (codes: readonly string[]) =>
       (opts.getThingsList ?? (async () => Promise.reject(new Error("not faked"))))(codes),
@@ -39,10 +40,12 @@ describe("DeviceRegistry", () => {
     it("queries {} + every house_id, unions and dedupes by serial (last write wins)", async () => {
       const errors: unknown[] = [];
       const bodiesSeen: unknown[] = [];
+      const headersSeen: unknown[] = [];
       const mega = fakeMega({
-        post: async (_s, path, body) => {
+        post: async (_s, path, body, headers) => {
           if (path.endsWith("get_house_list")) return { house_infos: [{ house_id: "H1" }, { house_id: "H2" }] };
           bodiesSeen.push(body);
+          headersSeen.push(headers);
           // {} → A,B ; H1 → B (dupe, newer params) ; H2 → C
           if (JSON.stringify(body) === "{}") return { devices: [rawDevice("A"), rawDevice("B")] };
           if ((body as any).house_id === "H1")
@@ -55,6 +58,7 @@ describe("DeviceRegistry", () => {
       const devs = await reg.getDevices();
 
       expect(bodiesSeen).toEqual([{}, { house_id: "H1" }, { house_id: "H2" }]);
+      expect(headersSeen).toEqual(Array(3).fill({ "x-accept-encoding": "gzip" }));
       expect(devs.map((d) => d.sn).sort()).toEqual(["A", "B", "C"]);
       const b = devs.find((d) => d.sn === "B");
       expect(b?.params?.[1101]).toBe("42"); // H1's later record won

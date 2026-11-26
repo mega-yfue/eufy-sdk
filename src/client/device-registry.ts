@@ -298,7 +298,8 @@ export class DeviceRegistry {
   /**
    * List + classify devices across all houses (mega API). Each device is tagged
    * with its API backend + realtime transport (see classifyDevice). Camera/
-   * HomeBase records still appear here for inventory; driving them is P2P.
+   * HomeBase records still appear here for inventory; driving them is P2P. Each `get_devs_list` asks for a gzipped
+   * reply (`X-Accept-Encoding: gzip`), as the app's `HouseNetApi.getDeviceList` does.
    *
    * A failing house/body query is tolerated so a partial outage still yields devices — but the result
    * is then a SUBSET, and devices it didn't return are KEPT from the previous list rather than dropped.
@@ -335,7 +336,9 @@ export class DeviceRegistry {
     for (const body of bodies) {
       let res: { devices?: any[] };
       try {
-        res = await this.mega.post<{ devices?: any[] }>("house", "/app/house/get_devs_list", body);
+        res = await this.mega.post<{ devices?: any[] }>("house", "/app/house/get_devs_list", body, {
+          "x-accept-encoding": "gzip",
+        });
       } catch (e) {
         if (e instanceof SessionExpiredError) throw e;
         partial = true;
