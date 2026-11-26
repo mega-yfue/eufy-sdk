@@ -202,7 +202,7 @@ describe("RtcSignalClient call", () => {
       expect(lines.filter((l) => l.includes(secret))).toEqual([]);
   });
 
-  it("486 is busy and ends the repeat, socket open; 480 hangs up; byte 13 outside 4..8 deletes only the session", () => {
+  it("486 is busy and ends the repeat, socket open until the 5 s without Trying; 480 hangs up; byte 13 outside 4..8 deletes only the session", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     vi.setSystemTime(TS * 1000);
     const busy = vi.fn();
@@ -215,21 +215,22 @@ describe("RtcSignalClient call", () => {
     const pm = sent.at(-1)!.socket;
     const close = vi.spyOn(pm, "close");
     station(pm, 2, 486, a);
-    vi.advanceTimersByTime(5000);
+    vi.advanceTimersByTime(4999);
     expect([busy.mock.calls, count(pm), close.mock.calls.length]).toEqual([[[a]], 1, 0]);
 
     const b = client.call(5).uuid;
     const priv1 = sent.at(-1)!.socket;
     station(priv1, 2, 480, b);
     vi.advanceTimersByTime(5000);
-    expect([hangup.mock.calls, count(priv1)]).toEqual([[[b]], 1]);
+    expect([hangup.mock.calls, count(priv1), close.mock.calls.length]).toEqual([[[b], [a]], 1, 1]);
 
     const c = client.call(6).uuid;
-    const before = count(pm);
-    station(pm, 2, 486, c, undefined, 0);
-    station(pm, 2, 100, c, {});
+    const pm2 = sent.at(-1)!.socket;
+    const before = count(pm2) - 1;
+    station(pm2, 2, 486, c, undefined, 0);
+    station(pm2, 2, 100, c, {});
     vi.advanceTimersByTime(5000);
-    expect([busy.mock.calls.length, trying.mock.calls.length, count(pm) - before > 5]).toEqual([1, 0, true]);
+    expect([busy.mock.calls.length, trying.mock.calls.length, count(pm2) - before > 5]).toEqual([1, 0, true]);
   });
 
   it("repeats the CALL unchanged every 500 ms in its first second, then every second, until 14 s, Trying or not", () => {
