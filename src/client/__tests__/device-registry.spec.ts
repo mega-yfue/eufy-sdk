@@ -198,6 +198,32 @@ describe("DeviceRegistry", () => {
       expect(dumped.things?.properties.nightvision_type?.type, "inspectDevice carries it, serialisable").toBe("bool");
     });
 
+    it("keys the description by the record's device_new_pn, else its device_model, as the app does", async () => {
+      const asked: (readonly string[])[] = [];
+      const reg = new DeviceRegistry({
+        mega: fakeMega({
+          post: listOf(rawDevice("A", { device_model: "T85D0C", device_new_pn: "T85D0" }), rawDevice("B")),
+          getThingsList: async (codes) => (
+            asked.push(codes),
+            {
+              things_list: ["T85D0", "T8410"].map((code) => ({
+                profile: { product_code: code },
+                properties: [
+                  { identifier: "is_support_mqtt", data_type: { type: "bool", specs: { defaultValue: "true" } } },
+                ],
+              })),
+            }
+          ),
+        }),
+        onError: () => {},
+      });
+      await reg.getDevices();
+      expect(asked).toEqual([["T85D0", "T8410"]]);
+      expect((await reg.record("A")).things?.productCode).toBe("T85D0");
+      expect(reg.thingDefault("A", "is_support_mqtt")).toBe("true");
+      expect((await reg.record("B")).things?.productCode).toBe("T8410");
+    });
+
     it("resolves the description for the device: its firmware picks the variant", async () => {
       const reply = {
         things_list: [

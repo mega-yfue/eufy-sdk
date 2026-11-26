@@ -31,6 +31,13 @@ export function recordString(raw: Record<string, unknown>, key: string): string 
   return typeof v === "string" && v ? v : undefined;
 }
 
+/**
+ * The product code the app keys a device's thing description by (`MegaDevice.devicePn`): the record's
+ * `device_new_pn`, else its `device_model`.
+ */
+const thingCode = (dev: EufyDevice): string =>
+  recordString((dev.raw ?? {}) as Record<string, unknown>, "device_new_pn") ?? dev.model ?? "";
+
 /** The house a listed device is in: its record's `house_id`, else the house the list was asked for. */
 function houseOf(raw: { house_id?: unknown }, body: { house_id?: string }): { houseId?: string } {
   const houseId = typeof raw.house_id === "string" && raw.house_id ? raw.house_id : body.house_id;
@@ -500,8 +507,8 @@ export class DeviceRegistry {
 
   /** The default value of a property of `sn`'s product description, as the description states it. */
   thingDefault(sn: string, identifier: string): string | undefined {
-    const model = this.devices.find((d) => d.sn === sn)?.model;
-    return this.things.get(model ?? "")?.properties[identifier]?.defaultValue;
+    const dev = this.devices.find((d) => d.sn === sn);
+    return this.things.get(dev ? thingCode(dev) : "")?.properties[identifier]?.defaultValue;
   }
 
   /** `sn`'s product description resolved for its listed record ({@link thingsFor}). */
@@ -516,7 +523,7 @@ export class DeviceRegistry {
    * account's country and its reported params.
    */
   private thingsFor(dev: EufyDevice, station: string, params: Record<number, string>): ThingDescription | undefined {
-    const td = this.things.get(dev.model ?? "");
+    const td = this.things.get(thingCode(dev));
     if (!td) return undefined;
     const firmware = (d?: EufyDevice) => recordString((d?.raw ?? {}) as Record<string, unknown>, "main_sw_version");
     return resolveThing(td, {
@@ -535,7 +542,7 @@ export class DeviceRegistry {
    * `get_things_list` call. A failed call is logged and asked again on the next refresh.
    */
   private async loadThings(seen: Map<string, EufyDevice>): Promise<void> {
-    const codes = [...new Set([...seen.values()].map((d) => d.model ?? ""))].filter((c) => c && !this.things.has(c));
+    const codes = [...new Set([...seen.values()].map(thingCode))].filter((c) => c && !this.things.has(c));
     if (!codes.length) return;
     let parsed: Readonly<Record<string, ThingDescription>>;
     try {
