@@ -2180,7 +2180,7 @@ export class P2PCommandRouter {
 
   /**
    * **`doorlock-pass-through-actuate` intent** — `CMD_DOORLOCK_DATA_PASS_THROUGH` inside the
-   * `CMD_SET_PAYLOAD` envelope, `mValue3=0`, on the lock's channel of the station it is paired to, its
+   * `CMD_SET_PAYLOAD` envelope, `mValue3=0`, on channel 0 of the station the lock is paired to, its
    * `payload` the sealed blob from {@link buildDoorlockPassThrough} keyed to that station and the
    * lock's member, as the app's `ESLStationP2PService.r` does. Sent once: the blob carries its own sequence number,
    * the clock in seconds + 1 as the app sends it. The key's admin id and the TLV's short user id are the lock's
@@ -2195,7 +2195,7 @@ export class P2PCommandRouter {
     cmd: Extract<Command, { kind: "doorlock-pass-through-actuate" }>,
   ): Promise<void> {
     const resolved = await this.resolveSession(sn);
-    const { parentSn, channel } = resolved;
+    const { parentSn } = resolved;
     if (!/^[0-9a-fA-F]{4}$/.test(cmd.shortUserId)) {
       throw new Error(
         `door-lock pass-through: ${sn} has no 4-digit hex short_user_id, got ${JSON.stringify(cmd.shortUserId)}`,
@@ -2210,7 +2210,7 @@ export class P2PCommandRouter {
       seqNum: Math.trunc(Date.now() / 1000) + 1,
     });
     (this.deps.logger ?? noopLogger).debug(
-      `[p2p] ${parentSn} door-lock pass-through ${cmd.engage ? "lock" : "unlock"} ${sn} ch=${channel}`,
+      `[p2p] ${parentSn} door-lock pass-through ${cmd.engage ? "lock" : "unlock"} ${sn}`,
     );
     await this.sendAnswered(
       sn,
@@ -2219,11 +2219,7 @@ export class P2PCommandRouter {
         session.sendSetPayload(
           CommandType.CMD_DOORLOCK_DATA_PASS_THROUGH,
           { payload: blob },
-          {
-            accountId: zmediaAccountId,
-            channel,
-            mValue3: 0,
-          },
+          { accountId: zmediaAccountId, channel: 0, mValue3: 0 },
         ),
       resolved,
       true,

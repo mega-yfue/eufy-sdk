@@ -105,14 +105,14 @@ describe("a door-lock pass-through actuation", () => {
     deviceSn: LOCK_SN,
   } as const;
 
-  it("sends one pass-through on the lock's channel, keyed and attributed to the lock's member, enveloped as the station's", async () => {
+  it("sends one pass-through on channel 0, keyed and attributed to the lock's member, enveloped as the station's", async () => {
     const { router, session } = makeRouter(true);
 
     await router.dispatchCommand(LOCK_SN, lockCmd);
 
     expect(session.sendSetPayload).toHaveBeenCalledTimes(1);
     const [cmd, payload, opts] = session.sendSetPayload.mock.calls[0]!;
-    expect([cmd, opts.channel, opts.accountId, opts.mValue3]).toEqual([1911, 42, STATION_ADMIN, 0]);
+    expect([cmd, opts.channel, opts.accountId, opts.mValue3]).toEqual([1911, 0, STATION_ADMIN, 0]);
     const decipher = createDecipheriv("aes-128-cbc", lockKey(ADMIN, STATION_SN), serialIv(STATION_SN));
     const plain = Buffer.concat([decipher.update(Buffer.from(payload.payload, "base64")), decipher.final()]);
     const inner = JSON.parse(plain.toString("utf-8").replace(/\0+$/, ""));
