@@ -73,13 +73,14 @@ describe("doorbell actions", () => {
 });
 
 describe.each([
-  ["T8224", 95],
-  ["T85V0", 203],
-  ["T85M0", undefined],
-])("%s: gets doorbell, no doorbell write tried", (model, deviceType) => {
+  ["T8224", 95, "camera"],
+  ["T85V0", 203, "camera"],
+  ["T85M0", undefined, "camera"],
+  ["T8530", 55, "lock"],
+] as const)("%s: gets doorbell, no doorbell write tried", (model, deviceType, codec) => {
   const dev: CommandContext = {
     channel: 0,
-    codec: "camera",
+    codec,
     deviceType,
     model,
     paramIds: new Set([CAMERA_CMD.DEV_LED_SWITCH]),

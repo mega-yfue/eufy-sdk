@@ -515,11 +515,15 @@ export const DOORBELL: CapabilityModule = {
   properties: propertiesOf(DOORBELL_MEMBERS),
   /**
    * Doorbells self-report no param of their own (the 1702-1719 settings also arrive from eufyCams), so a
-   * doorbell is one of {@link DOORBELL_TYPES} or a product whose description lists the ring notification
-   * switch `notification_ring_onoff`. Never the device's name: that is what its owner typed.
+   * doorbell is one of {@link DOORBELL_TYPES}, the Video Smart Lock S330 (`LOCK_8530`), or a product whose
+   * description lists the ring notification switch `notification_ring_onoff`. Never the device's name: that
+   * is what its owner typed.
+   *
+   * The S330's description lists no `notification_ring_onoff`, yet a press of its doorbell button arrives
+   * as `PRESS_DOORBELL` (3103) from the lock itself, so its device type is the evidence.
    */
   detection: {
-    deviceTypes: DOORBELL_TYPES,
+    deviceTypes: [...DOORBELL_TYPES, DeviceType.LOCK_8530],
     detect: (rec) => rec.things !== undefined && "notification_ring_onoff" in rec.things.properties,
   },
   /**

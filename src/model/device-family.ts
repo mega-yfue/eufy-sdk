@@ -146,9 +146,9 @@ export const isNvrDualLensCamera = (ctx: FamilyContext): boolean => ctx.model ==
 export const isNvrFullHdCamera = (ctx: FamilyContext): boolean => ctx.model === "T8E00" || ctx.model === "T8P00";
 /** Video Doorbell C31 (T8223) or C30 (T8224), streamed by the app over the portal `call` route. */
 export const isCallDoorbell = (ctx: FamilyContext): boolean => ctx.model === "T8223" || ctx.model === "T8224";
-/** Gets `doorbell` but has run no doorbell write: the C30/C31 and the video locks T85V0/T85M0. */
+/** Gets `doorbell` but has run no doorbell write: the C30/C31 and the video locks T85V0/T85M0/T8530. */
 export const isUntriedDoorbell = (ctx: FamilyContext): boolean =>
-  isCallDoorbell(ctx) || ctx.model === "T85V0" || ctx.model === "T85M0";
+  isCallDoorbell(ctx) || ctx.model === "T85V0" || ctx.model === "T85M0" || isVideoSmartLock(ctx);
 /** Wired doorbell (DeviceType.DOORBELL). */
 export const isWiredDoorbell = (ctx: FamilyContext): boolean => ctx.deviceType === DeviceType.DOORBELL;
 
