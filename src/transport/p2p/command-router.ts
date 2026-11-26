@@ -158,6 +158,15 @@ const NATIVE_ANSWER = {
 const REQUEST_SLOT_MS = 500;
 
 /**
+ * Serial prefixes of the stations the app does not reconnect when their session ends (`getConnectBlackList`, which
+ * `P2PWatchDog` skips on a 1044). Every other station whose session ends after it connected is connected again at once.
+ */
+const NO_RECONNECT_PREFIXES = (
+  "T8130 T8131 T8122 T8123 T8124 T8134 T8B00 T8170 T8171 T8173 T8790 T8214 T7401 T7400 T8510 T8520 T8500 T8501 " +
+  "T8503 T8502 T8506 T8531 T85V0 T87B0 T87B1 T87B2 T87B3 T87B4 T87B5 T8150 T8151 T8152 T8153 T86P2 T8110 T8115 T814X"
+).split(" ");
+
+/**
  * How long a talkback waits for an audio frame, counted from the first frame of either kind its media session
  * delivers, to learn which codec the speaker plays. A live session delivers audio every 30–64 ms, so a running stream
  * answers at once. A stream that delivers video and no audio opens as `aac-lc` once this elapses; one that delivers
@@ -548,7 +557,9 @@ export class P2PCommandRouter {
    * int, so 136 zero bytes, sent through the session's sender like any command.
    *
    * The `close` handler drops the session from the {@link SessionManager} and disposes any shared live
-   * source riding this station (consumers get `stop`; a later attach rebuilds via the factory).
+   * source riding this station (consumers get `stop`; a later attach rebuilds via the factory). A station session
+   * that ends on its own after it connected, the app's 1044, is opened again at once unless its serial is on
+   * {@link NO_RECONNECT_PREFIXES}.
    */
   private makeSession(
     stationSn: string,
@@ -584,12 +595,16 @@ export class P2PCommandRouter {
       });
       return session;
     }
+    let connected = false;
     session.on("connect", () => {
+      connected = true;
       if (this.manager.get(stationSn) === session) this.deps.onConnect(stationSn);
     });
     session.on("close", () => {
       if (this.manager.get(stationSn) !== session) return;
       this.tearDownStation(stationSn);
+      if (connected && !NO_RECONNECT_PREFIXES.some((prefix) => stationSn.startsWith(prefix)))
+        void this.prewarm(stationSn, 0);
     });
     session.on("level2Ready", ({ cipherId }: { cipherId: number }) => this.deps.onLevel2Ready(stationSn, cipherId));
     session.on("peerAnswer", (atMs: number) => {
