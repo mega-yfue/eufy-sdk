@@ -51,7 +51,7 @@ describe("frameCommand", () => {
     });
     expect(sent({ ai_detect_type: "5,4" })).toBeUndefined();
   });
-  it("fills $param tokens from the device's cached params: a JSON field, bits, the fallback, nothing for an absent unguarded param", () => {
+  it("fills $param tokens from the device's cached params: a JSON field, bits, the fallback, nothing without one", () => {
     const frame: BundleFrame = {
       cmd: 1350,
       body: "json1350",
@@ -59,8 +59,8 @@ describe("frameCommand", () => {
       subCmd: 1710,
       mValue3: 0,
       payload: {
-        notification_motion_onoff: "$param:1710.notification_motion_onoff??0",
-        notification_ring_onoff: "$param:1710.notification_ring_onoff??0",
+        notification_motion_onoff: "$param:1710.notification_motion_onoff",
+        notification_ring_onoff: "$param:1710.notification_ring_onoff",
         notification_style: 2,
       },
     };
@@ -73,7 +73,6 @@ describe("frameCommand", () => {
       notification_style: 2,
     });
     expect(sent(frame, { 1710: Buffer.from(cached).toString("base64") })).toMatchObject({ notification_ring_onoff: 1 });
-    expect(sent(frame, { 1710: "" })).toMatchObject({ notification_motion_onoff: 0, notification_ring_onoff: 0 });
     expect(sent(frame, {})).toBeUndefined();
     const guarded: BundleFrame = { ...frame, subCmd: 1298, payload: { ai_use_global: "$param:1298.ai_use_global??1" } };
     expect(sent(guarded, {})).toEqual({ ai_use_global: 1 });

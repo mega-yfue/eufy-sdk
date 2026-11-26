@@ -21,7 +21,25 @@ const IDENTIFIERS: Record<string, "bool" | "enum"> = {
   record_resolution: "enum",
   watermark_set: "enum",
 };
-const STATIONS = { standalone: undefined, hb2: "T8010P0000000000", hb3: "T8030P0000000000" } as const;
+/** A synthetic station serial per topology the data names, as `getConnectType` reads its prefix. */
+const STATIONS = {
+  standalone: undefined,
+  hb1: "T8001P0000000000",
+  hb2: "T8010P0000000000",
+  hb3: "T8030P0000000000",
+  hb3e: "T8030P0100000000",
+  hb4: "T8040P0000000000",
+  m8020: "T8020P0000000000",
+  m8021: "T8021P0000000000",
+  m8022: "T8022P0000000000",
+  m8023: "T8023P0000000000",
+  m8024: "T8024P0000000000",
+  m8025: "T8025P0000000000",
+  nvr: "T8N00P0000000000",
+  t7000: "T7000P0000000000",
+  t9000: "T9000P0000000000",
+  t90h1: "T90H1P0000000000",
+} as const;
 
 type Grouped<T> = Record<string, T>;
 const data = DATA as unknown as {
@@ -136,8 +154,8 @@ describe("every write of the shipped data, as the member identifiers send it", (
 
   it("covers the data", () => {
     expect(sent.length).toBeGreaterThan(5000);
-    expect(rows.length - sent.length).toBe(6);
-    expect(sent.length - bundled.length).toBe(18);
+    expect(rows.length - sent.length).toBe(32);
+    expect(sent.length - bundled.length).toBe(96);
   });
   it.each(bundled.map((r) => [`${r.model}${r.variant} ${r.identifier} ${r.topology} ${r.value}`, r] as const))(
     "%s",
@@ -146,7 +164,7 @@ describe("every write of the shipped data, as the member identifiers send it", (
       const value = r.type === "bool" ? r.value === "1" : /^-?\d+$/.test(r.value) ? Number(r.value) : r.value;
       // A cached field without a fallback, or of a param whose parser throws without it, its param unreported: the
       // app's frame needs the device record.
-      const unfilled = /"\$param:([^"?]*|1710[^"]*)"/.test(JSON.stringify(r.frame));
+      const unfilled = /"\$param:[^"?]*"/.test(JSON.stringify(r.frame));
       expect(thingWrite(r.identifier, r.value, ctx)).toEqual(unfilled ? undefined : expected(r.frame, value, ctx));
     },
   );

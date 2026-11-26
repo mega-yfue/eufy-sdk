@@ -34,8 +34,8 @@ import TIMEZONES from "./timezones.json" with { type: "json" };
  * Payloads, values and bodies carry `$value`, `$channel`, `$now`, `$nowS`, `$sn` and `$station` tokens, and
  * `$param:<id>[.<path>][|<m> | &~<m>]…[??<fallback>]` for a field the bundle reads off the device's cached param
  * `id`: its raw value, the `.`-joined `path` inside its (base64) JSON where given, as an int with bits `m` set or
- * cleared in turn, else the JSON `fallback` the bundle sends when the param is unreported (empty, for one of
- * {@link UNGUARDED_PARAMS}); none and the write is not sent. `next` are the frames sent after it, `after` the cloud write sent once it succeeds.
+ * cleared in turn, else the JSON `fallback` the bundle sends when the param is unreported; none and the write is
+ * not sent. `next` are the frames sent after it, `after` the cloud write sent once it succeeds.
  */
 export interface BundleFrame extends SessionFrame {
   transport?: string;
@@ -1237,13 +1237,6 @@ function cloudCommand(frame: BundleFrame, fill: (x: unknown) => unknown): Comman
 }
 
 /**
- * The params the bundles' parsers look up in the device record without a guard (`params.find(…).param_value`): with
- * the param absent the parser throws and the app sends nothing, so a `$param:` fallback stands only for a record
- * holding it empty.
- */
-const UNGUARDED_PARAMS = new Set([1710]);
-
-/**
  * The {@link Command} a bundle frame is for `value` on this device, its tokens filled: `$value`, `$channel`
  * (the device channel, 255 for a station), `$now` (epoch ms, a string), `$nowS` (epoch seconds), `$seq` (the bundles' `getRandom`, 1000–9999), `$input.<key>` (a key of
  * the written value, a JSON object), `$sn` (the device serial) and `$station` (its
@@ -1295,8 +1288,7 @@ export function frameCommand(
     const bits = Number.isNaN(n)
       ? undefined
       : [...ops!.matchAll(/(\||&~)(\d+)/g)].reduce((b, [, op, m]) => (op === "|" ? b | Number(m) : b & ~Number(m)), n);
-    const absent = raw === undefined && UNGUARDED_PARAMS.has(Number(id));
-    const out = v === undefined ? (absent ? undefined : fallback && JSON.parse(fallback)) : ops ? bits : v;
+    const out = v === undefined ? fallback && JSON.parse(fallback) : ops ? bits : v;
     unfilled ||= out === undefined;
     return out;
   };
