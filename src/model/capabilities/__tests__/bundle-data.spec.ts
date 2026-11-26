@@ -206,7 +206,7 @@ describe("the shipped data", () => {
 /** `SecurityOutdoorModeAction` writes outdoor mode: the bundle's parser reads an object payload the bool cannot carry. */
 describe("device_set_outdoor_mode", () => {
   it("is written by the app's Java action, so the data sends nothing for it", () => {
-    expect(data.wires.device_set_outdoor_mode).toEqual({ T814X: { override: "java" } });
+    expect(data.wires.device_set_outdoor_mode).toEqual({ "T8115 T814X": { override: "java" } });
   });
 });
 

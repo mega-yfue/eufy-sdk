@@ -976,7 +976,8 @@ describe("the regenerated data's forms", () => {
       sent("T8W11C", "activityzone_config", "Normalized=1 zoneWidth=1280 zoneHeight=720"),
       "no `normalized`: pixel",
     ).toMatchObject({
-      data: { points: [{ LeftPointX: 64, LeftPointY: 108, RightPointX: 896, RightPointY: 576 }] },
+      cmd: 6201,
+      payload: { activezone: { points: [{ LeftPointX: 64, LeftPointY: 108, RightPointX: 896, RightPointY: 576 }] } },
     });
   });
 

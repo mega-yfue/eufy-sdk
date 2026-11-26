@@ -147,6 +147,8 @@ describe("native RTC routing off is_connect_webrtc", () => {
         live: rtcLiveFrames("T8425", hub),
       });
       expect(rtcLiveFrames("T8425", hub)?.start).toBeDefined();
+      // An S4 behind an NVR S4 starts from its own product's bundle.
+      expect(rtcLiveFrames("T8E00", "T8N00P0000000000")?.start).toBeDefined();
       // A T8600 under it starts with 1700, above the station's 4.2.0.0 with the NVR 1350.
       expect(rtcLiveFrames("T8600", hub)?.start.cmd).toBe(1700);
       expect(rtcLiveFrames("T8600", hub, { parent: "4.2.0.1" })?.start.cmd).toBe(1350);
