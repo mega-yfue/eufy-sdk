@@ -442,6 +442,7 @@ export class RtcCommandRouter {
       userId,
       appId: this.deps.appId,
       token: this.deps.tokens?.get(sn),
+      logger: this.deps.logger,
     });
     signal.on("token", (t) => this.deps.tokens?.set(sn, t));
     const ready = new Promise<void>((resolve, reject) => {
