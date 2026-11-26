@@ -223,12 +223,12 @@ describe("a station scalar that states its answer deadline", () => {
   });
 });
 
-describe("an acknowledged send", () => {
+describe("a command datagram", () => {
   it("goes once, and every 2 s only the oldest unacknowledged datagram goes again under its own sequence", () => {
     vi.useFakeTimers();
     const { real, sent, acknowledge } = session();
-    real.sendAcknowledged(() => real.sendBytes(Buffer.alloc(8), CHANNEL, PARAM));
-    real.sendAcknowledged(() => real.sendBytes(Buffer.alloc(8), CHANNEL, PARAM + 1));
+    real.sendBytes(Buffer.alloc(8), CHANNEL, PARAM);
+    real.sendStringPayloadCommand(PARAM + 1, "{}", CHANNEL);
     const [first, second] = sent();
     vi.advanceTimersByTime(1_999);
     expect(sent()).toHaveLength(2);
@@ -255,7 +255,7 @@ describe("an acknowledged send", () => {
       ["T8010P0000000000", 1],
     ] as const) {
       const { real, sent } = session(true, stationSn);
-      real.sendAcknowledged(() => real.sendBytes(Buffer.alloc(8), CHANNEL, PARAM));
+      real.sendBytes(Buffer.alloc(8), CHANNEL, PARAM);
       vi.advanceTimersByTime(1_449);
       expect(sent()).toHaveLength(0);
       vi.advanceTimersByTime(1);

@@ -523,11 +523,9 @@ export class P2PSession extends EventEmitter {
   private connectionGeneration = 0;
   /** Whether this connection's latest `CMD_GATEWAYINFO` reply was a refusal — see {@link gatewayInfoRefused}. */
   private gatewayRefused = false;
-  /** Datagrams sent through {@link sendAcknowledged} and not yet acknowledged, by sequence, oldest first. */
+  /** Command datagrams sent and not yet acknowledged, by sequence, oldest first — see {@link sendCommandDatagram}. */
   private readonly unackedCommands = new Map<number, Buffer>();
   private commandRetransmitTimer?: ReturnType<typeof setInterval>;
-  /** The DATA datagrams sent while a {@link sendAcknowledged} call runs its send. */
-  private capturedCommands?: Buffer[];
 
   private readonly logger: Logger;
 
@@ -1170,38 +1168,21 @@ export class P2PSession extends EventEmitter {
   }
 
   /**
-   * Run `send` and retain each DATA datagram it emits under its own sequence until the device acknowledges
-   * that sequence, as the app's DRW channel holds an element in its unacked queue (`cs2p2p_DoDRWSend` sends
-   * each index once). Every {@link DRW_RESEND_MS} the oldest retained datagram, and only that one, goes again
-   * byte-identically (`thread_recv_DRW` moves the head of the channel's unacked queue back to ready), until a
-   * `DRWAck` lists it. The device answers a sequence once, however many copies arrive, and `onData` drops the
-   * repeats of that answer by their sequence. Answers what `send` answered. A call within another's `send` leaves
-   * its datagrams to the outer one.
+   * Send a command datagram and hold it under its own sequence until the device acknowledges that sequence, as
+   * every `PPCS_Write` of the app's DRW channel sits in its unacked queue (`cs2p2p_DoDRWSend` sends each index
+   * once). Every {@link DRW_RESEND_MS} the oldest held datagram, and only that one, goes again byte-identically
+   * (`thread_recv_DRW` moves the head of the channel's unacked queue back to ready), until a `DRWAck` lists it. The
+   * device answers a sequence once, however many copies arrive, and `onData` drops the repeats of that answer by
+   * their sequence.
    */
-  sendAcknowledged(send: () => boolean): boolean {
-    if (this.capturedCommands) return send();
-    this.capturedCommands = [];
-    let sent: boolean;
-    let captured: Buffer[];
-    try {
-      sent = send();
-    } finally {
-      captured = this.capturedCommands;
-      this.capturedCommands = undefined;
-    }
-    for (const data of captured) this.retainCommand(data);
-    return sent;
-  }
-
-  /** Hold `data` under its sequence until acknowledged, re-sending the oldest held one — see {@link sendAcknowledged}. */
-  private retainCommand(data: Buffer): void {
+  private sendCommandDatagram(data: Buffer): void {
     this.unackedCommands.set(data.readUInt16BE(2), data);
-    if (this.commandRetransmitTimer) return;
-    this.commandRetransmitTimer = setInterval(() => {
+    this.commandRetransmitTimer ??= setInterval(() => {
       const [head] = this.unackedCommands.values();
       if (head && this.connectAddress) this.send(this.connectAddress, RequestMessageType.DATA, head);
     }, DRW_RESEND_MS);
     this.commandRetransmitTimer.unref?.();
+    this.send(this.connectAddress!, RequestMessageType.DATA, data);
   }
 
   private clearCommandRetransmit(): void {
@@ -1335,7 +1316,7 @@ export class P2PSession extends EventEmitter {
    * Clear acknowledged commands and audio frames. The device's acknowledgement lists the sequence numbers it has
    * taken on a given data-type channel: `[dataTypeHeader:2][count:2 BE][seq:2 BE]×count`.
    *
-   * DATA acknowledgements release commands retained by {@link sendAcknowledged}. The video data-type
+   * DATA acknowledgements release commands held by {@link sendCommandDatagram}. The video data-type
    * acknowledgements release outbound talkback frames, whose ordered channel stalls on a gap.
    */
   private onAck(msg: Buffer): void {
@@ -1449,7 +1430,7 @@ export class P2PSession extends EventEmitter {
    * Send one frame of a product's bundle as {@link renderFrame} builds it, with `$entryType` and the media `$key`:
    * the app's `getCrypto`, the session's P-256 point once a gateway info came as version 8 or for an `ability` of 128
    * up, else the RSA modulus. Header byte 14 is the frame's `counter` ({@link headerCounter}). Sealed by the session,
-   * sent once and resent by DRW ({@link sendAcknowledged}).
+   * sent once and resent by DRW ({@link sendCommandDatagram}).
    */
   sendFrame(frame: SessionFrame, channel: number, userId = "", ability = 0, entryType = 0): void {
     if (!this.connectAddress) throw new Error(`P2P session ${this.cfg.stationSn} is not connected`);
@@ -1466,10 +1447,7 @@ export class P2PSession extends EventEmitter {
       this.tracedDatagramGaps = 0;
       this.trace({ phase: "media-command", cmd, key: ecc ? "ecc" : "rsa" });
     }
-    this.sendAcknowledged(() => {
-      this.transmit(cmd, header, body, { streamId, text: frame.body !== "native" });
-      return true;
-    });
+    this.transmit(cmd, header, body, { streamId, text: frame.body !== "native" });
   }
 
   /**
@@ -1512,8 +1490,8 @@ export class P2PSession extends EventEmitter {
    * mode 0 re-reads it every {@link SIGN0_POLL_MS} until it changes, at most {@link SIGN0_POLLS} times, then marks the
    * slot -1 (later sends no longer wait) and seals by what it finds. Header byte 11 is {@link commandCount}, byte 12 the
    * channel (0xff for {@link STATION_HEADER_COMMANDS}), byte 14 `streamId`; the sequence number and the counters are
-   * taken when the datagram goes, and a send made inside
-   * {@link sendAcknowledged} stays retained however late it goes. Nothing goes once its connection has ended.
+   * taken when the datagram goes, held until acknowledged ({@link sendCommandDatagram}). Nothing goes once its
+   * connection has ended.
    */
   private transmit(
     cmd: number,
@@ -1522,8 +1500,7 @@ export class P2PSession extends EventEmitter {
     opts: { streamId?: number; text?: boolean } = {},
   ): void {
     const generation = this.connectionGeneration;
-    const retain = this.capturedCommands !== undefined;
-    const go = (late: boolean): void => {
+    const go = (): void => {
       if (!this.connectAddress || generation !== this.connectionGeneration) return;
       const sealed = this.seal(cmd, plaintext, opts.text === true);
       const counter = this.commandCount;
@@ -1539,15 +1516,14 @@ export class P2PSession extends EventEmitter {
         ),
       ]);
       this.seqNumber = (this.seqNumber + 1) & 0xffff;
-      if (late && retain) this.retainCommand(data);
-      this.send(this.connectAddress, RequestMessageType.DATA, data);
+      this.sendCommandDatagram(data);
     };
-    if (this.signMode !== 0) return go(false);
+    if (this.signMode !== 0) return go();
     let polls = 0;
     const poll = (): void => {
       if (this.signMode === 0 && ++polls < SIGN0_POLLS) return void setTimeout(poll, SIGN0_POLL_MS).unref?.();
       if (this.signMode === 0) this.signMode = -1;
-      go(true);
+      go();
     };
     setTimeout(poll, SIGN0_POLL_MS).unref?.();
   }
@@ -1562,7 +1538,7 @@ export class P2PSession extends EventEmitter {
     if (!this.connectAddress) return;
     const data = Buffer.concat([buildCommandHeader(this.seqNumber, commandType), buildVoidCommandPayload(channel)]);
     this.seqNumber = (this.seqNumber + 1) & 0xffff;
-    this.send(this.connectAddress, RequestMessageType.DATA, data);
+    this.sendCommandDatagram(data);
   }
 
   /**
@@ -2101,7 +2077,6 @@ export class P2PSession extends EventEmitter {
       done?.();
       return;
     }
-    if (type === RequestMessageType.DATA && payload) this.capturedCommands?.push(payload);
     const packet = frameMessage(type, payload);
     socket.send(packet, addr.port, addr.host, (err) => {
       if (err) this.logger.warn(`[p2p] send err ${addr.host}:${addr.port}`, err.message);

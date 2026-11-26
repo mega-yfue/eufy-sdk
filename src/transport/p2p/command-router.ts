@@ -1443,11 +1443,7 @@ export class P2PCommandRouter {
       // sendSetPayload can throw synchronously (e.g. "not connected"); clean up the listener + timer
       // so they don't dangle until the timeout, then propagate the failure.
       try {
-        const sent = session.sendAcknowledged(() => {
-          session.sendSetPayload(subCmd, opts.payload ?? {}, { accountId, channel });
-          return true;
-        });
-        if (!sent) throw new Error("p2p query send failed");
+        session.sendSetPayload(subCmd, opts.payload ?? {}, { accountId, channel });
       } catch (e) {
         cleanup();
         reject(e instanceof Error ? e : new Error(String(e)));
@@ -1488,14 +1484,11 @@ export class P2PCommandRouter {
       };
       session.on("data", onData);
       try {
-        session.sendAcknowledged(() => {
-          session.sendStringPayloadCommand(
-            P2P_ENVELOPE.CONTROL_PAYLOAD,
-            JSON.stringify({ commandType: param, data }),
-            channel,
-          );
-          return true;
-        });
+        session.sendStringPayloadCommand(
+          P2P_ENVELOPE.CONTROL_PAYLOAD,
+          JSON.stringify({ commandType: param, data }),
+          channel,
+        );
       } catch (e) {
         cleanup();
         reject(e instanceof Error ? e : new Error(String(e)));
@@ -1832,10 +1825,7 @@ export class P2PCommandRouter {
         seqNum: this.keyedSeq++,
       });
       const code = await this.awaitKeyedReply(sn, session, channel, cmd.engage, () =>
-        session.sendAcknowledged(() => {
-          session.sendSetPayload(CommandType.P2P_ON_OFF_LOCK, payload, { accountId, channel, key });
-          return true;
-        }),
+        session.sendSetPayload(CommandType.P2P_ON_OFF_LOCK, payload, { accountId, channel, key }),
       );
       if (code !== 0) throw new Error(`keyed-payload command rejected by ${sn} with code ${code}`);
     });
@@ -1891,7 +1881,7 @@ export class P2PCommandRouter {
   /**
    * Send one command and settle it on the device's answer, through the app's two per-station queues: the request
    * queue ({@link enqueueRequest}) hands it down, the call queue ({@link serializeAnswered}) sends it once
-   * ({@link P2PSession.sendAcknowledged}) and reads its answer as the app's native call does ({@link readAnswer}),
+   * and reads its answer as the app's native call does ({@link readAnswer}),
    * holding the station until then. The request settles within {@link WRITE_ANSWER}'s deadline counted from
    * here, as `KmmP2PClient.request` bounds its wait, while the call goes on reading in the station's queue.
    *
@@ -1940,7 +1930,7 @@ export class P2PCommandRouter {
             if (!r.session.isConnected) await this.awaitConnected(r.session, r.parentSn);
             const target = r;
             return this.readAnswer(target.session, commandId, () => {
-              if (!target.session.sendAcknowledged(() => send(target) !== false)) {
+              if (send(target) === false) {
                 throw new Error(`command ${commandId} for ${sn} was never sent (session not connected)`);
               }
               dispatched();
