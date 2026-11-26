@@ -7,7 +7,9 @@
  *   node scripts/dev/things-corpus.ts <out-dir> [PRODUCT_CODE...]
  *
  * Signs in with the account in the environment (see examples/_client.ts). Without product codes it
- * refreshes the codes already in `<out-dir>/things/`. A bundle is downloaded only when its md5 differs
+ * fetches the codes already in `<out-dir>/things/`, every code the app's product catalogue
+ * (`get_products`) lists and every code the fetched bundles' product-name tables name, and prints the
+ * ones that have no description. A bundle is downloaded only when its md5 differs
  * from the description's `plugin_id`. Writes `<out-dir>/things/<code>.json` (raw description),
  * `<out-dir>/bundles/<code>.js` and `<out-dir>/corpus.json`. The out-dir is product data, not account
  * data, but keep it out of the repository: the bundles are the vendor's code.
@@ -224,36 +226,64 @@ function coverage(
   return out;
 }
 
+/** Every product code a `get_products` reply lists, through its nested `categories` and `sub_categories`. */
+export function catalogueCodes(reply: unknown): string[] {
+  const walk = (n: any): string[] => [
+    ...((n?.products ?? []) as any[]).map((p) => String(p.code)),
+    ...((n?.sub_categories ?? []) as any[]).flatMap(walk),
+  ];
+  return ((reply as any)?.categories ?? []).flatMap(walk);
+}
+
+/** Every product code a bundle's product-name table names (`{T8000:"<name>",…}`). */
+export function bundleCodes(src: string): string[] {
+  return [...new Set([...src.matchAll(/[{,](T[0-9][0-9A-Z]{3,7}):"/g)].map((m) => m[1]!))];
+}
+
 async function build(outDir: string, codes: string[]): Promise<void> {
   for (const d of ["things", "bundles"]) mkdirSync(join(outDir, d), { recursive: true });
-  if (!codes.length) codes = readdirSync(join(outDir, "things")).map((f) => f.replace(/\.json$/, ""));
   const { loginClient } = await import("../../examples/_client.ts");
   const eufy = await loginClient();
   const mega = (eufy as unknown as { mega: import("../../src/index.js").MegaHttpClient }).mega;
   const corpus: Record<string, { updateTime: number; properties: Record<string, BundleProperty> }> = {};
   try {
-    for (let i = 0; i < codes.length; i += 20) {
-      const reply = await mega.getThingsList<any>(codes.slice(i, i + 20));
-      for (const entry of reply?.things_list ?? []) {
-        const code = entry?.profile?.product_code;
-        const url = entry?.profile?.plugin_path;
-        if (typeof code !== "string") continue;
-        writeFileSync(join(outDir, "things", `${code}.json`), JSON.stringify(entry, null, 1));
-        if (typeof url !== "string" || !url) continue;
-        const file = join(outDir, "bundles", `${code}.js`);
-        const md5 = (b: Buffer) => createHash("md5").update(b).digest("hex");
-        if (!existsSync(file) || md5(readFileSync(file)) !== entry.profile.plugin_id)
-          writeFileSync(file, Buffer.from(await (await fetch(url)).arrayBuffer()));
-        corpus[code] = {
-          updateTime: entry.update_time,
-          properties: extractBundle(readFileSync(file, "utf8"), identifiers(entry)),
-        };
-        console.log(
-          `${code}: ${Object.keys(corpus[code].properties).length}/${identifiers(entry).size} identifiers wired`,
-        );
+    const seeded = !codes.length;
+    if (seeded) {
+      const listed = catalogueCodes(await mega.post("things", "/app/things/get_products"));
+      const known = readdirSync(join(outDir, "things")).map((f) => f.replace(/\.json$/, ""));
+      codes = [...new Set([...known, ...listed])].sort();
+    }
+    for (let pending = codes; pending.length;) {
+      const asked = new Set(codes);
+      const named = new Set<string>();
+      for (let i = 0; i < pending.length; i += 20) {
+        const reply = await mega.getThingsList<any>(pending.slice(i, i + 20));
+        for (const entry of reply?.things_list ?? []) {
+          const code = entry?.profile?.product_code;
+          const url = entry?.profile?.plugin_path;
+          if (typeof code !== "string") continue;
+          writeFileSync(join(outDir, "things", `${code}.json`), JSON.stringify(entry, null, 1));
+          if (typeof url !== "string" || !url) continue;
+          const file = join(outDir, "bundles", `${code}.js`);
+          const md5 = (b: Buffer) => createHash("md5").update(b).digest("hex");
+          if (!existsSync(file) || md5(readFileSync(file)) !== entry.profile.plugin_id)
+            writeFileSync(file, Buffer.from(await (await fetch(url)).arrayBuffer()));
+          corpus[code] = {
+            updateTime: entry.update_time,
+            properties: extractBundle(readFileSync(file, "utf8"), identifiers(entry)),
+          };
+          console.log(
+            `${code}: ${Object.keys(corpus[code].properties).length}/${identifiers(entry).size} identifiers wired`,
+          );
+          if (seeded) for (const c of bundleCodes(readFileSync(file, "utf8"))) named.add(c);
+        }
       }
+      pending = [...named].filter((c) => !asked.has(c)).sort();
+      codes = [...codes, ...pending];
     }
     writeFileSync(join(outDir, "corpus.json"), JSON.stringify(corpus, null, 1));
+    const undescribed = codes.filter((c) => !existsSync(join(outDir, "things", `${c}.json`)));
+    if (undescribed.length) console.log(`no description: ${undescribed.join(" ")}`);
   } finally {
     await eufy.disconnect();
   }
