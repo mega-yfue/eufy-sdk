@@ -1570,7 +1570,8 @@ export class EufyMega extends EventEmitter {
   private ff09OverMqtt(dev: EufyDevice): boolean {
     const raw = (dev.raw ?? {}) as Record<string, any>;
     const deviceType = raw.device_type;
-    const videoLock = isVideoSmartLock({ deviceType }) || deviceType === DeviceType.LOCK_85V0;
+    const videoLock =
+      isVideoSmartLock({ deviceType }) || deviceType === DeviceType.LOCK_8531 || deviceType === DeviceType.LOCK_85V0;
     return videoLock && !homeBaseAttached(raw, dev.sn);
   }
 
