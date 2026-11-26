@@ -93,7 +93,7 @@ export interface RtcLiveRoute extends RtcRoute {
    * The bundle frames the app's RTC player starts and stops the view with, without which the view is refused, and its
    * talkback with, without which there is no talkback.
    */
-  live?: Record<"start" | "stop", RtcLiveFrame> & Partial<Record<"talkStart" | "talkStop", RtcLiveFrame>>;
+  live?: Record<"start" | "stop", RtcLiveFrame> & Partial<Record<"startTB" | "talkStart" | "talkStop", RtcLiveFrame>>;
   /** The camera's lens ids (its param 9240 sensor list, in order) when it has any: its view is the lens page. */
   sensors?: readonly number[];
 }
@@ -442,13 +442,37 @@ export class RtcCommandRouter {
       userId,
       appId: this.deps.appId,
       token: this.deps.tokens?.get(sn),
+      logger: this.deps.logger,
     });
     signal.on("token", (t) => this.deps.tokens?.set(sn, t));
-    const ready = new Promise<void>((resolve) => signal.once("login", () => resolve()));
+    const ready = new Promise<void>((resolve, reject) => {
+      signal.once("login", () => resolve());
+      signal.start().catch((e: unknown) => {
+        if (this.stations.get(sn) === st) this.stations.delete(sn);
+        reject(e instanceof Error ? e : new Error(String(e)));
+      });
+    });
+    ready.catch(() => undefined);
     const st: Station = { signal, ready, counter: { word: 0x01020304 }, flag: 0, fails: 0, sleepUntil: 0 };
     this.stations.set(sn, st);
-    signal.start().catch((e: unknown) => this.deps.onError?.(e instanceof Error ? e : new Error(String(e))));
     return st;
+  }
+
+  /**
+   * Wait for the station's login until `deadline`: a failed start rejects with its own error, a deadline that runs
+   * out names the last answer the signalling heard.
+   */
+  private async loggedIn(sn: string, st: Station, deadline: AbortSignal, signal?: AbortSignal): Promise<void> {
+    try {
+      await abortable(st.ready, deadline);
+    } catch (e) {
+      if (signal?.aborted) throw signal.reason;
+      if (!deadline.aborted) throw e;
+      throw new Error(
+        `rtc: ${sn} signalling did not log in within ${CONNECT_TIMEOUT_MS} ms (last answer: ${st.signal.heard})`,
+        { cause: e },
+      );
+    }
   }
 
   /**
@@ -460,10 +484,8 @@ export class RtcCommandRouter {
     const sn = route.stationSn;
     const st = this.station(route);
     const deadline = AbortSignal.any([AbortSignal.timeout(CONNECT_TIMEOUT_MS), ...(signal ? [signal] : [])]);
-    let loggedIn = false;
+    await this.loggedIn(sn, st, deadline, signal);
     try {
-      await abortable(st.ready, deadline);
-      loggedIn = true;
       const flag = kcpMulti(sn, route.sdkVersion) ? 3 : 0;
       if (!st.data) await sleep(Math.max(0, st.sleepUntil - Date.now()), undefined, { signal: deadline });
       let data = st.data;
@@ -491,12 +513,11 @@ export class RtcCommandRouter {
       return data;
     } catch (e) {
       if (signal?.aborted) throw signal.reason;
-      const stage = loggedIn ? "data channel did not connect" : "signalling did not log in";
-      if (loggedIn && st.data) {
+      if (st.data) {
         st.data.close();
         st.data = undefined;
       }
-      throw new Error(`rtc: ${sn} ${stage} within ${CONNECT_TIMEOUT_MS} ms`, { cause: e });
+      throw new Error(`rtc: ${sn} data channel did not connect within ${CONNECT_TIMEOUT_MS} ms`, { cause: e });
     }
   }
 
@@ -566,7 +587,7 @@ export class RtcCommandRouter {
   /**
    * Hand `use` the station's live source for this camera in the same turn it is created or reused, so a consumer it
    * attaches is counted before another caller looks. Another camera whose source has consumers refuses this one; one
-   * with none is disposed and the slot taken.
+   * with none is disposed and the slot taken. A `view` the camera's lens list does not hold is refused.
    */
   private async withLiveSource<T>(
     route: RtcLiveRoute,
@@ -576,12 +597,16 @@ export class RtcCommandRouter {
     opts.signal?.throwIfAborted();
     const live = route.live;
     if (!live) throw new Error(`rtc live: no RTC start frame for ${route.cameraSn} in the bundle data`);
+    if (opts.view !== undefined && !route.sensors?.includes(opts.view))
+      throw new Error(`rtc live: ${route.cameraSn} lists no lens ${opts.view}`);
     const sn = route.stationSn;
     this.refuseIfWatched(route);
     const st = this.station(route);
-    await abortable(
-      st.ready,
+    await this.loggedIn(
+      sn,
+      st,
       AbortSignal.any([AbortSignal.timeout(CONNECT_TIMEOUT_MS), ...(opts.signal ? [opts.signal] : [])]),
+      opts.signal,
     );
     this.refuseIfWatched(route);
     const current = this.lives.get(sn);
@@ -592,7 +617,7 @@ export class RtcCommandRouter {
     let entry = this.lives.get(sn);
     if (!entry) {
       const source: SharedLiveSource = new SharedLiveSource({
-        makeStream: () => (entry!.stream = this.pmStream(route, st, live, opts.entryType ?? 0)),
+        makeStream: () => (entry!.stream = this.pmStream(route, st, live, opts.entryType ?? 0, opts.view)),
         label: `${sn}#${route.channel}`,
         logger: this.deps.logger,
         powered: opts.powered,
@@ -613,12 +638,16 @@ export class RtcCommandRouter {
       throw new StationStreamBusyError(route.stationSn, current.cameraSn);
   }
 
-  /** One live view on a fresh PM call; its ICE closes and the call hangs up when the view stops or fails. */
+  /**
+   * One live view on a fresh PM call; its ICE closes and the call hangs up when the view stops or fails. A camera with
+   * lenses opens its lens page (`startTB`), or with a `view` the single-camera page on that lens.
+   */
   private pmStream(
     route: RtcLiveRoute,
     st: Station,
-    live: Record<"start" | "stop", RtcLiveFrame>,
+    live: NonNullable<RtcLiveRoute["live"]>,
     entryType: number,
+    view?: number,
   ): RtcPmLiveStream {
     const call = st.signal.call(RtcCallType.PM);
     const agent = (this.deps.layers?.pmIce ?? pmIce)(st.signal, call);
@@ -626,8 +655,15 @@ export class RtcCommandRouter {
       call,
       gcm: mediaGcm(route.stationSn, route.version),
       cmdGcm: cmdGcm(route.stationSn, route.version),
-      start: () => this.liveCommand(route, st, live.start, entryType),
-      stop: () => this.liveCommand(route, st, live.stop, entryType),
+      start: () =>
+        this.liveCommand(
+          route,
+          st,
+          (view === undefined && route.sensors && live.startTB) || live.start,
+          entryType,
+          view,
+        ),
+      stop: () => this.liveCommand(route, st, live.stop, entryType, view),
       counter: st.counter,
       logger: this.deps.logger,
     });
@@ -641,9 +677,10 @@ export class RtcCommandRouter {
   /**
    * A live frame as the app's RTC sender frames it ({@link renderFrame}), its page the one
    * `LiveParamHelper.getLiveParams` builds: `$chnList` one `{cameraType: 0, chn, index, sensor}` per lens (index 0 for lens 0, else 1) on the lens page,
-   * else the single-camera page's one `{cameraType: 0, chn, index: 0, sensor: 0}` (camera id `CameraFixed`), and
-   * `$cameraType` 0; `$msgId` the next `getNextMsgId` of the player's parent (1 to 255, then 1 again): the station, or
-   * the camera itself on a lens page (a sensor device's parent), `$entryType` the view's. Header byte 14 is the
+   * else the single-camera page's one `{cameraType: lens, chn, index: 0, sensor: lens}`, and `$cameraType` that lens: the
+   * `view` as `MediaLiveStreamVideoView.startPlay` puts it, else 0 (camera id `CameraFixed`); `$msgId` the next
+   * `getNextMsgId` of the player device's parent (1 to 255, then 1 again): the station, or the camera itself on a lens
+   * page (a sensor device's parent), `$entryType` the view's. Header byte 14 is the
    * station's event-stream flag for a `1700` of inner `1000`, moved on per use as `rtc_get_stream_flag` does (10 when
    * `(flag + 5) & 0xff < 15`, else up one), else 0.
    *
@@ -653,13 +690,23 @@ export class RtcCommandRouter {
    * `is_livecmd_support_media_rtcp` (a T8223, T8224 or T8030 above its {@link cmdGcm} floor); a `1004` when it is 1 or
    * the station is `is_rtcp_solo` (a T8223/T8224 by its key mode, the same floor); anything else over the data channel.
    */
-  private liveCommand(route: RtcLiveRoute, st: Station, frame: RtcLiveFrame, entryType: number): RtcLiveCommand {
+  private liveCommand(
+    route: RtcLiveRoute,
+    st: Station,
+    frame: RtcLiveFrame,
+    entryType: number,
+    view?: number,
+  ): RtcLiveCommand {
     const sn = route.stationSn;
-    const parent = route.sensors ? route.cameraSn : sn;
+    const lenses = view === undefined ? route.sensors : undefined;
+    const lens = view ?? 0;
+    const parent = lenses ? route.cameraSn : sn;
     const { cmd, body, header } = renderFrame(frame, route.channel, this.accountId(route), {
       $chnList: () =>
-        (route.sensors ?? [0]).map((s) => ({ cameraType: 0, chn: route.channel, index: s === 0 ? 0 : 1, sensor: s })),
-      $cameraType: () => 0,
+        lenses?.map((s) => ({ cameraType: 0, chn: route.channel, index: s === 0 ? 0 : 1, sensor: s })) ?? [
+          { cameraType: lens, chn: route.channel, index: 0, sensor: lens },
+        ],
+      $cameraType: () => lens,
       $msgId: () => this.msgIds.set(parent, ((this.msgIds.get(parent) ?? 0) % 255) + 1).get(parent),
       $entryType: () => entryType,
       // `RtcLivePlayerBridge` starts with the camera's stated admin, else `""`; the envelope keeps esiotkit's.

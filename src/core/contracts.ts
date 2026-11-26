@@ -899,6 +899,11 @@ export interface SharedSourceHints {
    * products whose bundle forwards it send it.
    */
   entryType?: number;
+  /**
+   * The lens to stream alone, one of the camera's `views()`, as the app's single-lens player does; absent streams every
+   * lens, as its live page does. A route with no single-lens start refuses it.
+   */
+  view?: number;
 }
 
 /**

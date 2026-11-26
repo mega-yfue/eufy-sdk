@@ -1,3 +1,4 @@
+import type { Logger } from "../../../core/logger.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Socket, createSocket } from "node:dgram";
 import { constants, generateKeyPairSync, privateDecrypt } from "node:crypto";
@@ -72,7 +73,7 @@ describe("RtcSignalClient", () => {
   });
 
   /** A fake signalling server: DISCOVER → self, reg → 401, reg2 → checks did:lic, then 200 or a second 401. */
-  async function fakeServer(rejectReg2: boolean, dropRegs = 0) {
+  async function fakeServer(rejectReg2: boolean, dropRegs = 0, logger?: Logger) {
     const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 1024 });
     const modulus = Buffer.from((publicKey.export({ format: "jwk" }) as { n: string }).n, "base64url").toString("hex");
     const seen: { auth?: string; wrapped: boolean[]; regs: number[] } = { wrapped: [], regs: [] };
@@ -104,18 +105,45 @@ describe("RtcSignalClient", () => {
       reply(rx, 200, 6, Buffer.from("c0ffee00c0ffee00\0"), from);
     });
     await new Promise<void>((r) => server.bind(0, "127.0.0.1", r));
-    client = new RtcSignalClient({ sn: SN, did: DID, lic: LIC, host: "127.0.0.1", port: server.address().port });
+    client = new RtcSignalClient({
+      sn: SN,
+      did: DID,
+      lic: LIC,
+      host: "127.0.0.1",
+      port: server.address().port,
+      logger,
+    });
     return seen;
   }
 
   it("discovers, then reg → 401 → reg2 → 200 yields the contact_id", async () => {
     const seen = await fakeServer(false);
+    expect(client.heard).toBe("none");
     const login = new Promise<string>((r) => client.once("login", r));
     await client.start();
     expect(await login).toBe("c0ffee00c0ffee00");
     expect(seen.auth).toBe(`${DID}:${LIC}`);
     expect(seen.wrapped).toEqual([true, true, true]);
     expect(client.sessionKey).toMatch(/^[0-9a-zA-Z]{16}$/);
+    expect(client.heard).toBe("REG 200");
+  });
+
+  it("logs each datagram of the login by kind and status, naming no identity", async () => {
+    const lines: string[] = [];
+    const logger = { debug: (m: string) => lines.push(m), info() {}, warn() {}, error() {} };
+    await fakeServer(false, 0, logger);
+    const login = new Promise<string>((r) => client.once("login", r));
+    await client.start();
+    await login;
+    const events = lines.map((l) => l.replace(/ \+\d+ ms$/, ""));
+    expect(events).toEqual(
+      expect.arrayContaining([
+        "[rtc-signal] sent DISCOVER on the signalling socket",
+        "[rtc-signal] heard REG 401",
+        "[rtc-signal] heard REG 200",
+      ]),
+    );
+    for (const l of lines) for (const id of [SN, DID, LIC]) expect(l).not.toContain(id);
   });
 
   it("hands out the login as a token, and a fresh one logs in quickly with nothing sent; a 23 h old one does not", async () => {

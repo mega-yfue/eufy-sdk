@@ -62,6 +62,7 @@ import { EventEmitter } from "node:events";
 import { createSocket, type Socket } from "node:dgram";
 import { createHash, randomInt } from "node:crypto";
 import { readNullTerminatedString } from "../p2p/codec.js";
+import type { Logger } from "../../core/logger.js";
 import {
   RTC_CALL_BODY_LENGTH,
   RtcCallType,
@@ -114,6 +115,8 @@ export interface RtcSignalOptions {
   appId?: string;
   /** The station's cached login, for a quick login. */
   token?: RtcToken;
+  /** Takes one debug line per datagram sent or answered: direction, kind, status, socket, ms since `start`. */
+  logger?: Logger;
 }
 
 /**
@@ -201,6 +204,9 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
   private readonly imported: RtcServer[];
   contactId = "";
   sessionKey = "";
+  /** The last answer the signalling heard, by kind and status (`"none"` before the first), naming no identity. */
+  heard = "none";
+  private startedAt = 0;
   private socket = this.signalSocket();
   private readonly route = randomInt(256);
   private seq = 0;
@@ -237,9 +243,13 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
 
   /** Bind, hand out the server list if the start changed it, and log in quickly or start discovering. */
   async start(): Promise<void> {
+    this.startedAt = Date.now();
     await new Promise<void>((resolve) => this.socket.bind(0, resolve));
     if (this.cache.servers !== this.imported) this.emit("token", { ...this.cache });
-    if (this.registered) return void this.emit("login", this.contactId);
+    if (this.registered) {
+      this.trace("quick login from the cached token");
+      return void this.emit("login", this.contactId);
+    }
     this.discover();
     this.discoverTimer = setInterval(() => this.discovered || this.discover(), DISCOVER_INTERVAL_MS);
     this.retryTimer = setTimeout(() => this.retryLogin(false), RETRY_LOGIN_MS);
@@ -377,6 +387,7 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
   }
 
   private send(packet: Buffer, socket = this.socket): void {
+    this.trace(`sent ${describe(packet)} on the ${socket === this.socket ? "signalling" : "call"} socket`);
     socket.send(
       wrapRtcPacket(packet),
       this.opts.port ?? RTC_SIGNAL_PORT,
@@ -425,7 +436,12 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
   }
 
   /** `EndpointResetCommonNetwork`: a new socket to `s`. */
+  private trace(event: string): void {
+    this.opts.logger?.debug(`[rtc-signal] ${event} +${Date.now() - this.startedAt} ms`);
+  }
+
   private reset(s: RtcServer): void {
+    this.trace("reset: calls hung up, signalling socket reopened");
     this.use(s);
     this.socket.close();
     this.socket = this.signalSocket();
@@ -505,8 +521,11 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
       this.discovered = false;
       this.discover();
     }
-    if (readNullTerminatedString(p.header.subarray(20, 36), "latin1") !== this.opts.sn) return;
+    const ours = readNullTerminatedString(p.header.subarray(20, 36), "latin1") === this.opts.sn;
     const response = p.header[14] === 1;
+    if (response) this.heard = `${describe(p.header)}${ours ? "" : " for another serial"}`;
+    this.trace(`heard ${p.header[14] ? this.heard : describe(p.header)}`);
+    if (!ours) return;
     if (kind === RtcKind.DISCOVER && response) this.onDiscover(p.header, p.body);
     else if (kind === RtcKind.REG && response) this.onLogin(p.header, p.body);
     else if (p.body.length < RTC_CALL_BODY_LENGTH) return;
@@ -718,4 +737,11 @@ function echo(rx: Buffer, seq: number): Buffer {
   h.writeUInt16LE(0, 16);
   h[42] = seq;
   return h;
+}
+
+/** A datagram's kind by name, and its status when it is an answer (header byte 14), naming no identity. */
+function describe(header: Buffer): string {
+  const kind = header.readUInt16LE(4);
+  const name = Object.entries(RtcKind).find(([, v]) => v === kind)?.[0] ?? String(kind);
+  return header[14] ? `${name} ${header.readUInt16LE(16)}` : name;
 }

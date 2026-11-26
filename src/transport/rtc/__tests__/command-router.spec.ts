@@ -116,7 +116,10 @@ const head = (cmd: number, channel: number) => {
   return h;
 };
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 describe("RtcCommandRouter on the native layers", () => {
   it("dispatches a set-payload as a 1350 on the PRIV1 data channel, on the device's channel", async () => {
@@ -354,6 +357,26 @@ describe("RtcCommandRouter on the native layers", () => {
     router.close();
   });
 
+  /** `MediaLiveStreamVideoView.startPlay`: one lens on the single-camera page, its id as `cameraType` and `sensor`. */
+  it("streams one lens of a dual-lens camera on the single-camera page, both on the lens page without a view", async () => {
+    const start = NVR_LIVE!.start.payload as { payload: object };
+    const tb = { ...NVR_LIVE!.start, payload: { ...start, payload: { ...start.payload, stitch_mode: 5 } } };
+    const route = { ...ROUTE, stationSn: "T8N00P0000000000", cameraSn: "T8E00P0000000001", sensors: [0, 1] };
+    const payload = async (view?: number) => {
+      const { router, agent } = layers();
+      const consumer = await router.mediaProviderFor({ ...route, live: { ...NVR_LIVE!, startTB: tb } }).live({ view });
+      const json = JSON.parse(sent(agent, 0).body.toString()) as { payload: Record<string, unknown> };
+      consumer.stop();
+      router.close();
+      return json.payload;
+    };
+    const one = await payload(1);
+    expect(one).toMatchObject({ camera_type: 1, chn_list: [{ cameraType: 1, chn: 3, index: 0, sensor: 1 }] });
+    expect(one).not.toHaveProperty("stitch_mode");
+    expect(await payload()).toMatchObject({ camera_type: 0, stitch_mode: 5 });
+    await expect(layers().router.mediaProviderFor(route).live({ view: 2 })).rejects.toThrow("lists no lens 2");
+  });
+
   it("starts a standalone T8170 with its 1700 inner 1000, the event-stream flag in byte 14, and stops with 1004", async () => {
     const { router, agent } = layers();
     const sn = "T8170P0000000000";
@@ -533,6 +556,26 @@ describe("RtcCommandRouter on the native layers", () => {
   it("refuses a live view without the start JSON", async () => {
     const { router } = layers();
     await expect(router.mediaProviderFor({ ...ROUTE, live: undefined }).live()).rejects.toThrow("no RTC start frame");
+    router.close();
+  });
+
+  it("rejects a live view at once with the error its signalling start failed with, and starts afresh next time", async () => {
+    const { router, signal } = layers();
+    signal.start.mockRejectedValueOnce(new Error("bind failed"));
+    await expect(router.mediaProviderFor(ROUTE).live()).rejects.toThrow("bind failed");
+    await router.mediaProviderFor(ROUTE).live();
+    expect(signal.start).toHaveBeenCalledTimes(2);
+    router.close();
+  });
+
+  it("names the last signalling answer when the login never comes", async () => {
+    const { router, signal } = layers();
+    signal.start.mockResolvedValueOnce(undefined);
+    Object.assign(signal, { heard: "DISCOVER 200" });
+    vi.spyOn(AbortSignal, "timeout").mockReturnValue(AbortSignal.abort());
+    await expect(router.mediaProviderFor(ROUTE).live()).rejects.toThrow(
+      `rtc: ${ROUTE.stationSn} signalling did not log in within 20000 ms (last answer: DISCOVER 200)`,
+    );
     router.close();
   });
 

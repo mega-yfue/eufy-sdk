@@ -474,17 +474,19 @@ export function liveFrames(
 /**
  * The frames the app's RTC player starts and stops `model`'s live view with under `parentSn` (its own serial when it
  * is its own station), and its talkback with: `start_intercom` / `stop_intercom` take no player input, so they are
- * {@link liveFrames}' own. The start is the page `MediaLiveActivityViewModel.startPlay` opens: with `lenses` (a sensor
- * list) the portrait lens page `Stitch_T_B_2X2`, else the single-camera page; above the parent's firmware 4.2.0.0
- * (`parent`), a product's `<topology>>4.2.0.0` frames, as {@link liveFrames}. Each frame's `rtcSendRoute` is resolved
+ * {@link liveFrames}' own. `start` is the single-camera page, `startTB` the portrait lens page `Stitch_T_B_2X2` that
+ * `MediaLiveActivityViewModel.startPlay` opens on a camera with a sensor list, where the product has one; above the
+ * parent's firmware 4.2.0.0 (`parent`), a product's `<topology>>4.2.0.0` frames, as {@link liveFrames}. Each frame's `rtcSendRoute` is resolved
  * against the device's own firmware (`own`) or the parent's, as its parser's `compareVersions(version, from) < 0 ? 0 :
  * 1` reads it, a version the record lacks "". `undefined` for a product the bundles give no RTC view.
  */
 export function rtcLiveFrames(
   model: string,
   parentSn: string,
-  { lenses = false, own = "", parent = "" }: { lenses?: boolean; own?: string; parent?: string } = {},
-): (Record<"start" | "stop", RtcLiveFrame> & Partial<Record<"talkStart" | "talkStop", RtcLiveFrame>>) | undefined {
+  { own = "", parent = "" }: { own?: string; parent?: string } = {},
+):
+  | (Record<"start" | "stop", RtcLiveFrame> & Partial<Record<"startTB" | "talkStart" | "talkStop", RtcLiveFrame>>)
+  | undefined {
   const byTopology = memberOf(BUNDLE_WIRES.rtcLive, model);
   const topology = topologyOf(parentSn);
   // A `>4.2.0.0` entry holds only the frames that differ there.
@@ -498,7 +500,8 @@ export function rtcLiveFrames(
   const { talkStart, talkStop } = liveFrames(model, parentSn, [], parent || undefined) ?? {};
   return (
     entry && {
-      start: frame(lenses && entry.startTB !== undefined ? entry.startTB : entry.start),
+      start: frame(entry.start),
+      ...(entry.startTB !== undefined && { startTB: frame(entry.startTB) }),
       stop: frame(entry.stop),
       ...(talkStart && talkStop && { talkStart, talkStop }),
     }

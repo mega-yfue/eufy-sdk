@@ -1168,8 +1168,11 @@ export class P2PCommandRouter {
    * so opening a new channel releases those first — see
    * {@link releaseLingeringSiblings}. A pull with consumers is never touched. The release runs before the
    * reuse branch, so a reuse frees the station as a cold start does.
+   *
+   * A `view` is refused: no live start this router renders takes a lens.
    */
   async sharedLiveSourceFor(sn: string, opts: SharedLiveOpts = {}): Promise<SharedLiveSource> {
+    if (opts.view !== undefined) throw new Error(`p2p live: ${sn} has no single-lens start`);
     const resolved = await this.resolveSession(sn, { signal: opts.signal });
     const { session, parentSn, channel, accountId, homeBaseAttached } = resolved;
     const frames = this.liveFramesOf(sn, parentSn);
