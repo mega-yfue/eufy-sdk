@@ -75,3 +75,18 @@ describe("MegaHttpClient account registration", () => {
     ]);
   });
 });
+
+describe("MegaHttpClient passport body", () => {
+  it("goes out as application/json, as every esiotkit body does", async () => {
+    const mega = new MegaHttpClient({ email: EMAIL, password: "x", region: "us-pr" });
+    const internals = mega as unknown as Record<string, unknown>;
+    internals.ensureSessionKey = async () => ({ shareKey: "00".repeat(32), keyIdent: "k" });
+    const types: string[] = [];
+    internals.httpPost = vi.fn(async (_url: string, _body: unknown, headers: Record<string, string>) => {
+      types.push(headers["content-type"]!);
+      return { status: 200, data: { code: 0, data: {} } };
+    });
+    await mega.accountRegistered(EMAIL);
+    expect(types).toEqual(["application/json"]);
+  });
+});

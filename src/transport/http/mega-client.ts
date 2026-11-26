@@ -763,9 +763,9 @@ export class MegaHttpClient {
     // invalid") on the wrong one — so we probe, then REMEMBER the winner per host
     // to avoid re-probing (and the resulting noise/double-requests) next time.
     // eufylife data calls want text/plain (application/json → 403 at the proxy); mega hosts take
-    // json (except /passport/). Prefer the right one first so the HTML 403 doesn't end the probe.
+    // json, as the app's esiotkit client sends every body. Prefer the right one first so the HTML 403 doesn't end the probe.
     const cached = this.contentTypeByHost.get(host);
-    const wantsText = path.includes("/passport/") || host.includes(".eufylife.com");
+    const wantsText = host.includes(".eufylife.com");
     const preferred = cached ?? (wantsText ? "text/plain" : "application/json");
     const order =
       encBody === undefined
