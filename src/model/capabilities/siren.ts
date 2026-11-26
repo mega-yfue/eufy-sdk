@@ -167,13 +167,14 @@ const PREVIEW_HUBS = ["T8010", "T8002", "T8001", "T8025", "T9000", "T8N00", "T70
 
 /**
  * The app's alarm test. A sensor siren's settings test (`AlarmVolumeSettingScreen`, `IndoorSensorTestScreen`, the
- * add-device test) sounds `{open: true, forTest: true}`. A HomeBase other than a HomeBase 3 (`AudioSettingsScreen`'s
- * volume preview) sounds 2 s of its type-0 alarm under the raw login `nick_name`: `''` as is, the key dropped when the
- * login had none (Gson omits the null, so RN's `UserInfo.nickName` is undefined). No other family has one.
+ * add-device test) sounds `{open: true, forTest: true}` and ends it with `{open: false, forTest: true}`. A HomeBase
+ * other than a HomeBase 3 (`AudioSettingsScreen`'s volume preview) sounds 2 s of its type-0 alarm under the raw login
+ * `nick_name`: `''` as is, the key dropped when the login had none (Gson omits the null, so RN's `UserInfo.nickName`
+ * is undefined); the preview has no end. No other family has one.
  */
-function testAlarm(ctx: CommandContext): Command | undefined {
-  if (isSensorCodec(ctx)) return alarmWrite('{"open":true,"forTest":true}', ctx);
-  if (!PREVIEW_HUBS.some((p) => ctx.serial?.startsWith(p))) return undefined;
+function testAlarm(ctx: CommandContext, open = true): Command | undefined {
+  if (isSensorCodec(ctx)) return alarmWrite(JSON.stringify({ open, forTest: true }), ctx);
+  if (!open || !PREVIEW_HUBS.some((p) => ctx.serial?.startsWith(p))) return undefined;
   const preview = { type: 0, time: 2, open: true, nick_name: ctx.nickName };
   return alarmWrite(JSON.stringify(preview), ctx, JSON.stringify({ ...preview, nick_name: "$input.nick_name" }));
 }
@@ -288,14 +289,20 @@ export const SIREN_MEMBERS = {
     },
   },
 
-  /** The app's alarm test: a sensor siren's settings test, a HomeBase's 2 s volume preview. */
-  test: method(
-    ({ ctx, sink }) =>
-      () =>
-        sink.dispatch(testAlarm(ctx)!),
-    "Sound the alarm briefly as the app's settings test does.",
-    (ctx) => testAlarm(ctx) !== undefined,
-  ),
+  /** The app's alarm test: a sensor siren's settings test and its end, a HomeBase's 2 s volume preview. */
+  test: {
+    ...method(
+      ({ ctx, sink }) =>
+        (open = true) => {
+          const cmd = testAlarm(ctx, open);
+          if (!cmd) throw new Error("siren: this device's test has no end");
+          return sink.dispatch(cmd);
+        },
+      "Sound the alarm briefly as the app's settings test does; false ends a sensor siren's test.",
+      (ctx) => testAlarm(ctx) !== undefined,
+    ),
+    args: [{ name: "open", kind: "boolean", optional: true, description: "False ends a sensor siren's test." }],
+  },
   /** Sound the alarm as the live view does: the bundle's `time_out` (30 s), no duration of the host's. */
   trigger: {
     ...method(

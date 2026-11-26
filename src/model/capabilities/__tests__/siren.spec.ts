@@ -122,6 +122,12 @@ describe("siren capability module", () => {
       );
     });
 
+    it("ends a T90R0 test with the app's test stop (1871), not the ringing stop", async () => {
+      const { acts, sent } = sirenOf({ ...ctx(), things: alarmThings("T90R0", ["0"]) });
+      await acts.test!(false);
+      expect(sent).toMatchObject([{ kind: "set-payload", cmd: 1871 }]);
+    });
+
     it("installs no test or stop on a sensor siren whose description lists no set_alarm_type", () => {
       const { acts } = sirenOf(ctx());
       expect(acts.test).toBeUndefined();
@@ -652,7 +658,7 @@ const _dnd: Exact<typeof sn.doNotDisturb, boolean | undefined> = true;
 
 const _setVolumeOptional: Exact<undefined extends typeof sn.setVolume ? true : false, true> = true;
 const _testOptional: Exact<undefined extends typeof sn.test ? true : false, true> = true;
-const _testArgs: Exact<Parameters<NonNullable<typeof sn.test>>, []> = true;
+const _testArgs: Exact<Parameters<NonNullable<typeof sn.test>>, [open?: boolean]> = true;
 const _triggerOptional: Exact<undefined extends typeof sn.trigger ? true : false, true> = true;
 const _triggerArgs: Exact<Parameters<NonNullable<typeof sn.trigger>>, [types: number | readonly number[]]> = true;
 const _stopOptional: Exact<undefined extends typeof sn.stop ? true : false, true> = true;
