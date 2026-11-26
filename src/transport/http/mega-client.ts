@@ -1112,9 +1112,11 @@ export class MegaHttpClient {
 
   /**
    * Share devices with another eufy account by email, as the app's family module sends it
-   * (`app/devicerelation/device_invite`, `transaction: ""`). Each invite names a device and the role it grants:
-   * `member_type` 0 guest, 1 admin (the app forces 1 on `eufy_pet`). `permissions` goes out 0, as every 6.1.32
-   * invite does. Only devices this account administers (`memberType` 1 or 2) can be shared.
+   * (`app/devicerelation/device_invite`, `transaction: ""`, `email` and `nick_name` both the invitee's email in
+   * lower case). Each invite names a station or a standalone device and the role it grants: `member_type` 0 guest,
+   * 1 admin (the app forces 1 on `eufy_pet`). `permissions` goes out 0, as every app invite does. `subData` lists
+   * a station's devices, each `checked` when shared; a standalone device's names itself, checked, where none is
+   * given. The app offers to share only a device this account owns: no `member`, or `memberType` 2.
    *
    * When any invite is `eufy_security`, the app seals a fresh 6-digit share code into every invite's
    * `encrypted_data` (`email=…&type=DEVICE&deviceSn=<first serial>&ts=…`); the invitee must enter that code
@@ -1126,13 +1128,13 @@ export class MegaHttpClient {
    */
   async inviteShare(
     email: string,
-    nickName: string,
     invites: ReadonlyArray<{
       device_sn: string;
       category: string;
       member_type: number;
       device_name?: string;
       sub_sns?: string;
+      subData?: ReadonlyArray<{ device_sn: string; device_name?: string; checked: boolean }>;
     }>,
   ): Promise<{ emailSent: boolean; authCode?: string }> {
     let emailSent = false;
@@ -1172,13 +1174,15 @@ export class MegaHttpClient {
       permissions: 0,
       encrypted_data: sealed?.encrypted ?? "",
       sub_sns: "",
+      subData: [{ device_sn: i.device_sn, checked: true }],
       ...i,
       member_type: i.category === "eufy_pet" ? 1 : i.member_type,
     }));
+    const invitee = email.toLowerCase();
     const r = await this.post<{ email_sent?: boolean }>("devicerelation", "/app/devicerelation/device_invite", {
       transaction: "",
-      email,
-      nick_name: nickName,
+      email: invitee,
+      nick_name: invitee,
       invites: body,
     });
     return { emailSent: emailSent || !!r?.email_sent, ...(sealed && { authCode: sealed.code }) };
