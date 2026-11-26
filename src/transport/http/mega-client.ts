@@ -307,6 +307,17 @@ const GZIP = { "x-accept-encoding": "gzip" } as const;
 /** The app's `Digest.c(password, "SHA256")`: the lower-case SHA-256 hex of the trimmed password. */
 const sha256Hex = (password: string) => createHash("sha256").update(password.trim(), "utf8").digest("hex");
 
+/**
+ * Whether a failed call timed out, as the app's `TDRepositoryImpl.isTimeoutFailure` reads it: HTTP 408 or 504, or
+ * a message or error name saying `timeout` / `timed out`.
+ */
+function isTimeoutFailure(e: unknown): boolean {
+  const status = e instanceof MegaApiError ? e.status : undefined;
+  return (
+    status === 408 || status === 504 || /timeout|timed out/i.test(e instanceof Error ? `${e.name} ${e.message}` : "")
+  );
+}
+
 /** The challenge a `/passport/login` attempt answers: none, a solved captcha, or a 2FA code. */
 type LoginChallenge = { verifyCode?: string; captchaId?: string; answer?: string };
 
@@ -478,6 +489,8 @@ export class MegaHttpClient {
   private lastRecoveryAt = 0;
   /** A token of ours has been rejected and not yet replaced — see {@link noteTokenReplacement}. */
   private rejectedTokenPending = false;
+  /** A several-product `get_things_list` timed out once: each product is asked alone — see {@link getThingsList}. */
+  private singlePnThings = false;
   /** The last thing description of each product fetched, persisted with the session — see {@link getThingsList}. */
   private things: unknown[];
   /** The RTC signalling cache of each station, persisted with the session — see {@link rtcToken}. */
@@ -986,11 +999,16 @@ export class MegaHttpClient {
    *
    * Each product's last full description is kept with the session, as the app keeps its own locally, and
    * answers in place of a failed call for the products it covers. A dead session still throws.
+   *
+   * A request for several products that times out switches the client to one product per request, three in
+   * flight, for the rest of its life, as the app's `TDRepositoryImpl` does (`fetchSinglePnMode`,
+   * `fetchSinglePnConcurrently`); each product then keeps its own stored description on failure.
    */
   async getThingsList<T = unknown>(
     productCodes: readonly string[],
     codeTimeMap: Readonly<Record<string, number>> = {},
   ): Promise<T> {
+    if (this.singlePnThings && productCodes.length > 1) return this.thingsOnePerProduct(productCodes, codeTimeMap);
     const code = (t: unknown) => (t as { profile?: { product_code?: unknown } })?.profile?.product_code;
     try {
       const data = await this.post<{ things_list?: unknown }>(
@@ -1011,11 +1029,36 @@ export class MegaHttpClient {
       this.persist();
       return data as T;
     } catch (e) {
+      if (productCodes.length > 1 && !(e instanceof SessionExpiredError) && isTimeoutFailure(e)) {
+        this.singlePnThings = true;
+        return this.thingsOnePerProduct(productCodes, codeTimeMap);
+      }
       const cached = this.things.filter((t) => productCodes.includes(code(t) as string));
       if (e instanceof SessionExpiredError || !cached.length) throw e;
       this.logger.debug(`[mega] thing descriptions unavailable, using the stored ones: ${(e as Error)?.message ?? e}`);
       return { things_list: cached } as T;
     }
+  }
+
+  /** {@link getThingsList} for each product alone, at most three at a time, answering their joined `things_list`. */
+  private async thingsOnePerProduct<T>(codes: readonly string[], codeTimeMap: Readonly<Record<string, number>>) {
+    const lists: unknown[][] = [];
+    let next = 0;
+    const worker = async () => {
+      for (let i = next++; i < codes.length; i = next++) {
+        const c = codes[i]!;
+        const data = await this.getThingsList<{ things_list?: unknown[] }>(
+          [c],
+          c in codeTimeMap ? { [c]: codeTimeMap[c]! } : {},
+        ).catch((e: unknown) => {
+          if (e instanceof SessionExpiredError) throw e;
+          return { things_list: [] };
+        });
+        lists[i] = data.things_list ?? [];
+      }
+    };
+    await Promise.all([worker(), worker(), worker()]);
+    return { things_list: lists.flat() } as T;
   }
 
   /**
