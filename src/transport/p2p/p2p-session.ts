@@ -1368,7 +1368,10 @@ export class P2PSession extends EventEmitter {
    * surfaced via the `data` event. Two start protocols, selected by runtime topology (never by device
    * family):
    *  - `homeBaseAttached` (the camera rides a HomeBase's session): `CMD_SET_PAYLOAD` (1350) wrapping
-   *    `{cmd:1003, mChannel:channel}` at level-2, where `mChannel` picks the camera on the base.
+   *    `{cmd:1003, mChannel:channel}` at level-2, where `mChannel` picks the camera on the base. On a session
+   *    holding only the AES-128-ECB key of an RSA cipher, the same envelope goes out through
+   *    {@link sendControlLevel2} under that key, offering the RSA media key; a T8021 station answers it with
+   *    the attached camera's stream.
    *  - own-session (the session is the camera itself): `CMD_CONTROL_PAYLOAD` (1700) / inner cmd 1000
    *    START_LIVE, then the 1139 keepalive to hold the stream. A bare 1003 is read as a status query
    *    there, not a stream.
@@ -1395,6 +1398,11 @@ export class P2PSession extends EventEmitter {
   ): void {
     if (homeBaseAttached) {
       this.tracedDatagramGaps = 0;
+      if (!this.level2Key && this.level2EcbKey) {
+        this.trace({ phase: "media-command", topology: "attached", action: "start", level2: false, key: "rsa" });
+        this.sendControlLevel2(CMD_START_REALTIME_MEDIA, channel, accountId, this.attachedStartPayload(accountId));
+        return;
+      }
       const key = this.connectAddress && this.level2Key ? this.attachedStartKey(channel) : undefined;
       this.trace({
         phase: "media-command",
@@ -1800,7 +1808,9 @@ export class P2PSession extends EventEmitter {
   /**
    * Stop the realtime media stream (`CMD_STOP_REALTIME_MEDIA`, 1004) on a camera `channel`, in the shape
    * its runtime topology takes, as {@link startLiveMedia} selects its start:
-   *  - `homeBaseAttached`: `CMD_SET_PAYLOAD` (1350) wrapping `{cmd:1004, mChannel:channel}` at level-2.
+   *  - `homeBaseAttached`: `CMD_SET_PAYLOAD` (1350) wrapping `{cmd:1004, mChannel:channel}` at level-2, or
+   *    through {@link sendControlLevel2} under the AES-128-ECB key of an RSA cipher when that is the key held,
+   *    as the start went.
    *  - own-session at level-2: the direct 1004 frame whose entire plaintext is the camera channel as a
    *    `uint32`, the same 4-byte body as the attached talkback frames. The app sends this frame on closing
    *    an own-session camera's live view; the camera stops streaming on it within a second, and keeps
@@ -1825,6 +1835,8 @@ export class P2PSession extends EventEmitter {
       this.sendRawLevel2Bytes(body, channel, CMD_STOP_REALTIME_MEDIA, 8);
     } else if (this.level2Key) {
       this.sendMediaPayloadLevel2(CMD_STOP_REALTIME_MEDIA, channel, accountId, {});
+    } else if (homeBaseAttached && this.level2EcbKey) {
+      this.sendControlLevel2(CMD_STOP_REALTIME_MEDIA, channel, accountId, {});
     } else if (!homeBaseAttached && (this.sendsInTheClear() || this.refusedLevel2) && this.connectAddress) {
       const magic: [number, number] = this.sendsInTheClear() ? this.nextClearCommandBytes() : [0x01, 0x00];
       const data = Buffer.concat([
@@ -2016,13 +2028,28 @@ export class P2PSession extends EventEmitter {
   }
 
   /**
+   * The inner payload of an attached camera's media start: the `accountId` and the media key `key` offers
+   * (see {@link attachedStartKey}), which the camera wraps each keyframe's media key with. A start offering
+   * the P-256 point labels itself `ClientOS: "IOS"`, as every simple attached start in the app captures that
+   * carry that key form does; the RSA start keeps `"Android"`.
+   */
+  private attachedStartPayload(accountId: string, key?: "ecc" | "rsa"): Record<string, unknown> {
+    return {
+      ClientOS: key === "ecc" ? "IOS" : "Android",
+      accountId,
+      camera_type: 0,
+      entrytype: 0,
+      key: key === "ecc" ? this.mediaEccPair().point : this.rsaModulus(),
+      streamtype: 2,
+    };
+  }
+
+  /**
    * Send a CMD_SET_PAYLOAD(1350) wrapping `{account_id, cmd:<subCmd>, mChannel, mValue3:<subCmd>,
    * payload}`, encrypted level-2 (AES-256-GCM, signCode 8) — the app's media-control path. The
    * camera is selected by `mChannel` (= the device's `device_channel`) AND the frame-header channel.
-   * A start (HomeBase-controlled camera path, the V6 app's media-start envelope) also carries an
-   * `accountId` inside its payload and the media key `key` offers (see {@link attachedStartKey}). A start
-   * offering the P-256 point labels itself `ClientOS: "IOS"`, as every simple attached start in the app
-   * captures that carry that key form does; the RSA start keeps `"Android"`.
+   * A start (HomeBase-controlled camera path, the V6 app's media-start envelope) carries
+   * {@link attachedStartPayload} inside its payload.
    */
   private sendMediaPayloadLevel2(
     subCmd: number,
@@ -2038,18 +2065,8 @@ export class P2PSession extends EventEmitter {
       });
       return;
     }
-    const isStart = subCmd === CMD_START_REALTIME_MEDIA;
-    const innerPayload = isStart
-      ? {
-          ClientOS: key === "ecc" ? "IOS" : "Android",
-          accountId,
-          camera_type: 0,
-          entrytype: 0,
-          key: key === "ecc" ? this.mediaEccPair().point : this.rsaModulus(),
-          streamtype: 2,
-          ...payload,
-        }
-      : payload;
+    const innerPayload =
+      subCmd === CMD_START_REALTIME_MEDIA ? { ...this.attachedStartPayload(accountId, key), ...payload } : payload;
     const value = JSON.stringify({
       account_id: accountId,
       cmd: subCmd,
