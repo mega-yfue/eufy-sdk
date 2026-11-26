@@ -103,10 +103,22 @@ describe("native RTC routing off is_connect_webrtc", () => {
   });
 
   it.each([
+    [
+      "no IPv4 signalling server",
+      { ...RECORD, signaling_servers: ["https://a.invalid"] },
+      { host: "", domain: "a.invalid" },
+    ],
+    ["no license", { ...RECORD, p2p_license: "" }, { lic: "" }],
+  ])("sends a station at 2 with %s over RTC, which the app has no P2P fallback for", async (_, record, missing) => {
+    const { internals, rtc, p2p } = fixture("T9000", { is_connect_webrtc: "2" }, record);
+    await internals.routeCommand(HUB, command);
+    expect(rtc).toHaveBeenCalledExactlyOnceWith({ ...route(false), ...missing }, command);
+    expect(p2p).not.toHaveBeenCalled();
+  });
+
+  it.each([
     ["no is_connect_webrtc", {}, RECORD],
     ["is_connect_webrtc 0", { is_connect_webrtc: "0" }, RECORD],
-    ["no IPv4 signalling server", { is_connect_webrtc: "2" }, { ...RECORD, signaling_servers: ["https://a.invalid"] }],
-    ["no license", { is_connect_webrtc: "2" }, { ...RECORD, p2p_license: "" }],
   ])("keeps a station with %s on P2P", async (_, props, record) => {
     const { internals, rtc, p2p } = fixture("T8010", props, record);
     await internals.routeCommand(HUB, command);

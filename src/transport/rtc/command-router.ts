@@ -71,7 +71,7 @@ export interface RtcRoute {
   adminUserId?: string;
   /** The station record's member account id, which a command stating `stationAccount` carries instead. */
   stationAccountId?: string;
-  /** The station record's `p2p_did`, `p2p_license` and first IPv4 `signaling_servers` host. */
+  /** The station record's `p2p_did`, `p2p_license` and first IPv4 `signaling_servers` host, `""` where it states none. */
   did: string;
   lic: string;
   host: string;
@@ -429,7 +429,7 @@ export class RtcCommandRouter {
     return id;
   }
 
-  /** The station's client, created and started on first use. */
+  /** The station's client, created and started on first use; a route missing its did, license or host throws. */
   private station(route: RtcRoute): Station {
     const sn = route.stationSn;
     const known = this.stations.get(sn);
@@ -437,6 +437,8 @@ export class RtcCommandRouter {
     const userId = this.deps.userId();
     if (!userId) throw new Error(`rtc: not logged in, cannot reach ${sn}`);
     const { did, lic, host } = route;
+    if (!did || !lic || !host)
+      throw new Error(`rtc: ${sn}'s record states no p2p_did, p2p_license or IPv4 signalling host`);
     const signal = (this.deps.layers?.signal ?? ((o) => new RtcSignalClient(o)))({
       sn,
       did,

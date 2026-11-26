@@ -1114,8 +1114,9 @@ export class EufyMega extends EventEmitter {
   /**
    * The RTC route of a device the app connects natively (`DeviceWebrtcKtx.isWebrtc`), read off its station: the
    * station's description reads `is_connect_webrtc` 2, or 1 (`true`) on one listing no
-   * `is_connect_webrtc_sub_device_list`, and the station's record carries what the app's `WebrtcInterceptor` refuses
-   * a request without: `p2p_did`, `p2p_license` and an IPv4 `signaling_servers` entry. `undefined` otherwise. The
+   * `is_connect_webrtc_sub_device_list`; `undefined` otherwise. The route carries the station record's `p2p_did`,
+   * `p2p_license` and first IPv4 `signaling_servers` host, `""` where the record states none: the app's
+   * `WebrtcInterceptor` gates on `isWebrtc` alone and hands the record's fields to the RTC session as they are. The
    * account id is esiotkit's `p2pRequest` one, which the app's RTC sender carries too: the target's stated admin; a
    * legacy `ZmediaUtil` request (`isWebrtc`) carries the station's member one.
    *
@@ -1144,10 +1145,9 @@ export class EufyMega extends EventEmitter {
     const hosts = (Array.isArray(raw.signaling_servers) ? raw.signaling_servers : []).map(
       (s) => /^(?:https:\/\/)?([^/]*)/.exec(String(s))?.[1] ?? "",
     );
-    const host = hosts.find((h) => /^\d{1,3}(\.\d{1,3}){3}$/.test(h));
-    const did = text(raw.p2p_did);
-    const lic = text(raw.p2p_license);
-    if (!host || !did || !lic) return undefined;
+    const host = hosts.find((h) => /^\d{1,3}(\.\d{1,3}){3}$/.test(h)) ?? "";
+    const did = text(raw.p2p_did) ?? "";
+    const lic = text(raw.p2p_license) ?? "";
     return {
       stationSn,
       attached: stationSn !== sn,
