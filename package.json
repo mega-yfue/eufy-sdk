@@ -1,6 +1,6 @@
 {
   "name": "@mega-yfue/eufy-sdk",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "One typed TypeScript client for the Anker eufy v6 cloud — capability-driven devices, realtime events over P2P/MQTT/push, and live media",
   "license": "Apache-2.0",
   "author": "mega-yfue",
