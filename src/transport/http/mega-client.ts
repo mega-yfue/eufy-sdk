@@ -582,7 +582,8 @@ export class MegaHttpClient {
    * dash/underscore duplicates (os-type + os_type, app-version + app_version,
    * …) — the app sends both forms and the gateway reads a mix. `openudid` is
    * REQUIRED: the auth token is bound to it, so login + data calls must use the
-   * same value or the gateway 401s with "secret or user_id is empty".
+   * same value or the gateway 401s with "secret or user_id is empty". `timezone` is the host's zone id, which the
+   * app's `GlobalHeaderRouting` sets on every request.
    */
   private baseHeaders(): Record<string, string> {
     const v = this.cfg.appVersion;
@@ -604,6 +605,7 @@ export class MegaHttpClient {
       openudid: this.openudid,
       language: "en",
       "test-flag": "false",
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       "user-agent": "ktor-client",
       accept: "application/json",
       "accept-charset": "UTF-8",
@@ -1678,7 +1680,7 @@ export class MegaHttpClient {
   /**
    * Create the account for `email` once its code checked out (`passport/register_create_account`): `password`
    * goes out as the SHA-256 hex of the trimmed password, `country_code` and the `country` header are the client's
-   * `countryCode`, `timezone` the host's zone. Captcha codes answer as on {@link sendRegisterCode}. The account is
+   * `countryCode`. Captcha codes answer as on {@link sendRegisterCode}. The account is
    * not logged in; {@link login} follows, as the app's next call.
    */
   async registerAccount(opts: {
@@ -1700,7 +1702,7 @@ export class MegaHttpClient {
         is_subscribe: !!opts.subscribe,
         country_code: country,
       },
-      { country, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone },
+      { country },
     );
   }
 

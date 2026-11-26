@@ -49,7 +49,13 @@ describe("MegaHttpClient account registration", () => {
       is_subscribe: true,
       country_code: "DE",
     });
-    expect(headers).toEqual({ country: "DE", timezone: expect.any(String) });
+    expect(headers).toEqual({ country: "DE" });
+  });
+
+  it("sends the host's time zone on every call, as the app's global headers do", () => {
+    const { mega } = client();
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    expect((mega as unknown as { baseHeaders: () => Record<string, string> }).baseHeaders().timezone).toBe(zone);
   });
 
   it("activates an inactive account with the token the resend answers", async () => {
