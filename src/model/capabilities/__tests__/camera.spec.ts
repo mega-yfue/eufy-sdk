@@ -814,6 +814,7 @@ describe("camera enablement — observed write", () => {
       codec: "camera",
       model,
       homeBaseAttached,
+      ...(homeBaseAttached && { stationSerial: "T8010P0000000000" }),
       things: DESCRIBED,
       paramIds: new Set(reported),
     } as never);

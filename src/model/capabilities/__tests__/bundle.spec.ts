@@ -531,6 +531,19 @@ describe("bundled", () => {
       onOff.readAliases.find((a) => a.paramType === 6250)!.available(ctx("T0001", { things: described, ...attached })),
     ).toBe(true);
   });
+  it("takes the topology the bundles' getConnectType gives, and nothing on one the data lacks", async () => {
+    const { bundle } = await over(POWER);
+    const onOff = bundle.bundled(["camera_on_off"], 1035);
+    const behind = (stationSerial: string, outdoor?: string) =>
+      onOff.write(
+        true,
+        ctx("T0001", { things: described, stationSerial, paramValue: (p) => (p === 6271 ? outdoor : undefined) }),
+      );
+    expect(behind("T8010P0000000000")).toMatchObject({ cmd: 6250 });
+    expect(behind("T8010P0000000000", "1"), "outdoor mode").toMatchObject({ param: 1035 });
+    expect(behind("T8040P0000000000"), "HomeBase 4").toBeUndefined();
+    expect(behind("T8030P0100000000"), "HomeBase 3E").toBeUndefined();
+  });
   it("writes the frame of the topology the device is on", async () => {
     const { bundle } = await over(POWER);
     const onOff = bundle.bundled(["camera_on_off"], 1035);

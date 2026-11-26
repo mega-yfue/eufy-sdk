@@ -186,17 +186,19 @@ function variantOf(identifier: string, ctx: AvailabilityContext): string {
 }
 
 /**
- * The {@link BUNDLE_WIRES} write frames and read this device selects for `identifier`: its product and
- * resolved variant, standalone unless attached (a record naming a station serial is), a T8030 station as
- * `hb3`, any other as `hb2`.
+ * The {@link BUNDLE_WIRES} write frames and read this device selects for `identifier`: its product and resolved
+ * variant, on the topology the bundles' `getConnectType` gives it: standalone unless attached (a record naming a
+ * station serial is) or in outdoor mode (6271 on), else its station's ({@link topologyOf}). The data holds the rows
+ * of the topologies its probes ran on; a device on another has none, and nothing is sent or read for it.
  */
 export function bundleEntry(identifier: string, ctx: AvailabilityContext): BundleEntry | undefined {
   const groups = BUNDLE_WIRES.wires[identifier];
   const model = ctx.model ?? "";
   const entry = memberOf(groups, model + variantOf(identifier, ctx)) ?? memberOf(groups, model);
   const attached = ctx.homeBaseAttached ?? ctx.stationSerial !== undefined;
-  const topology = !attached ? "standalone" : ctx.stationSerial?.startsWith("T8030") ? "hb3" : "hb2";
-  const java = javaEntry(identifier, model, topology === "standalone");
+  const outdoor = ["1", "true"].includes(ctx.paramValue?.(6271) ?? "");
+  const topology = attached && !outdoor ? topologyOf(ctx.stationSerial ?? "") : "standalone";
+  const java = javaEntry(identifier, model, !attached);
   if (java) return java;
   const frame = (f: BundleFrame | number) => (typeof f === "number" ? BUNDLE_WIRES.frames?.[f] : f);
   const frames = (w: Grouped<BundleFrame | number> = {}) =>
@@ -207,7 +209,7 @@ export function bundleEntry(identifier: string, ctx: AvailabilityContext): Bundl
   const write = memberOf(entry?.write, topology);
   const esl =
     ESL_SETTINGS.test(model) || (model.startsWith("T8530") && identifier === "device_loitering_detection_response");
-  const lockService = topology === "standalone" && esl;
+  const lockService = !attached && esl;
   const rain = !!ctx.things?.properties.device_rain_mode;
   const own = write
     ? esl
