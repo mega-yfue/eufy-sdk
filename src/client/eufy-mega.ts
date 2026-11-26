@@ -1858,12 +1858,12 @@ export class EufyMega extends EventEmitter {
     if (!this.registry.list().length) await this.getDevices();
     const creds = await this.getUserMqttInfo(scope === "default" ? undefined : scope);
     if (scope === "default") {
-      // The clean line's `MqttConnectionNew`: `android-{app_name}-{user_id}-{mqttUUID}{endpoint without "-"}`, the
+      // The clean line's `MqttConnectionNew`: `android-{app_name}-{user_id}-{mqttUUID}{endpoint:8883 without "-"}`, the
       // `mqttUUID` a fresh random UUID's 32 hex per client (`CleanBridgeAppSettingImpl` → `EncryptUtil.generateUUID`),
       // Paho's keepalive, and a lost connection retried at once, three times.
       const clientId =
         `android-${creds.app_name ?? "eufy_mega"}-${creds.user_id ?? auth.userId}-` +
-        `${randomUUID().replace(/-/g, "")}${creds.endpoint_addr.replace(/-/g, "")}`;
+        `${randomUUID().replace(/-/g, "")}${creds.endpoint_addr.replace(/-/g, "")}:8883`;
       return await this.connectMqtt(creds, { clientId, backoff: { minS: 0.001, maxS: 0.001, attempts: 3 } });
     }
     const connect = (c: SecureMqttCredentials) =>
