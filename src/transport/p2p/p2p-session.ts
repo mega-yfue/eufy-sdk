@@ -75,8 +75,9 @@ import { StationUnreachableError, type SessionFrame } from "../../core/contracts
 
 const LOCAL_LOOKUP_PORT = 32108;
 /**
- * The app's CS2 alive (`cs2p2p_PPPP_thread_recv_DRW`): an ALIVE after each 999 ms that nothing arrived from the peer,
- * and the session closed as timed out once more than {@link ALIVE_MISSES} go unanswered; anything received resets it.
+ * The app's CS2 alive (`cs2p2p_PPPP_thread_recv_DRW`): an ALIVE after each 999 ms without DRW data from the peer, and
+ * the session closed as timed out once more than {@link ALIVE_MISSES} go unanswered. DRW data, an ALIVE and an ALIVE
+ * ACK from the peer answer them; a DRW ACK does not.
  */
 const ALIVE_MS = 1_000;
 /** The miss limit `cs2p2p_PPPP_Initialize` sets for a plain init string. */
@@ -1013,8 +1014,10 @@ export class P2PSession extends EventEmitter {
     const fromConnectedPeer =
       this.connected && this.connectAddress?.host === rinfo.address && this.connectAddress.port === rinfo.port;
     if (fromConnectedPeer) {
-      this.lastHeardAt = Date.now();
-      this.aliveMisses = 0;
+      const data = hasHeader(msg, ResponseMessageType.DATA);
+      if (data) this.lastHeardAt = Date.now();
+      if (data || hasHeader(msg, ResponseMessageType.PING) || hasHeader(msg, ResponseMessageType.PONG))
+        this.aliveMisses = 0;
     }
     if (fromConnectedPeer && (hasHeader(msg, ResponseMessageType.PONG) || hasHeader(msg, ResponseMessageType.ACK))) {
       this.lastPeerAt = Date.now();
