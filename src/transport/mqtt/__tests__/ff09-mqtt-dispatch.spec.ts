@@ -101,6 +101,27 @@ describe("MqttCommandRouter.dispatchCommand (ff09-actuate)", () => {
     expect(getPnBySn).toHaveBeenCalledWith("T85D0K0000000000");
   });
 
+  it("asks get_pn_by_sn again on the next command after a failed or empty answer", async () => {
+    const getPnBySn = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce("")
+      .mockResolvedValue("T85D2");
+    const { router, fakeMqtt, cmd } = makeRouter("T85D0K0000000000", {}, getPnBySn);
+    for (let i = 0; i < 4; i++) {
+      const p = router.dispatchCommand("T85D0K0000000000", cmd);
+      await vi.advanceTimersByTimeAsync(15_000);
+      await p;
+    }
+    expect(vi.mocked(fakeMqtt.publish).mock.calls.map((c) => c[0].split("/")[2])).toEqual([
+      "T85D0",
+      "T85D0",
+      "T85D2",
+      "T85D2",
+    ]);
+    expect(getPnBySn).toHaveBeenCalledTimes(3);
+  });
+
   it("sends once and resolves (does not throw) after 15 s with no reply, reporting acked:false", async () => {
     const { router, fakeMqtt, cmd, acks } = makeRouter();
 

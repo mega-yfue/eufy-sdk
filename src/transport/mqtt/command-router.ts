@@ -400,8 +400,8 @@ export class MqttCommandRouter {
   }
 
   /**
-   * `get_pn_by_sn` answers per serial, kept like the app's `DevicePnCache`: a failed call keeps `""`. The
-   * promise is kept, so commands racing on a serial share one call.
+   * `get_pn_by_sn` answers per serial, kept like the app's `DevicePnCache`: a failed or empty answer is not kept, so
+   * the next command asks again. The promise is kept, so commands racing on a serial share one call.
    */
   private readonly cloudPn = new Map<string, Promise<string>>();
 
@@ -419,7 +419,9 @@ export class MqttCommandRouter {
       pn = this.deps.mega.getPnBySn(sn).catch(() => "");
       this.cloudPn.set(sn, pn);
     }
-    return (await pn) || sn.slice(0, 5);
+    const answer = await pn;
+    if (!answer) this.cloudPn.delete(sn);
+    return answer || sn.slice(0, 5);
   }
 
   /** The facade's stack for `scope` ({@link MqttRouterDeps.secureTransport}). Throws if it isn't wired. */
