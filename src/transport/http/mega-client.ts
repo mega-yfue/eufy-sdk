@@ -416,7 +416,7 @@ export class MegaHttpClient {
   /** The security certificate `register/iot` last issued, cached with the session (see {@link getUserMqttInfo}). */
   private securityMqtt?: SecureMqttCredentials;
   private sessionKey?: SessionEntry;
-  /** Per-host ECDH session keys for non-mega gateways (e.g. eufylife) keyed by host. */
+  /** The Security category's ECDH session keys, keyed by the host each was exchanged on. */
   private readonly sessionKeys = new Map<string, SessionEntry>();
   /** The in-flight key exchanges, by host and the token they carry — see {@link ensureSessionKey}. */
   private readonly keyExchanges = new Map<string, Promise<SessionEntry>>();
@@ -684,31 +684,38 @@ export class MegaHttpClient {
    * so it MUST be reused (don't re-exchange after login).
    */
   async ensureSessionKey(targetHost?: string): Promise<SessionEntry> {
-    // The eufylife data host (security-app-*.eufylife.com) runs its OWN key exchange with a
-    // different bootstrap localKey + `/v3/` path, and rejects the mega key. Keep a per-host
-    // cache for it; the mega key (this.sessionKey) is shared across the whole *.eufy.com stack
-    // and is the one bound to user_id at login — don't conflate them.
-    const isEufylife = !!targetHost && targetHost.includes(".eufylife.com");
-    if (!isEufylife) {
+    const security = this.securityExchangeHost(targetHost);
+    if (!security) {
       if (this.sessionKey && Date.now() - this.sessionKey.createdAt < 12 * 3600_000) return this.sessionKey;
     } else {
-      const cached = this.sessionKeys.get(targetHost!);
+      const cached = this.sessionKeys.get(security);
       if (cached && Date.now() - cached.createdAt < 12 * 3600_000) return cached;
     }
     // A `mega-` domain fans out per module (`app-openapi-…` here); any other domain is the one host for all.
     const single = this.megaDomain && !this.megaDomain.startsWith("mega-") ? this.megaDomain : undefined;
-    const host = isEufylife ? targetHost! : (single ?? `app-openapi-${this.region}.eufy.com`);
+    const host = security ?? single ?? `app-openapi-${this.region}.eufy.com`;
     // Joined, not duplicated: every call that finds the key gone at once waits on the one exchange. The token is
     // part of the key because an exchange started before a login is bound to no user, and login re-exchanges
     // precisely to get one that is.
     const flight = `${host}\n${this.auth_?.authToken ?? ""}`;
     const joining = this.keyExchanges.get(flight);
     if (joining) return joining;
-    const exchange = this.exchangeSessionKey(host, isEufylife).finally(() => {
+    const exchange = this.exchangeSessionKey(host, !!security).finally(() => {
       if (this.keyExchanges.get(flight) === exchange) this.keyExchanges.delete(flight);
     });
     this.keyExchanges.set(flight, exchange);
     return exchange;
+  }
+
+  /**
+   * The host whose exchange keys a call to `host`, as the app's `getExchangeKeyUrl` picks it: the Security category
+   * host for itself and for `ProMonitor`, exchanged under the eufylife preset key on `/v3/`; `undefined` for every
+   * other host, Home included, which takes the mega key exchanged on `app-openapi`. That mega key is the one bound
+   * to the user at login.
+   */
+  private securityExchangeHost(host: string | undefined): string | undefined {
+    const security = this.securityAppHost();
+    return host === security || host?.startsWith("pro-monitoring-") ? security : undefined;
   }
 
   /** One key exchange against `host`, installed as that host's key. */
@@ -837,14 +844,15 @@ export class MegaHttpClient {
       authed &&
       (last?.code === EufyCloudErrorCode.IDENTITY_KEY_STALE ||
         /get identity error|identity error/i.test(last?.msg ?? ""));
-    // The app's `HttpSendInterceptKt.needExchanged`: HTTP 463, or 403 on a signed request (`isAppDomain` is true by
-    // default), re-exchanges the key and sends once more (`retryIfNeedExchangeKey`).
+    // The app's `HttpSendInterceptKt.needExchanged`: HTTP 463, or 403 on a host of its domain map (every host signed
+    // here), re-exchanges the key and sends once more (`retryIfNeedExchangeKey`).
     const exchange = identityError || last?.status === 463 || last?.status === 403;
     if (exchange && !retry.identity && this.auth_) {
       this.logger.debug(`[mega] ${last?.status}/${last?.code} → re-exchanging session key and retrying`);
       // Only the key this call was signed with: one another call already replaced is the fresh one to use.
-      if (host.includes(".eufylife.com")) {
-        if (this.sessionKeys.get(host) === entry) this.sessionKeys.delete(host);
+      const security = this.securityExchangeHost(host);
+      if (security) {
+        if (this.sessionKeys.get(security) === entry) this.sessionKeys.delete(security);
       } else if (this.sessionKey === entry) this.sessionKey = undefined;
       try {
         await this.ensureSessionKey(host);
@@ -1509,8 +1517,8 @@ export class MegaHttpClient {
    *
    * The `*.eufylife.com` gateway uses a SEPARATE ecdh key from the mega `*.eufy.com` gateway
    * (own bootstrap localKey `118c12c8…`, own `/v3/openapi/oauth/key/exchange` path, and data
-   * calls want `Content-Type: text/plain`). {@link ensureSessionKey} keeps a PER-HOST key
-   * for eufylife hosts and exchanges against the eufylife host, so `getFaces()`/`getCiphers()` work.
+   * calls want `Content-Type: text/plain`). {@link ensureSessionKey} keeps that key apart from the mega
+   * one and exchanges it against this host, so `getFaces()`/`getCiphers()` work.
    * Note `getFaces` returns an empty roster for accounts whose faces live on the HomeBase — the P2P
    * database path carries the real roster.
    */
@@ -1526,7 +1534,7 @@ export class MegaHttpClient {
 
   /**
    * A call on the app's Home category host (`product_domains.eufy_home`, default `api.eufylife.com`), as its esiotkit
-   * client makes it: `category: Home`, signed and encrypted under that host's key, answered in the
+   * client makes it: `category: Home`, signed and encrypted under the mega session key, answered in the
    * `{res_code, message, data}` envelope with `res_code` 1 for success. Answers `data`.
    */
   private async homeRequest<T>(method: "GET" | "POST" | "DELETE", path: string, body?: object): Promise<T> {

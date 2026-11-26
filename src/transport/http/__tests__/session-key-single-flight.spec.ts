@@ -2,7 +2,7 @@ import { createCipheriv, createDecipheriv, createECDH, randomBytes } from "node:
 
 import { describe, expect, it, vi } from "vitest";
 
-import { EUFY_MEGA_LOCAL_KEY_HEX, type SessionEntry } from "../../../core/crypto.js";
+import { EUFY_MEGA_LOCAL_KEY_HEX, EUFYLIFE_LOCAL_KEY_HEX, type SessionEntry } from "../../../core/crypto.js";
 import { MegaHttpClient } from "../mega-client.js";
 
 /**
@@ -17,15 +17,15 @@ type Response = { status: number; data: unknown };
 
 const LOCALKEY = Buffer.from(EUFY_MEGA_LOCAL_KEY_HEX, "hex");
 
-/** The server side of one key exchange: unwrap the client key, answer with a wrapped server key. */
-function serverKeyExchange(clientPublicKeyB64: string): string {
+/** The server side of one key exchange under `localKey`: unwrap the client key, answer with a wrapped server key. */
+function serverKeyExchange(clientPublicKeyB64: string, localKey = LOCALKEY): string {
   const raw = Buffer.from(clientPublicKeyB64, "base64");
-  const dec = createDecipheriv("aes-128-cbc", LOCALKEY, raw.subarray(0, 16));
+  const dec = createDecipheriv("aes-128-cbc", localKey, raw.subarray(0, 16));
   Buffer.concat([dec.update(raw.subarray(16)), dec.final()]);
   const server = createECDH("prime256v1");
   server.generateKeys();
   const iv = randomBytes(16);
-  const c = createCipheriv("aes-128-cbc", LOCALKEY, iv);
+  const c = createCipheriv("aes-128-cbc", localKey, iv);
   return Buffer.concat([iv, c.update(server.getPublicKey("hex", "uncompressed"), "utf-8"), c.final()]).toString(
     "base64",
   );
@@ -198,5 +198,31 @@ describe("a 463 or 403 on a signed request", () => {
 
     await expect(mega.postSigned("app-mega-us-pr.eufy.com", "/synthetic", {}, true)).resolves.toEqual({ ok: true });
     expect(exchanges).toBe(1);
+  });
+
+  it("keys the Home host on the mega exchange and ProMonitor on the Security host's, as getExchangeKeyUrl does", async () => {
+    const mega = new MegaHttpClient({ email: "synthetic@example.invalid", password: "synthetic", region: "us-pr" });
+    const internals = mega as unknown as {
+      httpPost: (url: string, body: { client_public_key: string }) => Promise<Response>;
+      sessionKey?: SessionEntry;
+    };
+    const exchanges: string[] = [];
+    internals.httpPost = vi.fn(async (url: string, body: { client_public_key: string }) => {
+      exchanges.push(url);
+      const key = Buffer.from(url.includes("/v3/") ? EUFYLIFE_LOCAL_KEY_HEX : EUFY_MEGA_LOCAL_KEY_HEX, "hex");
+      return {
+        status: 200,
+        data: { code: 0, data: { server_public_key: serverKeyExchange(body.client_public_key, key) } },
+      };
+    });
+
+    const megaKey = await mega.ensureSessionKey();
+    expect(await mega.ensureSessionKey("api.eufylife.com")).toBe(megaKey);
+    const security = await mega.ensureSessionKey("pro-monitoring-us-pr.eufy.com");
+    expect(await mega.ensureSessionKey("security-app.eufylife.com")).toBe(security);
+    expect(exchanges).toEqual([
+      "https://app-openapi-us-pr.eufy.com/openapi/oauth/key/exchange",
+      "https://security-app.eufylife.com/v3/openapi/oauth/key/exchange",
+    ]);
   });
 });
