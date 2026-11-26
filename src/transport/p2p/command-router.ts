@@ -633,8 +633,8 @@ export class P2PCommandRouter {
   /**
    * The private key of `cipherId` for a gateway info of `version`, as the app's `ConnectKeyFactory` gets it:
    * from the cache under `${userId}_${cipherId}`, else from `data[0]` of a `get_ciphers` call, asked at most twice
-   * while no key comes back. Version 8 asks with `station_sn` and keeps `ecc_private_key`; any other version asks
-   * with `sn` and keeps `private_key`. Only a non-empty key is cached.
+   * while no key comes back; a call that fails ends the lookup. Version 8 asks with `station_sn` and keeps
+   * `ecc_private_key`; any other version asks with `sn` and keeps `private_key`. Only a non-empty key is cached.
    */
   private async cipherKeyFor(
     cipherId: number,
@@ -645,17 +645,17 @@ export class P2PCommandRouter {
     const cacheKey = `${userId}_${cipherId}`;
     if (this.cipherKeyCache.has(cacheKey)) return this.cipherKeyCache.get(cacheKey);
     const ecc = version === 8;
-    for (let pass = 0; pass < 2; pass++) {
-      try {
+    try {
+      for (let pass = 0; pass < 2; pass++) {
         const [cipher] = await this.deps.mega.getCiphers([cipherId], userId, stationSn, ecc ? "station_sn" : "sn");
         const key = ecc ? cipher?.ecc_private_key : cipher?.private_key;
         if (key) {
           this.cipherKeyCache.set(cacheKey, key);
           return key;
         }
-      } catch (e) {
-        this.deps.onError(e instanceof Error ? e : new Error(String(e)));
       }
+    } catch (e) {
+      this.deps.onError(e instanceof Error ? e : new Error(String(e)));
     }
     return undefined;
   }
