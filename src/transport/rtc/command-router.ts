@@ -230,7 +230,7 @@ export class RtcCommandRouter {
       case "set-json-raw": {
         if (nativeGroup(cmd.cmd) !== "E") break;
         const accountId = this.accountId(route, cmd.stationAccount);
-        const body = withUser({ account_id: accountId, ...cmd.data }, accountId);
+        const body = withUser(cmd.cmd === 1255 ? { ...cmd.data, account_id: accountId } : cmd.data, accountId);
         return { id: cmd.cmd, body, channel: JSON_ON_DEVICE_CHANNEL.includes(cmd.cmd) ? cmd.channel : STATION_CHANNEL };
       }
       case "p2p-string": {

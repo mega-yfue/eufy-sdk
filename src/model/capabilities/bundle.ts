@@ -601,7 +601,15 @@ function floodlightWrite(param: number, value: string, ctx: CommandContext): Com
       ? undefined
       : { kind: "set-param", param, value: seconds, channel: ctx.channel, stationAccount };
   if (param === 1404)
-    return schedules && { kind: "set-json-raw", cmd: param, data: { schedules }, channel: 255, stationAccount };
+    return (
+      schedules && {
+        kind: "set-json-raw",
+        cmd: param,
+        data: { account_id: "$userId", schedules },
+        channel: 255,
+        stationAccount,
+      }
+    );
   const at = parse(ctx.paramValue?.(1415));
   const [lat, lng] = [at?.lat, at?.lng].map((x) => parseFloat(String(x)));
   const java = (n: number) => (Number.isInteger(n) ? n.toFixed(1) : String(n));

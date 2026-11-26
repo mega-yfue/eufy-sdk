@@ -1342,7 +1342,7 @@ describe("legacy floodlight writes the app sends in Java", () => {
     expect(cmd).toEqual({
       kind: "set-json-raw",
       cmd: 1404,
-      data: { schedules },
+      data: { account_id: "$userId", schedules },
       channel: 255,
       stationAccount: true,
     });

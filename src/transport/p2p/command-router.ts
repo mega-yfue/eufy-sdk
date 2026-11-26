@@ -1809,11 +1809,9 @@ export class P2PCommandRouter {
   }
 
   /**
-   * **`set-json-raw` intent** — bare JSON, no envelope: outer P2P cmd = `outerCmd` itself, plaintext
-   * exactly `{account_id,...data}`, sealed by the session. Reversed from a live
-   * capture of the app's own SET_SNOOZE_TIME (1271) frame — see `param-dictionary.ts`'s `1271` entry
-   * (`snoozeTime`); the alarm-delay config (1255, `arming.ts`'s `ARMING_CMD.SET_ALL_ACTION`) reuses
-   * the same bare-JSON shape. `station` sends the station's member account id.
+   * **`set-json-raw` intent** — bare JSON, no envelope: outer P2P cmd = `outerCmd` itself, plaintext `data`, a
+   * `"$userId"` in it the account id, and for 1255 `account_id` after it, as the app's sender adds it to that one
+   * command alone; sealed by the session. `station` sends the station's member account id.
    */
   private async sendJsonRaw(
     sn: string,
@@ -1829,7 +1827,7 @@ export class P2PCommandRouter {
         const accountId = station ? zmediaAccountId : admin;
         return session.sendStringPayloadCommand(
           outerCmd,
-          withUser({ account_id: accountId, ...data }, accountId),
+          withUser(outerCmd === 1255 ? { ...data, account_id: accountId } : data, accountId),
           channel,
         );
       },

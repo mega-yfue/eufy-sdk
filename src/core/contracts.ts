@@ -327,7 +327,7 @@ export type Command =
     | { kind: "set-json"; param: number; data: Record<string, unknown> | number; channel: number }
     // `set-json-raw` differs from `set-json` in ONE way: the wire's outer P2P command IS `cmd` itself
     // (no `1700` CONTROL_PAYLOAD wrapper, no `{commandType,data}` nesting) — the plaintext is exactly
-    // `data` (plus an injected `account_id`), matching the app's own SET_SNOOZE_TIME (1271) frame.
+    // `data` (a `"$userId"` in it the account id, and for 1255 an `account_id` after it).
     | {
         kind: "set-json-raw";
         cmd: number;
