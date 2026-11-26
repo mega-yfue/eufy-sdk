@@ -520,7 +520,8 @@ export class P2PCommandRouter {
    * notifications and frames.
    *
    * The level-2 key is waited for here on the same terms the station's own session gets, because a
-   * connection is not usable for this without one: an attached camera's media start has no level-1 form,
+   * connection is not usable for this without one: an attached camera's media start has no level-1 form
+   * (the set-payload key of an RSA cipher serves it, see {@link P2PSession.startLiveMedia}),
    * so a start issued before the key arrives is dropped as `media-command-unsent`, and the stream then
    * shows nothing until a later keepalive tick happens to find the key. A connected session that cannot
    * carry the start is not a connected session, so this refuses rather than returning one.
@@ -535,9 +536,9 @@ export class P2PCommandRouter {
     const session = await this.openSession(mediaKey, parentSn);
     try {
       await this.awaitConnected(session, parentSn, signal);
-      let ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal);
+      let ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call", "set-payload"), signal);
       if (!ready && session.repromptLevel2Key()) {
-        ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal);
+        ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call", "set-payload"), signal);
       }
       if (!ready) throw new StationKeyUnavailableError(parentSn);
       return session;
@@ -1143,6 +1144,7 @@ export class P2PCommandRouter {
     const { session, parentSn, channel, accountId, homeBaseAttached } = await this.resolveSession(sn, {
       waitLevel2: "soft",
       requireLevel2ForAttached: true,
+      level2Sender: "set-payload",
       signal: opts.signal,
     });
     const key = `${parentSn}:${channel}`;

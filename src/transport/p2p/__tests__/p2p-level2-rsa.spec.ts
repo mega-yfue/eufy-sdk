@@ -363,3 +363,66 @@ describe("routing on an RSA session", () => {
     }
   });
 });
+
+/**
+ * An attached camera's live media on a session holding only the AES-128-ECB key: the start and the stop are
+ * the set-payload `{cmd:1003}` / `{cmd:1004}` sealed under that key at encryption type 2, the form the
+ * station already takes for every set-payload on this cipher.
+ *
+ * Measured on a HomeBase-attached T8530 behind a T8021 whose gateway info is version 1: the start returned
+ * a first H.265 keyframe within three seconds and streamed until the stop, after which the station fell back
+ * to keepalives within ten seconds.
+ */
+describe("attached live media on an RSA session", () => {
+  const CHANNEL = 2;
+
+  it("starts with the set-payload {cmd:1003} under the negotiated key, offering the RSA media key", async () => {
+    const { session } = await negotiatedSession();
+    const sent = capture(session);
+    const modulus = (session as unknown as { rsaModulus(): string }).rsaModulus();
+
+    session.startLiveMedia(CHANNEL, ACCOUNT_ID, true);
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].header).toMatchObject({ commandId: 1350, channel: CHANNEL, signCode: 2 });
+    expect(JSON.parse(decryptP2PData(sent[0].body, SESSION_KEY).toString("utf-8").replace(/\0+$/, ""))).toEqual({
+      account_id: ACCOUNT_ID,
+      cmd: 1003,
+      mChannel: CHANNEL,
+      mValue3: 1003,
+      payload: {
+        ClientOS: "Android",
+        accountId: ACCOUNT_ID,
+        camera_type: 0,
+        entrytype: 0,
+        key: modulus,
+        streamtype: 2,
+      },
+    });
+  });
+
+  it("stops with the set-payload {cmd:1004} under the negotiated key", async () => {
+    const { session } = await negotiatedSession();
+    const sent = capture(session);
+
+    session.stopLiveMedia(CHANNEL, ACCOUNT_ID, true);
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].header).toMatchObject({ commandId: 1350, channel: CHANNEL, signCode: 2 });
+    expect(JSON.parse(decryptP2PData(sent[0].body, SESSION_KEY).toString("utf-8").replace(/\0+$/, ""))).toEqual({
+      account_id: ACCOUNT_ID,
+      cmd: 1004,
+      mChannel: CHANNEL,
+      mValue3: 1004,
+      payload: {},
+    });
+  });
+
+  it("is not refused by the router for want of the AES-256-GCM key", async () => {
+    const { session } = await negotiatedSession(ROUTER_STATION_SN);
+    capture(session);
+    const router = routerWithSession(session as unknown as FakeP2PSession);
+
+    await expect(router.sharedLiveSourceFor(DEVICE_SN)).resolves.toBeDefined();
+  });
+});
