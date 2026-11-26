@@ -535,7 +535,7 @@ export class EufyMega extends EventEmitter {
         return;
       }
       this.transports.set(scope, mqtt);
-      if (scope !== "default") this.refreshAfterLosses(scope, mqtt);
+      if (scope === "eufy_security") this.forgetCertificateAfterLosses(mqtt);
       await this.subscribeMqttDevices(scope, mqtt);
     })().catch((e) => {
       if (this.mqttReady.get(scope) === attempt) this.mqttReady.delete(scope);
@@ -546,20 +546,17 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * The app's `handleConnectionStatus`: three connection losses without a connect in between fetch a fresh
-   * certificate and reconnect the stack (`MAX_CONNECT_LOST_RETRY`).
+   * The app's `SecurityMqttManagerImpl.handleConnectionStatus`: every third connection loss without a connect in
+   * between drops the cached security certificate (`MAX_CONNECT_LOST_RETRY`, `clearSecurityCertificateCache`), so
+   * the next bring-up asks for a fresh one; the stack keeps reconnecting on its own.
    */
-  private refreshAfterLosses(scope: MqttScope, mqtt: SecureMqtt): void {
+  private forgetCertificateAfterLosses(mqtt: SecureMqtt): void {
     let lost = 0;
     mqtt.on("connect", () => (lost = 0));
     mqtt.on("disconnect", () => {
-      if (++lost !== 3 || this.transports.get(scope) !== mqtt) return;
-      this.transports.delete(scope);
-      this.mqttReady.delete(scope);
-      void mqtt
-        .disconnect()
-        .then(() => this.ensureMqttStarted(scope))
-        .catch((e) => this.reportError(e));
+      if (++lost < 3) return;
+      lost = 0;
+      this.mega.forgetSecurityMqtt();
     });
   }
 

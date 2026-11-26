@@ -475,26 +475,26 @@ describe("EufyMega auto-realtime", () => {
     expect(transport.subscribeDevice.mock.calls.map(([d]) => d.sn)).toEqual(["M1", "M2"]);
   });
 
-  it("fetches a fresh certificate and reconnects after three losses, as the app's MAX_CONNECT_LOST_RETRY", async () => {
+  it("drops the cached security certificate after three losses, as the app's MAX_CONNECT_LOST_RETRY", async () => {
     const c = makeClient({ mqtt: 0 }, { pollMs: 0 });
-    const light = { sn: "T8L00X0000000000", category: "eufy_life", model: "T8L00" } as unknown as EufyDevice;
     const transport = Object.assign(new EventEmitter(), {
       subscribeDevice: vi.fn(async () => {}),
       disconnect: vi.fn(async () => {}),
     });
     c.mqtt.mockResolvedValue(transport);
-    (c.eufy as any).getMqttDevices.mockReturnValue([light]);
-    await (c.eufy as any).ensureRealtime();
-    expect(c.mqtt).toHaveBeenCalledTimes(1);
+    const forget = vi.spyOn((c.eufy as any).mega, "forgetSecurityMqtt").mockReturnValue(undefined);
+    await (c.eufy as any).ensureMqttStarted("eufy_security");
+    expect(c.mqtt.mock.calls.map((a) => a[0])).toEqual(["eufy_security"]);
 
     transport.emit("disconnect");
     transport.emit("connect");
     transport.emit("disconnect");
     transport.emit("disconnect");
-    expect(c.mqtt).toHaveBeenCalledTimes(1);
+    expect(forget).not.toHaveBeenCalled();
     transport.emit("disconnect");
-    await vi.waitFor(() => expect(c.mqtt).toHaveBeenCalledTimes(2));
-    expect(transport.disconnect).toHaveBeenCalled();
+    expect(forget).toHaveBeenCalledOnce();
+    expect(c.mqtt).toHaveBeenCalledTimes(1);
+    expect(transport.disconnect).not.toHaveBeenCalled();
   });
 
   it("subscribes a device under the product number the app's snToPn gives, not its model", async () => {

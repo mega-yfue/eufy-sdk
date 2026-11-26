@@ -1509,6 +1509,12 @@ export class MegaHttpClient {
     }
   }
 
+  /** Drop the cached security certificate, as the app's `clearSecurityCertificateCache`: the next one is fetched. */
+  forgetSecurityMqtt(): void {
+    this.securityMqtt = undefined;
+    this.persist();
+  }
+
   /** The app's `PushManager.uploadToken` body: the push token, also as `voip_token`. */
   async registerPushToken(token: string): Promise<void> {
     await this.post("push", "/app/push/register_push_token", {
