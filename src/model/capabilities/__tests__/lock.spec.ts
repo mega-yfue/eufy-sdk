@@ -169,21 +169,19 @@ describe("lock capability module", () => {
     expect(sent[1]).toEqual({ ...sent[0], engage: true }); // lock (engage)
   });
 
-  it("lock/unlock on an MQTT-only device dispatch the SAME transport-neutral ff09-actuate intent", async () => {
-    // dev.lock()/.unlock() are byte-for-byte the same intent as the P2P case — the capability names no
-    // transport; the sink routes P2P vs MQTT by topology, so the host never has to know this is a garage
-    // door rather than a deadbolt.
-    const { acts, sent } = lockOf(mqttCtx);
+  it("lock/unlock on a lock its bundle drives over MQTT dispatch the SAME transport-neutral ff09-actuate intent", async () => {
+    const own = { ...mqttCtx, model: "T85M0", serial: "T85M0K0000000000", homeBaseAttached: false };
+    const { acts, sent } = lockOf(own);
     await acts.unlock!();
     await acts.lock!();
     expect(sent).toHaveLength(2);
     expect(sent[0]).toEqual({
       kind: "ff09-actuate",
       engage: false, // unlock (release)
-      adminUserId: mqttCtx.adminUserId,
-      username: mqttCtx.accountName,
-      shortUserId: mqttCtx.shortUserId,
-      deviceSn: mqttCtx.serial,
+      adminUserId: own.adminUserId,
+      username: own.accountName,
+      shortUserId: own.shortUserId,
+      deviceSn: own.serial,
     });
     expect(sent[1]).toEqual({ ...sent[0], engage: true }); // lock (engage)
   });
@@ -430,7 +428,7 @@ export const _surfaceAssertions = [
   _snapshot,
 ];
 
-/** A T8531 that is its own station: lock/unlock and auto-lock go through its own MQTT settings service. */
+/** A T8531 that is its own station, or a T85D0: lock/unlock and auto-lock go through the lock's MQTT settings service. */
 describe("lock capability — a lock that is its own station", () => {
   const own: CommandContext = { ...p2pCtx, model: "T8531", deviceType: DeviceType.LOCK_8531, homeBaseAttached: false };
   const service = { kind: "mqtt-dp", mqttCmdCode: 9, lockService: true, subVersion: 3, functionType: 2, encrypt: true };
@@ -438,16 +436,18 @@ describe("lock capability — a lock that is its own station", () => {
     (c as { fields: { tag: number; value: Buffer }[] }).fields.map((f) => [f.tag, f.value.toString("hex")]);
 
   it("sends lock/unlock as opcode 35 under apiCommand 6018, the user's name and short id after the operation", async () => {
-    const { acts, sent } = lockOf(own);
-    await acts.lock!();
-    await acts.unlock!();
-    expect(sent[0]).toMatchObject({ ...service, cmdCode: 35, apiCommand: 6018, timeoutS: 20 });
-    expect(fields(sent[0])).toEqual([
-      [0xa3, "00"],
-      [0xa4, Buffer.from("someone+tag").toString("hex")],
-      [0xa5, "0003"],
-    ]);
-    expect(fields(sent[1])[0]).toEqual([0xa3, "01"]);
+    for (const ctx of [own, mqttCtx]) {
+      const { acts, sent } = lockOf(ctx);
+      await acts.lock!();
+      await acts.unlock!();
+      expect(sent[0]).toMatchObject({ ...service, cmdCode: 35, apiCommand: 6018, timeoutS: 20 });
+      expect(fields(sent[0])).toEqual([
+        [0xa3, "00"],
+        [0xa4, Buffer.from("someone+tag").toString("hex")],
+        [0xa5, "0003"],
+      ]);
+      expect(fields(sent[1])[0]).toEqual([0xa3, "01"]);
+    }
   });
 
   it("writes auto-lock as its settings frame, re-sending the schedule, door-state check and, unless given, the delay", async () => {

@@ -80,7 +80,7 @@ import {
   type DeviceInspection,
   type RawParams,
 } from "../model/index.js";
-import { isHomeBase, isTuyaVacuum, settingsOverMqttWhenStandalone } from "../model/device-family.js";
+import { isHomeBase, isTuyaVacuum, lockMqttWire } from "../model/device-family.js";
 import { cameraPowerTier } from "../model/capabilities/battery.js";
 import { liveFrames, rtcLiveFrames } from "../model/capabilities/bundle.js";
 import { lensIds } from "../model/capabilities/camera.js";
@@ -1061,7 +1061,8 @@ export class EufyMega extends EventEmitter {
   /**
    * Choose the transport stack for one command — the routing half of {@link commandSinkFor}.
    *
-   * The `ff09-*` kinds share ONE frame that rides either transport; for any other device each stack is asked whether it drives
+   * The `ff09-*` kinds share ONE frame that rides either transport: a lock the app drives over secure MQTT
+   * ({@link ff09OverMqtt}) takes MQTT; for any other device each stack is asked whether it drives
    * it (`claimsDevice`) rather than inferring from the kind; `keyed-payload-actuate` (the classic Wi-Fi
    * lock) and `doorlock-pass-through-actuate` (the Bluetooth lock) are routed the same way, an actuation
    * claimed by the stack that drives the lock. `registry.require` throws on an unloaded serial, so a
@@ -1081,6 +1082,7 @@ export class EufyMega extends EventEmitter {
       cmd.kind === "doorlock-pass-through-actuate"
     ) {
       const dev = this.registry.require(sn);
+      if (this.ff09OverMqtt(dev)) return this.mqtt.dispatchCommand(sn, cmd);
       if (P2PCommandRouter.claimsDevice(dev)) return this.p2p.dispatchCommand(sn, cmd);
       if (MqttCommandRouter.claimsDevice(dev)) return this.mqtt.dispatchCommand(sn, cmd);
       throw new Error(`no transport stack claims device ${sn} for a ${cmd.kind} command`);
@@ -1344,11 +1346,9 @@ export class EufyMega extends EventEmitter {
     return dev;
   }
 
-  /** A lock whose own settings say so reads its settings through its MQTT settings service when it is its own station. */
-  private ff09OverMqtt(dev: EufyDevice): boolean {
-    return (
-      settingsOverMqttWhenStandalone(dev.model) && !homeBaseAttached((dev.raw ?? {}) as Record<string, any>, dev.sn)
-    );
+  /** The secure-MQTT wire the app drives `dev`'s lock frames on ({@link lockMqttWire}), `undefined` for none. */
+  private ff09OverMqtt(dev: EufyDevice): "native" | "bundle" | undefined {
+    return lockMqttWire(dev.model, !homeBaseAttached((dev.raw ?? {}) as Record<string, any>, dev.sn));
   }
 
   /**
@@ -1368,10 +1368,10 @@ export class EufyMega extends EventEmitter {
     const deviceSn = ctx.serial ?? "";
     return {
       getAutoLockState: () => {
-        const lockService = this.ff09OverMqtt(this.registry.require(sn));
-        return ctx.hasP2p && !lockService
+        const wire = this.ff09OverMqtt(this.registry.require(sn));
+        return ctx.hasP2p && !wire
           ? this.p2p.getAutoLockState(sn, { adminUserId, deviceSn })
-          : this.mqtt.getAutoLockState(sn, { adminUserId, deviceSn, ...(lockService && { lockService }) });
+          : this.mqtt.getAutoLockState(sn, { adminUserId, deviceSn, ...(wire === "native" && { lockService: true }) });
       },
     };
   }

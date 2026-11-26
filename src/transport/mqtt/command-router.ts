@@ -569,7 +569,7 @@ export class MqttCommandRouter {
   }
 
   /**
-   * The `ff09-autolock` intent handler over MQTT — read-modify-write the T85D0's auto-lock setting.
+   * The `ff09-autolock` intent handler over MQTT — read-modify-write a lock's auto-lock setting.
    * Unlike {@link dispatchFf09Actuate} (one
    * fire-and-forget frame), this is a GET then a SET:
    *
@@ -677,7 +677,7 @@ export class MqttCommandRouter {
   }
 
   /**
-   * **Read the T85D0's current auto-lock settings over MQTT** — the `Ff09SettingsReader` implementation.
+   * **Read a lock's current auto-lock settings over MQTT** — the `Ff09SettingsReader` implementation.
    * A pure GET, no SET: reuses {@link fetchFf09SettingsGetReply}, then decrypts
    * + decodes fields `a1`-`a5` per `transport/ff09.ts`'s response tag map.
    */
