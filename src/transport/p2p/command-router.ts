@@ -2199,7 +2199,8 @@ export class P2PCommandRouter {
    * `payload` the sealed blob from {@link buildDoorlockPassThrough} keyed to that station and the
    * lock's member, as the app's `ESLStationP2PService.r` does. The blob carries the station's next
    * {@link passThroughSeq}, and a `P2P_SEQ` notify naming its `lock_cmd` sends it again under the station's new one
-   * ({@link onStationFrame}). The key's admin id and the TLV's short user id are the lock's member
+   * ({@link onStationFrame}). A station on firmware `2.1.2.2l_1.3` takes it AES-128-ECB. The key's admin id and the
+   * TLV's short user id are the lock's member
    * (`ESLStationAesManager.a(AnkerAccountManager.e(lockSn), stationSn)`, read here off the lock's record, and
    * `OnOffRequestPayload.shortUserId`, which the intent carries); only the envelope's account id is the station's (`AccountDelegate.m(stationSn)`). The
    * `short_user_id` is hex, as on the `ff09` path, and anything but four hex digits throws rather than writing the
@@ -2227,6 +2228,7 @@ export class P2PCommandRouter {
         nickname: cmd.username,
         stationSn: parentSn,
         seqNum,
+        ecb: (this.recordFor(parentSn)?.raw as Record<string, unknown> | undefined)?.main_sw_version === "2.1.2.2l_1.3",
       });
       (this.deps.logger ?? noopLogger).debug(
         `[p2p] ${parentSn} door-lock pass-through ${cmd.engage ? "lock" : "unlock"} ${sn} seq=${seqNum}`,

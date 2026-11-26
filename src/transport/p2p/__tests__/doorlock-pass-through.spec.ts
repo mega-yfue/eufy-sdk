@@ -203,4 +203,12 @@ describe("a door-lock pass-through actuation", () => {
     );
     expect(tlv.subarray(4, 7).toString("hex")).toBe("a20100");
   });
+
+  it("seals AES-128-ECB for a station on firmware 2.1.2.2l_1.3", async () => {
+    const { router, session } = makeRouter(true, ME, "2.1.2.2l_1.3");
+
+    await router.dispatchCommand(LOCK_SN, lockCmd);
+
+    expect(sealed(session.sendSetPayload.mock.calls[0]!, "aes-128-ecb")).toMatchObject({ lock_cmd: 8 });
+  });
 });
