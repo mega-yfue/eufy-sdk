@@ -40,7 +40,7 @@ import { adminUserIdOf, memberAccountId } from "../../core/member.js";
 import { setTimeout as sleep } from "node:timers/promises";
 import { CONNECT_TIMEOUT_MS, P2PSession, STATION_CHANNEL, type P2PFrame } from "./p2p-session.js";
 import { buildDirectBinaryBody, buildStringBody } from "./write-commands.js";
-import { buildDoorlockPassThrough, sealStationPayload } from "./doorlock-pass-through.js";
+import { buildDoorlockPassThrough, LOCK_CMD_ON_OFF, sealStationPayload } from "./doorlock-pass-through.js";
 import { CommandType } from "./commands.js";
 import {
   buildFf09Frame,
@@ -613,10 +613,20 @@ export class P2PCommandRouter {
     return session;
   }
 
-  /** A frame from a station's session: a `P2P_SEQ` notify moves {@link keyedSeq} on, then the client decodes it. */
+  /**
+   * A frame from a station's session: a `P2P_SEQ` notify moves {@link keyedSeq} on, sets the station's
+   * {@link passThroughSeq} to its `seq_num` and resends the station's last pass-through of its `lock_cmd`, as the app's
+   * `ESLStationP2PService.onReceiveSquNum` does; then the client decodes it.
+   */
   private onStationFrame(stationSn: string, f: P2PFrame): void {
     const mark = keyedPayloadSeqMark(f.json);
-    if (mark !== undefined) this.keyedSeq = mark + 1;
+    if (mark !== undefined) {
+      this.keyedSeq = mark + 1;
+      this.passThroughSeq.set(stationSn, mark);
+      const lockCmd = (f.json!.payload as { lock_cmd?: unknown }).lock_cmd;
+      const resend = typeof lockCmd === "number" ? this.passThroughSent.get(stationSn)?.get(lockCmd) : undefined;
+      if (resend) void resend().catch((e) => this.reportError(e));
+    }
     this.deps.onFrame(stationSn, f);
   }
 
@@ -2178,13 +2188,19 @@ export class P2PCommandRouter {
     return { lock_payload: frame.lockPayload, seq_num: seqNum, apiCommand: lock.apiCommand, time: frame.time };
   }
 
+  /** Per station, the last pass-through `seq_num` (`ESLSeqNumManager`); unseen, the clock in seconds. */
+  private readonly passThroughSeq = new Map<string, number>();
+  /** Per station, the last pass-through sent per `lock_cmd`, kept to be sent again on a `P2P_SEQ` notify. */
+  private readonly passThroughSent = new Map<string, Map<number, () => Promise<void>>>();
+
   /**
    * **`doorlock-pass-through-actuate` intent** — `CMD_DOORLOCK_DATA_PASS_THROUGH` inside the
    * `CMD_SET_PAYLOAD` envelope, `mValue3=0`, on channel 0 of the station the lock is paired to, its
    * `payload` the sealed blob from {@link buildDoorlockPassThrough} keyed to that station and the
-   * lock's member, as the app's `ESLStationP2PService.r` does. Sent once: the blob carries its own sequence number,
-   * the clock in seconds + 1 as the app sends it. The key's admin id and the TLV's short user id are the lock's
-   * member (`ESLStationAesManager.a(AnkerAccountManager.e(lockSn), stationSn)`, read here off the lock's record, and
+   * lock's member, as the app's `ESLStationP2PService.r` does. The blob carries the station's next
+   * {@link passThroughSeq}, and a `P2P_SEQ` notify naming its `lock_cmd` sends it again under the station's new one
+   * ({@link onStationFrame}). The key's admin id and the TLV's short user id are the lock's member
+   * (`ESLStationAesManager.a(AnkerAccountManager.e(lockSn), stationSn)`, read here off the lock's record, and
    * `OnOffRequestPayload.shortUserId`, which the intent carries); only the envelope's account id is the station's (`AccountDelegate.m(stationSn)`). The
    * `short_user_id` is hex, as on the `ff09` path, and anything but four hex digits throws rather than writing the
    * wrong user. The name is the intent's account name, the app's `AccountDelegate.i()`. Sealed by the session like
@@ -2201,29 +2217,36 @@ export class P2PCommandRouter {
         `door-lock pass-through: ${sn} has no 4-digit hex short_user_id, got ${JSON.stringify(cmd.shortUserId)}`,
       );
     }
-    const blob = buildDoorlockPassThrough({
-      engage: cmd.engage,
-      adminUserId: memberAccountId(this.recordFor(sn)?.raw, this.deps.mega.auth?.userId),
-      shortUserId: Number.parseInt(cmd.shortUserId, 16),
-      nickname: cmd.username,
-      stationSn: parentSn,
-      seqNum: Math.trunc(Date.now() / 1000) + 1,
-    });
-    (this.deps.logger ?? noopLogger).debug(
-      `[p2p] ${parentSn} door-lock pass-through ${cmd.engage ? "lock" : "unlock"} ${sn}`,
-    );
-    await this.sendAnswered(
-      sn,
-      P2P_ENVELOPE.SET_PAYLOAD,
-      ({ session, zmediaAccountId }) =>
-        session.sendSetPayload(
-          CommandType.CMD_DOORLOCK_DATA_PASS_THROUGH,
-          { payload: blob },
-          { accountId: zmediaAccountId, channel: 0, mValue3: 0 },
-        ),
-      resolved,
-      true,
-    );
+    const send = async () => {
+      const seqNum = (this.passThroughSeq.get(parentSn) ?? Math.trunc(Date.now() / 1000)) + 1;
+      this.passThroughSeq.set(parentSn, seqNum);
+      const blob = buildDoorlockPassThrough({
+        engage: cmd.engage,
+        adminUserId: memberAccountId(this.recordFor(sn)?.raw, this.deps.mega.auth?.userId),
+        shortUserId: Number.parseInt(cmd.shortUserId, 16),
+        nickname: cmd.username,
+        stationSn: parentSn,
+        seqNum,
+      });
+      (this.deps.logger ?? noopLogger).debug(
+        `[p2p] ${parentSn} door-lock pass-through ${cmd.engage ? "lock" : "unlock"} ${sn} seq=${seqNum}`,
+      );
+      await this.sendAnswered(
+        sn,
+        P2P_ENVELOPE.SET_PAYLOAD,
+        ({ session, zmediaAccountId }) =>
+          session.sendSetPayload(
+            CommandType.CMD_DOORLOCK_DATA_PASS_THROUGH,
+            { payload: blob },
+            { accountId: zmediaAccountId, channel: 0, mValue3: 0 },
+          ),
+        resolved,
+        true,
+      );
+    };
+    const sent = this.passThroughSent.get(parentSn) ?? new Map<number, () => Promise<void>>();
+    this.passThroughSent.set(parentSn, sent.set(LOCK_CMD_ON_OFF, send));
+    await send();
   }
 
   /**

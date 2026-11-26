@@ -13,7 +13,7 @@ import { paddingP2PData } from "./codec.js";
 import { serialIv } from "./keyed-payload.js";
 
 /** `lock_cmd` for lock/unlock. */
-const LOCK_CMD_ON_OFF = 8;
+export const LOCK_CMD_ON_OFF = 8;
 
 /** The on/off TLV's tags, in frame order: short user id, direction, timestamp, nickname. */
 const TAG = { USER: 0xa1, DIRECTION: 0xa2, TIME: 0xa3, NAME: 0xa4 } as const;
