@@ -36,6 +36,14 @@ describe("the app's seal", () => {
     expect(decryptP2PData(frames()[0]!.body, LEVEL1)).toEqual(Buffer.alloc(16));
   });
 
+  it("frames the string group on header channel 0xff, except 1204, 1271 and 1350", () => {
+    const session = new P2PSession({ stationSn: SN, p2pDid: DID });
+    const frames = capture(session);
+    atSignMode1(session);
+    for (const cmd of [1254, 1256, 1264, 1404, 1204, 1271, 1350, 1257]) session.sendBytes(Buffer.alloc(4), 3, cmd);
+    expect(frames().map((f) => f.channel)).toEqual([0xff, 0xff, 0xff, 0xff, 3, 3, 3, 3]);
+  });
+
   it("encrypts a JSON body with its NUL", () => {
     const session = new P2PSession({ stationSn: SN, p2pDid: DID });
     const frames = capture(session);

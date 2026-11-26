@@ -244,8 +244,27 @@ const LEVEL1_AT_SIGN0_PREFIXES = ["T8001", "T8002", "T8010", "T8030", "T8021", "
 const SIGN0_POLL_MS = 50;
 const SIGN0_POLLS = 29;
 
-/** Commands the app's sender frames on header channel 0xff whatever channel they address. */
-const STATION_HEADER_COMMANDS = new Set([1001, 1002, 1054, 1060, CMD_PING]);
+/**
+ * Commands the app's sender frames on header channel 0xff whatever channel they address. 1204, 1271 and 1350 share
+ * the string group's case but keep their channel; 1257 and 1263 are not in it.
+ */
+const STATION_HEADER_COMMANDS = new Set([
+  1001,
+  1002,
+  1054,
+  1060,
+  CMD_PING,
+  1254,
+  1255,
+  1256,
+  1258,
+  1259,
+  1260,
+  1261,
+  1262,
+  1264,
+  1404,
+]);
 
 /**
  * The header byte-14 counter some frames carry, cycling 10..251: one byte for the whole native library, shared by
