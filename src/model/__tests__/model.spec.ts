@@ -429,6 +429,11 @@ describe("video lock — confirmed against real T8530", () => {
     expect(r.capabilities).toContain("camera");
     expect(r.name).toBe("Video Smart Lock S330");
   });
+
+  it("types the T8530 as a doorbell, whose button press arrives as PRESS_DOORBELL", () => {
+    const r = resolveDevice({ model: "T8530", deviceType: DeviceType.LOCK_8530, parentSn: "T8030P0000000000" });
+    expect(r.capabilities).toContain("doorbell");
+  });
 });
 
 describe("Device — state + graceful unknown params", () => {
