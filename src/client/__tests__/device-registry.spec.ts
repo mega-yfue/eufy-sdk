@@ -80,7 +80,7 @@ describe("DeviceRegistry", () => {
     });
   });
 
-  it("carries the record's member_type as memberType, absent when the record names no member", async () => {
+  it("carries the record's member_type as memberType, 0 on a member stating none, absent without a member", async () => {
     const mega = fakeMega({
       post: async (_s, path, body) =>
         path.endsWith("get_house_list") || JSON.stringify(body) !== "{}"
@@ -89,12 +89,18 @@ describe("DeviceRegistry", () => {
               devices: [
                 rawDevice("OWN", { member: { member_type: 2, admin_user_id: "u-0", member_user_id: "u-0" } }),
                 rawDevice("GUEST", { member: { member_type: 0, admin_user_id: "u-1", member_user_id: "u-0" } }),
+                rawDevice("UNSTATED", { member: { admin_user_id: "u-1", member_user_id: "u-0" } }),
                 rawDevice("BARE"),
               ],
             },
     });
     const devs = await new DeviceRegistry({ mega, onError: () => {} }).getDevices();
-    expect(Object.fromEntries(devs.map((d) => [d.sn, d.memberType]))).toEqual({ OWN: 2, GUEST: 0, BARE: undefined });
+    expect(Object.fromEntries(devs.map((d) => [d.sn, d.memberType]))).toEqual({
+      OWN: 2,
+      GUEST: 0,
+      UNSTATED: 0,
+      BARE: undefined,
+    });
     expect(devs.find((d) => d.sn === "BARE")).not.toHaveProperty("memberType");
   });
 

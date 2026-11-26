@@ -365,7 +365,9 @@ export class DeviceRegistry {
           stationSn: params[6271] === "1" ? raw.device_sn : resolvedStationSn(raw, raw.device_sn),
           ...(typeof raw.device_channel === "number" ? { channel: raw.device_channel } : {}),
           p2pDid: raw.p2p_did,
-          ...(typeof raw.member?.member_type === "number" ? { memberType: raw.member.member_type } : {}),
+          ...(raw.member
+            ? { memberType: typeof raw.member.member_type === "number" ? raw.member.member_type : 0 }
+            : {}),
           ...houseOf(raw, body),
           params,
           paramUpdatedAt,

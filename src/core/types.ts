@@ -64,9 +64,9 @@ export interface EufyDevice {
   p2pDid?: string;
   /**
    * This account's role on the device, its record's `member.member_type`, the one field the app's `isSuperAdmin()`
-   * (2), `isAdmin()` (1) and `isGuest()` (0) test; 4 is a keypad entry-only user. 2 is the owner's own account. A
-   * guest cannot change the security mode, re-share, or open some camera settings; an admin can. Absent when the
-   * record names no member.
+   * (2), `isAdmin()` (1) and `isGuest()` (0) test; 0 where the member states none, as esiotkit's `FamilyMember`
+   * defaults it. 2 is the owner's own account. A guest cannot change the security mode or open some camera settings;
+   * only the owner can share the device. Absent when the record names no member.
    */
   memberType?: number;
   /** The house the device list places the device in (`house_id`, an id of `get_house_list`); absent where none. */
