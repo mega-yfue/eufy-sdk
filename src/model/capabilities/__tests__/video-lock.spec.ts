@@ -30,10 +30,12 @@ const signal = (payload: unknown, deviceType = 55): InboundSignal => ({
 
 describe("native video lock", () => {
   it.each([
-    ["lock", 1],
-    ["unlock", 0],
-  ] as const)("%s sends one native intent with numeric operation", async (action, operation) => {
-    const { acts, sent } = bind<LockActions>("lock", ctx);
+    ["lock", 1, "T8030P0000000000"],
+    ["unlock", 0, "T8030P0000000000"],
+    ["lock", 1, "T8021P0000000000"],
+    ["unlock", 0, "T8021P0000000000"],
+  ] as const)("%s sends one native intent with numeric operation %i behind %s", async (action, operation, station) => {
+    const { acts, sent } = bind<LockActions>("lock", { ...ctx, stationSerial: station });
     await acts[action]!();
     expect(sent).toEqual([
       {
@@ -42,10 +44,11 @@ describe("native video lock", () => {
         channel: ctx.channel,
         mValue3: 0,
         payload: { shortUserId: "0001", slOperation: operation, userId: ctx.adminUserId, userName: ctx.accountName },
+        level2Sender: "set-payload",
       },
     ]);
   });
-  it.each([undefined, "T8021P0000000000", "T8530P0000000000"])(
+  it.each([undefined, "T8530P0000000000"])(
     "withholds native actuation on an unverified station %s",
     async (stationSerial) => {
       const context = { ...ctx, stationSerial };
