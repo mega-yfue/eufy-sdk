@@ -5,7 +5,14 @@ import { LockPushEvent } from "../push-events.js";
 import { describeDevice } from "./access.js";
 import { method, propertiesOf, provided, type Members, type Surface } from "./members.js";
 import type { AvailabilityContext, CapabilityModule, CommandContext, InboundSignal } from "./types.js";
-import type { Command, CommandSink, AutoLockSnapshot, MediaProvider } from "../../core/contracts.js";
+import type {
+  Command,
+  CommandSink,
+  AutoLockSnapshot,
+  DeviceUserDirectory,
+  Ff09SettingsReader,
+  MediaProvider,
+} from "../../core/contracts.js";
 
 /**
  * Setting-id selectors for the compact `ff09-setting-toggle` write — this capability's OWN wire
@@ -44,10 +51,12 @@ export const LOCK_SETTING_ID = {
  * wire its family takes: the shared `ff09` frame on the T8531 video smart lock and the T85D0 garage door,
  * the T8530 video lock's own `set-payload`, the keyed-payload envelope on the classic Wi-Fi lock (the
  * `T8520`-range unit that never negotiates a session key), and the station's door-lock pass-through on the
- * Bluetooth lock. The setting toggles ride `ff09` only. This module emits ONE transport-neutral intent per
- * wire (identity fields only, no wire bytes, no cipher, no routing key) and names no transport: the command
- * sink routes P2P vs MQTT by the device's topology, and the chosen transport's command router builds the
- * frame + envelope and re-resolves its own routing tail.
+ * Bluetooth lock. The setting toggles ride `ff09` only. Actuation and the toggles emit ONE transport-neutral
+ * intent per wire (identity fields only, no wire bytes, no cipher, no routing key): the command sink routes P2P
+ * vs MQTT by the device's topology, and the chosen transport's command router builds the frame + envelope and
+ * re-resolves its own routing tail. `addPasscode` encodes its `ff09` field values itself and hands them to the
+ * injected `Ff09SettingsReader.exchange`, which builds the frame, cipher and envelope around them and answers
+ * the reply; the cloud's records go through the injected `DeviceUserDirectory`. The module names no transport.
  * Which pipe it is does not reach `dev.lock()` — its surface is identical either way, the same way
  * P2P-vs-cloud is hidden for live media.
  *
@@ -176,6 +185,77 @@ function nativeReport(signal: InboundSignal): Record<string, unknown> | undefine
     return undefined;
   const report = signal.json.payload as Record<string, unknown> | undefined;
   return report?.code === 0 ? report : undefined;
+}
+
+/**
+ * The `ff09` opcodes that add a keypad code and read one back by its password id (QUERY_PW, the code in `a1`), and
+ * the envelope `apiCommand` the app sends a C33's commands under.
+ */
+const ADD_PASSCODE = { code: 0x24, readBack: 0x27, apiCommand: 6012 } as const;
+
+/** The cloud schedule the app records for a permanent code. */
+const PERMANENT_SCHEDULE = JSON.stringify({
+  startDate: 0,
+  endDate: -1,
+  timePeriodNum: 1,
+  timePeriods: [{ periodic: 127, startTime: "0:0", endTime: "-1:-1" }],
+});
+
+/**
+ * Add a permanent keypad code as the app does: the cloud creates the user and assigns its short id, the lock
+ * stores the code under it and answers the code's password id in `a1`, and the cloud records that id in
+ * upper-case hex. The frame's fields are the code in ASCII, user type `4`, start date `00000000`, end date
+ * `ffffffff`, every weekday `7f`, `00:00` to no end time `ffff`, `0`, the name, the short id and validity `0`.
+ * An add the lock does not answer in time is read back under the short id, the password id the lock answers an
+ * add with: the code there completes the add. A failure after the user is created names it, and what the lock may
+ * hold; a lock refusal leaves it holding no code, as the app does.
+ */
+async function addPasscode(
+  users: DeviceUserDirectory,
+  exchange: NonNullable<Ff09SettingsReader["exchange"]>,
+  name: string,
+  passcode: string,
+): Promise<{ shortUserId: string; passwordId: string }> {
+  if (!/^\d+$/.test(passcode)) throw new Error("lock.addPasscode: a passcode is digits only");
+  const shortUserId = await users.addUser(name);
+  const remains = `cloud user ${shortUserId} remains`;
+  const passwordId = await exchange(ADD_PASSCODE.code, ADD_PASSCODE.apiCommand, [
+    Buffer.from(passcode, "ascii"),
+    Buffer.from([4]),
+    Buffer.from([0, 0, 0, 0]),
+    Buffer.from([0xff, 0xff, 0xff, 0xff]),
+    Buffer.from([0x7f]),
+    Buffer.from([0, 0]),
+    Buffer.from([0xff, 0xff]),
+    Buffer.from([0]),
+    Buffer.from(name, "utf8"),
+    Buffer.from(shortUserId, "hex"),
+    Buffer.from([0]),
+  ]).then(
+    (reply) => {
+      if (reply.status !== 0) throw new Error(`lock.addPasscode: device result ${reply.status} (${remains})`);
+      const id = reply.fields.get(0xa1);
+      if (id?.length !== 2) throw new Error(`lock.addPasscode: the reply carries no password id (${remains})`);
+      return id.toString("hex").toUpperCase();
+    },
+    async (e: Error) => {
+      const held = await exchange(ADD_PASSCODE.readBack, ADD_PASSCODE.apiCommand, [
+        Buffer.from(shortUserId, "hex"),
+      ]).catch(() => undefined);
+      if (held?.status === 0 && held.fields.get(0xa1)?.toString("ascii") === passcode) return shortUserId.toUpperCase();
+      const lock = held
+        ? `holds no such code under ${shortUserId}`
+        : `may hold it under ${shortUserId}, answering no read-back`;
+      throw new Error(`lock.addPasscode: ${e.message}; the lock ${lock} (${remains})`, { cause: e });
+    },
+  );
+  await users.savePassword(shortUserId, passwordId, PERMANENT_SCHEDULE).catch((e: Error) => {
+    throw new Error(
+      `lock.addPasscode: code ${passwordId} of user ${shortUserId} is on the lock, not in the cloud: ${e.message}`,
+      { cause: e },
+    );
+  });
+  return { shortUserId, passwordId };
 }
 
 /**
@@ -400,6 +480,18 @@ export const LOCK_MEMBERS = {
     description: "One-touch rear locking (setting-id 11). Wire shape confirmed in the app's own JS, NOT captured.",
     write: (v, ctx) => settingToggleCommand(LOCK_SETTING_ID.ONE_TOUCH_REAR_LOCK, v, ctx),
   },
+
+  /** Add a permanent keypad code for a new user on a Smart Lock C33; answers its short id and password id. */
+  addPasscode: provided(
+    "deviceUsers",
+    (users, { ctx, ff09Settings }) => {
+      const exchange = ff09Settings?.exchange?.bind(ff09Settings);
+      return ctx.deviceType === DeviceType.LOCK_85L0 && exchange
+        ? (name: string, passcode: string) => addPasscode(users, exchange, name, passcode)
+        : undefined;
+    },
+    "Add a permanent keypad passcode for a new user.",
+  ),
 
   /** Read the current device-reported state; undefined means no settled locked/unlocked state. */
   refreshStatus: {

@@ -6,7 +6,7 @@ import { DeviceType } from "../../device-types.js";
 import { bind } from "./bind.js";
 import { Device } from "../../device.js";
 import type { CommandContext } from "../types.js";
-import type { CommandSink, Ff09SettingsReader } from "../../../core/contracts.js";
+import type { CommandSink, DeviceUserDirectory, Ff09Reply, Ff09SettingsReader } from "../../../core/contracts.js";
 
 /** The bound `dev.lock()` object — every method is a member, derived in the barrel. */
 const lockOf = (
@@ -379,6 +379,115 @@ describe("lock capability module", () => {
   });
 });
 
+describe("lock capability — keypad passcodes", () => {
+  const c33Ctx: CommandContext = {
+    ...mqttCtx,
+    deviceType: DeviceType.LOCK_85L0,
+    model: "T85L0",
+    serial: "T85L0K0000000000",
+  };
+  const answer = (status: number, a1?: string): Ff09Reply => ({
+    status,
+    fields: new Map(a1 ? [[0xa1, Buffer.from(a1, "hex")]] : []),
+  });
+  const keypad = (reply: Ff09Reply | ((code: number) => Promise<Ff09Reply>)) => {
+    const order: string[] = [];
+    const deviceUsers: DeviceUserDirectory = {
+      addUser: vi.fn(async () => (order.push("addUser"), "0007")),
+      savePassword: vi.fn(async () => void order.push("savePassword")),
+    };
+    const ff09Settings: Ff09SettingsReader = {
+      getAutoLockState: vi.fn(),
+      exchange: vi.fn(
+        async (code: number) => (order.push("exchange"), typeof reply === "function" ? reply(code) : reply),
+      ),
+    };
+    const { acts } = bind<LockActions>("lock", c33Ctx, { ff09Settings, deviceUsers });
+    return { acts, deviceUsers, ff09Settings, order };
+  };
+
+  it("creates the cloud user, sends the lock the code under its short id, then records the code", async () => {
+    const { acts, deviceUsers, ff09Settings, order } = keypad(answer(0, "000c"));
+
+    await expect(acts.addPasscode!("Guest", "13572468")).resolves.toEqual({ shortUserId: "0007", passwordId: "000C" });
+    expect(order).toEqual(["addUser", "exchange", "savePassword"]);
+    expect(deviceUsers.addUser).toHaveBeenCalledWith("Guest");
+    const [code, apiCommand, fields] = vi.mocked(ff09Settings.exchange!).mock.calls[0]!;
+    expect([code, apiCommand]).toEqual([0x24, 6012]);
+    expect(fields.map((f) => f.toString("hex"))).toEqual([
+      Buffer.from("13572468").toString("hex"),
+      "04",
+      "00000000",
+      "ffffffff",
+      "7f",
+      "0000",
+      "ffff",
+      "00",
+      Buffer.from("Guest").toString("hex"),
+      "0007",
+      "00",
+    ]);
+    expect(deviceUsers.savePassword).toHaveBeenCalledWith(
+      "0007",
+      "000C",
+      JSON.stringify({
+        startDate: 0,
+        endDate: -1,
+        timePeriodNum: 1,
+        timePeriods: [{ periodic: 127, startTime: "0:0", endTime: "-1:-1" }],
+      }),
+    );
+  });
+
+  it("names the cloud user a refusal leaves, and sends nothing for a code that is not digits", async () => {
+    const refused = keypad(answer(17));
+    await expect(refused.acts.addPasscode!("Guest", "13572468")).rejects.toThrow(
+      "device result 17 (cloud user 0007 remains)",
+    );
+    expect(refused.deviceUsers.savePassword).not.toHaveBeenCalled();
+
+    const typo = keypad(answer(0, "0007"));
+    await expect(typo.acts.addPasscode!("Guest", "12a4")).rejects.toThrow(/digits only/);
+    expect(typo.order).toEqual([]);
+  });
+
+  it("reads an add the lock did not answer back under the short id, and says what it may hold", async () => {
+    const code = Buffer.from("13572468").toString("hex");
+    const lost = (readBack: () => Promise<Ff09Reply>) =>
+      keypad(async (op) => (op === 0x24 ? Promise.reject(new Error("no ff09 0x24 reply")) : readBack()));
+
+    const stored = lost(async () => answer(0, code));
+    await expect(stored.acts.addPasscode!("Guest", "13572468")).resolves.toEqual({
+      shortUserId: "0007",
+      passwordId: "0007",
+    });
+    expect(vi.mocked(stored.ff09Settings.exchange!).mock.calls[1]).toEqual([0x27, 6012, [Buffer.from("0007", "hex")]]);
+    expect(stored.order).toEqual(["addUser", "exchange", "exchange", "savePassword"]);
+
+    const empty = lost(async () => answer(1));
+    await expect(empty.acts.addPasscode!("Guest", "13572468")).rejects.toThrow(
+      "no ff09 0x24 reply; the lock holds no such code under 0007 (cloud user 0007 remains)",
+    );
+    const silent = lost(() => Promise.reject(new Error("no ff09 0x27 reply")));
+    await expect(silent.acts.addPasscode!("Guest", "13572468")).rejects.toThrow(
+      "the lock may hold it under 0007, answering no read-back (cloud user 0007 remains)",
+    );
+    expect([empty, silent].map((k) => vi.mocked(k.deviceUsers.savePassword).mock.calls.length)).toEqual([0, 0]);
+  });
+
+  it("is present only on a C33 bound to the cloud's users and an ff09 exchange", () => {
+    const { ff09Settings, deviceUsers } = keypad(answer(0));
+    const { exchange: _exchange, ...readOnly } = ff09Settings;
+    const has = (ctx: CommandContext, deps: Parameters<typeof bind>[2]) =>
+      "addPasscode" in bind<LockActions>("lock", ctx, deps).acts;
+
+    expect(has(c33Ctx, { ff09Settings, deviceUsers })).toBe(true);
+    expect(has(mqttCtx, { ff09Settings, deviceUsers })).toBe(false);
+    expect(has(c33Ctx, { ff09Settings })).toBe(false);
+    expect(has(c33Ctx, { ff09Settings: readOnly, deviceUsers })).toBe(false);
+  });
+});
+
 describe("lock capability — SmartDrop lid", () => {
   const things = parseThingsList({
     things_list: [{ profile: { product_code: "T8790" }, properties: [{ identifier: "smart_lock_onoff_status" }] }],
@@ -467,6 +576,12 @@ const _snapshot: Exact<
   Promise<import("../../../core/contracts.js").AutoLockSnapshot>
 > = true;
 
+// Present only where it is bound, so optional; it answers the cloud's ids for the new user and code.
+const _passcode: Exact<
+  typeof lk.addPasscode,
+  ((name: string, passcode: string) => Promise<{ shortUserId: string; passwordId: string }>) | undefined
+> = true;
+
 export const _surfaceAssertions = [
   _locked,
   _battery,
@@ -480,4 +595,5 @@ export const _surfaceAssertions = [
   _autoLockRequired,
   _autoLockArgs,
   _snapshot,
+  _passcode,
 ];

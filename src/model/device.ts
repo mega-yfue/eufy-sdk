@@ -25,7 +25,13 @@ import type {
   PropertyValue,
   ResolvedDevice,
 } from "./types.js";
-import type { CommandSink, MediaProvider, Ff09SettingsReader, RawDpCodec } from "../core/contracts.js";
+import type {
+  CommandSink,
+  DeviceUserDirectory,
+  MediaProvider,
+  Ff09SettingsReader,
+  RawDpCodec,
+} from "../core/contracts.js";
 import { noopLogger, type Logger } from "../core/logger.js";
 import { structuralEqual } from "../core/util.js";
 import { resolveDevice, resolveProperties } from "./registry.js";
@@ -288,11 +294,11 @@ export class Device {
    * command variant. Called by `EufyMega.getDevice`; a raw model object left unbound simply has
    * no action objects (all accessors return `undefined`). `ff09Settings` reads that frame family's
    * settings over whichever transport the device has; `rawDp` reads the structured payloads a few params
-   * carry in place of a scalar. Both are optional and both are named for the job, not the caller — a
-   * read needing one returns `undefined` without it. See `CapabilityModule.actions`'s doc before
-   * threading a third. The final `buildActions` arg is the live-state reader backing the capabilities' typed
-   * read getters (`dev.battery()?.level`): it closes over `this.getProperty`, so a getter built once
-   * here stays current as realtime/poll updates land in `this.state`.
+   * carry in place of a scalar; `deviceUsers` is the cloud's record of its local users. All are optional and
+   * named for the job, not the caller — a member needing one is absent without it. See
+   * `CapabilityModule.actions`'s doc before threading another. The final `buildActions` arg is the live-state
+   * reader backing the capabilities' typed read getters (`dev.battery()?.level`): it closes over
+   * `this.getProperty`, so a getter built once here stays current as realtime/poll updates land in `this.state`.
    */
   bindActions(
     ctx: CommandContext,
@@ -300,6 +306,7 @@ export class Device {
     media?: MediaProvider,
     ff09Settings?: Ff09SettingsReader,
     rawDp?: RawDpCodec,
+    deviceUsers?: DeviceUserDirectory,
   ): void {
     this.actionMap = buildActions(this.capabilities, {
       ctx,
@@ -308,6 +315,7 @@ export class Device {
       media,
       ff09Settings,
       rawDp,
+      deviceUsers,
     });
     this.things = ctx.things;
     this.bound = true;

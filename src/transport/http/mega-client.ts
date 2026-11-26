@@ -1120,6 +1120,43 @@ export class MegaHttpClient {
   }
 
   /**
+   * Create a local user on a device, `POST /v3/app/device/local_user/add` on the security-app host; answers
+   * the 4-hex-digit short id the cloud assigns. `stationSn` is the parent station, empty for a device that is
+   * its own. Rejects when the answer carries no short id of that shape.
+   */
+  async addDeviceLocalUser(deviceSn: string, stationSn: string, nickName: string): Promise<string> {
+    const out = await this.securityAppPost<{ short_user_id?: unknown }>("/v3/app/device/local_user/add", {
+      device_sn: deviceSn,
+      nick_name: nickName,
+      station_sn: stationSn,
+    });
+    const id = out?.short_user_id;
+    if (typeof id !== "string" || !/^[0-9a-fA-F]{4}$/.test(id))
+      throw new Error("local_user/add answered no short_user_id");
+    return id;
+  }
+
+  /**
+   * Record a keypad code (`password_type` 1) a device stored under one of its local users,
+   * `POST /v3/app/device/password/save_or_update` on the security-app host. `schedule` is the cloud's JSON,
+   * sent verbatim; `stationSn` is as {@link addDeviceLocalUser} takes it.
+   */
+  async saveDevicePassword(
+    deviceSn: string,
+    stationSn: string,
+    shortUserId: string,
+    passwordId: string,
+    schedule: string,
+  ): Promise<void> {
+    await this.securityAppPost("/v3/app/device/password/save_or_update", {
+      device_sn: deviceSn,
+      short_user_id: shortUserId,
+      station_sn: stationSn,
+      password_list: [{ password_id: passwordId, password_type: 1, schedule }],
+    });
+  }
+
+  /**
    * List the account's enrolled AI faces (the recognition roster). Each entry is keyed by `ai_user_id` —
    * the id an `IDENTITY_PERSON_DETECTION` push carries as `person_id` — so this is the lookup table for
    * naming a recognised person. Endpoint: `/v3/aiassis/get_faces` on the security-app host.

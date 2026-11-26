@@ -20,6 +20,7 @@ import {
   reflectCommand,
   type Command,
   type CommandSink,
+  type DeviceUserDirectory,
   type Ff09SettingsReader,
   type MediaProvider,
   type RawDpCodec,
@@ -342,6 +343,8 @@ export interface MemberDeps {
    * so any device driven by that frame can use it — see {@link Ff09SettingsReader}.
    */
   ff09Settings?: Ff09SettingsReader;
+  /** The cloud's record of the device's local users — see {@link DeviceUserDirectory}. */
+  deviceUsers?: DeviceUserDirectory;
 }
 
 /**
@@ -426,6 +429,7 @@ export function method<F>(
 export interface Providers {
   media: MediaProvider;
   ff09Settings: Ff09SettingsReader;
+  deviceUsers: DeviceUserDirectory;
 }
 
 /**

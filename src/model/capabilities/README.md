@@ -208,12 +208,12 @@ What comes out of the table, with nothing else declared:
 
 ### The member kinds
 
-| Kind                 | Declared as                            | Gives                                                      |
-| -------------------- | -------------------------------------- | ---------------------------------------------------------- |
-| **`ValueMember`**    | `{ param, type, kind, description }`   | a getter; plus a setter when it declares `write`           |
-| **`ActionMember`**   | `{ action: (ctx) => Command, … }`      | a momentary `() => Promise<void>` — no readable state      |
-| **`MethodMember`**   | `method((deps) => fn, "…")`            | a method owning its whole signature (flows to the surface) |
-| **`ProvidedMember`** | `provided("media"\|"ff09Settings", …)` | a method only a device bound to that provider has          |
+| Kind                 | Declared as                                           | Gives                                                      |
+| -------------------- | ----------------------------------------------------- | ---------------------------------------------------------- |
+| **`ValueMember`**    | `{ param, type, kind, description }`                  | a getter; plus a setter when it declares `write`           |
+| **`ActionMember`**   | `{ action: (ctx) => Command, … }`                     | a momentary `() => Promise<void>` — no readable state      |
+| **`MethodMember`**   | `method((deps) => fn, "…")`                           | a method owning its whole signature (flows to the surface) |
+| **`ProvidedMember`** | `provided("media"\|"ff09Settings"\|"deviceUsers", …)` | a method only a device bound to that provider has          |
 
 `method()` is the escape hatch that keeps the table honest instead of pretending everything is a
 property: a lock's `setAutoLock(enabled, delaySeconds?)` is neither a getter over one param nor a bare
@@ -375,8 +375,8 @@ export const MY_CAP_MEMBERS = {
         sink.dispatch(setScalar(MY_CAP_CMD.MY_TRIGGER, times, ctx)),
     "Do the thing the table cannot state as one param's value.",
   ),
-  // A ProvidedMember (omitted here): `provided("media"|"ff09Settings", (p, deps) => fn, "…")` — lands
-  // optional, since an unbound device does not have it.
+  // A ProvidedMember (omitted here): `provided("media"|"ff09Settings"|"deviceUsers", (p, deps) => fn, "…")` —
+  // lands optional, since an unbound device does not have it.
 } as const satisfies Members;
 
 export const MY_CAP: CapabilityModule = {

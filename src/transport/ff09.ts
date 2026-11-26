@@ -145,7 +145,7 @@
 
 import { createCipheriv, createDecipheriv } from "node:crypto";
 import { u16be, u16le, u32be, u32le } from "../core/util.js";
-import type { AutoLockSnapshot } from "../core/contracts.js";
+import type { AutoLockSnapshot, Ff09Reply } from "../core/contracts.js";
 
 /**
  * `apiCommand` values for the `TRANSFER_PAYLOAD` (1940) envelope `payload`. `ON_OFF_LOCK` (6018)
@@ -405,12 +405,15 @@ export interface Ff09QueryFrameInput {
   seqNum?: number;
 }
 
-/**
- * Build the settings **GET** query frame (`LOCK_COMMAND_CODE.GET_SETTINGS`) — plaintext is just
- * `[A1 time][A2 adminUserId]`, no user-attribution fields (narrower than `omitUserFields` on
- * {@link buildFf09Frame}, which still keeps A3). See the module doc's "Settings GET/SET" section.
- */
-export function buildFf09QueryFrame(input: Ff09QueryFrameInput): Ff09Frame {
+/** The input of {@link buildFf09CommandFrame}: the opcode, the envelope's `apiCommand`, and the fields from `A3`. */
+export interface Ff09CommandFrameInput extends Ff09QueryFrameInput {
+  commandCode: number;
+  apiCommand: number;
+  fields: readonly Buffer[];
+}
+
+/** Build an `ff09` frame for any opcode: `[A1 time][A2 adminUserId]`, then `fields` tagged from `A3` in order. */
+export function buildFf09CommandFrame(input: Ff09CommandFrameInput): Ff09Frame {
   const { adminUserId, deviceSn } = input;
   const { unixTime, keyTime, seqNum } = resolveFf09Identity(
     adminUserId,
@@ -419,16 +422,22 @@ export function buildFf09QueryFrame(input: Ff09QueryFrameInput): Ff09Frame {
     input.nonce,
     input.seqNum,
   );
-  const plain = zeroPadToBlock(writeTlv([u32le(unixTime), Buffer.from(adminUserId, "ascii")]));
-  return assembleFf09Frame(
-    LOCK_COMMAND_CODE.GET_SETTINGS,
-    LOCK_API_COMMAND.GET_SETTINGS,
-    plain,
-    adminUserId,
-    deviceSn,
-    keyTime,
-    seqNum,
-  );
+  const plain = zeroPadToBlock(writeTlv([u32le(unixTime), Buffer.from(adminUserId, "ascii"), ...input.fields]));
+  return assembleFf09Frame(input.commandCode, input.apiCommand, plain, adminUserId, deviceSn, keyTime, seqNum);
+}
+
+/**
+ * Build the settings **GET** query frame (`LOCK_COMMAND_CODE.GET_SETTINGS`) — plaintext is just
+ * `[A1 time][A2 adminUserId]`, no user-attribution fields (narrower than `omitUserFields` on
+ * {@link buildFf09Frame}, which still keeps A3). See the module doc's "Settings GET/SET" section.
+ */
+export function buildFf09QueryFrame(input: Ff09QueryFrameInput): Ff09Frame {
+  return buildFf09CommandFrame({
+    ...input,
+    commandCode: LOCK_COMMAND_CODE.GET_SETTINGS,
+    apiCommand: LOCK_API_COMMAND.GET_SETTINGS,
+    fields: [],
+  });
 }
 
 export interface Ff09SettingsFrameInput {
@@ -624,22 +633,13 @@ export function decryptFf09Frame(input: {
   return Buffer.concat([decipher.update(ct), decipher.final()]);
 }
 
-/** A decoded settings-response TLV: the leading status byte + the `a1..ad` fields, keyed by separator byte. */
-export interface Ff09SettingsResponse {
-  /** The leading status byte (byte 0 of the decrypted plaintext, before the TLV fields). */
-  status: number;
-  /** `sep` (e.g. `0xa2`) → field bytes. The response's own tag numbering — does NOT line up positionally
-   * with the GET/SET request TLVs (see the module doc). */
-  fields: Map<number, Buffer>;
-}
-
 /**
  * Parse a decrypted settings-response plaintext ({@link decryptFf09Frame}'s output) into its leading
  * status byte + `sep|len|bytes` TLV fields. Stops at a `0x00` separator (real tags start at `0xa1`;
  * a `0x00` sep only ever shows up as trailing zero-padding, never a real field) so it doesn't choke on
  * padding past the last real field.
  */
-export function parseFf09SettingsResponse(plain: Buffer): Ff09SettingsResponse {
+export function parseFf09SettingsResponse(plain: Buffer): Ff09Reply {
   if (plain.length < 1) throw new Error("ff09: settings response too short (missing status byte)");
   const status = plain[0]!;
   const fields = walkFf09Tlv(plain, 1, plain.length);
@@ -695,7 +695,7 @@ export function readFf09HourMinute(field: Buffer | undefined, name: string): [nu
  * `a4`/`a5`=schedule start/end (`[hour,minute]`). Shared here (rather than copied into each router's
  * `getAutoLockState`) so the P2P and MQTT read paths can't drift on the field mapping.
  */
-export function decodeFf09AutoLockSnapshot(parsed: Ff09SettingsResponse): AutoLockSnapshot {
+export function decodeFf09AutoLockSnapshot(parsed: Ff09Reply): AutoLockSnapshot {
   return {
     enabled: readFf09U8(parsed.fields.get(0xa1), "a1 (enabled)") !== 0,
     delaySeconds: readFf09U16LE(parsed.fields.get(0xa2), "a2 (delaySeconds)"),
