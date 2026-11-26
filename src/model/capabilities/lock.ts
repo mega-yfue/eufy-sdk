@@ -57,7 +57,7 @@ export const LOCK_SETTING_ID = {
  */
 export type LockActions = Surface<typeof LOCK_MEMBERS>;
 
-/** Native video-lock command vocabulary verified on T8530 attached to HomeBase 3. */
+/** Native video-lock command vocabulary verified on T8530 attached to HomeBase 3; `ACTUATE` also behind a T8021. */
 const VIDEO_LOCK_CMD = { ACTUATE: 1961, STATUS: 1955, NOTIFY: 1351 } as const;
 
 /**
@@ -78,6 +78,10 @@ function openLid(ctx: CommandContext, sink: CommandSink): Promise<void> {
 /**
  * The actuation intent, or a refusal naming what is missing. Identity is a genuine precondition — the
  * frame carries the member fields — and a generated "not a valid value" message would misreport it.
+ *
+ * The video lock's set-payload names the set-payload sender: a T8021 negotiates only its RSA cipher's
+ * AES-128-ECB key and moves the bolt on the envelope sealed under it, while a HomeBase 3 seals it under the
+ * AES-256-GCM key as before.
  */
 function actuate(engage: boolean, ctx: CommandContext, sink: CommandSink): Promise<void> {
   if (!ctx.adminUserId || !ctx.shortUserId || (isVideoSmartLock(ctx) && !ctx.accountName)) {
@@ -99,6 +103,7 @@ function actuate(engage: boolean, ctx: CommandContext, sink: CommandSink): Promi
         userId: ctx.adminUserId,
         userName: ctx.accountName,
       },
+      level2Sender: "set-payload",
     });
   }
   return sink.dispatch({
@@ -138,12 +143,16 @@ const overP2p = (ctx: AvailabilityContext): boolean =>
   ctx.hasP2p === true && !isVideoSmartLock(ctx) && !isSmartDrop(ctx);
 
 /**
- * Native actuation is verified only on the HomeBase 3 route; a SmartDrop lid opens only standalone and never
- * engages. Other lock families retain their controls.
+ * Native actuation is verified only on the HomeBase 3 and T8021 routes; a SmartDrop lid opens only standalone
+ * and never engages. Other lock families retain their controls.
  */
 function actuationAvailable(ctx: CommandContext, engage: boolean): boolean {
   if (isSmartDrop(ctx)) return !engage && ctx.stationSerial === undefined;
-  return !isVideoSmartLock(ctx) || ctx.stationSerial?.startsWith("T8030") === true;
+  return (
+    !isVideoSmartLock(ctx) ||
+    ctx.stationSerial?.startsWith("T8030") === true ||
+    ctx.stationSerial?.startsWith("T8021") === true
+  );
 }
 
 /** Live status read; unknown states remain unknown and device refusals reject. */
