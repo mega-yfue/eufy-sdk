@@ -6,7 +6,7 @@ import { described } from "./thing-description.js";
 import { bundled, bundleEntry, thingReadback } from "./bundle.js";
 import { AUDIO_CMD } from "./audio.js";
 import { cameraPowerTier } from "./battery.js";
-import { propertiesOf, provided, type Members, type Surface, type MemberDeps } from "./members.js";
+import { method, propertiesOf, provided, type Members, type Surface, type MemberDeps } from "./members.js";
 import type { AvailabilityContext, CapabilityModule, CapabilityActions, CommandContext } from "./types.js";
 import { CameraDisabledError, type MediaProvider } from "../../core/contracts.js";
 
@@ -189,6 +189,21 @@ const ANTI_THEFT = bundled(["anti_theft_detection_switch"], CAMERA_CMD.EAS_SWITC
  */
 function poweredOf(ctx: CommandContext): "wired" | "battery" {
   return cameraPowerTier(ctx.model, ctx.capabilities ?? new Set());
+}
+
+/**
+ * The lens ids of a camera's param 9240 sensor list (`getSensorListBy`: `[{type, id}]`, in order), `undefined` when it
+ * lists none or is unreadable.
+ */
+export function lensIds(raw: string | undefined): number[] | undefined {
+  try {
+    const list = JSON.parse(raw ?? "") as { id?: unknown; type?: unknown }[];
+    return list.length > 0 && list.every((s) => Number.isInteger(s.id) && Number.isInteger(s.type))
+      ? list.map((s) => s.id as number)
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -436,6 +451,20 @@ export const CAMERA_MEMBERS = {
       },
     "Open a managed live stream.",
   ),
+  /**
+   * The lens ids `live({ view })` takes, from the `device_sensor_count` list the product describes: the app's
+   * single-lens player streams one of them alone, its live page every lens. `undefined` until the device reports it.
+   */
+  views: {
+    ...method(
+      ({ ctx }) =>
+        () =>
+          lensIds(ctx.paramValue?.(9240)),
+      "Lens ids a live view can stream alone.",
+      cameraThing("device_sensor_count"),
+    ),
+    answers: true,
+  },
   record: provided(
     "media",
     (m, { ctx, read }) =>

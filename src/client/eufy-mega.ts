@@ -83,6 +83,7 @@ import {
 import { isHomeBase, isTuyaVacuum, settingsOverMqttWhenStandalone } from "../model/device-family.js";
 import { cameraPowerTier } from "../model/capabilities/battery.js";
 import { liveFrames, rtcLiveFrames } from "../model/capabilities/bundle.js";
+import { lensIds } from "../model/capabilities/camera.js";
 import {
   armedWithHouse,
   armingModeCommand,
@@ -1178,8 +1179,8 @@ export class EufyMega extends EventEmitter {
   /**
    * The RTC media of a device on an RTC route: the station's own on channel 0 unless its record states one, an
    * attached camera's when its `device_channel` resolves back to it on the station; `undefined` otherwise. Its view
-   * starts and stops with the bundle's RTC player frames for its product under the station ({@link rtcLiveFrames}), on
-   * the lens page when its param 9240 lists sensors (`getSensorListBy`: `[{type, id}]`, unreadable as none).
+   * starts and stops with the bundle's RTC player frames for its product under the station ({@link rtcLiveFrames}), its
+   * lenses those its param 9240 lists ({@link lensIds}).
    */
   private rtcMediaFor(sn: string): MediaProvider | undefined {
     const route = this.rtcRouteFor(sn, "live");
@@ -1189,26 +1190,15 @@ export class EufyMega extends EventEmitter {
     const channel = typeof raw.device_channel === "number" ? raw.device_channel : route.attached ? undefined : 0;
     if (channel === undefined || (route.attached && this.registry.serialForFrame(route.stationSn, channel) !== sn))
       return undefined;
-    let sensors: number[] = [];
-    try {
-      const list = JSON.parse(device?.params?.[9240] ?? "[]") as { id?: unknown; type?: unknown }[];
-      if (list.every((s) => Number.isInteger(s.id) && Number.isInteger(s.type)))
-        sensors = list.map((s) => s.id as number);
-    } catch {
-      /* none */
-    }
+    const sensors = lensIds(device?.params?.[9240]);
     const firmware = (serial: string) => {
       const v = (this.registry.list().find((d) => d.sn === serial)?.raw as Record<string, unknown>)?.main_sw_version;
       return typeof v === "string" ? v : "";
     };
     const live = device?.model
-      ? rtcLiveFrames(device.model, route.stationSn, {
-          lenses: sensors.length > 0,
-          own: firmware(sn),
-          parent: firmware(route.stationSn),
-        })
+      ? rtcLiveFrames(device.model, route.stationSn, { own: firmware(sn), parent: firmware(route.stationSn) })
       : undefined;
-    return this.rtc.mediaProviderFor({ ...route, cameraSn: sn, channel, live, ...(sensors.length && { sensors }) });
+    return this.rtc.mediaProviderFor({ ...route, cameraSn: sn, channel, live, ...(sensors && { sensors }) });
   }
 
   /**

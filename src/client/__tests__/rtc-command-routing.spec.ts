@@ -222,7 +222,7 @@ describe("native RTC routing off is_connect_webrtc", () => {
     internals.rtcMediaFor(CAMERA);
     expect(media.mock.calls[1]![0]).toMatchObject({
       sensors: [0, 1],
-      live: { start: { payload: { payload: { stitch_mode: 5 } } } },
+      live: { startTB: { payload: { payload: { stitch_mode: 5 } } } },
     });
     camera.model = "T8010";
     internals.rtcMediaFor(CAMERA);

@@ -354,6 +354,26 @@ describe("RtcCommandRouter on the native layers", () => {
     router.close();
   });
 
+  /** `MediaLiveStreamVideoView.startPlay`: one lens on the single-camera page, its id as `cameraType` and `sensor`. */
+  it("streams one lens of a dual-lens camera on the single-camera page, both on the lens page without a view", async () => {
+    const start = NVR_LIVE!.start.payload as { payload: object };
+    const tb = { ...NVR_LIVE!.start, payload: { ...start, payload: { ...start.payload, stitch_mode: 5 } } };
+    const route = { ...ROUTE, stationSn: "T8N00P0000000000", cameraSn: "T8E00P0000000001", sensors: [0, 1] };
+    const payload = async (view?: number) => {
+      const { router, agent } = layers();
+      const consumer = await router.mediaProviderFor({ ...route, live: { ...NVR_LIVE!, startTB: tb } }).live({ view });
+      const json = JSON.parse(sent(agent, 0).body.toString()) as { payload: Record<string, unknown> };
+      consumer.stop();
+      router.close();
+      return json.payload;
+    };
+    const one = await payload(1);
+    expect(one).toMatchObject({ camera_type: 1, chn_list: [{ cameraType: 1, chn: 3, index: 0, sensor: 1 }] });
+    expect(one).not.toHaveProperty("stitch_mode");
+    expect(await payload()).toMatchObject({ camera_type: 0, stitch_mode: 5 });
+    await expect(layers().router.mediaProviderFor(route).live({ view: 2 })).rejects.toThrow("lists no lens 2");
+  });
+
   it("starts a standalone T8170 with its 1700 inner 1000, the event-stream flag in byte 14, and stops with 1004", async () => {
     const { router, agent } = layers();
     const sn = "T8170P0000000000";
