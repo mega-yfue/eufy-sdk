@@ -181,6 +181,27 @@ describe("RtcSignalClient call", () => {
     ]);
   });
 
+  it("traces a dropped datagram and an attach's shape without identity or payload content", () => {
+    const lines: string[] = [];
+    const logger = { debug: (m: string) => lines.push(m), info() {}, warn() {}, error() {} };
+    const traced = new RtcSignalClient({ sn: SN, did: DID, lic: LIC, host: "127.0.0.1", logger });
+    traced.sessionKey = KEY;
+    traced.contactId = CONTACT;
+    const { uuid, ufrag, pwd } = traced.call(6);
+    const socket = sent[0]!.socket;
+    socket.emit("message", Buffer.from([1, 1, 0, 0]));
+    const inner = `{"ice-u":"a=ice-ufrag:${ufrag}","ice-p":"a=ice-pwd:${pwd}"}\u0005`;
+    station(socket, 4, 0, uuid, { sdp: inner, candidate: "candidate:1 1 udp 1 192.0.2.10 50000 typ host" });
+    traced.close();
+    expect(lines.some((l) => l.includes("dropped a 4-byte datagram, type 257, inner type none"))).toBe(true);
+    const info = lines.find((l) => l.includes("INFO attach:"))!;
+    expect(info).toContain("keys sdp,candidate");
+    expect(info).toContain("sdp string of");
+    expect(info).toContain("JSON.parse SyntaxError, text after the last }: yes, control chars: yes");
+    for (const secret of [SN, DID, LIC, KEY, CONTACT, uuid, ufrag, pwd, "192.0.2.10"])
+      expect(lines.filter((l) => l.includes(secret))).toEqual([]);
+  });
+
   it("486 is busy and ends the repeat, socket open; 480 hangs up; byte 13 outside 4..8 deletes only the session", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     vi.setSystemTime(TS * 1000);

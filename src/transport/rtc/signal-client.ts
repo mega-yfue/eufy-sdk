@@ -115,7 +115,10 @@ export interface RtcSignalOptions {
   appId?: string;
   /** The station's cached login, for a quick login. */
   token?: RtcToken;
-  /** Takes one debug line per datagram sent or answered: direction, kind, status, socket, ms since `start`. */
+  /**
+   * Takes one debug line per datagram sent, answered or dropped (direction, kind, status, socket, ms since `start`) and
+   * one per call attach read, by shape only.
+   */
   logger?: Logger;
 }
 
@@ -514,7 +517,7 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
 
   private onDatagram(msg: Buffer): void {
     const p = parseRtcDatagram(msg);
-    if (!p) return;
+    if (!p) return this.trace(dropped(msg));
     const kind = p.header.readUInt16LE(4);
     if (p.header[14]) this.answered(kind, p.header[42]!);
     if (kind !== RtcKind.DISCOVER && p.header[19]! & 0x01) {
@@ -535,17 +538,30 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
     else if (kind === RtcKind.INFO && p.header.readUInt16LE(16) === 200) this.onInfoAck(p.header, p.body);
   }
 
-  /** The decrypted attach JSON of a call body (base64 text first when `base64`), `{}` when absent or unreadable. */
+  /**
+   * The decrypted attach JSON of a call body (base64 text first when `base64`), `{}` when absent or unreadable. Traces
+   * its shape: length, byte 18, key names, the type and length of `sdp`, and for the attach and a string `sdp` how a
+   * strict JSON parse fares, whether text follows the last `}` and whether a control character occurs.
+   */
   private attach(header: Buffer, body: Buffer, base64 = false): Record<string, unknown> {
     const n = body.readUInt16LE(4);
+    const head = `${describe(header)} attach: ${n} bytes, byte 18 ${header[18]}`;
     let a = body.subarray(RTC_CALL_BODY_LENGTH, RTC_CALL_BODY_LENGTH + n);
     try {
       if (header[18] === 1 && n) a = rtcDecrypt(a, this.sessionKey, header.readUInt32LE(8));
     } catch {
+      this.trace(`${head}, unreadable`);
       return {};
     }
-    const text = readNullTerminatedString(a);
-    return jsonObject(base64 ? Buffer.from(text, "base64").toString() : text) ?? {};
+    const raw = readNullTerminatedString(a);
+    const text = base64 ? Buffer.from(raw, "base64").toString() : raw;
+    const o = jsonObject(text);
+    const sdp = o?.sdp;
+    this.trace(
+      `${head}, ${o ? `keys ${Object.keys(o).join(",")}` : "unreadable"}; ${shape(text)}; sdp ${typeof sdp}` +
+        (typeof sdp === "string" ? ` of ${sdp.length} chars, ${shape(sdp)}` : ""),
+    );
+    return o ?? {};
   }
 
   private onCallAnswer(header: Buffer, body: Buffer): void {
@@ -733,6 +749,25 @@ function jsonObject(text: string): Record<string, unknown> | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** A datagram {@link parseRtcDatagram} refused: its length, its first u16 and, under a type-8 wrapper, the inner one. */
+function dropped(msg: Buffer): string {
+  const type = msg.length >= 2 ? msg.readUInt16LE(0) : "none";
+  const inner = type === 8 && msg.length >= 24 ? (msg[22]! ^ msg[4]!) | ((msg[23]! ^ msg[5]!) << 8) : "none";
+  return `dropped a ${msg.length}-byte datagram, type ${type}, inner type ${inner}`;
+}
+
+/** How JSON text fares: a strict `JSON.parse` (ok or the error's name), text after the last `}`, a control character. */
+function shape(text: string): string {
+  let parse = "ok";
+  try {
+    JSON.parse(text);
+  } catch (e) {
+    parse = e instanceof Error ? e.name : "error";
+  }
+  const tail = text.slice(text.lastIndexOf("}") + 1).length > 0;
+  return `JSON.parse ${parse}, text after the last }: ${tail ? "yes" : "no"}, control chars: ${/[\x00-\x1f]/.test(text) ? "yes" : "no"}`;
 }
 
 /** A received request's header answered 200, seq kept, over `body`. */
