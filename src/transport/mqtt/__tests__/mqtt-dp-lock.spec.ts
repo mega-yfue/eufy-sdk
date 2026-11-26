@@ -80,13 +80,13 @@ describe("a bundle mqtt-dp write to a lock", () => {
     expect(frame.subarray(frame.length - 4, frame.length - 1)).toEqual(Buffer.from([0xa3, 1, 1]));
   });
 
-  it("sends again once while no reply comes, as the app's sendForRawResponse, or as the descriptor's retryCount", async () => {
+  it("sends once while no reply comes, again only where the descriptor states a retryCount", async () => {
     const { router, mqtt } = lockRouter();
     const p = router.dispatchCommand(SN, write);
     await vi.advanceTimersByTimeAsync(10_000);
     await p;
-    expect(mqtt.publish).toHaveBeenCalledTimes(2);
-    const q = router.dispatchCommand(SN, { ...write, retryCount: 0 });
+    expect(mqtt.publish).toHaveBeenCalledTimes(1);
+    const q = router.dispatchCommand(SN, { ...write, retryCount: 1 });
     await vi.advanceTimersByTimeAsync(10_000);
     await q;
     expect(mqtt.publish).toHaveBeenCalledTimes(3);

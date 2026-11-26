@@ -220,7 +220,7 @@ describe("MqttCommandRouter.dispatchCommand (ff09-autolock)", () => {
     };
     const p = router.dispatchCommand(SN, cmd);
     const assertion = expect(p).rejects.toThrow(/no settings GET reply/);
-    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(15_000);
     await assertion;
   });
 
@@ -270,7 +270,7 @@ describe("MqttCommandRouter.dispatchCommand (ff09-autolock)", () => {
       enabled: true,
     };
     const p = router.dispatchCommand(SN, cmd);
-    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(15_000);
     await expect(p).resolves.toBe(false);
     expect(acks).toEqual([{ sn: SN, kind: "ff09-autolock", getAcked: true, acked: false }]);
   });

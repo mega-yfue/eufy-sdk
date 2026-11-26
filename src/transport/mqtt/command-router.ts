@@ -429,16 +429,15 @@ export class MqttCommandRouter {
   }
 
   /**
-   * How long {@link dispatchFf09Actuate} waits for the device's `/res` **delivery ack** before giving up.
-   * This is NOT a physical-actuation budget, so the SAME number covers a deadbolt and a garage door
-   * despite their very different travel times — see that method's doc for why.
+   * How long {@link dispatchFf09Actuate} waits for the device's `/res` **delivery ack** before giving up: the
+   * `timeout` every lock bundle's MQTT descriptor states, 15 s.
    */
-  private static readonly FF09_ACK_TIMEOUT_MS = 5000;
+  private static readonly FF09_ACK_TIMEOUT_MS = 15_000;
 
   /**
    * Publish `envelope()` to `topic` and wait `timeoutMs` for the answer `match` picks, sending again up to `retries`
-   * times while none comes, as the app's `MqttDelegate.sendForRawResponse` does (`MqttConfig.maxRetryCount` 1 unless
-   * the descriptor states `retryCount`). The wait is armed before each publish.
+   * times while none comes, as the app's `MqttDelegate.sendForRawResponse` does with the descriptor's `retryCount`
+   * (none stated: sent once). The wait is armed before each publish.
    */
   private async request<T>(
     mqtt: SecureMqtt,
@@ -446,7 +445,7 @@ export class MqttCommandRouter {
     envelope: () => string,
     match: (m: { topic?: string; raw?: unknown }) => T | undefined,
     timeoutMs: number,
-    retries = 1,
+    retries = 0,
   ): Promise<T | undefined> {
     for (let attempt = 0; attempt <= retries; attempt++) {
       const answer = this.waitForMqttMessage(mqtt, match, timeoutMs);
@@ -744,7 +743,6 @@ export class MqttCommandRouter {
         return !(reply.cmd & 0x8000) || (part < 0x80 && part >> 4 === (part & 15)) ? true : undefined;
       },
       MqttCommandRouter.LIGHT_REPLY_TIMEOUT_MS,
-      0,
     );
   }
 
@@ -885,7 +883,6 @@ export class MqttCommandRouter {
         }
       },
       timeoutMs,
-      0,
     );
   }
 
@@ -910,7 +907,6 @@ export class MqttCommandRouter {
           return t?.cmd === cmd.cmd && typeof t.payload?.result === "number" ? t.payload.result : undefined;
         },
         (cmd.timeoutS ?? 5) * 1000,
-        0,
       );
       this.deps.onCommandAck({ sn, kind: "mqtt-json", cmd: cmd.cmd, acked: result !== undefined });
       return result === 0;

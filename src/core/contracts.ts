@@ -440,7 +440,7 @@ export type Command =
         preserve?: readonly (number | Buffer)[];
         /** The descriptor's `timeout`, seconds: how long the app waits for the reply (5 s when it states none). */
         timeoutS?: number;
-        /** The descriptor's `retryCount`: sends again while no reply comes (1 when it states none). */
+        /** The descriptor's `retryCount`: sends again while no reply comes (none when it states none). */
         retryCount?: number;
       }
     // `mqtt-json` — a `type: "json"` secure-MQTT write: the descriptor's `cmd` and JSON `payload` in the security envelope.
