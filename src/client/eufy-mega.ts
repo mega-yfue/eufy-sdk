@@ -398,7 +398,7 @@ export class EufyMega extends EventEmitter {
       sessionIdle: { batteryIdleMs: opts.p2pIdleMs },
       localAddresses: opts.localAddresses,
       noBroadcast: opts.noBroadcast,
-      sessionPerCamera: opts.p2pSessionPerCamera,
+      sessionPerCamera: opts.sessionPerCamera,
       listDevices: () => this.registry.list(),
       ensureDevices: async () => {
         await this.registry.getDevices();
@@ -425,6 +425,7 @@ export class EufyMega extends EventEmitter {
       ffmpegPath: opts.ffmpegPath,
       onError: (e) => this.reportError(e),
       onFrame: (stationSn, f) => this.onP2PFrame(stationSn, f),
+      sessionPerCamera: opts.sessionPerCamera,
     });
     this.mqtt = new MqttCommandRouter({
       mega: this.mega,

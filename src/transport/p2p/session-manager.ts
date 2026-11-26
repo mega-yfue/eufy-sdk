@@ -53,7 +53,7 @@ export const PREWARM_MS = 28_000;
  *
  * The power tier is deliberately NOT stored: it is resolved per idle-arm, so a station whose battery
  * evidence arrives after its first session still gets the right window. `station` is the serial the key connects to:
- * the key itself, or the station of a camera's own media session (`p2pSessionPerCamera`).
+ * the key itself, or the station of a camera's own media session (`sessionPerCamera`).
  */
 interface SessionEntry {
   station: string;

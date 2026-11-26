@@ -79,7 +79,7 @@ const CALL: RtcCallSdp = {
 };
 
 /** Fake native layers: a signal client that logs in at once, a connected data channel, a connected PM ICE. */
-function layers(onFrame?: RtcCommandRouterDeps["onFrame"]) {
+function layers(onFrame?: RtcCommandRouterDeps["onFrame"], sessionPerCamera?: boolean) {
   const signal = Object.assign(new EventEmitter(), {
     start: vi.fn(async () => void queueMicrotask(() => signal.emit("login", "contact"))),
     call: vi.fn(() => ({ uuid: "pm-call", ...CALL })),
@@ -101,6 +101,7 @@ function layers(onFrame?: RtcCommandRouterDeps["onFrame"]) {
     userId: () => "synthetic-user",
     appId: "0123456789abcdef",
     onFrame,
+    sessionPerCamera,
     layers: { signal: () => signal as unknown as RtcSignalClient, priv1, pmIce },
   });
   return { router, signal, data, agent, priv1, pmIce };
@@ -551,6 +552,22 @@ describe("RtcCommandRouter on the native layers", () => {
     expect((await failed).message).toContain("did not take start_intercom");
     await talk.stop();
     router.close();
+  });
+
+  it("refuses a second camera on a watched station, and with sessionPerCamera gives it a PM call of its own", async () => {
+    const other: RtcLiveRoute = { ...ROUTE, cameraSn: "T8425P0000000002", channel: 4 };
+    const single = layers();
+    await single.router.mediaProviderFor(ROUTE).live();
+    await expect(single.router.mediaProviderFor(other).live()).rejects.toThrow("is serving T8425P0000000001");
+    const wall = layers(undefined, true);
+    const a = await wall.router.mediaProviderFor(ROUTE).live();
+    const b = await wall.router.mediaProviderFor(other).live();
+    expect(wall.signal.call).toHaveBeenCalledTimes(2);
+    expect(wall.signal.start).toHaveBeenCalledOnce();
+    a.stop();
+    b.stop();
+    single.router.close();
+    wall.router.close();
   });
 
   it("refuses a live view without the start JSON", async () => {

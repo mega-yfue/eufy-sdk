@@ -17,7 +17,9 @@
  * (CMD_DATABASE_IMAGE) a stored image, each as the station's notify under that command id, matched by its content
  * (`transaction`, `file`) since the notify stream carries other reports between them.
  *
- * The station serves one live view at a time: a second camera is refused while the first one's view has consumers.
+ * One live view per station, as the app plays one: a second camera is refused while the first one's view has consumers.
+ * With {@link RtcCommandRouterDeps.sessionPerCamera} each camera's view places a PM call of its own on the station's
+ * client instead, so several cameras on one station stream at once.
  */
 import { createECDH, randomInt } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -113,6 +115,8 @@ export interface RtcCommandRouterDeps {
   onFrame?: (stationSn: string, frame: P2PFrame) => void;
   /** The native layers, replaceable in a spec. */
   layers?: { signal?: (o: RtcSignalOptions) => RtcSignalClient; priv1?: typeof priv1; pmIce?: typeof pmIce };
+  /** Camera wall: one live view per camera rather than per station, each on its own PM call. */
+  sessionPerCamera?: boolean;
 }
 
 interface Station {
@@ -129,7 +133,7 @@ interface Station {
 
 class StationStreamBusyError extends Error {
   constructor(stationSn: string, servingSn: string) {
-    super(`rtc live: ${stationSn} is serving ${servingSn}; the station streams one camera at a time`);
+    super(`rtc live: ${stationSn} is serving ${servingSn}; one camera at a time without sessionPerCamera`);
     this.name = "StationStreamBusyError";
   }
 }
@@ -357,7 +361,7 @@ export class RtcCommandRouter {
     const sn = route.stationSn;
     if (this.talking.has(sn)) throw new Error(`talkback: ${sn} is already talking; stop it before starting another`);
     const { talkStart, talkStop } = route.live!;
-    const pm = () => this.lives.get(sn)?.stream;
+    const pm = () => this.lives.get(this.liveKey(route))?.stream;
     let consumer: Consumer | undefined;
     let speaking = false;
     const talk: Talkback = new Talkback(
@@ -600,6 +604,7 @@ export class RtcCommandRouter {
     if (opts.view !== undefined && !route.sensors?.includes(opts.view))
       throw new Error(`rtc live: ${route.cameraSn} lists no lens ${opts.view}`);
     const sn = route.stationSn;
+    const key = this.liveKey(route);
     this.refuseIfWatched(route);
     const st = this.station(route);
     await this.loggedIn(
@@ -609,12 +614,12 @@ export class RtcCommandRouter {
       opts.signal,
     );
     this.refuseIfWatched(route);
-    const current = this.lives.get(sn);
+    const current = this.lives.get(key);
     if (current && current.cameraSn !== route.cameraSn) {
-      this.lives.delete(sn);
+      this.lives.delete(key);
       current.source.dispose();
     }
-    let entry = this.lives.get(sn);
+    let entry = this.lives.get(key);
     if (!entry) {
       const source: SharedLiveSource = new SharedLiveSource({
         makeStream: () => (entry!.stream = this.pmStream(route, st, live, opts.entryType ?? 0, opts.view)),
@@ -623,17 +628,22 @@ export class RtcCommandRouter {
         powered: opts.powered,
         preBufferSeconds: opts.preBufferSeconds,
         onStopped: () => {
-          if (this.lives.get(sn)?.source === source) this.lives.delete(sn);
+          if (this.lives.get(key)?.source === source) this.lives.delete(key);
         },
       });
       entry = { cameraSn: route.cameraSn, source };
-      this.lives.set(sn, entry);
+      this.lives.set(key, entry);
     }
     return await use(entry.source);
   }
 
+  /** A live view's slot: its station, or its camera with {@link RtcCommandRouterDeps.sessionPerCamera}. */
+  private liveKey(route: RtcLiveRoute): string {
+    return this.deps.sessionPerCamera ? route.cameraSn : route.stationSn;
+  }
+
   private refuseIfWatched(route: RtcLiveRoute): void {
-    const current = this.lives.get(route.stationSn);
+    const current = this.lives.get(this.liveKey(route));
     if (current && current.cameraSn !== route.cameraSn && current.source.consumerCount > 0)
       throw new StationStreamBusyError(route.stationSn, current.cameraSn);
   }
