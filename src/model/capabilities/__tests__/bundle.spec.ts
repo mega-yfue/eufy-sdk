@@ -2,6 +2,7 @@ import { frameCommand, qualityOf, thingRead, thingReadback, thingWrite, type Bun
 import { parseThingsList, type ThingDescription } from "../thing-description.js";
 import { power } from "./bundle-fixture.js";
 import type { CommandContext } from "../types.js";
+import type { Command } from "../../../core/contracts.js";
 
 const NOW = 1_700_000_000_000;
 beforeEach(() => vi.spyOn(Date, "now").mockReturnValue(NOW));
@@ -1197,6 +1198,24 @@ describe("the regenerated data's forms", () => {
     expect(read("ecl_mow_debug_panel_ack_result", 180, "00"), "the app's cut prefix").toBe('{"seq":0,"type":0}');
   });
 
+  it("gives every frame of one write the write's transaction", () => {
+    vi.spyOn(Date, "now")
+      .mockReturnValueOnce(NOW)
+      .mockReturnValue(NOW + 7);
+    const frame = (subCmd: number): BundleFrame => ({
+      cmd: 1350,
+      body: "json1350",
+      channel: "$channel",
+      subCmd,
+      mValue3: 0,
+      payload: { value: "$value", transaction: "$now" },
+    });
+    const cmd = frameCommand({ ...frame(1277), next: [frame(6252)] }, 1, ctx("T8214")) as Command & { next: Command };
+    expect([cmd, cmd.next].map((c) => (c as { payload: { transaction: string } }).payload.transaction)).toEqual([
+      String(NOW),
+      String(NOW),
+    ]);
+  });
   it("keeps a $userId account_id where the bundle puts it, for the transport to fill", () => {
     const frame: BundleFrame = {
       cmd: 1700,

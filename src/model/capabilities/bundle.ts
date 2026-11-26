@@ -1245,17 +1245,23 @@ const UNGUARDED_PARAMS = new Set([1710]);
  * The {@link Command} a bundle frame is for `value` on this device, its tokens filled: `$value`, `$channel`
  * (the device channel, 255 for a station), `$now` (epoch ms, a string), `$nowS` (epoch seconds), `$seq` (the bundles' `getRandom`, 1000–9999), `$input.<key>` (a key of
  * the written value, a JSON object), `$sn` (the device serial) and `$station` (its
- * station's), `$param:…` (the device's cached param, {@link BundleFrame}), `$userId` left to the transport, which fills the account id, then `{"$b64": <template>}` the filled template as base64 JSON, then the frames after it as `next`. `undefined` for a frame no builder can carry: a `ble`
+ * station's), `$param:…` (the device's cached param, {@link BundleFrame}), `$userId` left to the transport, which fills the account id, then `{"$b64": <template>}` the filled template as base64 JSON, then the frames after it as `next`, on the same clock: one write is one transaction (`TraceIdUtil.newTraceId`). `undefined` for a frame no builder can carry: a `ble`
  * or unknown transport, an `mqtt` one its builder refuses, an unknown body, a seal other than `ecb` or on a non-JSON body, a scalar with no integer value, a bare JSON
  * body that is not an object, a data point whose template cannot be set, a cloud call with another method, or a
  * frame after it that is any of these.
  */
-export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandContext, td?: Td): Command | undefined {
+export function frameCommand(
+  frame: BundleFrame,
+  value: unknown,
+  ctx: CommandContext,
+  td?: Td,
+  now = Date.now(),
+): Command | undefined {
   const tokens: Record<string, unknown> = {
     $value: value,
     $channel: isStationSerial(ctx.serial ?? "") ? 255 : ctx.channel,
-    $now: String(Date.now()),
-    $nowS: Math.floor(Date.now() / 1000),
+    $now: String(now),
+    $nowS: Math.floor(now / 1000),
     $seq: Math.floor(1e3 + 9e3 * Math.random()),
     $sn: ctx.serial,
     $station: ctx.stationSerial ?? ctx.serial,
@@ -1324,7 +1330,7 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
             : undefined;
   const after = [...(frame.next ?? []), ...(frame.after ? [frame.after] : [])];
   const next = after.length
-    ? frameCommand({ ...after[0]!, next: after.slice(1), after: undefined }, value, ctx, td)
+    ? frameCommand({ ...after[0]!, next: after.slice(1), after: undefined }, value, ctx, td, now)
     : null;
   if (!head || next === undefined || unfilled) return undefined;
   return next ? { ...head, next } : head;
