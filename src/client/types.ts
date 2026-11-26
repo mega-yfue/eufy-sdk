@@ -177,16 +177,6 @@ export interface EufyMegaOptions extends MegaClientConfig {
    */
   ffmpegLogLevel?: FfmpegLevel;
   /**
-   * Opt into unverified Tuya DP writes for `eufy_home_tuya` clean-line devices (G-series / X8).
-   *
-   * By default `TuyaCommandRouter` refuses to send `dp.publish` because the request shape
-   * has been reversed but not yet confirmed from a live on-device capture — a wrong shape comes back
-   * as a generic Tuya error indistinguishable from an actual device rejection. `true` sends it anyway,
-   * which is sound only where the full round-trip has been confirmed on a real device, or that
-   * ambiguity is accepted.
-   */
-  tuyaAllowUnverified?: boolean;
-  /**
    * The `ffmpeg` executable the media paths that shell out should run (live snapshot / record).
    * Default: the bare name `"ffmpeg"`, looked up on `PATH`.
    *

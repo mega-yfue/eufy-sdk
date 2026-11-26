@@ -43,9 +43,8 @@ export const LOCATE_MEMBERS = {
       "cancel a beep but holds no durable state, so this may never be observed true in practice.",
   },
   /**
-   * Writes DP 160 (AIoT) — `true` starts the beep, `false` cancels one already sounding. AIoT only:
-   * the legacy Tuya DP 103 is read as an alias above, but its WRITE direction is unconfirmed, so no
-   * Tuya dispatch is offered. The default
+   * Writes DP 160 (AIoT) or reported DP 103 (Tuya). Both start and cancel on the
+   * Tuya path were physically tested on X8 Pro / T2276 only. The default
    * argument is what makes this a `method`: a bare `locate()` is the call that matters, and a derived
    * setter always demands its value.
    *
@@ -54,11 +53,11 @@ export const LOCATE_MEMBERS = {
    */
   locate: {
     ...method(
-      ({ sink }) =>
+      ({ sink, ctx }) =>
         (on = true): Promise<void> =>
-          sink.dispatch(aiotDp(LOCATE_DP, on)),
-      "Trigger the find-robot beep; pass false to cancel one in progress.",
-      isAiotVacuum,
+          sink.dispatch(aiotDp(isTuyaVacuum(ctx) ? LEGACY_LOCATE_DP : LOCATE_DP, on)),
+      "Trigger the find-robot beep; pass false to cancel. Tuya tested only on X8 Pro / T2276.",
+      (ctx) => isAiotVacuum(ctx) || (isTuyaVacuum(ctx) && (ctx.paramIds?.has(LEGACY_LOCATE_DP) ?? false)),
     ),
     args: [{ name: "on", kind: "boolean", optional: true, description: "False cancels a beep in progress." }],
   },

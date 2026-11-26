@@ -17,8 +17,8 @@ The accessor returns `undefined` on a device without the capability, so guard it
 (`dev.vacuumClean?.()?.…`) or assert once up front. Each individual getter is **present only when the
 device reports that value**, so read them defensively.
 
-::: warning A robot's state appears only after it reports
-The **cloud device record does not carry a robot's live state** — its reported parameters hold none of
+::: warning AIoT state appears only after the robot reports
+For AIoT vacuums, the **cloud device record does not carry a robot's live state** — its reported parameters hold none of
 the activity/suction/battery values. Confirmed on two unrelated models, so treat it as how the line
 behaves rather than a quirk of one robot. Those values arrive only over the robot's **realtime feed**,
 which the SDK subscribes for you.
@@ -30,7 +30,8 @@ resolve with **no state getters at all** until the first report lands — `activ
 
 So don't treat a missing getter as an error, and don't block startup waiting for one. Listen for
 `deviceState` and re-read `dev.vacuumClean?.()` when it fires, rather than sampling once at bind time.
-There is no way to ask a robot for its state on demand — the vendor cloud exposes no such read.
+The AIoT cloud does not provide an on-demand read of those values. Tuya vacuums also have cloud
+state polling, described below.
 
 Re-read **through the accessor** (`dev.vacuumClean?.()?.activity`), not through an object you kept from
 an earlier call: the report that first creates the reads installs them on a fresh object, and a cached
@@ -89,6 +90,10 @@ it can't rely on this getter to do it.
 
 ## Suction
 
+AIoT vacuums expose suction through `dev.suction()`. Tuya vacuums use
+`dev.vacuumClean?.()?.cleaningStrength`, a string such as `"Quiet"` or `"Max"`; see
+[Tuya controls](#tuya-controls) for writes.
+
 ```ts
 import { suctionLevelName } from "@mega-yfue/eufy-sdk";
 
@@ -106,29 +111,97 @@ report both.
 
 ## Refreshing state + controls
 
-The robot's state does not come down on the cloud device record; it arrives on the realtime feed, which
-the SDK subscribes and merges into device state for you. A getter built once stays current — the same
-object reflects each new report, so there is nothing to re-fetch and no poll to schedule.
+AIoT state arrives on the realtime feed. Tuya state can also arrive through the SDK's cloud polling.
+With SDK-managed connectivity enabled, `pollMs` configures the polling interval and
+`setPollInterval(ms)` changes it at runtime; `0` disables polling. `autoRealtime: false` disables
+SDK-managed background connectivity, including the polling loop.
 
-What you cannot do is **pull** state: a robot reports on change, and the vendor cloud offers no
-read that returns its current values. So the honest pattern is event-driven — react to `deviceState`
-rather than sampling. A robot that has not reported since you connected simply has no getters yet.
+Listen for `deviceState` and re-read capability accessors when it fires. An object obtained before a
+parameter was first reported will not gain the new getter or control, so do not retain it as a fixed
+list of available features. For Tuya activity, read `dev.vacuumClean?.()?.workStatus`.
 
-A report also announces each value it moved as [`propertyChanged`](/events), naming the property rather
-than the whole device — so you update one reading instead of re-reading the object. That includes the
-session and lifetime counters (`clearTime`, `clearArea`, `lifetimeCleanTime`, `lifetimeCleanArea`), which
-advance throughout a run: since the realtime feed is the only place a robot's state comes from, this is
-also the only way to follow a clean in progress. They are payload-backed on the AIoT line, so those
-announcements name the property with no value — re-read it through the accessor.
+A report also announces changed properties through [`propertyChanged`](/events). Payload-backed
+AIoT readings need to be re-read through their typed getter.
+
+Command acceptance does not confirm physical execution or an immediate state update. The SDK does
+not currently schedule extra Tuya refreshes after commands. In X8 Pro / T2276 testing, cancelling a
+return to the dock physically worked while `workStatus` still indicated returning for at least
+15 seconds. Do not use that value alone to decide whether cancellation succeeded.
 
 ## Controls
 
-Every write below is **AIoT-only**. The legacy Tuya clean line dispatches nothing at all — that
-direction has no live capture behind it — so a Tuya robot binds the reads and none of the verbs, and
-the missing method is the signal.
+Controls depend on the device family and reported parameters. Each method is optional; check for its
+presence before offering it. Optional chaining in the examples skips a missing method rather than
+reporting an unsupported operation.
 
-Each verb is also optional on the surface, because whether a device has it is a runtime fact. The `?.`
-is not defensive style — it is the type telling you to check.
+### Tuya controls
+
+These controls are offered to `eufy_home_tuya` vacuums once the required parameters have been reported.
+There is no model allowlist. **Physical testing has been performed on an X8 Pro**; support on other Tuya
+models has not been verified.
+
+| Control                 | API                                        | Required reported parameters |
+| ----------------------- | ------------------------------------------ | ---------------------------- |
+| Start auto-clean        | `vacuumClean().startCleaning()`            | Mode and play/pause          |
+| Pause                   | `vacuumClean().pauseCleaning()`            | Play/pause                   |
+| Return to dock          | `vacuumClean().returnToDock()`             | Return-to-dock               |
+| Cancel return to dock   | `vacuumClean().setStopReturnToDock(true)`  | Return-to-dock               |
+| Suction level           | `vacuumClean().setCleaningStrength(level)` | Cleaning strength            |
+| Clean current-map rooms | `vacuumClean().cleanCurrentMapRooms(ids)`  | Map operations               |
+| Locate / stop locating  | `locate().locate(true / false)`            | Locate                       |
+
+```ts
+const tuyaClean = dev.vacuumClean?.();
+await tuyaClean?.startCleaning?.();
+await tuyaClean?.pauseCleaning?.();
+await tuyaClean?.returnToDock?.();
+await tuyaClean?.setStopReturnToDock?.(true); // cancel while returning
+
+await tuyaClean?.setCleaningStrength?.("Quiet"); // also Standard, Turbo, Max
+dev.vacuumClean?.()?.cleaningStrength; // reported value; may also be Off
+
+await dev.locate?.()?.locate?.(true);
+await dev.locate?.()?.locate?.(false); // stop locating
+```
+
+All four suction settings and both locate directions were physically observed on T2276. `Off` is a
+reported suction state, not a supported write. The AIoT `suction().setSuctionLevel()` API does not set
+Tuya suction.
+
+**Resume is unavailable on Tuya.** Its standalone play command was accepted but did not move the
+X8 Pro, and the reported state remained unchanged at 3, 8 and 15 seconds. Starting auto-clean after a
+pause worked, but that does not establish that the existing job resumes. Zone and scene cleaning
+remain unavailable on Tuya.
+
+`cleanCurrentMapRooms([0, 3])` cleans those room IDs once on the currently selected map. Zero is a
+valid room ID. The command does not switch maps, discover room IDs, or change per-room settings.
+Select the correct map in the vendor app first. This current-map control is separate from AIoT
+`cleanRooms(mapId, rooms, cleanTimes)`, which explicitly addresses a map. Room cleaning was
+physically verified on T2276; other Tuya models remain untested.
+
+Tuya publishing no longer requires an experimental opt-in: `tuyaAllowUnverified` and the low-level
+`allowUnverified` options have been removed. API rejections throw through the command router; successful
+acceptance still does not guarantee a physical result.
+
+### Saved Tuya rooms
+
+Download the saved maps and their named room IDs using the authenticated cloud account:
+
+```ts
+const savedMaps = await eufy.getTuyaMapRooms(dev.sn);
+for (const map of savedMaps) {
+  console.log(map.mapId, map.name, map.rooms); // [{ id: 0, name: "Room A" }, …]
+}
+```
+
+Each map has its own room IDs, including zero. Names may repeat, so the result preserves a list
+rather than using names as unique keys. Only named room-table entries are returned; unnamed grid
+segments are excluded. No stored maps returns an empty array; authentication, download and malformed
+map errors reject the promise. This read does not switch the active map. Select the matching map in
+the vendor app before passing its room IDs to `cleanCurrentMapRooms`. Verified on T2276 using the
+owner account; shared-account access and other models have not been verified.
+
+### AIoT controls
 
 **Every mode-control verb below was run on a T2351 and did what it says** — the whole-floor four, and
 the three that take an argument. The two suction setters rest on something different: a data-point write
@@ -141,7 +214,7 @@ different command rather than a failure. A settings write has no number to get w
 itself: the three reads it changes are on the data point it is sent to, so a frame the robot rejects
 leaves them where they were.
 
-### Whole-floor verbs
+#### Whole-floor verbs
 
 ```ts
 const clean = dev.vacuumClean?.();
@@ -155,7 +228,7 @@ await dev.suction?.()?.setSuctionLevel?.(2); // raw level, see above
 await dev.suction?.()?.setBoostIq?.(true);
 ```
 
-### What a run does with a surface
+#### What a run does with a surface
 
 The cleaning type, how far past the mapped edge a job reaches, and how much water the mop lays down all
 travel in one `CleanParam`, so one verb states all three — and the three reads beside it are how you see
@@ -173,7 +246,7 @@ clean?.mopLevel; // "high"
 is not part of this message even though a `fan` field sits in it — it has its own data point, and
 `setSuctionLevel` above is where it is set.
 
-### Cleaning part of a floor
+#### Cleaning part of a floor
 
 Three verbs take an argument, and each argument comes from a read the robot already publishes rather than
 from anything you have to invent. Running a **saved scene** is the simplest: the argument is the robot's
@@ -222,12 +295,10 @@ eufy.on("map", ({ map }) => map.rooms?.rooms);
 await clean?.requestMap?.();
 ```
 
-### What is still missing
+#### What is still missing
 
-The **clean parameters** — clean type, mop level, water level, clean extent, cleaning strength — are
-read-only. They decode out of one payload the robot reports, and no capture pins a write for any of
-them, so there is no setter to offer. Reading them back after changing them in the vendor's app works
-as it always did.
+The available AIoT settings writes are described above. Tuya's supported controls and remaining
+limitations are listed separately under [Tuya controls](#tuya-controls).
 
 **Driving to a point** (`START_GOTO_CLEAN`, method 4) has no encoder either, and for a different
 reason: its argument is a coordinate, and no read published here hands you one. A scene id and a map id

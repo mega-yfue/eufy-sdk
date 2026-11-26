@@ -148,3 +148,5 @@ export { SolixSite, discoverSolixSites, type SolixSiteReader, type SolixSiteOpti
 // `SolixSiteRecord` / `SolixSiteDeviceEntry` are core-owned (see `core/index.ts` `export *
 // ./solix-types`), so they reach `src/index.ts` through the core barrel — not re-exported here (a
 // core type should leave through one layer barrel, matching how `SolixDeviceRecord` is handled).
+
+export type { TuyaMapRooms } from "./tuya-map.js";

@@ -5,12 +5,12 @@
  * Usage: call {@link bind} after a successful mega login, then {@link registerDevice} for each
  * `eufy_home_tuya` device (the facade does both). On the first {@link dispatchCommand} the router
  * logs into the Tuya cloud lazily (once, shared across all subsequent sends). The dp.publish write
- * is sent via `TuyaClient.publishDps` — note the `dp.publish` param shape is not yet confirmed from
- * a live eufy Home/Clean capture (gated by {@link TuyaCommandRouterConfig.allowUnverified}, default `false`).
+ * is sent via `TuyaClient.publishDps`, verified on T2276.
  *
  * Layering: imports `../../core` only — no `model/` import, consistent with the capability↔transport
  * decorrelation invariant. Sibling tuya/* imports are same-layer (transport).
  */
+import { fetchStoredMaps, type StoredMapFile } from "./map-storage.js";
 import type { Command } from "../../core/contracts.js";
 import { resolveCountryCode } from "./account.js";
 import { HmacSigner } from "./sign.js";
@@ -19,12 +19,6 @@ import type { TuyaHttpPost } from "./request.js";
 import { parseTuyaDpEvent } from "./dp-codec.js";
 
 export interface TuyaCommandRouterConfig {
-  /**
-   * Opt-in to unverified Tuya DP writes. Defaults to `false` — {@link dispatchCommand} will throw
-   * until a live `publishDps` capture confirms the dp.publish round-trip. Set `true` only after that
-   * confirmation and remove the gate when the write is shipped as verified.
-   */
-  allowUnverified?: boolean;
   /** Inject a POST transport (test stub); default = native fetch. Forwarded to the internal TuyaClient. */
   http?: TuyaHttpPost;
 }
@@ -41,7 +35,6 @@ interface TuyaDeviceIds {
 }
 
 export class TuyaCommandRouter {
-  private readonly allowUnverified: boolean;
   private readonly http: TuyaHttpPost | undefined;
   private userId: string | undefined;
   private dialCode: string | undefined;
@@ -57,7 +50,6 @@ export class TuyaCommandRouter {
   private readonly snMap = new Map<string, TuyaDeviceIds>();
 
   constructor(config: TuyaCommandRouterConfig = {}) {
-    this.allowUnverified = config.allowUnverified ?? false;
     this.http = config.http;
   }
 
@@ -108,6 +100,14 @@ export class TuyaCommandRouter {
     return this.loginOnce;
   }
 
+  /** Download stored objects for a registered device using the shared login. */
+  async fetchMapFiles(sn: string): Promise<StoredMapFile[]> {
+    const ids = this.snMap.get(sn);
+    if (!ids) throw new Error("No registered Tuya device for map retrieval");
+    await this.ensureLoggedIn();
+    return fetchStoredMaps(this.client!, ids.devId);
+  }
+
   /**
    * Read a device's current DPs from the Tuya cloud (`smartlife.m.device.dp.get`) and answer the DP
    * map: the reply's flat `result`, kept to integer DP keys with scalar values. Answers `null` for an
@@ -129,9 +129,7 @@ export class TuyaCommandRouter {
    * Logs in lazily on first call. The eufy SN must have been registered via {@link registerDevice}
    * before dispatch — the facade does this when the device list is loaded.
    *
-   * ⚠️ `dp.publish` is unverified — see {@link TuyaCommandRouterConfig.allowUnverified}. By default
-   * this throws. Pass `allowUnverified: true` in the router config only after a live capture
-   * confirms the full round-trip, then remove the gate.
+   * Rejected API replies throw; acceptance alone does not confirm physical execution.
    */
   async dispatchCommand(sn: string, cmd: Command): Promise<void> {
     if (cmd.kind !== "aiot-dp") {
@@ -145,11 +143,9 @@ export class TuyaCommandRouter {
           "Ensure getDevices() was called; it registers every eufy_home_tuya device under its Tuya id or its serial.",
       );
     }
-    await this.client!.publishDps(
-      ids.devId,
-      ids.gwId,
-      { [cmd.dp]: cmd.value },
-      { allowUnverified: this.allowUnverified },
-    );
+    const reply = await this.client!.publishDps(ids.devId, ids.gwId, { [cmd.dp]: cmd.value });
+    if (!reply.success) {
+      throw new Error(`Tuya DP publish rejected: ${reply.errorCode ?? "unknown"}`);
+    }
   }
 }
