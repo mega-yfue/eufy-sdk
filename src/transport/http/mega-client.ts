@@ -936,7 +936,8 @@ export class MegaHttpClient {
 
   /**
    * Fetch the per-station DSK key using each station's reported cloud category. Mirrors
-   * the legacy `get_dsk_keys` body shape on the mega devicerelation service.
+   * the legacy `get_dsk_keys` body shape on the mega devicerelation service, sent with `Category: eufy_security`,
+   * the default of the app's `DeviceRelationNetApi.getDeviceDskKeys`.
    * The P2P *local* lookup path does not need this; only the cloud path does.
    */
   async getDskKeys(
@@ -959,11 +960,12 @@ export class MegaHttpClient {
     // { device_sn, dsk_key, expiration, enabled, about_to_be_replaced }).
     const res = await this.post<{
       device_dsks?: Array<{ device_sn: string; dsk_key: string; expiration: number }>;
-    }>("devicerelation", "/app/devicerelation/get_dsk_keys", {
-      device_dsks: deviceDsks,
-      invalid_dsks: invalid,
-      station_sns: stations.map(({ sn }) => sn),
-    });
+    }>(
+      "devicerelation",
+      "/app/devicerelation/get_dsk_keys",
+      { device_dsks: deviceDsks, invalid_dsks: invalid, station_sns: stations.map(({ sn }) => sn) },
+      { category: "eufy_security" },
+    );
     const out: Record<string, { dskKey: string; expiration: number }> = {};
     for (const k of res.device_dsks ?? []) out[k.device_sn] = { dskKey: k.dsk_key, expiration: k.expiration };
     return out;

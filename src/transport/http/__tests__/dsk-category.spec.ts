@@ -36,19 +36,24 @@ describe("per-station DSK categories", () => {
       { [SECURITY_SN]: "2".repeat(32), [CARE_CAMERA_SN]: "3".repeat(32) },
     );
 
-    expect(post).toHaveBeenCalledExactlyOnceWith("devicerelation", "/app/devicerelation/get_dsk_keys", {
-      device_dsks: [
-        { invalid_dsk: "2".repeat(32), device_sn: SECURITY_SN, category: "eufy_security" },
-        { invalid_dsk: "3".repeat(32), device_sn: CARE_CAMERA_SN, category: "eufy_care" },
-        { invalid_dsk: "", device_sn: CARE_BASE_SN, category: "eufy_care" },
-      ],
-      invalid_dsks: {
-        [SECURITY_SN]: "2".repeat(32),
-        [CARE_CAMERA_SN]: "3".repeat(32),
-        [CARE_BASE_SN]: "",
+    expect(post).toHaveBeenCalledExactlyOnceWith(
+      "devicerelation",
+      "/app/devicerelation/get_dsk_keys",
+      {
+        device_dsks: [
+          { invalid_dsk: "2".repeat(32), device_sn: SECURITY_SN, category: "eufy_security" },
+          { invalid_dsk: "3".repeat(32), device_sn: CARE_CAMERA_SN, category: "eufy_care" },
+          { invalid_dsk: "", device_sn: CARE_BASE_SN, category: "eufy_care" },
+        ],
+        invalid_dsks: {
+          [SECURITY_SN]: "2".repeat(32),
+          [CARE_CAMERA_SN]: "3".repeat(32),
+          [CARE_BASE_SN]: "",
+        },
+        station_sns: [SECURITY_SN, CARE_CAMERA_SN, CARE_BASE_SN],
       },
-      station_sns: [SECURITY_SN, CARE_CAMERA_SN, CARE_BASE_SN],
-    });
+      { category: "eufy_security" },
+    );
     expect(keys).toEqual({
       [SECURITY_SN]: { dskKey: securityKey, expiration: 1700000000 },
       [CARE_CAMERA_SN]: { dskKey: careKey, expiration: 1700000010 },
@@ -60,10 +65,15 @@ describe("per-station DSK categories", () => {
 
     await mega.getDskKeys([{ sn: SECURITY_SN, category: "" }]);
 
-    expect(post).toHaveBeenCalledExactlyOnceWith("devicerelation", "/app/devicerelation/get_dsk_keys", {
-      device_dsks: [{ invalid_dsk: "", device_sn: SECURITY_SN, category: "eufy_security" }],
-      invalid_dsks: { [SECURITY_SN]: "" },
-      station_sns: [SECURITY_SN],
-    });
+    expect(post).toHaveBeenCalledExactlyOnceWith(
+      "devicerelation",
+      "/app/devicerelation/get_dsk_keys",
+      {
+        device_dsks: [{ invalid_dsk: "", device_sn: SECURITY_SN, category: "eufy_security" }],
+        invalid_dsks: { [SECURITY_SN]: "" },
+        station_sns: [SECURITY_SN],
+      },
+      { category: "eufy_security" },
+    );
   });
 });
