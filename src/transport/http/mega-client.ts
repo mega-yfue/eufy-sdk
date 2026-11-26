@@ -318,6 +318,16 @@ function isTimeoutFailure(e: unknown): boolean {
   );
 }
 
+/** The serial a request body names, as `CategoryHeaderRouting.getDeviceSn` reads it. */
+function deviceSnOf(body: unknown): string | undefined {
+  for (const key of ["device_sn", "station_sn", "deviceSn"]) {
+    const v = (body as Record<string, unknown> | null)?.[key];
+    const sn = Array.isArray(v) ? v[0] : v;
+    if (typeof sn === "string" && sn) return sn;
+  }
+  return undefined;
+}
+
 /** The challenge a `/passport/login` attempt answers: none, a solved captcha, or a 2FA code. */
 type LoginChallenge = { verifyCode?: string; captchaId?: string; answer?: string };
 
@@ -435,6 +445,13 @@ export class MegaHttpClient {
   private securityDomain?: string;
   /** @internal The facade's Tuya session, for the Tuya-side step of `eufy_home_tuya` sharing. */
   tuya?: TuyaCommandRouter;
+  /**
+   * The cloud category of a device by serial, the app's `getCategoryByDevice`: a signed call with no `Category`
+   * header takes the category of the `device_sn`, `station_sn` or `deviceSn` its body names (a string, or the
+   * first of an array), as the app's `CategoryHeaderRouting` derives it; `undefined` adds none.
+   * @internal
+   */
+  categoryOf: (sn: string) => string | undefined = () => undefined;
   /** `product_domains.eufy_home` of the last `estimate_domain` reply, the app's Home category host. */
   private homeDomain?: string;
   /** `domain` of the last `estimate_domain` reply, the app's Basic host (`mega-…`, or one host for everything). */
@@ -825,6 +842,10 @@ export class MegaHttpClient {
         // MQTT cert on an existing eufy_mega session — see EufyMega.getUserMqttInfo).
         ...headerOverrides,
       };
+      if (!headers.category && !path.includes("app/cloudstor/get_app_up_token_general")) {
+        const category = this.categoryOf(deviceSnOf(body) ?? "");
+        if (category) headers.category = category;
+      }
       // The app's request pipeline mirrors `app-tab` and `Category` into each other when only one is set.
       const tab = headers["app-tab"] || headers.category;
       if (tab) Object.assign(headers, { "app-tab": headers["app-tab"] || tab, category: headers.category || tab });

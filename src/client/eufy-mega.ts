@@ -373,6 +373,7 @@ export class EufyMega extends EventEmitter {
       logger: opts.logger,
       onListFetched: (devices) => this.getParamsOnRefresh(devices),
     });
+    this.mega.categoryOf = (sn) => this.registry.list().find((d) => d.sn === sn)?.category || undefined;
     this.p2p = new P2PCommandRouter({
       mega: this.mega,
       logger: opts.logger,
