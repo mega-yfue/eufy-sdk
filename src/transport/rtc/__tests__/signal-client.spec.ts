@@ -110,12 +110,14 @@ describe("RtcSignalClient", () => {
 
   it("discovers, then reg → 401 → reg2 → 200 yields the contact_id", async () => {
     const seen = await fakeServer(false);
+    expect(client.heard).toBe("none");
     const login = new Promise<string>((r) => client.once("login", r));
     await client.start();
     expect(await login).toBe("c0ffee00c0ffee00");
     expect(seen.auth).toBe(`${DID}:${LIC}`);
     expect(seen.wrapped).toEqual([true, true, true]);
     expect(client.sessionKey).toMatch(/^[0-9a-zA-Z]{16}$/);
+    expect(client.heard).toBe("REG 200");
   });
 
   it("hands out the login as a token, and a fresh one logs in quickly with nothing sent; a 23 h old one does not", async () => {

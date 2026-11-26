@@ -444,11 +444,34 @@ export class RtcCommandRouter {
       token: this.deps.tokens?.get(sn),
     });
     signal.on("token", (t) => this.deps.tokens?.set(sn, t));
-    const ready = new Promise<void>((resolve) => signal.once("login", () => resolve()));
+    const ready = new Promise<void>((resolve, reject) => {
+      signal.once("login", () => resolve());
+      signal.start().catch((e: unknown) => {
+        if (this.stations.get(sn) === st) this.stations.delete(sn);
+        reject(e instanceof Error ? e : new Error(String(e)));
+      });
+    });
+    ready.catch(() => undefined);
     const st: Station = { signal, ready, counter: { word: 0x01020304 }, flag: 0, fails: 0, sleepUntil: 0 };
     this.stations.set(sn, st);
-    signal.start().catch((e: unknown) => this.deps.onError?.(e instanceof Error ? e : new Error(String(e))));
     return st;
+  }
+
+  /**
+   * Wait for the station's login until `deadline`: a failed start rejects with its own error, a deadline that runs
+   * out names the last answer the signalling heard.
+   */
+  private async loggedIn(sn: string, st: Station, deadline: AbortSignal, signal?: AbortSignal): Promise<void> {
+    try {
+      await abortable(st.ready, deadline);
+    } catch (e) {
+      if (signal?.aborted) throw signal.reason;
+      if (!deadline.aborted) throw e;
+      throw new Error(
+        `rtc: ${sn} signalling did not log in within ${CONNECT_TIMEOUT_MS} ms (last answer: ${st.signal.heard})`,
+        { cause: e },
+      );
+    }
   }
 
   /**
@@ -460,10 +483,8 @@ export class RtcCommandRouter {
     const sn = route.stationSn;
     const st = this.station(route);
     const deadline = AbortSignal.any([AbortSignal.timeout(CONNECT_TIMEOUT_MS), ...(signal ? [signal] : [])]);
-    let loggedIn = false;
+    await this.loggedIn(sn, st, deadline, signal);
     try {
-      await abortable(st.ready, deadline);
-      loggedIn = true;
       const flag = kcpMulti(sn, route.sdkVersion) ? 3 : 0;
       if (!st.data) await sleep(Math.max(0, st.sleepUntil - Date.now()), undefined, { signal: deadline });
       let data = st.data;
@@ -491,12 +512,11 @@ export class RtcCommandRouter {
       return data;
     } catch (e) {
       if (signal?.aborted) throw signal.reason;
-      const stage = loggedIn ? "data channel did not connect" : "signalling did not log in";
-      if (loggedIn && st.data) {
+      if (st.data) {
         st.data.close();
         st.data = undefined;
       }
-      throw new Error(`rtc: ${sn} ${stage} within ${CONNECT_TIMEOUT_MS} ms`, { cause: e });
+      throw new Error(`rtc: ${sn} data channel did not connect within ${CONNECT_TIMEOUT_MS} ms`, { cause: e });
     }
   }
 
@@ -581,9 +601,11 @@ export class RtcCommandRouter {
     const sn = route.stationSn;
     this.refuseIfWatched(route);
     const st = this.station(route);
-    await abortable(
-      st.ready,
+    await this.loggedIn(
+      sn,
+      st,
       AbortSignal.any([AbortSignal.timeout(CONNECT_TIMEOUT_MS), ...(opts.signal ? [opts.signal] : [])]),
+      opts.signal,
     );
     this.refuseIfWatched(route);
     const current = this.lives.get(sn);

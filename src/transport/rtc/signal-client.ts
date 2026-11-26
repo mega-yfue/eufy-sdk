@@ -201,6 +201,8 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
   private readonly imported: RtcServer[];
   contactId = "";
   sessionKey = "";
+  /** The last answer the signalling heard, by kind and status (`"none"` before the first), naming no identity. */
+  heard = "none";
   private socket = this.signalSocket();
   private readonly route = randomInt(256);
   private seq = 0;
@@ -505,8 +507,11 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
       this.discovered = false;
       this.discover();
     }
-    if (readNullTerminatedString(p.header.subarray(20, 36), "latin1") !== this.opts.sn) return;
+    const ours = readNullTerminatedString(p.header.subarray(20, 36), "latin1") === this.opts.sn;
     const response = p.header[14] === 1;
+    if (response)
+      this.heard = `${Object.entries(RtcKind).find(([, v]) => v === kind)?.[0] ?? kind} ${p.header.readUInt16LE(16)}${ours ? "" : " for another serial"}`;
+    if (!ours) return;
     if (kind === RtcKind.DISCOVER && response) this.onDiscover(p.header, p.body);
     else if (kind === RtcKind.REG && response) this.onLogin(p.header, p.body);
     else if (p.body.length < RTC_CALL_BODY_LENGTH) return;

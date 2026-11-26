@@ -116,7 +116,10 @@ const head = (cmd: number, channel: number) => {
   return h;
 };
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 describe("RtcCommandRouter on the native layers", () => {
   it("dispatches a set-payload as a 1350 on the PRIV1 data channel, on the device's channel", async () => {
@@ -553,6 +556,26 @@ describe("RtcCommandRouter on the native layers", () => {
   it("refuses a live view without the start JSON", async () => {
     const { router } = layers();
     await expect(router.mediaProviderFor({ ...ROUTE, live: undefined }).live()).rejects.toThrow("no RTC start frame");
+    router.close();
+  });
+
+  it("rejects a live view at once with the error its signalling start failed with, and starts afresh next time", async () => {
+    const { router, signal } = layers();
+    signal.start.mockRejectedValueOnce(new Error("bind failed"));
+    await expect(router.mediaProviderFor(ROUTE).live()).rejects.toThrow("bind failed");
+    await router.mediaProviderFor(ROUTE).live();
+    expect(signal.start).toHaveBeenCalledTimes(2);
+    router.close();
+  });
+
+  it("names the last signalling answer when the login never comes", async () => {
+    const { router, signal } = layers();
+    signal.start.mockResolvedValueOnce(undefined);
+    Object.assign(signal, { heard: "DISCOVER 200" });
+    vi.spyOn(AbortSignal, "timeout").mockReturnValue(AbortSignal.abort());
+    await expect(router.mediaProviderFor(ROUTE).live()).rejects.toThrow(
+      `rtc: ${ROUTE.stationSn} signalling did not log in within 20000 ms (last answer: DISCOVER 200)`,
+    );
     router.close();
   });
 
