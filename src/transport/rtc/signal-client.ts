@@ -595,15 +595,14 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
       if (c.trying && typeof line === "string" && typeof num === "number") this.emit("fileCandidate", uuid, line, num);
       return;
     }
-    if (typeof a.sdp === "string" && a.sdp && !c.sdp) {
+    const o = !c.sdp && typeof a.sdp === "string" ? jsonObject(a.sdp) : undefined;
+    if (o) {
       c.sdp = true;
-      const o = jsonObject(a.sdp);
-      if (o)
-        this.emit(
-          "sdp",
-          uuid,
-          Object.fromEntries(SDP_KEYS.map((k) => [k, typeof o[k] === "string" ? o[k] : ""])) as RtcRemoteSdp,
-        );
+      this.emit(
+        "sdp",
+        uuid,
+        Object.fromEntries(SDP_KEYS.map((k) => [k, typeof o[k] === "string" ? o[k] : ""])) as RtcRemoteSdp,
+      );
     }
     const cand = typeof a.candidate === "string" ? a.candidate : "";
     const kind = ["host", "srflx", "relay"].find((t) => cand.includes(t));
@@ -706,10 +705,31 @@ function u16(n: number): Buffer {
   return b;
 }
 
+/**
+ * A JSON object as the app's `cJSON_Parse` reads it: a control character is whitespace outside a string and kept inside
+ * one, anything after the top-level value is ignored, and keys match case-insensitively (lowercased here, the first of
+ * equals kept). `undefined` when no object parses.
+ */
 function jsonObject(text: string): Record<string, unknown> | undefined {
+  let out = "";
+  let depth = 0;
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!;
+    const code = c.charCodeAt(0);
+    if (quoted && c === "\\") out += c + (text[++i] ?? "");
+    else if (code < 0x20) out += quoted ? `\\u${code.toString(16).padStart(4, "0")}` : " ";
+    else out += c;
+    if (c === '"') quoted = !quoted;
+    else if (!quoted && (c === "{" || c === "[")) depth++;
+    else if (!quoted && (c === "}" || c === "]") && --depth === 0) break;
+  }
   try {
-    const o: unknown = JSON.parse(text);
-    return o && typeof o === "object" ? (o as Record<string, unknown>) : undefined;
+    const o: unknown = JSON.parse(out);
+    if (!o || typeof o !== "object" || Array.isArray(o)) return undefined;
+    const lower: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(o)) if (!(k.toLowerCase() in lower)) lower[k.toLowerCase()] = v;
+    return lower;
   } catch {
     return undefined;
   }

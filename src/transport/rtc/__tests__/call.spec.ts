@@ -60,14 +60,15 @@ describe("RtcSignalClient call", () => {
     vi.restoreAllMocks();
   });
 
-  /** A station packet of `kind` on the call body of `uuid`, its attach JSON under the session key. */
-  function station(socket: Socket, kind: number, status: number, uuid: string, json?: object, b13 = 6) {
+  /** A station packet of `kind` on the call body of `uuid`, its attach JSON (or that text) under the session key. */
+  function station(socket: Socket, kind: number, status: number, uuid: string, json?: object | string, b13 = 6) {
     const h = rtcHeader({ kind, sn: SN, seq: 42, route: 9, ts: TS });
     h[13] = b13;
     h[14] = status ? 1 : 0;
     h.writeUInt16LE(status, 16);
     h[18] = 1;
-    const attach = json ? rtcEncrypt(Buffer.from(JSON.stringify(json)), KEY, TS) : undefined;
+    const text = typeof json === "string" ? json : JSON.stringify(json);
+    const attach = json ? rtcEncrypt(Buffer.from(text), KEY, TS) : undefined;
     const body = callBody(uuid, "station", attach);
     socket.emit("message", wrapRtcPacket(rtcPacket(h, 7, body)));
     return body;
@@ -155,6 +156,29 @@ describe("RtcSignalClient call", () => {
     expect(ok.socket).toBe(socket);
     expect([ok.p.header[14], ok.p.header.readUInt16LE(16), ok.p.header[42]]).toEqual([1, 200, 42]);
     expect(ok.p.body).toEqual(body);
+  });
+
+  it("reads an attach and sdp as cJSON does, and takes a later sdp after one that does not parse", () => {
+    const { uuid } = client.call(6);
+    const socket = sent[0]!.socket;
+    const sdp = vi.fn();
+    client.on("sdp", sdp);
+    station(socket, 4, 0, uuid, { sdp: "{broken" });
+    const inner = '{"ICE-U":"a=ice-ufrag:abcd\r\n","ice-p":"a=ice-pwd:0123456789012345678901"}\u0005\u0005';
+    station(socket, 4, 0, uuid, `{"Sdp":${JSON.stringify(inner)}}\u0003\u0003\u0003`);
+    expect(sdp.mock.calls).toEqual([
+      [
+        uuid,
+        {
+          "ice-u": "a=ice-ufrag:abcd\r\n",
+          "ice-p": "a=ice-pwd:0123456789012345678901",
+          asc: "",
+          vsc: "",
+          sg: "",
+          sgc: "",
+        },
+      ],
+    ]);
   });
 
   it("486 is busy and ends the repeat, socket open; 480 hangs up; byte 13 outside 4..8 deletes only the session", () => {
