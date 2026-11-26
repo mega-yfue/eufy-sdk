@@ -554,7 +554,7 @@ export class P2PCommandRouter {
    * {@link StationUnreachableError} when it does not.
    *
    * `connect()` resolves once the lookups are under way, not once a path answers, so a session handed back by
-   * {@link openSession} may still be connecting: a relay connect lands about 25 s in. A level-2 grace counted
+   * {@link openSession} may still be connecting: a relay connect lands several seconds in. A level-2 grace counted
    * before this would be spent on the connect rather than on the key.
    */
   private async awaitConnected(session: P2PSession, parentSn: string, signal?: AbortSignal): Promise<void> {

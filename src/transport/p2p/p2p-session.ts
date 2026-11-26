@@ -85,16 +85,6 @@ const HEARTBEAT_MS = 5_000;
  */
 const PATH_SILENCE_MS = HEARTBEAT_MS * 3;
 const LOOKUP_RETRY_MS = 1_000;
-/**
- * Lookup rounds a connect counts, from the lookup server's acknowledgement of its P2P request, before it
- * also asks for a relayed path.
- *
- * The vendor client's own threshold for the mode its app connects remote stations in: its round counter
- * starts at 1 on the first one-second round after a P2P_REQ_ACK with result 0, steps once a round, and the
- * relay handshake begins once it exceeds this. A connect whose request is never acknowledged, as for a
- * device that is offline, never asks for a relay.
- */
-const RELAY_AFTER_ACKED_ROUNDS = 24;
 /** RLY_PKT copies sent per RLY_TO, as the vendor client sends them. */
 const RELAY_PACKET_COPIES = 4;
 /**
@@ -114,10 +104,10 @@ const RECEIVE_BUFFER_BYTES = 4 * 1024 * 1024;
  * Published because it bounds every wait on a session connecting — a second number for the same deadline
  * elsewhere would outlive the connection it waits on and charge the difference to every failure.
  *
- * The relay handshake starts once the lookup server has acknowledged the P2P request for 24 lookup rounds, so
- * about 25 s in. The vendor app's own remote connect has a 30 s budget, which leaves the handshake 3–6 s.
- * Forty-five seconds keeps the vendor's threshold and gives the handshake about 20 s to complete. A station that
- * never acknowledges the request, as an offline one does, takes this long to fail.
+ * The relay handshake starts on the first lookup round after the lookup server acknowledges the P2P request,
+ * so a few seconds in, and a station behind carrier NAT has been measured connecting through it about 7 s in.
+ * Forty-five seconds leaves a slow relay or a slow direct path room to complete. A station that never
+ * acknowledges the request, as an offline one does, takes this long to fail.
  */
 export const CONNECT_TIMEOUT_MS = 45_000;
 /**
@@ -537,10 +527,16 @@ export class P2PSession extends EventEmitter {
   /** Cloud lookup inputs resolved once for a connection. */
   private cloudLookup?: { key: string; addresses: Address[] };
   /**
-   * Lookup rounds since the lookup server acknowledged this connect's P2P request, or `undefined` while it
-   * has not; see {@link RELAY_AFTER_ACKED_ROUNDS}.
+   * Whether a lookup server has acknowledged this connect's P2P request with result 0.
+   *
+   * The relay handshake begins on the first one-second lookup round after it, alongside the hole punch rather
+   * than after it. The current vendor app does the same: a capture of its traffic showed RLY_HELLO to the
+   * listed relays about 0.6 s after its first cloud lookup, while its punches were still going out. A direct
+   * path that answers first still wins, since the handshake stops once the connect completes: a station on
+   * the LAN answers within milliseconds, before that round. A connect whose request is never acknowledged, as
+   * for a device that is offline, never asks for a relay.
    */
-  private ackedRounds?: number;
+  private requestAcked = false;
   /**
    * The relay handshake of a connect that has fallen back to one, by the step it waits on: the relay list
    * (`list`, answering ListReq_DSK), a relay's hello acknowledgement (`hello`), that relay's port (`port`),
@@ -966,7 +962,7 @@ export class P2PSession extends EventEmitter {
     this.connecting = true;
     this.closed = false;
     this.connectionGeneration += 1;
-    this.ackedRounds = undefined;
+    this.requestAcked = false;
     this.attachedStartKeys.clear();
     this.resetInboundSequencing();
     if (!this.level2KeyServes("set-payload")) {
@@ -1118,15 +1114,14 @@ export class P2PSession extends EventEmitter {
         `[p2p] ${this.cfg.stationSn} sendLookups: cloud -> ${lookup.addresses.map((a) => `${a.host}:${a.port}`).join(", ")} self=${this.selfHost ?? "unknown"}`,
       );
     }
-    this.countAckedRound();
+    this.startRelayOnceAcked();
     this.sendRelay();
   }
 
-  /** Step {@link ackedRounds} for one lookup round, and start the relay handshake once it passes its threshold. */
-  private countAckedRound(): void {
-    if (this.ackedRounds === undefined || this.relay || !this.cloudLookup) return;
-    this.ackedRounds += 1;
-    if (this.ackedRounds > RELAY_AFTER_ACKED_ROUNDS) this.relay = { step: "list", relays: [] };
+  /** Start the relay handshake on a lookup round once the P2P request is acknowledged; see {@link requestAcked}. */
+  private startRelayOnceAcked(): void {
+    if (!this.requestAcked || this.relay || !this.cloudLookup) return;
+    this.relay = { step: "list", relays: [] };
   }
 
   /**
@@ -1208,7 +1203,7 @@ export class P2PSession extends EventEmitter {
    * WORKING session before reading it as a cause.
    *
    * P2P_REQ_ACK is the lookup server acknowledging this connect's P2P request; the first one carrying result 0
-   * starts the round count {@link RELAY_AFTER_ACKED_ROUNDS} measures.
+   * sets {@link requestAcked}, so the next lookup round starts the relay handshake.
    *
    * CAM_ADDR is recognised and dropped: it names the address the device is already answering from, and the
    * CAM_ID that follows it is what completes the connect. RLY_TO is a relay endpoint, never the device: it is
@@ -1256,7 +1251,7 @@ export class P2PSession extends EventEmitter {
         this.onConnected({ host: rinfo.address, port: rinfo.port }, socket);
       }
     } else if (hasHeader(msg, ResponseMessageType.P2P_REQ_ACK)) {
-      if (!this.connected && this.ackedRounds === undefined && msg.length > 4 && msg[4] === 0) this.ackedRounds = 0;
+      if (!this.connected && msg.length > 4 && msg[4] === 0) this.requestAcked = true;
     } else if (
       hasHeader(msg, ResponseMessageType.LIST_REQ_ACK) ||
       hasHeader(msg, ResponseMessageType.RLY_HELLO_ACK) ||

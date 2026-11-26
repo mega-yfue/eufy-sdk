@@ -16,7 +16,7 @@ import {
 /**
  * A station a direct path cannot reach is connected through a PPCS relay, in the vendor client's order:
  * ListReq_DSK → LIST_REQ_ACK → RLY_HELLO → RLY_HELLO_ACK → RLY_PORT → RLY_PORT_ACK → RLY_REQ → RLY_RDY,
- * starting once the lookup server has acknowledged the P2P request for more than 24 lookup rounds.
+ * starting on the first lookup round after the lookup server acknowledges the P2P request.
  */
 const STATION_SN = "T8000P0000000000";
 const P2P_DID = "XXXXXXX-000000-XXXXX";
@@ -52,7 +52,7 @@ function loopbackRecord(port: number): Buffer {
 }
 
 describe("PPCS relay fallback", () => {
-  it("connects through the relay a cloud lookup server lists, with the relay as the peer, after the acknowledged rounds", async () => {
+  it("connects through the relay a cloud lookup server lists, with the relay as the peer, right after the acknowledgement", async () => {
     const cloud = await peer();
     const relay = await peer();
     const relayed = await peer();
@@ -99,9 +99,8 @@ describe("PPCS relay fallback", () => {
     });
     try {
       await session.connect();
-      await elapse(23_000);
-      expect(hellos).toBe(0);
-      await elapse(4_000);
+      await elapse(3_000);
+      expect(hellos).toBeGreaterThan(0);
       expect(connected).toHaveBeenCalledOnce();
       expect(requested!.subarray(4, 24)).toEqual(p2pDidToBuffer(P2P_DID));
       expect(requested!.subarray(24, 40)).toEqual(loopbackRecord(relayed.address().port));
@@ -118,14 +117,14 @@ describe("PPCS relay fallback", () => {
   }, 20_000);
 
   /**
-   * A relay that is slow to answer RLY_HELLO still connects: the relay starts about 25 s in, and the connect
-   * budget leaves its handshake room past 30 s.
+   * A relay that is slow to answer RLY_HELLO still connects: the relay starts about a second in, and the
+   * connect budget leaves its handshake room past 30 s.
    */
   it("connects through a relay whose handshake finishes after 30 s, inside the connect budget", async () => {
     const cloud = await peer();
     const relay = await peer();
     const relayed = await peer();
-    const IGNORED_HELLOS = 7;
+    const IGNORED_HELLOS = 31;
     let hellos = 0;
     const connected = vi.fn();
     const errors: Error[] = [];
