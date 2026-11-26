@@ -1237,7 +1237,7 @@ const UNGUARDED_PARAMS = new Set([1710]);
  * The {@link Command} a bundle frame is for `value` on this device, its tokens filled: `$value`, `$channel`
  * (the device channel, 255 for a station), `$now` (epoch ms, a string), `$nowS` (epoch seconds), `$seq` (the bundles' `getRandom`, 1000–9999), `$input.<key>` (a key of
  * the written value, a JSON object), `$sn` (the device serial) and `$station` (its
- * station's), `$param:…` (the device's cached param, {@link BundleFrame}), `$userId` left to the transport, which fills the user id (an `account_id` key left out: the envelope's), then `{"$b64": <template>}` the filled template as base64 JSON, then the frames after it as `next`. `undefined` for a frame no builder can carry: a `ble`
+ * station's), `$param:…` (the device's cached param, {@link BundleFrame}), `$userId` left to the transport, which fills the account id, then `{"$b64": <template>}` the filled template as base64 JSON, then the frames after it as `next`. `undefined` for a frame no builder can carry: a `ble`
  * or unknown transport, an `mqtt` one its builder refuses, an unknown body, a seal other than `ecb` or on a non-JSON body, a scalar with no integer value, a bare JSON
  * body that is not an object, a data point whose template cannot be set, a cloud call with another method, or a
  * frame after it that is any of these.
@@ -1298,11 +1298,7 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
           : x;
   // `"$input": "...[<key>][|<transform>]"`: the host's object (or its key), as the parser transforms it, spread in there.
   const spread = (o: Record<string, unknown>) => {
-    const rest = Object.fromEntries(
-      Object.entries(o).flatMap(([k, v]) =>
-        (v === "$userId" && k === "account_id") || k === "$input" ? [] : [[k, fill(v)]],
-      ),
-    );
+    const rest = Object.fromEntries(Object.entries(o).flatMap(([k, v]) => (k === "$input" ? [] : [[k, fill(v)]])));
     const mark = o["$input"];
     if (typeof mark !== "string" || !mark.startsWith("...")) return rest;
     return { ...(inputOf(mark.slice(3)) as Record<string, unknown>), ...rest };

@@ -80,7 +80,7 @@ const contextOf = (r: { identifier: string; type: string; model: string; variant
 
 /**
  * `x` with the bundle's tokens as the app fills them on this device for `value`, no param reported (a
- * `$param:` token's `??` fallback); an `account_id: "$userId"` key left out.
+ * `$param:` token's `??` fallback), a `$userId` left to the transport.
  */
 const filled = (x: unknown, value: unknown, ctx: CommandContext): unknown => {
   const tokens: Record<string, unknown> = {
@@ -95,11 +95,7 @@ const filled = (x: unknown, value: unknown, ctx: CommandContext): unknown => {
   if (typeof x === "string" && x.startsWith("$param:")) return JSON.parse(x.split("??")[1]!);
   if (Array.isArray(x)) return x.map((v) => filled(v, value, ctx));
   if (x && typeof x === "object")
-    return Object.fromEntries(
-      Object.entries(x).flatMap(([k, v]) =>
-        v === "$userId" && k === "account_id" ? [] : [[k, filled(v, value, ctx)]],
-      ),
-    );
+    return Object.fromEntries(Object.entries(x).map(([k, v]) => [k, filled(v, value, ctx)]));
   return x;
 };
 

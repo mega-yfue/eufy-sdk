@@ -203,6 +203,7 @@ describe("RtcCommandRouter on the native layers", () => {
       channel: 3,
       stationAccount: true,
     });
+    await router.dispatchCommand(ROUTE, { kind: "set-json", param: 6013, data: { account_id: "$userId" }, channel: 3 });
     expect(data.command.mock.calls).toEqual([
       [1035, Buffer.concat([u32(3, 1), account]), 3],
       [1235, Buffer.concat([u32(7), account]), 255],
@@ -214,6 +215,7 @@ describe("RtcCommandRouter on the native layers", () => {
       [1255, JSON.stringify({ account_id: "synthetic-admin", t: 2 }), 255],
       [1230, buildDirectBinaryBody(4, "synthetic-station", 3), 3],
       [1350, JSON.stringify({ account_id: "synthetic-station", cmd: 6266, mChannel: 3, mValue3: 0, payload: {} }), 3],
+      [1700, JSON.stringify({ commandType: 6013, data: { account_id: "synthetic-admin" } }), 3],
     ]);
     router.close();
   });

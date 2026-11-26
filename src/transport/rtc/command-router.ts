@@ -165,6 +165,9 @@ const NATIVE_GROUPS: Record<string, readonly number[]> = {
 const nativeGroup = (id: number) => Object.keys(NATIVE_GROUPS).find((g) => NATIVE_GROUPS[g]!.includes(id));
 const JSON_ON_DEVICE_CHANNEL = [1204, 1271, 1350];
 
+/** `x` as JSON, a `"$userId"` a bundle's parser put in it the account id, as the P2P sender fills it. */
+const withUser = (x: unknown, accountId: string) => JSON.stringify(x, (_, v) => (v === "$userId" ? accountId : v));
+
 /** A reply's code as the app's `ack_processor_process_response` reads it: its first int32, 0 for an empty body. */
 const replyCode = (reply: Buffer) => (reply.length >= 4 ? reply.readInt32LE(0) : 0);
 
@@ -210,7 +213,7 @@ export class RtcCommandRouter {
       case "set-json":
         return {
           id: 1700,
-          body: JSON.stringify({ commandType: cmd.param, data: cmd.data }),
+          body: withUser({ commandType: cmd.param, data: cmd.data }, this.accountId(route)),
           channel: own(cmd.channel),
         };
       case "set-payload": {
@@ -226,7 +229,8 @@ export class RtcCommandRouter {
       }
       case "set-json-raw": {
         if (nativeGroup(cmd.cmd) !== "E") break;
-        const body = JSON.stringify({ account_id: this.accountId(route, cmd.stationAccount), ...cmd.data });
+        const accountId = this.accountId(route, cmd.stationAccount);
+        const body = withUser({ account_id: accountId, ...cmd.data }, accountId);
         return { id: cmd.cmd, body, channel: JSON_ON_DEVICE_CHANNEL.includes(cmd.cmd) ? cmd.channel : STATION_CHANNEL };
       }
       case "p2p-string": {

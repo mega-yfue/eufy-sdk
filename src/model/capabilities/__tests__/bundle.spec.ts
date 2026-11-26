@@ -1197,15 +1197,20 @@ describe("the regenerated data's forms", () => {
     expect(read("ecl_mow_debug_panel_ack_result", 180, "00"), "the app's cut prefix").toBe('{"seq":0,"type":0}');
   });
 
-  it("leaves a $userId key to the transport", () => {
+  it("keeps a $userId account_id where the bundle puts it, for the transport to fill", () => {
     const frame: BundleFrame = {
-      cmd: 1271,
-      body: "json",
-      channel: 255,
-      payload: { account_id: "$userId", snooze_time: 900 },
+      cmd: 1700,
+      body: "json1700",
+      channel: "$channel",
+      subCmd: 6013,
+      payload: { account_id: "$userId", schedules: { loop: "$input.loop" }, transaction: "$now" },
     };
-    expect(frameCommand(frame, 1, ctx("T8214"))).toMatchObject({ kind: "set-json-raw", data: { snooze_time: 900 } });
-    expect((frameCommand(frame, 1, ctx("T8214")) as { data: object }).data).not.toHaveProperty("account_id");
+    expect(frameCommand(frame, JSON.stringify({ loop: [] }), ctx("T8214"))).toEqual({
+      kind: "set-json",
+      param: 6013,
+      data: { account_id: "$userId", schedules: { loop: [] }, transaction: String(NOW) },
+      channel: 3,
+    });
   });
 });
 
