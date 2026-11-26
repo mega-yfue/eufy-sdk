@@ -32,7 +32,6 @@ function clientWithLoginReply(res: Record<string, unknown>, store = new MemorySe
     sessionKey?: unknown;
     attemptLogin: (body: unknown, messageType: number) => Promise<unknown>;
     authTokenHeaders: () => Record<string, string>;
-    loginBody: (o: Record<string, unknown>) => unknown;
   };
   internals.postSigned = vi.fn(async () => res);
   internals.ensureSessionKey = vi.fn(async () => {
@@ -53,7 +52,7 @@ describe("gtoken header id", () => {
   it("hashes the account's user_id, not ap_cloud_user_id, when the reply carries both", async () => {
     const { internals } = clientWithLoginReply(okReply({ ap_cloud_user_id: AP_CLOUD_ID, user_id: ACCOUNT_ID }));
 
-    await internals.attemptLogin(internals.loginBody({}), 2);
+    await internals.attemptLogin({}, 2);
 
     expect(internals.authTokenHeaders().gtoken).toBe(gtoken(ACCOUNT_ID));
     expect(internals.authTokenHeaders().gtoken).not.toBe(gtoken(AP_CLOUD_ID));
@@ -66,7 +65,7 @@ describe("gtoken header id", () => {
   it("is unchanged from hashing userId when the two ids agree", async () => {
     const { internals } = clientWithLoginReply(okReply({ ap_cloud_user_id: ACCOUNT_ID, user_id: ACCOUNT_ID }));
 
-    await internals.attemptLogin(internals.loginBody({}), 2);
+    await internals.attemptLogin({}, 2);
 
     expect(internals.authTokenHeaders().gtoken).toBe(gtoken(ACCOUNT_ID));
   });
@@ -74,14 +73,14 @@ describe("gtoken header id", () => {
   it("hashes userId when the reply carries only the one id", async () => {
     const { internals } = clientWithLoginReply(okReply({ user_id: ACCOUNT_ID }));
 
-    await internals.attemptLogin(internals.loginBody({}), 2);
+    await internals.attemptLogin({}, 2);
 
     expect(internals.authTokenHeaders().gtoken).toBe(gtoken(ACCOUNT_ID));
   });
 
   it("carries the account id through persistence, so a restored session sends the same header", async () => {
     const { internals, store } = clientWithLoginReply(okReply({ ap_cloud_user_id: AP_CLOUD_ID, user_id: ACCOUNT_ID }));
-    await internals.attemptLogin(internals.loginBody({}), 2);
+    await internals.attemptLogin({}, 2);
     expect(store.load()?.accountUserId).toBe(ACCOUNT_ID);
 
     const restored = new MegaHttpClient({

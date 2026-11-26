@@ -188,6 +188,8 @@ export const EufyCloudErrorCode = {
   CAPTCHA_REQUIRED: 100032,
   /** Captcha answer was wrong — fetch a fresh challenge and re-solve. */
   CAPTCHA_WRONG: 100033,
+  /** The account lives on another region than the one asked: run `estimate_domain` again and retry once. */
+  DOMAIN_MISMATCH: 26502,
 } as const;
 /**
  * Any one of the gateway error codes above.
@@ -286,6 +288,12 @@ function houseInvite(transaction: string, houseId: string, fields: Record<string
 
 /** The app's `isClean`: the Home categories whose shares run on the Home host's `v1/share/active/*`. */
 const isHomeCategory = (category: string) => category === "eufy_home" || category === "eufy_home_tuya";
+
+/** The app's `Digest.c(password, "SHA256")`: the lower-case SHA-256 hex of the trimmed password. */
+const sha256Hex = (password: string) => createHash("sha256").update(password.trim(), "utf8").digest("hex");
+
+/** The challenge a `/passport/login` attempt answers: none, a solved captcha, or a 2FA code. */
+type LoginChallenge = { verifyCode?: string; captchaId?: string; answer?: string };
 
 /** The `transaction` the app's `Transactions.c()` stamps on a request: the monotonic clock in nanoseconds. */
 const transactionStamp = () => String(process.hrtime.bigint());
@@ -1619,9 +1627,9 @@ export class MegaHttpClient {
     }>;
   }
 
-  /** Build the /passport/login body (verify_code empty unless 2FA). */
-  private loginBody(opts: { verifyCode?: string; captchaId?: string; answer?: string }): Record<string, unknown> {
-    const base = loginCredentials(this.cfg.email, this.cfg.password, this.cfg.countryCode);
+  /** Build the /passport/login body (verify_code empty unless 2FA) around `password`, plain or hashed. */
+  private loginBody(opts: LoginChallenge, password: string): Record<string, unknown> {
+    const base = loginCredentials(this.cfg.email, password, this.cfg.countryCode);
     // Captured shapes: 2FA verify-login is minimal (verify_code + login_id);
     // captcha-solve carries answer + captcha_id; the initial login has empties.
     if (opts.verifyCode) return { ...base, verify_code: opts.verifyCode, login_id: "" };
@@ -1685,7 +1693,7 @@ export class MegaHttpClient {
       "/passport/register_create_account",
       {
         email: opts.email,
-        password: createHash("sha256").update(opts.password.trim(), "utf8").digest("hex"),
+        password: sha256Hex(opts.password),
         verify_code: opts.verifyCode,
         answer: opts.captcha?.answer ?? "",
         captcha_id: opts.captcha?.captchaId ?? "",
@@ -1763,7 +1771,7 @@ export class MegaHttpClient {
         },
       };
     }
-    return this.attemptLogin(this.loginBody({}), opts.messageType ?? 2);
+    return this.attemptLogin({}, opts.messageType ?? 2);
   }
 
   /**
@@ -1912,7 +1920,7 @@ export class MegaHttpClient {
    */
   async solveCaptcha(answer: string, opts: { messageType?: number } = {}): Promise<LoginResult> {
     if (!this.pendingCaptchaId) throw new Error("no pending captcha — call login() first");
-    return this.attemptLogin(this.loginBody({ captchaId: this.pendingCaptchaId, answer }), opts.messageType ?? 2);
+    return this.attemptLogin({ captchaId: this.pendingCaptchaId, answer }, opts.messageType ?? 2);
   }
 
   /**
@@ -1920,33 +1928,56 @@ export class MegaHttpClient {
    * the next {@link LoginResult} (normally `ok`).
    */
   async submitVerifyCode(code: string): Promise<LoginResult> {
-    return this.attemptLogin(this.loginBody({ verifyCode: code }), 2);
+    return this.attemptLogin({ verifyCode: code }, 2);
   }
 
   /**
    * One `/passport/login` round-trip + outcome classification. Shared by {@link login} /
-   * {@link solveCaptcha} / {@link submitVerifyCode}; the caller-facing methods only build the body.
+   * {@link solveCaptcha} / {@link submitVerifyCode}; the caller-facing methods only name the challenge answered.
    */
-  private async attemptLogin(body: Record<string, unknown>, messageType: number): Promise<LoginResult> {
+  private async attemptLogin(challenge: LoginChallenge, messageType: number): Promise<LoginResult> {
     this.loggingIn = true;
     try {
-      return await this.loginRoundTrip(body, messageType);
+      return await this.loginRoundTrip(challenge, messageType);
     } finally {
       this.loggingIn = false;
     }
   }
 
-  /** The round trip itself. Wrapped by {@link attemptLogin}, which marks it in flight. */
-  private async loginRoundTrip(body: Record<string, unknown>, messageType: number): Promise<LoginResult> {
+  /**
+   * The round trip itself. Wrapped by {@link attemptLogin}, which marks it in flight.
+   *
+   * As the app's `MegaAccountNetManager.login`: `passport/validate_email` first, whose `enc_text: "sha2"` means
+   * the password goes out as its SHA-256 hex; a `DOMAIN_MISMATCH` runs `estimate_domain` again and retries once
+   * (`domainSwitched`), on either call except the 2FA login itself.
+   */
+  private async loginRoundTrip(
+    challenge: LoginChallenge,
+    messageType: number,
+    domainSwitched = false,
+  ): Promise<LoginResult> {
     if (!this.cfg.region) await this.estimateDomain();
     await this.ensureSessionKey();
     const passportHost = `app-passport-${this.region}.eufy.com`;
-    const isVerify = "verify_code" in body && !!body.verify_code;
+    const isVerify = !!challenge.verifyCode;
 
     let res: Record<string, unknown>;
+    let checked = false;
     try {
+      const account = await this.passport<{ enc_text?: unknown }>("/passport/validate_email", {
+        email: this.cfg.email,
+      });
+      checked = true;
+      const password = account?.enc_text === "sha2" ? sha256Hex(this.cfg.password) : this.cfg.password;
+      const body = this.loginBody(challenge, password);
       res = await this.postSigned<Record<string, unknown>>(passportHost, "/passport/login", body, !!this.auth_);
     } catch (e) {
+      const retryable = !domainSwitched && !(checked && isVerify);
+      if (retryable && e instanceof MegaApiError && e.code === EufyCloudErrorCode.DOMAIN_MISMATCH) {
+        await this.estimateDomain();
+        this.sessionKey = undefined;
+        return this.loginRoundTrip(challenge, messageType, true);
+      }
       const msg = e instanceof Error ? e.message : String(e);
       // Captcha required / wrong answer — the code is matched in the thrown message (postSigned embeds
       // `(status/code)`), so the patterns are built from the consts. Hold the id for solveCaptcha().
