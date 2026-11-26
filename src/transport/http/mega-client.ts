@@ -13,6 +13,7 @@
  */
 import { createCipheriv, createDecipheriv, createHash, pbkdf2, randomBytes, randomInt } from "node:crypto";
 import { promisify } from "node:util";
+import { gunzipSync } from "node:zlib";
 import {
   type SessionEntry,
   EUFYLIFE_LOCAL_KEY_HEX,
@@ -21,6 +22,7 @@ import {
   finishKeyExchange,
   gtoken,
   prepareKeyExchange,
+  signRequest,
 } from "../../core/crypto.js";
 import { MemorySessionStore, isSessionValid, type SessionStore } from "../../core/store.js";
 import type { RtcToken } from "../rtc/signal-client.js";
@@ -81,6 +83,16 @@ interface ApiEnvelope<T> {
   code: number;
   msg?: string;
   data: T;
+  /** HMAC of the reply's `X-Request-Ts`, `X-Request-Once` and encrypted `data`, as a request is signed. */
+  signature?: string;
+}
+
+/**
+ * A decrypted reply body, gunzipped when it carries the gzip magic (`1f 8b`, at least 18 bytes), as the app's
+ * `NetworkDecryptResponseUtil` reads an `algorithm_ecdh_gzip` reply.
+ */
+function inflated(plain: Buffer): Buffer {
+  return plain.length >= 18 && plain[0] === 0x1f && plain[1] === 0x8b ? gunzipSync(plain) : plain;
 }
 
 /** Parse a response body as JSON, falling back to the raw text (mirrors axios' default transform). */
@@ -643,14 +655,14 @@ export class MegaHttpClient {
     url: string,
     body: string | object | undefined,
     headers: Record<string, string>,
-  ): Promise<{ status: number; data: unknown }> {
+  ): Promise<{ status: number; data: unknown; headers: Headers }> {
     const res = await fetch(url, {
       method: "POST",
       headers,
       body: body === undefined || typeof body === "string" ? body : JSON.stringify(body),
       signal: AbortSignal.timeout(20_000),
     });
-    return { status: res.status, data: parseMaybeJson(await res.text()) };
+    return { status: res.status, data: parseMaybeJson(await res.text()), headers: res.headers };
   }
 
   /**
@@ -751,7 +763,9 @@ export class MegaHttpClient {
 
   /**
    * Signed + encrypted POST. Content-type auto-falls-back (text/plain ↔ json). A `null` body sends none: no
-   * content-type, and the signature over the timestamp and nonce alone, as the app sends a body-less call.
+   * content-type, and the signature over the timestamp and nonce alone, as the app sends a body-less call. An
+   * encrypted reply whose `signature` does not match its `X-Request-Ts`, `X-Request-Once` and `data` is refused,
+   * as the app's `checkSignatureAndDecrypt` refuses it; a gzipped one is inflated after decryption.
    *
    * `retry` is this method's own bookkeeping across the two recoveries it performs on itself — a re-exchanged
    * session key, and a re-login — so each is attempted once per call. A caller leaves it out.
@@ -805,7 +819,17 @@ export class MegaHttpClient {
         if (authed) this.noteSessionWorking();
         if (contentType) this.contentTypeByHost.set(host, contentType); // remember what worked
         if (typeof env.data === "string" && env.data.length > 0) {
-          const pt = decryptBody(env.data, entry.shareKey).toString("utf-8");
+          const signed = (h: string) => res.headers.get(h) ?? "";
+          if (
+            env.signature &&
+            env.signature !== signRequest(entry.shareKey, signed("x-request-ts"), signed("x-request-once"), env.data)
+          )
+            throw new MegaApiError(
+              `${path} failed (${res.status}): reply signature does not match`,
+              undefined,
+              res.status,
+            );
+          const pt = inflated(decryptBody(env.data, entry.shareKey)).toString("utf-8");
           try {
             return JSON.parse(pt) as T;
           } catch {
