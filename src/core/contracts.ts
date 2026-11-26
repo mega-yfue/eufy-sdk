@@ -1182,12 +1182,12 @@ export interface Ff09Reply {
 }
 
 /**
- * The **`ff09` settings read boundary** — `GET_SETTINGS` is a request/reply query (like a
- * `MediaProvider` media op), not a passive property the device broadcasts, so it needs its own
- * request/reply primitive rather than reusing the write-only {@link CommandSink}. Named for the frame
- * family it reads, the same way the `ff09-*` {@link Command} kinds and {@link Ff09Identity} are: any
- * device driven by that frame can grow a reader here, and the settings it exposes are the frame's, not
- * one capability's.
+ * The **`ff09` request/reply boundary**: an `ff09` command whose decrypted reply is answered, which the
+ * write-only {@link CommandSink} cannot do. `getAutoLockState` reads the settings (`GET_SETTINGS`, a query, not
+ * a property the device broadcasts). `exchange` sends one command of any opcode from field values its caller
+ * encodes, a write as well as a read, and answers the reply. Named for the frame family, the same way the
+ * `ff09-*` {@link Command} kinds and {@link Ff09Identity} are: any device driven by that frame can grow a method
+ * here, and what it carries is the frame's, not one capability's.
  *
  * Bound to one device serial (transport picked internally, P2P or MQTT, same as `CommandSink`), so the
  * methods take no identity args. Optional because an unbound model has no live client, and because only

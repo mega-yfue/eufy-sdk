@@ -51,10 +51,12 @@ export const LOCK_SETTING_ID = {
  * wire its family takes: the shared `ff09` frame on the T8531 video smart lock and the T85D0 garage door,
  * the T8530 video lock's own `set-payload`, the keyed-payload envelope on the classic Wi-Fi lock (the
  * `T8520`-range unit that never negotiates a session key), and the station's door-lock pass-through on the
- * Bluetooth lock. The setting toggles ride `ff09` only. This module emits ONE transport-neutral intent per
- * wire (identity fields only, no wire bytes, no cipher, no routing key) and names no transport: the command
- * sink routes P2P vs MQTT by the device's topology, and the chosen transport's command router builds the
- * frame + envelope and re-resolves its own routing tail.
+ * Bluetooth lock. The setting toggles ride `ff09` only. Actuation and the toggles emit ONE transport-neutral
+ * intent per wire (identity fields only, no wire bytes, no cipher, no routing key): the command sink routes P2P
+ * vs MQTT by the device's topology, and the chosen transport's command router builds the frame + envelope and
+ * re-resolves its own routing tail. `addPasscode` encodes its `ff09` field values itself and hands them to the
+ * injected `Ff09SettingsReader.exchange`, which builds the frame, cipher and envelope around them and answers
+ * the reply; the cloud's records go through the injected `DeviceUserDirectory`. The module names no transport.
  * Which pipe it is does not reach `dev.lock()` — its surface is identical either way, the same way
  * P2P-vs-cloud is hidden for live media.
  *
