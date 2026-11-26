@@ -90,3 +90,16 @@ describe("MegaHttpClient passport body", () => {
     expect(types).toEqual(["application/json"]);
   });
 });
+
+describe("MegaHttpClient estimate_domain", () => {
+  it("asks mega-us-pr with the configured country code, whatever the region", async () => {
+    const mega = new MegaHttpClient({ email: EMAIL, password: "x", region: "eu-pr", countryCode: "FR" });
+    const post = vi.fn(async () => ({ status: 200, data: { code: 0, data: {} } }));
+    (mega as unknown as { httpPost: typeof post }).httpPost = post;
+    await mega.estimateDomain();
+    expect(post.mock.calls[0]!.slice(0, 2)).toEqual([
+      "https://mega-us-pr.eufy.com/passport/estimate_domain",
+      { ab: "FR", mode: 1 },
+    ]);
+  });
+});

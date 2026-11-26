@@ -653,11 +653,14 @@ export class MegaHttpClient {
     return { status: res.status, data: parseMaybeJson(await res.text()) };
   }
 
-  /** Step 1: discover the account's region shard (and the bootstrap host). */
+  /**
+   * Step 1: discover the account's region shard (and the bootstrap host). Posted plain to `mega-us-pr` whatever
+   * the region, with the country code as configured, as the app's `IotDomainManager.estimateDomain` does.
+   */
   async estimateDomain(): Promise<void> {
     const res = await this.httpPost(
-      `https://mega-${this.region}.eufy.com/passport/estimate_domain`,
-      { ab: this.cfg.countryCode.toLowerCase(), mode: 1 },
+      "https://mega-us-pr.eufy.com/passport/estimate_domain",
+      { ab: this.cfg.countryCode, mode: 1 },
       { ...this.baseHeaders(), "content-type": "application/json" },
     );
     this.logger.debug("[mega] estimate_domain raw:", JSON.stringify(res.data).slice(0, 400));
