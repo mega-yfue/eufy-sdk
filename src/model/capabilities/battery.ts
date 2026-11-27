@@ -160,11 +160,25 @@ function recordSetting(param: number, value: number, ctx: CommandContext): Comma
  * temperature and a solar read it cannot have. T8416 (Indoor Cam S350) has no battery and runs from a
  * 5 V USB-C supply according to the vendor's product pages; a HomeBase 3-attached unit reported the
  * sentinels 1101=100 and 1138=30, which surfaced as a battery level and a cell temperature that never move.
+ * T8600 (eufyCam E330 Professional) is a plug-in camera with no battery; three HomeBase 3-attached units
+ * on owned hardware report the same 100% level and 30 °C cell temperature, and #597 shows their live
+ * stream cut after ~55 s by the battery budget.
  *
  * The same list decides the live-media and P2P-session power tier through {@link cameraPowerTier}: a
  * budget on a mains camera is not cheap once it kills a continuous stream every minute.
  */
-const MAINS_CAMERA_MODELS = ["T8425", "T8419", "T8410", "T84A1", "T8423", "T8E00", "T8P00", "T8P10", "T8416"] as const;
+const MAINS_CAMERA_MODELS = [
+  "T8425",
+  "T8419",
+  "T8410",
+  "T84A1",
+  "T8423",
+  "T8E00",
+  "T8P00",
+  "T8P10",
+  "T8416",
+  "T8600",
+] as const;
 
 /**
  * Power tier of a camera for its live-media budget and standalone P2P session: `"battery"` only when it
