@@ -23,6 +23,13 @@ import { isHomeBase } from "../device-family.js";
 // VACUUM_DP is the capability's own wire vocabulary (internal — not on the barrel), so a spec imports
 // it by direct path, the same way the P2P command specs import `CAMERA_CMD`.
 import { VACUUM_DP } from "../capabilities/vacuum-clean.js";
+import { parseThingsList } from "../capabilities/thing-description.js";
+
+/** A description of product `code` listing only the given identifiers. */
+const described = (code: string, ...identifiers: string[]) =>
+  parseThingsList({
+    things_list: [{ profile: { product_code: code }, properties: identifiers.map((identifier) => ({ identifier })) }],
+  })[code]!;
 
 describe("classify (device_type → codec)", () => {
   it("maps known DeviceType numbers to their codec family", () => {
@@ -101,6 +108,25 @@ describe("classify (device_type → codec)", () => {
     // security-line) capability leaks in — see line-partition.spec.ts for the adversarial case.
     expect(r.capabilities).toEqual(["display", "info"]);
   });
+
+  it("maps SmartTrack item trackers to the tracker codec, NOT camera", () => {
+    // device_type path: SMART_TRACK_LINK (157) / SMART_TRACK_CARD (159) and the two newer tags sit
+    // inside the 0..210 security residual, so before the fix they fell through to the camera bucket.
+    expect(codecForType(DeviceType.SMART_TRACK_LINK)).toBe("tracker");
+    expect(codecForType(DeviceType.SMART_TRACK_CARD)).toBe("tracker");
+    expect(codecForType(DeviceType.TRACKER_87B4)).toBe("tracker");
+    expect(codecForType(DeviceType.TRACKER_87B5)).toBe("tracker");
+    // model path: the reporter's records (T87B0-V SmartTrack Link, T87B2 SmartTrack Card). The "-V"
+    // suffix exercises the prefix match, and these must NOT fall into the generic `/^T8/` camera arm.
+    expect(classify({ model: "T87B0-V" })).toBe("tracker");
+    expect(classify({ model: "T87B2" })).toBe("tracker");
+    // model wins over a colliding/absent security device_type, same guarantee as the display line.
+    expect(classify({ model: "T87B0-V", deviceType: 9 })).toBe("tracker");
+    // A tracker gets ONLY the universal `info` — no video/snapshot/motion/camera entities.
+    expect(resolveDevice({ model: "T87B0-V", deviceType: DeviceType.SMART_TRACK_LINK }).capabilities).toEqual(["info"]);
+    // Regression guard: a real camera (CAMERA2, device_type 9) still classifies as camera.
+    expect(classify({ model: "T8114", deviceType: 9 })).toBe("camera");
+  });
 });
 
 describe("resolveDevice — 3-tier composition", () => {
@@ -150,7 +176,8 @@ describe("resolveDevice — 3-tier composition", () => {
   it("does not advertise a spotlight from the params reported by T8171", () => {
     // Three T8171 units on firmware 1.2.1.6 reported precisely these light-detection params.
     const params = { 1400: "0", 1401: "80", 1403: "1" };
-    const e30 = resolveDevice({ model: "T8171", deviceType: DeviceType.SOLO_CAMERA_E30, params });
+    const things = described("T8171", "nightvision_type");
+    const e30 = resolveDevice({ model: "T8171", deviceType: DeviceType.SOLO_CAMERA_E30, params, things });
     expect(e30.capabilities).not.toContain("light");
     const properties = e30.properties.map((p) => p.name);
     for (const name of ["light", "brightness", "spotlightEnabled", "colorTemp"]) {
@@ -159,28 +186,38 @@ describe("resolveDevice — 3-tier composition", () => {
     expect(resolveDevice({ model: "T8170", deviceType: 48, params }).capabilities).toContain("light");
     for (const [param, value] of Object.entries(params)) {
       expect(
-        resolveDevice({ model: "T8171", deviceType: DeviceType.SOLO_CAMERA_E30, params: { [param]: value } })
+        resolveDevice({ model: "T8171", deviceType: DeviceType.SOLO_CAMERA_E30, params: { [param]: value }, things })
           .capabilities,
       ).not.toContain("light");
     }
   });
 
-  it.each([undefined, DeviceType.CAMERA_POE_S4])(
-    "recognizes PoE S4 pan-tilt without reported preset parameters (device type %s)",
-    (deviceType) => {
-      expect(
-        resolveDevice({ model: "T8E00", category: "eufy_security", deviceType, params: {} }).capabilities,
-      ).toContain("ptz");
-    },
-  );
+  it("does not advertise a spotlight from the params reported by an Indoor Cam S350 (T8416)", () => {
+    const params = { 1400: "0", 1401: "70", 1403: "1", 1410: "100" };
+    const things = described("T8416", "nightvision_type");
+    const s350 = resolveDevice({ model: "T8416", deviceType: DeviceType.INDOOR_PT_CAMERA_S350, params, things });
+    expect(s350.capabilities).not.toContain("light");
+    const properties = s350.properties.map((p) => p.name);
+    for (const name of ["light", "brightness", "spotlightEnabled", "colorTemp"]) {
+      expect(properties).not.toContain(name);
+    }
+  });
+
+  it("recognizes PoE S4 pan-tilt without reported preset parameters, from its device type or its description", () => {
+    const things = parseThingsList({
+      things_list: [{ profile: { product_code: "T0000" }, actions: [{ identifier: "ptz_action_control" }] }],
+    }).T0000!;
+    const caps = (rec: object) =>
+      resolveDevice({ model: "T0000", category: "eufy_security", params: {}, ...rec }).capabilities;
+    expect(caps({ deviceType: DeviceType.CAMERA_POE_S4 })).toContain("ptz");
+    expect(caps({ things })).toContain("ptz");
+  });
 
   it("a normal solar cam (T8124R) is NOT pan-tilt — the mistaken model hint is gone", () => {
     // T8124R (deviceType 62 = SOLO_CAMERA_SPOTLIGHT_SOLAR) is a FIXED solar cam: it reports no PT param
     // and isn't a PT deviceType. An unfounded `\bT8124R\b` model hint used to grant it ptz anyway;
     // confirmed on a real owned unit that it does not pan/tilt, so the hint was removed.
     expect(resolveDevice({ model: "T8124R", deviceType: 62 }).capabilities).not.toContain("ptz");
-    // Genuine PT models still resolve via their real signals — a name hint (S340) and a PT deviceType.
-    expect(resolveDevice({ model: "SoloCam S340" }).capabilities).toContain("ptz");
     expect(resolveDevice({ deviceType: 48 }).capabilities).toContain("ptz"); // OUTDOOR_PT_CAMERA
   });
 
@@ -315,11 +352,18 @@ describe("doorbell — confirmed against real T8214", () => {
 
   it("types the battery T8213 as a doorbell", () => {
     // Without its registry row the raw T-code missed the doorbell model hint, so a T8213's presses
-    // arrived but the host built no doorbell event or ring trigger (ha-eufy-sdk#38).
+    // arrived but the host built no doorbell event or ring trigger.
     const r = resolveDevice({ model: "T8213", deviceType: 91 });
     expect(r.capabilities).toContain("doorbell");
     expect(r.capabilities).toContain("battery");
     expect(r.name).toBe("Video Doorbell Dual");
+  });
+
+  it.each([
+    ["T8224", 95],
+    ["T8223", 96],
+  ])("types the Video Doorbell C30/C31 (%s) as a doorbell", (model, deviceType) => {
+    expect(resolveDevice({ model, deviceType }).capabilities).toContain("doorbell");
   });
 
   it("marks each manifest property with whether the device has reported it", () => {
@@ -350,10 +394,6 @@ describe("doorbell — confirmed against real T8214", () => {
 
   it.each([5, 7, 16, 91, 93, 94])("types any record of the app's doorbell deviceType %i as a doorbell", (t) => {
     expect(resolveDevice({ model: "T8299", deviceType: t }).capabilities).toContain("doorbell");
-  });
-
-  it.each(["T8201", "T8212", "T8220", "T8222"])("types the app's doorbell model %s as a doorbell", (model) => {
-    expect(resolveDevice({ model }).capabilities).toContain("doorbell");
   });
 
   it("types the T8210C variant as a doorbell, like the T8210", () => {
@@ -488,10 +528,9 @@ describe("inspectParams — enrichment export", () => {
 });
 
 describe("mergeProperties — shared props dedupe across capabilities", () => {
-  it("collapses repeated props (rssi/lastSeen) first-wins", () => {
-    const props = mergeProperties(["contact", "leak"]); // both contribute lastSeen
-    const lastSeen = props.filter((p) => p.name === "lastSeen");
-    expect(lastSeen).toHaveLength(1);
+  it("collapses repeated props first-wins", () => {
+    const props = mergeProperties(["lock", "battery"]); // both contribute battery
+    expect(props.filter((p) => p.name === "battery")).toHaveLength(1);
   });
 
   it("detectCapabilities gates camera extras on the camera codec", () => {

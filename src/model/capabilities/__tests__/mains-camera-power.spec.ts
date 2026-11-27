@@ -21,6 +21,7 @@ describe("PoE camera power tier behind T8N00 (#437)", () => {
   it.each([
     ["T8E00", "Synthetic PoE Bullet PTZ Cam S4"],
     ["T8P00", "Synthetic PoE Cam E40"],
+    ["T8P10", "Synthetic PoE Cam E41"],
   ])("classifies %s as wired and withholds its sentinel battery reading", async (model, name) => {
     const sn = `${model}P0000000001`;
     const record = {
@@ -159,5 +160,49 @@ describe("mains-only camera power tier (T84A1 Wall Light Cam S100)", () => {
     expect(
       Device.fromRecord(sn, { deviceType: 9, model: "T8423", params: { 1101: "100" } }).getProperty("battery"),
     ).toBeUndefined();
+  });
+});
+
+describe("mains-only camera power tier (T8416 Indoor Cam S350)", () => {
+  const sn = "T8416P0000000001";
+  const record = {
+    deviceType: 104,
+    model: "T8416",
+    stationSn: "T8030P0000000000",
+    channel: 4,
+    params: { 1101: "100", 1138: "30" },
+  };
+
+  it("withholds the sentinel battery level and cell temperature of a HomeBase-attached unit", () => {
+    const dev = Device.fromRecord(sn, record);
+    expect(dev.getProperty("battery")).toBeUndefined();
+    expect(dev.getProperty("batteryTemperature")).toBeUndefined();
+  });
+
+  it("gives every media egress the wired tier, so no battery budget is armed", async () => {
+    expect(cameraPowerTier("T8416", BATTERY_CAPS)).toBe("wired");
+    const seen: string[] = [];
+    const media: MediaProvider = {
+      snapshotLive: async (opts) => {
+        seen.push(opts?.powered ?? "missing");
+        return { jpeg: Buffer.alloc(0), width: 1, height: 1 };
+      },
+      live: async (opts) => (seen.push(opts?.powered ?? "missing"), {}) as never,
+      record: async () => Buffer.alloc(0),
+    };
+    const { acts } = bind<CameraActions>(
+      "camera",
+      {
+        channel: record.channel,
+        codec: "camera",
+        model: "T8416",
+        paramIds: new Set<number>([1101, 1138]),
+        capabilities: BATTERY_CAPS,
+      },
+      { media },
+    );
+    await acts.snapshotLive!();
+    await acts.live!();
+    expect(seen).toEqual(["wired", "wired"]);
   });
 });

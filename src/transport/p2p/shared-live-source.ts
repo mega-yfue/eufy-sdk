@@ -559,7 +559,8 @@ export class SharedLiveSource {
    *
    * The previous stream is dropped rather than stopped through the state machine: it speaks to a session that
    * is gone, and its `stop` would be read as an upstream end. Only a warm-up that asked for a replacement
-   * rewarms, so this is inert on a source that is streaming or has already failed.
+   * rewarms, so this is inert on a source that is streaming or has already failed. Each call replaces the
+   * re-issue ticker rather than adding one, so the start goes out once per interval however often it runs.
    */
   rewarm(): void {
     if (this.disposed || !this.sessionReplacementAsked || this._state !== "warming") return;
@@ -570,6 +571,7 @@ export class SharedLiveSource {
     this.openStream();
     this.warmAttempts++;
     this.logger.debug(`${this.tag} warming again on a replacement session (attempt ${this.warmAttempts})`);
+    if (this.warmRetryTimer) clearInterval(this.warmRetryTimer);
     this.warmRetryTimer = setInterval(() => this.reissueStart(), this.warmRetryMs);
   }
 
@@ -860,14 +862,19 @@ export class SharedLiveSource {
 
   /**
    * Handle a consumer leaving. When the last one detaches (1→0), release the station-session user via
-   * {@link SharedLiveSourceOptions.onIdle} (its own longer idle timer then arms) and arm the stream's
-   * linger teardown.
+   * {@link SharedLiveSourceOptions.onIdle} (its own longer idle timer then arms) and, while a stream is
+   * still running, arm its linger teardown.
+   *
+   * A source that ended its own stream ends its consumers before tearing down, and a Readable consumer
+   * detaches only once it has reached EOF — after that teardown. The source is then already `stopped`,
+   * with its session claim released, and stays so: lingering would make the owner hand it out again
+   * instead of building a source that holds a session.
    */
   private onDetach(consumer: ConsumerImpl): void {
     this.consumers.delete(consumer);
     if (this.consumers.size === 0 && !this.disposed) {
       this.opts.onIdle?.();
-      this.arm();
+      if (this.stream) this.arm();
     }
   }
 

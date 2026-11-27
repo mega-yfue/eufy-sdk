@@ -8,6 +8,7 @@ import {
   DEVICE_SN,
   STATION_SN,
   connectedSession,
+  onFakeTime,
   routerWithSession,
   type FakeP2PSession,
 } from "./session-fixtures.js";
@@ -198,8 +199,8 @@ describe("P2PCommandRouter.sendKeyedPayloadActuate (keyed-payload-actuate comman
 
   it("settles on the state report alone when the echo was not read — the report of the state it drove to", async () => {
     const { sent, actuate } = harness(() => [{ report: 0 }]);
-    await expect(actuate(true)).resolves.toBeUndefined();
-    await expect(actuate(false)).resolves.toBeUndefined();
+    await expect(actuate(true)).resolves.toBe(true);
+    await expect(actuate(false)).resolves.toBe(true);
     expect(sent).toHaveLength(2);
   });
 
@@ -214,7 +215,7 @@ describe("P2PCommandRouter.sendKeyedPayloadActuate (keyed-payload-actuate comman
 
   it("settles on the echo alone, at once — a command the device was already in the state of draws no report", async () => {
     const { sent, actuate } = harness(() => [{ echo: 0 }]);
-    await expect(actuate(true)).resolves.toBeUndefined();
+    await expect(actuate(true)).resolves.toBe(true);
     expect(sent).toHaveLength(1);
   });
 
@@ -260,7 +261,7 @@ describe("P2PCommandRouter.sendKeyedPayloadActuate (keyed-payload-actuate comman
   it("rejects when the resend at mark + 1 is refused too", async () => {
     // Two refusals and the command gives up with the device's code — it does not keep resending.
     const { sent, actuate } = harness((sent) => refusedAt(sent.inner.seq_num + 100));
-    await expect(actuate(true)).rejects.toThrow(`code ${KEYED_PAYLOAD_SEQ_ERROR}`);
+    await expect(onFakeTime(() => actuate(true))).rejects.toThrow(`code ${KEYED_PAYLOAD_SEQ_ERROR}`);
     expect(sent).toHaveLength(2);
   });
 
@@ -278,7 +279,7 @@ describe("P2PCommandRouter.sendKeyedPayloadActuate (keyed-payload-actuate comman
     await vi.advanceTimersByTimeAsync(TWIN_MS - 1);
     expect(sent).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(1);
-    await expect(done).resolves.toBeUndefined();
+    await expect(done).resolves.toBe(true);
     expect(sent.map((s) => s.inner.seq_num)).toEqual([FIRST_SEQ, 1001]);
   });
 

@@ -15,8 +15,8 @@
  * invariant.
  *
  * Two connection strategies live here, matched to what each wire was verified over:
- *  - **ff09** opens its OWN one-shot, explicitly non-reconnecting `SecureMqtt` pinned to the broker
- *    instance that holds the device's session (see {@link ensureSecurityMqttFor}) and tears it down
+ *  - **ff09** opens its OWN one-shot, explicitly non-reconnecting `SecureMqtt` pinned to a broker
+ *    instance that grants the device's topic (see {@link ensureSecurityMqttFor}) and tears it down
  *    right after — the lock/garage path needs the SUBSCRIBE-and-wait ack machinery.
  *  - **eufy_life DP** (lights) publishes fire-and-forget over the facade's persistent account-wide
  *    `this.transport` via the injected {@link MqttRouterDeps.publishSecure} — that persistent connection
@@ -49,6 +49,10 @@ import { buildDpFrame, buildDpEnvelope } from "./dp-codec.js";
 import { dpPresetFields, dpLevelFields, type DpPresetSpec } from "../dp-preset.js";
 import { dpColorFields } from "./dp-color.js";
 import { buildCleanDpEnvelope } from "./clean-codec.js";
+
+/** The app's `snToPn` fallback for a lock serial: the T8520 range splits on its 7th character. */
+const pnFromSerial = (sn: string): string =>
+  sn.startsWith("T8520") ? ({ "8": "T8510P", "9": "T8520P" }[sn.charAt(6)] ?? "T8520") : sn.slice(0, 5);
 
 /**
  * The ff09 command topic — always the `eufy_security` scope, regardless of the device's own category
@@ -257,7 +261,8 @@ export class MqttCommandRouter {
   /**
    * Whether this transport stack drives `dev`'s `ff09-*` commands — a **eufy-cloud device**
    * (`api === "mega"`) with NO usable P2P endpoint (empty `p2p_did`): a standalone lock/garage (T85D0),
-   * an appliance, and so on. Named positively by the plane it drives rather than "anything without a
+   * an appliance, and so on. A standalone video lock also takes its `ff09` frames on this stack, although its
+   * P2P endpoint keeps it unclaimed here. Named positively by the plane it drives rather than "anything without a
    * P2P id", so a device on another cloud (a printer, `api === "ankermake"`) is claimed by NEITHER this
    * stack nor {@link P2PCommandRouter.claimsDevice} instead of falling onto the eufy MQTT plane. (See
    * P2P's `claimsDevice` for why the endpoint, not the `realtime` tag, is the routing fact.)
@@ -268,8 +273,8 @@ export class MqttCommandRouter {
 
   /**
    * Route a transport-neutral {@link Command} to the secure-MQTT wire — the MQTT half of the command
-   * sink. The `ff09-actuate`/`ff09-autolock` (locks/garage) and `mqtt-dp`/`mqtt-dp-color`/`mqtt-dp-preset`
-   * (`eufy_life` lights) kinds reach here (the facade fans everything else to the P2P router); any
+   * sink. The `ff09-actuate`/`ff09-autolock` (a lock/garage without a P2P endpoint, or a standalone video lock)
+   * and `mqtt-dp`/`mqtt-dp-color`/`mqtt-dp-preset` (`eufy_life` lights) kinds reach here (the facade fans everything else to the P2P router); any
    * other kind is a routing bug, so fail loud rather than resolve as a silent success.
    */
   async dispatchCommand(sn: string, cmd: Command): Promise<void> {
@@ -293,7 +298,7 @@ export class MqttCommandRouter {
         await this.dispatchAiotDp(sn, cmd);
         return;
       default:
-        // The facade sink routes an ff09-* command here only for an MQTT device (no P2P endpoint).
+        // An ff09-* command reaches here for a device with no P2P endpoint or a standalone video lock.
         // `ff09-setting-toggle` (Rain Mode) has no MQTT form, so one reaching here is a routing bug; fail
         // loud rather than guess a shape that is not known to exist. Same for any non-ff09 or non-aiot-dp
         // kind (the facade routes those to P2P).
@@ -310,6 +315,16 @@ export class MqttCommandRouter {
     const dev = this.deps.listDevices().find((d) => d.sn === sn);
     if (!dev) throw new Error(`device ${sn} not found`);
     return dev;
+  }
+
+  /**
+   * The record with `model` set to the product number `ff09` topics name: `device_new_pn`, else the app's
+   * serial-derived fallback, never `device_model` (a C30 reports `T85D0C` and answers only on `T85D0`).
+   */
+  private async ff09DeviceFor(sn: string): Promise<EufyDevice> {
+    const dev = await this.deviceFor(sn);
+    const pn = (dev.raw as { device_new_pn?: unknown } | undefined)?.device_new_pn;
+    return { ...dev, model: typeof pn === "string" && pn ? pn : pnFromSerial(sn) };
   }
 
   /**
@@ -337,24 +352,20 @@ export class MqttCommandRouter {
   ];
 
   /**
-   * Connect a fresh **security-scoped** (`eufy_security`) MQTT client PINNED to whichever broker
-   * instance currently holds `dev`'s live session. `aiot-mqtt-{region}.anker.com` fronts multiple
-   * independent backend instances (an AWS NLB, one target per AZ) that do NOT share subscribe/publish
-   * routing — a plain DNS connect can silently land on an instance that will accept the TLS CONNECT but
-   * never route to this device (looks exactly like an authorization wall, isn't one). This probes every
-   * candidate with a SUBSCRIBE-only connection (never publishes during discovery — see
-   * `transport/mqtt/broker-discovery.ts`), then opens one real connection pinned to the first instance
-   * that granted the SUBSCRIBE, for the caller to actually publish on.
+   * Connect a fresh **security-scoped** (`eufy_security`) MQTT client pinned to a broker instance that
+   * grants the device's `/res` SUBSCRIBE (probed SUBSCRIBE-only, never publishing — see
+   * `transport/mqtt/broker-discovery.ts`), for the caller to publish on.
+   *
+   * The `security-mqtt-{region}` cluster is probed first, and the `aiot-mqtt-{region}` endpoint with
+   * {@link KNOWN_AIOT_BROKER_IPS} when no security instance grants.
    *
    * Which cert is used does NOT change the outcome — the account's own `get_user_mqtt_info` cert and a
    * cert extracted from a real phone's keystore produce the identical grant/deny pattern across every
-   * candidate IP. Only the instance matters, which is why this probes instances and not credentials.
-   * One exception is known: a single garage unit whose own-cert SUBSCRIBE was denied on every candidate
-   * while a phone-extracted cert granted on the same one, with a sibling of the same model on the same
-   * account granting fine. That is a per-device authorization gap on the vendor's backend, not a
-   * broker-instance problem and not something this SDK works around — the throw below names each
-   * candidate's outcome (its SUBACK deny code, a timeout or a connection error) until the backend grants
-   * the account's own credentials.
+   * candidate IP. One exception is known: a single garage unit whose own-cert SUBSCRIBE was denied on
+   * every candidate while a phone-extracted cert granted on the same one, with a sibling of the same
+   * model on the same account granting fine. That is a per-device authorization gap on the vendor's
+   * backend, not something this SDK works around — the throw below names each candidate's outcome (its
+   * SUBACK deny code, a timeout or a connection error).
    *
    * One fresh, explicitly non-reconnecting (`reconnectPeriod: 0`) connection per call — it repays the
    * full mTLS handshake every command and tears the socket down right after (see
@@ -365,30 +376,39 @@ export class MqttCommandRouter {
    * with a scope-bounded wildcard (`cmd/{app}/+/+/res`) instead of per-call subscribe/unsubscribe.
    */
   private async ensureSecurityMqttFor(dev: EufyDevice): Promise<{ mqtt: SecureMqtt; instanceIp: string }> {
-    const creds: SecureMqttCredentials = await this.deps.mega.getUserMqttInfo("eufy_security");
+    const account: SecureMqttCredentials = await this.deps.mega.getUserMqttInfo("eufy_security");
+    let creds: SecureMqttCredentials = {
+      ...account,
+      endpoint_addr: account.endpoint_addr.replace(/^aiot-mqtt-/, "security-mqtt-"),
+    };
     const mqttUuid = mqttUuidFrom(this.deps.mega.openudid);
     const clientIdFor = () => buildAppShapedClientId({ appName: "eufy_security", uid: creds.user_id ?? "", mqttUuid });
-    const results = await discoverReachableInstance(
-      {
-        hostname: creds.endpoint_addr,
-        port: creds.endpoint_port,
-        certificate_pem: creds.certificate_pem,
-        private_key: creds.private_key,
-        aws_root_ca1_pem: creds.aws_root_ca1_pem,
-      },
-      {
-        clientIdFor,
-        topic: secureTopic(dev, "res"),
-        candidateIps: MqttCommandRouter.KNOWN_AIOT_BROKER_IPS,
-        stopOnFirstGrant: true,
-        perAttemptTimeoutMs: 8000,
-      },
-    );
+    const probe = (on: SecureMqttCredentials, candidateIps?: string[]) =>
+      discoverReachableInstance(
+        {
+          hostname: on.endpoint_addr,
+          port: on.endpoint_port,
+          certificate_pem: on.certificate_pem,
+          private_key: on.private_key,
+          aws_root_ca1_pem: on.aws_root_ca1_pem,
+        },
+        {
+          clientIdFor,
+          topic: secureTopic(dev, "res"),
+          candidateIps,
+          stopOnFirstGrant: true,
+          perAttemptTimeoutMs: 8000,
+        },
+      );
+    let results = await probe(creds);
+    if (!results.some((r) => r.granted)) {
+      creds = account;
+      results = await probe(account, MqttCommandRouter.KNOWN_AIOT_BROKER_IPS);
+    }
     const winner = results.find((res) => res.granted);
-
     if (!winner) {
       throw new Error(
-        `ensureSecurityMqttFor(${dev.sn}): no broker instance currently holds this device's session ` +
+        `ensureSecurityMqttFor(${dev.sn}): no broker instance grants this device's topic ` +
           `(probed ${results.length} candidate IPs: ` +
           results
             .map(
@@ -452,7 +472,7 @@ export class MqttCommandRouter {
   }
 
   /**
-   * The `ff09-actuate` intent handler over MQTT — a standalone lock/garage door (T85D0) with no P2P endpoint.
+   * The `ff09-actuate` intent handler over MQTT: sends one lock or unlock frame to the device.
    * Builds the same `ff09` frame the P2P lock uses (`transport/ff09.ts`), wraps it in the MQTT `trans`
    * envelope (`buildFf09Trans`/`buildFf09MqttEnvelope`, this module), discovers which broker instance holds the device's
    * live session (see {@link ensureSecurityMqttFor}), and publishes to `cmd/eufy_security/{pn}/{sn}/req`.
@@ -480,8 +500,7 @@ export class MqttCommandRouter {
    * unlike a fixed-sleep-then-teardown, where a late reply arrives after the subscription is already gone.
    */
   private async dispatchFf09Actuate(sn: string, cmd: Extract<Command, { kind: "ff09-actuate" }>): Promise<void> {
-    const dev = await this.deviceFor(sn);
-    if (!dev.model) throw new Error(`dispatchFf09Actuate(${sn}): no product model (pn) — required for the topic`);
+    const dev = await this.ff09DeviceFor(sn);
     const trans = buildFf09Trans({
       engage: cmd.engage,
       adminUserId: cmd.adminUserId,
@@ -559,8 +578,7 @@ export class MqttCommandRouter {
    *     as-is rather than adding keyTime correlation this ack doesn't otherwise need.
    */
   private async dispatchFf09Autolock(sn: string, cmd: Extract<Command, { kind: "ff09-autolock" }>): Promise<void> {
-    const dev = await this.deviceFor(sn);
-    if (!dev.model) throw new Error(`dispatchFf09Autolock(${sn}): no product model (pn) — required for the topic`);
+    const dev = await this.ff09DeviceFor(sn);
 
     const { mqtt, instanceIp } = await this.ensureSecurityMqttFor(dev);
     try {
@@ -657,8 +675,7 @@ export class MqttCommandRouter {
    * has not been independently exercised against a real device yet.
    */
   async getAutoLockState(sn: string, cmd: { adminUserId: string; deviceSn: string }): Promise<AutoLockSnapshot> {
-    const dev = await this.deviceFor(sn);
-    if (!dev.model) throw new Error(`getAutoLockState(${sn}): no product model (pn) — required for the topic`);
+    const dev = await this.ff09DeviceFor(sn);
     const { mqtt, instanceIp } = await this.ensureSecurityMqttFor(dev);
     try {
       await mqtt.subscribeDevice(dev);

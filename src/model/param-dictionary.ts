@@ -852,6 +852,21 @@ export const SECURITY_PARAMS: Record<number, ParamDef> = {
     type: "bool",
     provenance: "apk",
   },
+  1820: {
+    name: "waterSensorWaterState",
+    type: "bool",
+    provenance: "apk",
+  },
+  1822: {
+    name: "waterSensorTemperatureLow",
+    type: "bool",
+    provenance: "apk",
+  },
+  1823: {
+    name: "smokeSensorLastSmokeEvt",
+    type: "number",
+    provenance: "apk",
+  },
   1825: {
     name: "sirenSensorSetAlarmVol",
     type: "number",
@@ -860,6 +875,11 @@ export const SECURITY_PARAMS: Record<number, ParamDef> = {
   1828: {
     name: "sensorNotDisturb",
     type: "bool",
+    provenance: "apk",
+  },
+  1873: {
+    name: "waterSensorTemperatureAlarm",
+    type: "number",
     provenance: "apk",
   },
   2001: {

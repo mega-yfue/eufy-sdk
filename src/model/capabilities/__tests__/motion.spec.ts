@@ -10,8 +10,10 @@ import type { MotionActions } from "../motion.js";
 
 import type { CommandContext } from "../types.js";
 import type { Command } from "../../../core/contracts.js";
-import { buildActions, buildCommand } from "../index.js";
+import { buildActions, buildCommand, describeCapabilities } from "../index.js";
+import { parseThingsList } from "../thing-description.js";
 import { Device } from "../../device.js";
+import { resolveDevice } from "../../registry.js";
 
 /**
  * Bind the way a device does: a member's setter is derived in the barrel, not returned by `actions()`.
@@ -117,28 +119,110 @@ describe("motion capability module", () => {
   });
 
   describe("motionDetection buildCommand", () => {
-    it("emits the direct-binary 1011 scalar (on=1/off=0) — the capture-verified watermark-class wire", () => {
+    it("emits the auto 1011 scalar (on=1/off=0) — the capture-verified watermark-class wire with session fallback", () => {
       expect(intent("motionDetection", true, ctx([], 3))).toEqual({
         kind: "set-param",
         param: MOTION_CMD.CAMERA_PIR, // 1011
         value: 1,
-        form: "direct-binary",
+        form: "auto",
         channel: 3,
       });
       expect(intent("motionDetection", false, ctx([], 3))).toMatchObject({
-        form: "direct-binary",
+        form: "auto",
         value: 0,
       });
     });
-    it("actions.setDetection dispatches the same direct-binary 1011 scalar", async () => {
+    it("actions.setDetection dispatches the same auto 1011 scalar", async () => {
       const sent: any[] = [];
       const acts = bindMotion(ctx([], 3), sent);
       await acts.setDetection(true);
       expect(sent[0]).toMatchObject({
         kind: "set-param",
         param: MOTION_CMD.CAMERA_PIR,
-        form: "direct-binary",
+        form: "auto",
         value: 1,
+      });
+    });
+  });
+
+  describe("motionDetection on a device reporting 6040", () => {
+    const t8410 = (extra: Partial<CommandContext> = {}): CommandContext => ({
+      ...ctx([MOTION_CMD.INDOOR_MOTION_ENABLE], 0),
+      model: "T8410",
+      ...extra,
+    });
+
+    it("reads 6040 into motionDetection and follows it both ways", () => {
+      const dev = Device.fromRecord("T8410P0000000000", { model: "T8410", params: { 6040: "0" } });
+      expect(dev.properties.find((p) => p.name === "motionDetection")).toMatchObject({
+        paramType: MOTION_CMD.INDOOR_MOTION_ENABLE,
+        writable: true,
+      });
+      expect(dev.getProperty("motionDetection")?.value).toBe(false);
+      dev.applyParams({ 6040: "1" });
+      expect(dev.getProperty("motionDetection")?.value).toBe(true);
+    });
+
+    it("writes the 1700 control payload on 6040, on and off", () => {
+      expect(intent("motionDetection", true, t8410())).toEqual({
+        kind: "set-json",
+        param: MOTION_CMD.INDOOR_MOTION_ENABLE,
+        data: { status: 1 },
+        channel: 0,
+      });
+      expect(intent("motionDetection", false, t8410())).toMatchObject({ data: { status: 0 } });
+    });
+
+    it("actions.setDetection dispatches the same 6040 payload", async () => {
+      const sent: Command[] = [];
+      await bindMotion(t8410(), sent).setDetection(true);
+      expect(sent).toEqual([
+        {
+          kind: "set-json",
+          param: MOTION_CMD.INDOOR_MOTION_ENABLE,
+          data: { status: 1 },
+          channel: 0,
+        },
+      ]);
+    });
+
+    it("reads 6040 on a HomeBase-attached T8410 that also reports 1011", () => {
+      const dev = Device.fromRecord("T8410P0000000000", {
+        model: "T8410",
+        parentSn: "T8030P0000000000",
+        params: { 1011: "1", 6040: "0" },
+      });
+      expect(dev.properties.find((p) => p.name === "motionDetection")?.paramType).toBe(MOTION_CMD.INDOOR_MOTION_ENABLE);
+      expect(dev.getProperty("motionDetection")?.value).toBe(false);
+    });
+
+    it("writes the same 6040 payload on a HomeBase-attached T8410", () => {
+      const attached = t8410({ homeBaseAttached: true, paramIds: new Set([1011, MOTION_CMD.INDOOR_MOTION_ENABLE]) });
+      expect(intent("motionDetection", false, attached)).toMatchObject({
+        kind: "set-json",
+        param: MOTION_CMD.INDOOR_MOTION_ENABLE,
+        data: { status: 0 },
+      });
+    });
+
+    it("reads and writes 6040 on any standalone camera that reports it, not only a T8410", () => {
+      const dev = Device.fromRecord("T8170P0000000000", { model: "T8170", params: { 6040: "1" } });
+      expect(dev.properties.find((p) => p.name === "motionDetection")?.paramType).toBe(MOTION_CMD.INDOOR_MOTION_ENABLE);
+      expect(dev.getProperty("motionDetection")?.value).toBe(true);
+      expect(
+        intent("motionDetection", false, { ...ctx([MOTION_CMD.INDOOR_MOTION_ENABLE], 0), model: "T8170" }),
+      ).toMatchObject({
+        kind: "set-json",
+        param: MOTION_CMD.INDOOR_MOTION_ENABLE,
+        data: { status: 0 },
+      });
+    });
+
+    it("a camera reporting only 1011 keeps the 1011 auto switch", () => {
+      expect(intent("motionDetection", true, { ...ctx([1011], 3), model: "T8425" })).toMatchObject({
+        kind: "set-param",
+        param: MOTION_CMD.CAMERA_PIR,
+        form: "auto",
       });
     });
   });
@@ -254,11 +338,49 @@ describe("motion capability module", () => {
     it("proves motion via the PIR switch param 1011", () => {
       expect(MOTION.detection?.evidenceParams).toContain(1011);
     });
-    it("the glass-break model hint matches glass but not an unrelated string", () => {
-      const re = MOTION.detection!.modelHints![0];
-      expect(re.test("Glass Break Sensor")).toBe(true);
-      expect(re.test("Wired Doorbell")).toBe(false);
+    it("detects from the reported PIR switch, never the owner's name", () => {
+      const caps = (rec: object) =>
+        resolveDevice({ category: "eufy_security", model: "T0000", deviceType: 2, ...rec }).capabilities;
+      expect(caps({ params: { 1011: "1" } })).toContain("motion");
+      expect(caps({ params: {}, name: "Glass Break Sensor" })).not.toContain("motion");
     });
+  });
+});
+
+/** Where the product's thing description is held, it rather than the codec says which family a device is. */
+describe("motion — the thing description over the codec", () => {
+  const things = (properties: string[], actions: string[] = []) =>
+    parseThingsList({
+      things_list: [
+        {
+          profile: { product_code: "T0000" },
+          properties: properties.map((identifier) => ({ identifier })),
+          actions: actions.map((identifier) => ({ identifier })),
+        },
+      ],
+    }).T0000!;
+
+  it("claims and admits writes by the identifiers the description lists", async () => {
+    const pet = (description?: ReturnType<typeof things>) =>
+      describeCapabilities(
+        buildActions(["motion"], {
+          ctx: { ...ctx([1011]), things: description },
+          sink: { dispatch: async () => undefined },
+          read: () => undefined,
+        }),
+        {
+          codec: "camera",
+          capabilities: new Set(["motion"]),
+          things: description,
+        },
+      )[0]!.events.includes("petDetection");
+    expect(pet()).toBe(true);
+    expect(pet(things(["detection_type_set"]))).toBe(true);
+    expect(pet(things(["motion_detection_status"]))).toBe(false);
+
+    const sensorDescribed = { ...ctx([]), things: things([], ["sensor_entry_test_mode"]) };
+    await expect(bindMotion(sensorDescribed).setTestMode(true)).resolves.toBeUndefined();
+    await expect(bindMotion(sensorDescribed).setDetection(true)).rejects.toThrow(/verified only on a camera/);
   });
 });
 

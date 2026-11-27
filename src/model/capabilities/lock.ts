@@ -1,4 +1,5 @@
-import { isClassicWifiLock, isVideoSmartLock } from "../device-family.js";
+import { isBluetoothLock, isClassicWifiLock, isSmartDrop, isVideoSmartLock } from "../device-family.js";
+import { DeviceType } from "../device-types.js";
 import { asBool } from "../../core/util.js";
 import { LockPushEvent } from "../push-events.js";
 import { describeDevice } from "./access.js";
@@ -41,11 +42,12 @@ export const LOCK_SETTING_ID = {
  *
  * Everything is DERIVED from `LOCK_MEMBERS`. `lock`/`unlock` drive every lock-family actuator over the
  * wire its family takes: the shared `ff09` frame on the T8531 video smart lock and the T85D0 garage door,
- * the T8530 video lock's own `set-payload`, and the keyed-payload envelope on the classic Wi-Fi lock (the
- * `T8520`-range unit that never negotiates a session key). The setting toggles ride `ff09` only. This
- * module emits ONE transport-neutral intent per wire (identity fields only, no wire bytes, no cipher, no
- * routing key) and names no transport: the command sink routes P2P vs MQTT by the device's topology, and
- * the chosen transport's command router builds the frame + envelope and re-resolves its own routing tail.
+ * the T8530 video lock's own `set-payload`, the keyed-payload envelope on the classic Wi-Fi lock (the
+ * `T8520`-range unit that never negotiates a session key), and the station's door-lock pass-through on the
+ * Bluetooth lock. The setting toggles ride `ff09` only. This module emits ONE transport-neutral intent per
+ * wire (identity fields only, no wire bytes, no cipher, no routing key) and names no transport: the command
+ * sink routes P2P vs MQTT by the device's topology, and the chosen transport's command router builds the
+ * frame + envelope and re-resolves its own routing tail.
  * Which pipe it is does not reach `dev.lock()` — its surface is identical either way, the same way
  * P2P-vs-cloud is hidden for live media.
  *
@@ -57,6 +59,21 @@ export type LockActions = Surface<typeof LOCK_MEMBERS>;
 
 /** Native video-lock command vocabulary verified on T8530 attached to HomeBase 3. */
 const VIDEO_LOCK_CMD = { ACTUATE: 1961, STATUS: 1955, NOTIFY: 1351 } as const;
+
+/**
+ * Opens a SmartDrop lid with `SET_PAYLOAD` 2100 at level 2, the only direction its wire has; the lid does not
+ * open on the same frame at level 1.
+ */
+function openLid(ctx: CommandContext, sink: CommandSink): Promise<void> {
+  return sink.dispatch({
+    kind: "set-payload",
+    cmd: 2100,
+    payload: { isOpen: 1, userIndex: 0 },
+    channel: ctx.channel,
+    mValue3: 0,
+    level2Sender: "set-payload",
+  });
+}
 
 /**
  * The actuation intent, or a refusal naming what is missing. Identity is a genuine precondition — the
@@ -85,7 +102,11 @@ function actuate(engage: boolean, ctx: CommandContext, sink: CommandSink): Promi
     });
   }
   return sink.dispatch({
-    kind: isClassicWifiLock(ctx) ? "keyed-payload-actuate" : "ff09-actuate",
+    kind: isClassicWifiLock(ctx)
+      ? "keyed-payload-actuate"
+      : isBluetoothLock(ctx)
+        ? "doorlock-pass-through-actuate"
+        : "ff09-actuate",
     engage,
     adminUserId: ctx.adminUserId,
     username: ctx.accountName ?? "",
@@ -113,10 +134,15 @@ function settingToggle(settingId: number, name: string, enabled: boolean, ctx: C
  * The compact toggles are only known on the P2P video lock; the MQTT garage door does not expose them in
  * the app, so offering them there would guess a frame shape that likely does not exist.
  */
-const overP2p = (ctx: AvailabilityContext): boolean => ctx.hasP2p === true && !isVideoSmartLock(ctx);
+const overP2p = (ctx: AvailabilityContext): boolean =>
+  ctx.hasP2p === true && !isVideoSmartLock(ctx) && !isSmartDrop(ctx);
 
-/** Native actuation is verified only on the HomeBase 3 route; other lock families retain their controls. */
-function actuationAvailable(ctx: CommandContext): boolean {
+/**
+ * Native actuation is verified only on the HomeBase 3 route; a SmartDrop lid opens only standalone and never
+ * engages. Other lock families retain their controls.
+ */
+function actuationAvailable(ctx: CommandContext, engage: boolean): boolean {
+  if (isSmartDrop(ctx)) return !engage && ctx.stationSerial === undefined;
   return !isVideoSmartLock(ctx) || ctx.stationSerial?.startsWith("T8030") === true;
 }
 
@@ -155,12 +181,20 @@ function nativeReport(signal: InboundSignal): Record<string, unknown> | undefine
 /**
  * Whether the device speaks the `ff09` settings frames at all. The classic Wi-Fi lock actuates over its
  * own keyed envelope and never negotiates the session key those frames ride on, so a settings write
- * aimed at it can only time out — the members are withheld there rather than offered and failing.
+ * aimed at it can only time out — the members are withheld there rather than offered and failing. The
+ * Bluetooth lock is withheld too: on the one unit tried, its T8021 bridge's session held only the set-payload
+ * key, so the SDK refused the settings frame before sending it. Whether the lock would accept a settings frame
+ * at all is untested.
  */
-const speaksFf09Settings = (ctx: CommandContext): boolean => !isClassicWifiLock(ctx);
+const speaksFf09Settings = (ctx: CommandContext): boolean =>
+  !isClassicWifiLock(ctx) && !isBluetoothLock(ctx) && !isSmartDrop(ctx);
 
-/** Rain Mode's gate: the P2P video lock, and only a device that takes the `ff09` settings frame. */
-const rainModeAvailable = (ctx: CommandContext): boolean => overP2p(ctx) && speaksFf09Settings(ctx);
+/**
+ * Rain Mode's gate: the P2P video lock, and only a device that takes the `ff09` settings frame. Not the
+ * LOCK_85V0: its description lists the switch, but the app's bundle builds no command for it.
+ */
+const rainModeAvailable = (ctx: CommandContext): boolean =>
+  overP2p(ctx) && speaksFf09Settings(ctx) && ctx.deviceType !== DeviceType.LOCK_85V0;
 
 /**
  * Every `lock` feature, declared once.
@@ -207,18 +241,6 @@ export const LOCK_MEMBERS = {
     provenance: "verified",
     description: "Lock battery level 0-100 (verified: param 1101, alias 6001).",
   },
-  /**
-   * Link quality in dBm as the lock measures it, on the shared param 1141. On the `ff09` wire the
-   * actuations are fire-and-forget, so a weak link is silent rather than an error.
-   */
-  rssi: {
-    param: 1141,
-    type: "number",
-    unit: "dBm",
-    kind: "dbm",
-    provenance: "verified",
-    description: "Lock signal strength (verified: param 1141 = RSSI).",
-  },
 
   /**
    * Lock the deadbolt/door. Resolves after sending, without confirming physical state — except on the
@@ -229,18 +251,19 @@ export const LOCK_MEMBERS = {
       (): Promise<void> =>
         actuate(true, ctx, sink),
     "Lock the deadbolt/door.",
-    actuationAvailable,
+    (ctx) => actuationAvailable(ctx, true),
   ),
   /**
-   * Unlock the deadbolt/door. Resolves after sending, without confirming physical state — except on the
-   * classic Wi-Fi lock, which answers: there it rejects on a device refusal or no reply as well.
+   * Unlock the deadbolt/door, or open a SmartDrop lid. Resolves after sending, without confirming physical
+   * state — except on the classic Wi-Fi lock, which answers: there it rejects on a device refusal or no
+   * reply as well.
    */
   unlock: method(
     ({ ctx, sink }) =>
       (): Promise<void> =>
-        actuate(false, ctx, sink),
+        isSmartDrop(ctx) ? openLid(ctx, sink) : actuate(false, ctx, sink),
     "Unlock the deadbolt/door.",
-    actuationAvailable,
+    (ctx) => actuationAvailable(ctx, false),
   ),
 
   /**
@@ -403,7 +426,10 @@ export const LOCK_MEMBERS = {
   getAutoLockState: {
     ...provided(
       "ff09Settings",
-      (f, { ctx }) => (isVideoSmartLock(ctx) ? undefined : (): Promise<AutoLockSnapshot> => f.getAutoLockState()),
+      (f, { ctx }) =>
+        isVideoSmartLock(ctx) || isSmartDrop(ctx) || isBluetoothLock(ctx)
+          ? undefined
+          : (): Promise<AutoLockSnapshot> => f.getAutoLockState(),
       "Read the current auto-lock settings via a live round-trip.",
     ),
     answers: true,
@@ -457,9 +483,17 @@ export const LOCK: CapabilityModule = {
     if (report.slBattery !== undefined) params[6001] = String(report.slBattery);
     return { params };
   },
-  // Lock state is reported via param 6000 (verified: 4=locked, 3=unlocked); the model name (lock/safe) is a
-  // signal, and every lock-codec device has the lock capability as its baseline.
-  detection: { evidenceParams: [6000], modelHints: [/lock/i, /safe/i], codecs: ["lock"] },
+  /**
+   * The app offers a lock where the product's thing description lists `smart_lock_onoff_status`, video
+   * locks and the SmartDrop lid included. Without a description, the lock codec or a reported 6000 is the
+   * evidence. Never the device's name: that is what its owner typed.
+   */
+  detection: {
+    detect: (record, codec) =>
+      record.things
+        ? "smart_lock_onoff_status" in record.things.properties
+        : codec === "lock" || Object.hasOwn(record.params ?? {}, 6000),
+  },
   // Inbound FCM lock events (LockPushEvent 257..771: (un)lock actions + alarms) → one "lockState", whose
   // payload carries a decoded `locked` boolean for the (un)lock actions (see decodeLockTransition).
   events: [{ source: "push", match: [257, 771], emit: "lockState", derive: decodeLockTransition }],

@@ -1,9 +1,11 @@
-import { LIGHT, LIGHT_CMD, type LightActions } from "../light.js";
-import { unobservableMembers } from "../members.js";
+import { LIGHT, LIGHT_CMD, LIGHT_MEMBERS, type LightActions } from "../light.js";
+import { actionSpecOf } from "../access.js";
+import { unobservableMembers, propertiesOf } from "../members.js";
 import { buildCommand, detectCapabilities } from "../index.js";
 import { bind } from "./bind.js";
 import type { CommandContext } from "../types.js";
 import { DeviceType } from "../../device-types.js";
+import { parseThingsList } from "../thing-description.js";
 import type { Command } from "../../../core/contracts.js";
 
 /**
@@ -51,8 +53,21 @@ describe("light capability module", () => {
     for (const param of [1400, 1401, 1403, 6080, 6082, 1413]) {
       expect(detectCapabilities({ params: { [param]: "1" } }, "camera")).toContain("light");
     }
-    expect(detectCapabilities({ name: "Floodlight Cam" }, "camera")).toContain("light");
-    expect(detectCapabilities({ name: "Wired Doorbell" }, "camera")).not.toContain("light");
+    expect(detectCapabilities({ name: "Floodlight Cam" }, "camera")).not.toContain("light");
+  });
+
+  it("detects from the product's description over its params when it has one", () => {
+    const things = (...identifiers: string[]) =>
+      parseThingsList({
+        things_list: [
+          { profile: { product_code: "T0000" }, properties: identifiers.map((identifier) => ({ identifier })) },
+        ],
+      }).T0000!;
+    const params = { 1400: "0", 1401: "50", 1403: "1" };
+    expect(detectCapabilities({ params, things: things("nightvision_type") }, "camera")).not.toContain("light");
+    expect(detectCapabilities({ params: {}, things: things("spotlight_switch") }, "camera")).toContain("light");
+    const named = { params, name: "Garage Spotlight", things: things("nightvision_type") };
+    expect(detectCapabilities(named, "camera")).not.toContain("light");
   });
 
   describe("buildCommand — variant resolution", () => {
@@ -110,9 +125,44 @@ describe("light capability module", () => {
       });
     });
 
+    it("on/off on a Wall Light Cam S4 / T86C1 (deviceType 298) → set-json floodlight switch (1400)", () => {
+      const t86c1 = { ...ctx(5), deviceType: DeviceType.WALL_LIGHT_CAM_T86C1 };
+      expect(intent("on", true, t86c1)).toEqual({
+        kind: "set-json",
+        param: LIGHT_CMD.FLOODLIGHT_SWITCH,
+        data: { time: 0, type: 2, value: 1 },
+        channel: 5,
+      });
+      expect((intent("off", false, t86c1) as Extract<Command, { kind: "set-json" }>).data).toEqual({
+        time: 0,
+        type: 2,
+        value: 0,
+      });
+    });
+
+    it.each(["T8214", "T8217"])(
+      "on/off on a HomeBase-attached %s doorbell → set-param pinned to int-string (1400)",
+      (model) => {
+        const e340 = { ...ctx(1), deviceType: undefined, model, homeBaseAttached: true };
+        expect(intent("on", true, e340)).toEqual({
+          kind: "set-param",
+          param: LIGHT_CMD.FLOODLIGHT_SWITCH,
+          value: 1,
+          form: "int-string",
+          channel: 1,
+        });
+        expect(intent("off", false, e340)).toMatchObject({ form: "int-string", value: 0 });
+      },
+    );
+
+    it.each(["T8214", "T8217"])("leaves a standalone %s doorbell without a switch wire", (model) => {
+      const standalone = { ...ctx(), deviceType: undefined, model, homeBaseAttached: false };
+      expect(() => intent("on", true, standalone)).toThrow(/light: isOn write wire unverified/);
+    });
+
     it("does not assign a spotlight switch wire to SoloCam E30", () => {
       expect(() => intent("on", true, { ...ctx(), deviceType: DeviceType.SOLO_CAMERA_E30 })).toThrow(
-        /light: unknown spotlight switch wire format/,
+        /light: isOn write wire unverified/,
       );
     });
 
@@ -178,27 +228,30 @@ describe("light capability module", () => {
       expect(intent("totally_unknown", 1, ctx())).toBeUndefined();
     });
 
-    it("on/off on a model NOT in either wire-format table → throws the model as the reason (don't guess)", () => {
-      // A spotlight was detected but this deviceType's switch wire format is unknown → refuse
-      // rather than silently send the wrong format (the silent-no-op bug). The refusal names the
-      // MODEL, which a generated "not a valid value" over a boolean could never say.
-      expect(() => intent("on", true, unknownCtx())).toThrow(/light: unknown spotlight switch wire format/);
-      expect(() => intent("light", false, unknownCtx())).toThrow(/light: unknown spotlight switch wire format/);
+    it("on/off on a model NOT in either wire-format table → throws unverified, naming the device (don't guess)", () => {
+      expect(() => intent("on", true, unknownCtx())).toThrow(/light: isOn write wire unverified.*deviceType=99999/);
+      expect(() => intent("light", false, unknownCtx())).toThrow(/light: isOn write wire unverified.*deviceType=99999/);
     });
 
-    it("the on()/off() verbs reject rather than throwing synchronously on such a model", async () => {
-      const { acts, sent } = bind<LightActions>("light", unknownCtx());
-      await expect(acts.on()).rejects.toThrow(/light: unknown spotlight switch wire format/);
-      await expect(acts.off()).rejects.toThrow(/light: unknown spotlight switch wire format/);
-      await expect(acts.set(true)).rejects.toThrow(/light: unknown spotlight switch wire format/);
-      expect(sent).toEqual([]);
+    it("installs no switch on such a model and publishes its state read-only", () => {
+      const unknown = { ...unknownCtx(), paramIds: new Set([LIGHT_CMD.FLOODLIGHT_SWITCH]) };
+      const { acts } = bind<LightActions>("light", unknown);
+      for (const name of ["on", "off", "set"]) expect(name in acts).toBe(false);
+      expect(propertiesOf(LIGHT_MEMBERS, unknown).find((p) => p.name === "light")?.writable).toBe(false);
+      expect(propertiesOf(LIGHT_MEMBERS, jsonCtx()).find((p) => p.name === "light")?.writable).toBe(true);
+    });
+
+    it("installs a described switch that reflects isOn on a model with a confirmed wire", () => {
+      const json = { ...jsonCtx(), paramIds: new Set([LIGHT_CMD.FLOODLIGHT_SWITCH]) };
+      const { acts } = bind<LightActions>("light", json);
+      expect(actionSpecOf(acts.set)?.reflects).toBe("isOn");
     });
   });
 
   describe("actions → dispatch the resolved Command through the sink", () => {
     it("on() dispatches the resolved switch command; the derived setBrightness → direct-binary", async () => {
       const { acts, sent } = bind<LightActions>("light", ctx(2)); // int-string family
-      await acts.on();
+      await acts.on!();
       await acts.setBrightness!(40);
       expect(sent[0]).toMatchObject({
         kind: "set-param",

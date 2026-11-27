@@ -32,6 +32,26 @@ export interface FakeP2PSession extends EventEmitter {
   repromptLevel2Key: ReturnType<typeof vi.fn>;
   /** What a second ask would achieve: `true` = the key arrives on the retry. Default: nothing to be had. */
   keyArrivesOnReprompt: boolean;
+  /** Sends once: delivery is the real session's concern, so the fake device takes each send as one command. */
+  sendAcknowledged: ReturnType<typeof vi.fn>;
+}
+
+/**
+ * Run `call` on fake timers, every timed wait in it expired at once, then hand back its outcome.
+ *
+ * The router replays an unacknowledged command five times 200 ms apart; on real timers each such spec
+ * sleeps through it. A rejection that lands while the timers run is the caller's to assert.
+ */
+export async function onFakeTime<T>(call: () => Promise<T>): Promise<T> {
+  vi.useFakeTimers();
+  try {
+    const outcome = call();
+    outcome.catch(() => {});
+    await vi.runAllTimersAsync();
+    return await outcome;
+  } finally {
+    vi.useRealTimers();
+  }
 }
 
 /**
@@ -47,6 +67,7 @@ export function connectedSession(hasLevel2Key = true): FakeP2PSession {
   session.traceId = "station-fake";
   session.hasLevel2Key = hasLevel2Key;
   session.keyArrivesOnReprompt = false;
+  session.sendAcknowledged = vi.fn((send: () => boolean) => send());
   session.awaitLevel2Key = vi.fn(async () => session.hasLevel2Key);
   session.repromptLevel2Key = vi.fn(() => {
     if (session.hasLevel2Key || !session.keyArrivesOnReprompt) return false;

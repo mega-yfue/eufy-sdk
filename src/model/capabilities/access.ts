@@ -31,7 +31,12 @@ import type { Command, ScalarForm } from "../../core/contracts.js";
  * Set a scalar (integer) param. `form` defaults to `"auto"` — let the session decide the level.
  * Pass an explicit form only when the firmware pins the wire (see {@link ScalarForm}).
  */
-export function setScalar(param: number, value: number, ctx: CommandContext, form: ScalarForm = "auto"): Command {
+export function setScalar(
+  param: number,
+  value: number,
+  ctx: CommandContext,
+  form: ScalarForm = "auto",
+): Extract<Command, { kind: "set-param" }> {
   return { kind: "set-param", param, value, form, channel: ctx.channel };
 }
 
@@ -99,10 +104,11 @@ export function setPayload(
 
 /**
  * Set a station-scoped scalar (132-byte body, no channel field) on an EXPLICIT channel — for the
- * HomeBase's own controls on the station broadcast channel 255 (alarm/speaker volume 1235).
+ * HomeBase's own controls on the station broadcast channel 255 (alarm/speaker volume 1235). Level-2
+ * only, unless `form` is `"auto"`, which seals it at the session's own level.
  */
-export function setStationScalar(cmd: number, value: number, channel: number): Command {
-  return { kind: "p2p-station-scalar", cmd, value, channel };
+export function setStationScalar(cmd: number, value: number, channel: number, form?: "auto"): Command {
+  return { kind: "p2p-station-scalar", cmd, value, channel, ...(form ? { form } : {}) };
 }
 
 /**

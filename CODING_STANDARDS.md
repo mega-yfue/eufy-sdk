@@ -137,10 +137,11 @@ those layers. CI-enforced by `guard:capability-ownership`.
   joined by name, is how one feature ends up spelled six ways and disagreeing with itself. The member
   kinds and flags are normative in `capabilities/members.ts`, with the walkthrough in
   `capabilities/README.md`.
-- **Getters are evidence-gated** — installed only when the device actually reported the backing
-  parameter, so a device advertises exactly what it has and no phantom sub-features. The binder narrows
-  a stored value to the member's declared type and answers `undefined` on a mismatch rather than
-  lie-casting.
+- **Getters are evidence-gated** — installed when the device reported the backing parameter, or when
+  the product's thing description lists the member's identifier, in which case it reads the
+  description's default until a report arrives — so a device advertises exactly what it has and no
+  phantom sub-features. The binder narrows a stored value to the member's declared type and answers
+  `undefined` on a mismatch rather than lie-casting.
 - **`actions()` is for what the table cannot state** — an object that is not a projection of device
   parameters at all, a method needing per-bind state the table cannot hold, or an on/off alias pair
   beside a member's own setter. A module may have both; the bound members merge over the `actions()`
@@ -148,6 +149,8 @@ those layers. CI-enforced by `guard:capability-ownership`.
 - A capability owns its **semantics** (parameter polarity, frame shape); family classification owns
   only **pure classification** — no parameter ids, no wire forms. Compose family predicates in the
   capability rather than duplicating device-type sets.
+- **What a product offers comes from its thing description, not a model list** — see
+  `src/model/capabilities/README.md`.
 - Transport **encryption level** is a runtime topology fact, resolved once in the transport — never a
   family trait.
 - **Every property declares what its value MEANS (`kind`)**, not just how it is stored.
@@ -166,7 +169,9 @@ those layers. CI-enforced by `guard:capability-ownership`.
   device reports it. Runtime gating hides an unreported one, but don't advertise a guess in the typed
   surface either.
 - **Ground every wire claim in evidence you can point at.** A parameter id, a polarity or a frame shape
-  is valid only when it comes from the current app's own behaviour. Older third-party eufy clients are
+  is valid only when it comes from the current app's own behaviour: a capture, a run on a real device, or
+  the app's own code — including the per-product plugin whose URL the thing description's `profile`
+  gives, which maps each property to its command, payload and topology. Older third-party eufy clients are
   **wrong** for this protocol, and a model will confidently reproduce them — a borrowed _name_ may be
   credited to a third-party project, but that is provenance for a label only, never authority for
   behaviour. If the evidence isn't there, the wire is unverified and the write must throw, not ship.

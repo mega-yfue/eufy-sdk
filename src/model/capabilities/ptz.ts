@@ -1,14 +1,15 @@
 import { DeviceType } from "../device-types.js";
+import { asBool } from "../../core/util.js";
 import { setJson, setPayload } from "./access.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
-import type { CapabilityModule, InboundSignal, CapabilityEvent, CommandContext } from "./types.js";
+import type { AvailabilityContext, CapabilityModule, InboundSignal, CapabilityEvent, CommandContext } from "./types.js";
 import type { Command } from "../../core/contracts.js";
 
 /**
  * The P2P **feature-command ids** this pan-tilt capability drives. Capability-owned wire vocabulary
  * (transport forwards `cmd.param` opaquely; full id→name catalog in the generated
  * `transport/p2p/commands.ts`). Distinct from the {@link PTZ_ROTATE} direction map below (which is
- * `rotate_type` 1..4, not a command id).
+ * `rotate_type` 0..4, not a command id).
  *
  * Ids + envelopes are taken from the V6 app's own command builders (the `Set*Parser`/`*PositionsParser`
  * classes in the decompiled JS), which is this project's wire ground truth — NOT a third-party
@@ -47,6 +48,9 @@ export const PTZ_CMD = {
    * inside the smart lock's `601x` block, so the shared param dictionary labels it `lockParam` — an id
    * reused across product lines, and the camera's meaning is the observed one. */
   PTZ_ROTATE_SPEED: 6015,
+  /** Automatic motion tracking, the description's `motion_track_status`. 1700 wrapper, `{value:0|1}`,
+   * read back on the same param. */
+  MOTION_TRACK: 6016,
 } as const;
 
 /**
@@ -154,41 +158,48 @@ export const PtzDirection = {
 } as const;
 export type PtzDirection = (typeof PtzDirection)[keyof typeof PtzDirection];
 
-/** Pan-tilt rotate direction → `rotate_type` (the on-wire code). Not re-exported by the barrel —
- * stays internal to the capability. Confirmed on hardware (T8425): 1=left, 2=right, 3=up, 4=down. */
-export const PTZ_ROTATE = { left: 1, right: 2, up: 3, down: 4 } as const;
+/** Pan-tilt rotate motion → `rotate_type` (the on-wire code). Not re-exported by the barrel —
+ * stays internal to the capability. Confirmed on hardware (T8425): 1=left, 2=right, 3=up, 4=down.
+ * `sweep` (0) is a full 360° pan (room scan), from the app's 360 button. */
+export const PTZ_ROTATE = { sweep: 0, left: 1, right: 2, up: 3, down: 4 } as const;
 
-/** Reported params that prove a second (telephoto) lens — the digital zoom (a dual-camera command)
- * exists only on these. `6204` = the dual-lens `calibration_data`, `6205` = the dual-cam video-type
- * setting. A dual-lens SoloCam (T8170/S340) reports them; a single-lens PT cam (T8171) reports none,
- * so `zoom()` is gated off there — EXCEPT the params can lag/never sync on a real unit: confirmed live
- * on BOTH a T8170 and a T8425 (Floodlight cam) that report neither 6204 nor 6205, yet the raw zoom
- * command works on both. Two independent confirmations makes this look like a general property of the
- * evidence params, not a one-off — treat any future zoom-model addition here the same way. Same trust
- * pattern as the module's own PTZ detection ("trust the deviceType" comment above): each listed model
- * is dual-lens BY DEFINITION, so a direct model-code match is authoritative evidence too, independent
- * of whatever the cloud happened to sync for this device. */
+/** Reported params that prove a second (telephoto) lens: `6204` the dual-lens `calibration_data`, `6205`
+ * the dual-cam video type. */
 const ZOOM_EVIDENCE_PARAMS = [6204, 6205];
-const ZOOM_MODEL_HINT = /^T8170\b|^T8425\b|S340/i;
 
-/** True when this device has zoom evidence — either the dual-lens params, or a model code known to be
- * dual-lens by definition (see {@link ZOOM_MODEL_HINT}'s doc note on why params alone aren't enough). */
+/**
+ * True when the product's description lists `set_picture_zoom`, the action its bundle sends as the
+ * `COMMAND_DUAL_CAMERA_ZOOM` (6203) payload; without a description, when a dual-lens param was reported.
+ */
 function hasZoomEvidence(ctx: CommandContext): boolean {
-  return ZOOM_EVIDENCE_PARAMS.some((p) => ctx.paramIds.has(p)) || (!!ctx.model && ZOOM_MODEL_HINT.test(ctx.model));
+  return ctx.things ? "set_picture_zoom" in ctx.things.actions : ZOOM_EVIDENCE_PARAMS.some((p) => ctx.paramIds.has(p));
 }
 
 const PRESET_EVIDENCE_PARAMS = [1029, 6090, 6091, 6092, 6210];
 
 /**
- * Fixed-lens models that report preset params anyway. A standalone T8134 (SoloCam S220,
- * deviceType 63) reports 6090/6091/6092 as `"0"` and does not pan or tilt, so on these models the
- * preset params prove nothing.
+ * Vendor deviceTypes of the pan-tilt cameras. An Indoor PT reports no PT param, so without a description
+ * its deviceType is the evidence.
  */
-const FIXED_LENS_MODELS: ReadonlySet<string> = new Set(["T8134"]);
+const PT_DEVICE_TYPES: readonly number[] = [
+  DeviceType.OUTDOOR_PT_CAMERA,
+  DeviceType.INDOOR_PT_CAMERA,
+  DeviceType.INDOOR_PT_CAMERA_1080,
+  DeviceType.CAMERA_4G_S330,
+  DeviceType.INDOOR_PT_CAMERA_C220,
+  DeviceType.INDOOR_PT_CAMERA_C210,
+  DeviceType.INDOOR_PT_CAMERA_C220_V2,
+  DeviceType.INDOOR_PT_CAMERA_C220_V3,
+  DeviceType.FLOODLIGHT_CAMERA_8425,
+  DeviceType.CAMERA_POE_S4,
+];
+
+/** Models whose app 360 button was captured sending `rotate_type` 0; `rotate360` binds on these alone. */
+const ROTATE360_MODELS: ReadonlySet<string> = new Set(["T8410", "T8170", "T8E00"]);
 
 /**
  * Pan-tilt rotate as a transport-neutral {@link Command}. CONFIRMED wire command (captured on
- * T8425 ch3 during live-view): `{"commandType":6030,"data":{"cmd_type":1,"rotate_type":1..4,
+ * T8425 ch3 during live-view): `{"commandType":6030,"data":{"cmd_type":1,"rotate_type":0..4,
  * "zoom":1.0}}` under the generic control wrapper `1700` on the camera channel. `cmd_type:1` =
  * move; `zoom` defaults to 1.0.
  *
@@ -196,7 +207,7 @@ const FIXED_LENS_MODELS: ReadonlySet<string> = new Set(["T8134"]);
  * resolver picks the encryption level by topology (standalone → L1, HomeBase → L2). A PT cam can be
  * either, so the level is NOT fixed here.
  */
-export function rotateCommand(direction: PtzDirection, ctx: CommandContext, zoom = 1.0): Command {
+export function rotateCommand(direction: keyof typeof PTZ_ROTATE, ctx: CommandContext, zoom = 1.0): Command {
   return setJson(PTZ_CMD.PTZ_ROTATE, { cmd_type: 1, rotate_type: PTZ_ROTATE[direction], zoom }, ctx);
 }
 
@@ -338,8 +349,8 @@ function isDirection(v: unknown): v is PtzDirection {
  *
  * Movement is command-driven, so almost every entry is a `method`: `rotate` takes a direction plus an
  * optional speed, the four compass verbs take nothing, `preset()` returns a whole sub-API, and `zoom`
- * is gated on the device having a second lens. `rotationSpeed` is the one value member — the camera's
- * own step speed, which it stores. There is no position member: no device reports where it is pointed
+ * is gated on the device having a second lens. The value members are `rotationSpeed`, the camera's own
+ * step speed, and `motionTracking`. There is no position member: no device reports where it is pointed
  * as a parameter. Position arrives only while the camera moves, as the `ptzNotify` event {@link PTZ}
  * decodes from a live frame.
  *
@@ -377,6 +388,21 @@ export const PTZ_MEMBERS = {
     },
   },
 
+  /** Offered where the description lists `motion_track_status`; with none, once the camera reported 6016. */
+  motionTracking: {
+    param: PTZ_CMD.MOTION_TRACK,
+    type: "bool",
+    kind: "boolean",
+    thing: ["motion_track_status"],
+    provenance: "verified",
+    available: (ctx: AvailabilityContext) =>
+      ctx.things ? "motion_track_status" in ctx.things.properties : ctx.paramIds?.has(PTZ_CMD.MOTION_TRACK) === true,
+    description:
+      "Whether the camera turns to follow a moving subject, independent of motion detection " +
+      "(COMMAND_INDOOR_PAN_MOTION_TRACK 6016).",
+    write: (v, ctx) => setJson(PTZ_CMD.MOTION_TRACK, { value: asBool(v) ? 1 : 0 }, ctx),
+  },
+
   /** Rotate a step in a direction; `zoom` scales the step size (1.0 = the default step). */
   rotate: method(
     ({ ctx, sink }) =>
@@ -411,6 +437,15 @@ export const PTZ_MEMBERS = {
       (): Promise<void> =>
         sink.dispatch(rotateCommand("down", ctx)),
     "Rotate down.",
+  ),
+
+  /** Pan a full 360° (room scan). */
+  rotate360: method(
+    ({ ctx, sink }) =>
+      (): Promise<void> =>
+        sink.dispatch(rotateCommand("sweep", ctx)),
+    "Pan a full 360° (room scan).",
+    (ctx) => ROTATE360_MODELS.has(ctx.model ?? ""),
   ),
 
   /**
@@ -487,36 +522,18 @@ export const PTZ: CapabilityModule = {
   },
   members: PTZ_MEMBERS,
   properties: propertiesOf(PTZ_MEMBERS),
-  // SoloCam proves PT via reported preset params (6090/6091/6092/6210) and a rotate command surface
-  // (1029), except on a FIXED_LENS_MODELS model; Indoor-PT (deviceType 31/35/111 + C220 range
-  // 10008-10011) reports NO PT param, so the vendor deviceType is the only honest signal; explicit
-  // PT/S340/S350 model names also prove it.
-  // OUTDOOR_PT_CAMERA (48, e.g. SoloCam S340 / T8170) is pan-tilt by definition but a live unit can
-  // report none of the preset params — trust the deviceType. The rotating SoloCam solar variant
-  // T8124R shares deviceType 62 with the FIXED T8124 base, so its model code is the only honest
-  // signal that separates the two. Match ONLY confirmed rotating model codes here — do NOT widen to
-  // a `T81\d\dR` wildcard: the "R = rotating" reading is unverified for other models, and an
-  // over-broad hint would false-positive a future non-PT model, the same class of bug as a mislabel.
+  /**
+   * The app offers pan and tilt where the product's description lists `ptz_action_control`, the action
+   * its bundle sends as `INDOOR_ROTATE` (6030); a fixed SoloCam or a video smart lock reports preset
+   * params and lists none. Without a description, a pan-tilt deviceType or a preset param is the
+   * evidence. Never the device's name: that is what its owner typed.
+   */
   detection: {
     detect: (record) =>
-      !FIXED_LENS_MODELS.has(record.model ?? "") &&
-      PRESET_EVIDENCE_PARAMS.some((p) => Object.hasOwn(record.params ?? {}, p)),
-    deviceTypes: [
-      DeviceType.OUTDOOR_PT_CAMERA,
-      DeviceType.INDOOR_PT_CAMERA,
-      DeviceType.INDOOR_PT_CAMERA_1080,
-      DeviceType.CAMERA_4G_S330,
-      DeviceType.INDOOR_PT_CAMERA_C220,
-      DeviceType.INDOOR_PT_CAMERA_C210,
-      DeviceType.INDOOR_PT_CAMERA_C220_V2,
-      DeviceType.INDOOR_PT_CAMERA_C220_V3,
-      // T8425 has its own dedicated deviceType (47), distinct from OUTDOOR_PT_CAMERA (48) — easy to
-      // miss since the name doesn't say "PT". Was omitted here despite T8425 being the hardware that
-      // grounded the rotate_type wire mapping (see PTZ_ROTATE's doc comment) — confirmed live it has
-      // no PTZ capability without this, on a real owned unit.
-      DeviceType.FLOODLIGHT_CAMERA_8425,
-    ],
-    modelHints: [/pan.?tilt|\bpt\b|S3[45]0|indoor.?pt/i, /\bT8E00\b/i],
+      record.things
+        ? "ptz_action_control" in record.things.actions
+        : PT_DEVICE_TYPES.includes(record.deviceType ?? -1) ||
+          PRESET_EVIDENCE_PARAMS.some((p) => Object.hasOwn(record.params ?? {}, p)),
   },
   emits: ["ptzNotify"],
   /**

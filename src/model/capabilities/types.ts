@@ -1,4 +1,5 @@
 import type { DpCatalog } from "./dp-catalog.js";
+import type { ThingDescription } from "./thing-description.js";
 
 /**
  * Capability-module contract — the extended shape each `capabilities/<cap>.ts` file implements.
@@ -52,15 +53,15 @@ export interface DetectionSpec {
  * `display` (the T87Ax Smart Display — secure MQTT, never P2P, its own 8001-8006 param space).
  * They overlap in retail vocabulary but share no wire, no param space and no semantics.
  *
- * `display` is a line of its own for the second of those reasons rather than the first: without it,
- * every security capability detected by a NAME regex is attachable to a Smart Display — measured at six,
- * on a device that can answer for none of them because it speaks no P2P at all. A line holding one
- * capability still buys that, which is why the count is not the measure of whether a line is worth
- * declaring.
+ * `display` and `tracker` are lines of their own for the second of those reasons rather than the first:
+ * without them, every security capability detected by a NAME regex is attachable to a Smart Display (the
+ * T87Ax) or a SmartTrack tracker (the T87Bx) — devices that speak no P2P and can answer for none of them
+ * (measured at six, on the Display). A line holding one capability still buys that, which is why the
+ * count is not the measure of whether a line is worth declaring.
  *
  * `any` is for the handful of capabilities that are genuinely line-independent (device identity).
  */
-export type ProductLine = "security" | "life" | "clean" | "print" | "display" | "any";
+export type ProductLine = "security" | "life" | "clean" | "print" | "display" | "tracker" | "any";
 
 /**
  * A structural subset of a P2P frame. Deliberately NOT `import`ed from `p2p/*` — keeping it
@@ -186,6 +187,12 @@ export interface EventClaim {
    * and ignored where that is absent.
    */
   homeBaseAttached?: boolean;
+  /**
+   * Thing-description property identifiers whose presence is the evidence: the product's description,
+   * resolved for this device, lists at least one of them. Compared against
+   * {@link AvailabilityContext.things}, and ignored where that is absent.
+   */
+  things?: readonly string[];
 }
 
 /**
@@ -251,6 +258,12 @@ export interface AvailabilityContext {
    */
   paramIds?: ReadonlySet<number>;
   /**
+   * The product's thing description, when the cloud returned one for its product code: which values each
+   * named property offers on this product. Absent when not fetched — fall back to static defaults rather
+   * than treating the device as incapable.
+   */
+  things?: ThingDescription;
+  /**
    * Whether the device hangs off a HomeBase (a `parent_sn` other than its own) rather than standing
    * alone. A DEVICE fact, not a transport one — the same class of routing evidence as {@link hasP2p} —
    * which is why it sits here rather than on {@link CommandContext}: it is as true of a described
@@ -259,6 +272,8 @@ export interface AvailabilityContext {
    * cannot do what its name promises there.
    */
   homeBaseAttached?: boolean;
+  /** The command kinds this device's primary transport REFUSES (a setter emitting one is withheld); `undefined` when it refuses none (the P2P default). Set by the client, which owns the routing. */
+  refusedCommandKinds?: ReadonlySet<Command["kind"]>;
   /** Serial of the covering station, when the device record names one. */
   stationSerial?: string;
   /**

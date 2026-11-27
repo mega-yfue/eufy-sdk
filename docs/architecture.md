@@ -46,6 +46,8 @@ login()                      // on success, realtime starts automatically (push 
 disconnect()                 // tear the channels down; the login session stays valid
 ```
 
+`getDevices()` also loads each product's **thing description**, resolved per device as the app does; `inspectDevice(sn).things` returns it.
+
 A restored session (via a `store`) skips straight past login. Connectivity is SDK-managed: the event
 channels come up on login and a camera's P2P session opens only when a command / stream / doorbell ring
 needs it, then idle-detaches so battery cameras sleep. See [Connectivity & battery](/connectivity).

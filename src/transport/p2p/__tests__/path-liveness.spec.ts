@@ -86,6 +86,19 @@ describe("a session's path liveness", () => {
     }
   });
 
+  it("announces each selected-peer answer with the time it was heard", () => {
+    const { built, internals } = session();
+    const heard: number[] = [];
+    built.on("peerAnswer", (atMs: number) => heard.push(atMs));
+    const handlers = built as unknown as { onAck: () => void };
+    handlers.onAck = vi.fn();
+    receive(built, ResponseMessageType.PONG, "203.0.113.1");
+    receive(built, ResponseMessageType.ACK, "203.0.113.1");
+    receive(built, ResponseMessageType.PONG, "203.0.113.2");
+    expect(heard).toHaveLength(2);
+    expect(heard[1]).toBe(internals.lastPeerAt);
+  });
+
   it("does not count another endpoint as the selected peer", () => {
     const { built, internals } = session();
     internals.lastPeerAt = Date.now() - 16_000;

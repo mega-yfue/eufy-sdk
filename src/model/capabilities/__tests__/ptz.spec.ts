@@ -18,6 +18,7 @@ import {
 import { buildCommand, detectCapabilities } from "../index.js";
 import { resolveDevice } from "../../registry.js";
 import { bind } from "./bind.js";
+import { parseThingsList } from "../thing-description.js";
 import type { CapabilityFrame, InboundSignal, CommandContext } from "../types.js";
 import type { Command, MediaProvider } from "../../../core/contracts.js";
 
@@ -29,12 +30,16 @@ const ctx = (channel = 0, paramIds: number[] = []): CommandContext => ({
 });
 // A dual-lens cam context — carries the zoom-evidence param so the `zoom` action/command is offered.
 const zoomCtx = (channel = 0): CommandContext => ctx(channel, [6204]);
+/** A description of a synthetic product listing only the given actions. */
+const described = (...identifiers: string[]) =>
+  parseThingsList({
+    things_list: [{ profile: { product_code: "T0000" }, actions: identifiers.map((identifier) => ({ identifier })) }],
+  }).T0000!;
 
 describe("ptz capability module", () => {
   it("declares the capability + schema", () => {
     expect(PTZ.capability).toBe("ptz");
-    // rotationSpeed is the only value member: position is an event, not a parameter.
-    expect(PTZ.properties.map((p) => p.name)).toEqual(["rotationSpeed"]);
+    expect(PTZ.properties.map((p) => p.name)).toEqual(["rotationSpeed", "motionTracking"]);
     expect(PTZ.properties[0].paramType).toBe(6015);
   });
 
@@ -78,29 +83,69 @@ describe("ptz capability module", () => {
     });
   });
 
+  describe("motionTracking (6016)", () => {
+    const listing = (...identifiers: string[]) =>
+      parseThingsList({
+        things_list: [
+          {
+            profile: { product_code: "T0000" },
+            properties: identifiers.map((identifier) => ({ identifier, data_type: { type: "bool" } })),
+          },
+        ],
+      }).T0000!;
+    const available = PTZ_MEMBERS.motionTracking.available!;
+
+    it("is offered where the description lists motion_track_status", () => {
+      expect(available({ ...ctx(), things: listing("motion_track_status") })).toBe(true);
+      expect(available({ ...ctx(0, [6016]), things: listing("ptz_action_control") })).toBe(false);
+    });
+
+    it("without a description, once the camera reported 6016", () => {
+      expect(available(ctx(0, [6016]))).toBe(true);
+      expect(available(ctx())).toBe(false);
+    });
+
+    it.each([
+      [true, 1],
+      [false, 0],
+    ])("writes %s as the app's set-json {value: %i}", (on, value) => {
+      expect(buildCommand("motionTracking", on, ctx(1, [6016]))).toEqual({
+        kind: "set-json",
+        param: 6016,
+        data: { value },
+        channel: 1,
+      });
+    });
+  });
+
   describe("detection", () => {
-    it("SoloCam preset params + Indoor-PT vendor deviceTypes", () => {
-      // Preset params prove SoloCam; deviceType 31/35/111 prove Indoor-PT (which reports no PT param).
+    it("without a description, a preset param or a pan-tilt deviceType is the evidence", () => {
       for (const p of [6090, 6091, 6092, 6210]) {
-        expect(detectCapabilities({ model: "T8171", params: { [p]: "0" } }, "camera")).toContain("ptz");
+        expect(detectCapabilities({ model: "T0000", params: { [p]: "0" } }, "camera")).toContain("ptz");
       }
-      expect(PTZ.detection?.deviceTypes).toEqual(expect.arrayContaining([31, 35, 111]));
+      for (const deviceType of [31, 35, 111]) {
+        expect(detectCapabilities({ model: "T0000", deviceType, params: {} }, "camera")).toContain("ptz");
+      }
     });
-    it("a fixed-lens T8134 reporting preset params as 0 is not pan-tilt", () => {
-      const presets = { 6090: "0", 6091: "0", 6092: "0" };
-      expect(detectCapabilities({ model: "T8134", deviceType: 63, params: presets }, "camera")).not.toContain("ptz");
-      expect(resolveDevice({ model: "T8134", deviceType: 63, params: presets }).capabilities).not.toContain("ptz");
-      expect(resolveDevice({ model: "T8171", params: presets }).capabilities).toContain("ptz");
+    it("detects from the description alone, whatever the deviceType and params", () => {
+      const solocam = { model: "T0000", deviceType: 88, params: {}, things: described("ptz_action_control") };
+      expect(detectCapabilities(solocam, "camera")).toContain("ptz");
+      expect(resolveDevice(solocam).capabilities).toContain("ptz");
     });
-    it("model-name regex matches PT families but not a fixed cam", () => {
-      const re = PTZ.detection!.modelHints![0];
-      expect(re.test("pantilt")).toBe(true);
-      expect(re.test("Indoor PT")).toBe(true);
-      expect(re.test("S350")).toBe(true);
-      expect(re.test("Wired Doorbell")).toBe(false);
-      // Known gap: "Pan & Tilt" (3 chars between words) does NOT match the tight regex — Indoor-PT
-      // is covered by detection.deviceTypes instead, so this is a bonus hint, not the primary signal.
-      expect(re.test("Indoor Cam Pan & Tilt")).toBe(false);
+    it("is not detected from preset params or a pan-tilt deviceType when the description lists none", () => {
+      const presets = { 6090: "0", 6091: "0", 6092: "0", 6210: "0" };
+      const lock = { model: "T0000", deviceType: 189, params: presets, things: described("open_live_stream") };
+      expect(detectCapabilities(lock, "lock")).not.toContain("ptz");
+      expect(resolveDevice(lock).capabilities).not.toContain("ptz");
+      const fixed = { model: "T0000", deviceType: 48, params: presets, things: described("open_live_stream") };
+      expect(detectCapabilities(fixed, "camera")).not.toContain("ptz");
+    });
+    it("is never detected from the device's name", () => {
+      for (const name of ["Indoor PT", "Pan Tilt Cam", "SoloCam S340"]) {
+        expect(detectCapabilities({ model: "T0000", name, params: {} }, "camera")).not.toContain("ptz");
+        const things = described("open_live_stream");
+        expect(detectCapabilities({ model: "T0000", name, params: {}, things }, "camera")).not.toContain("ptz");
+      }
     });
   });
 
@@ -114,6 +159,15 @@ describe("ptz capability module", () => {
       });
       const down = rotateCommand(PtzDirection.down, ctx(0)) as Extract<Command, { kind: "set-json" }>;
       expect(down.data).toMatchObject({ rotate_type: 4, zoom: 1.0 });
+    });
+
+    it("maps the 360° sweep to rotate_type 0 on the same rotate frame", () => {
+      expect(rotateCommand("sweep", ctx(3))).toEqual({
+        kind: "set-json",
+        param: PTZ_CMD.PTZ_ROTATE,
+        data: { cmd_type: 1, rotate_type: 0, zoom: 1.0 },
+        channel: 3,
+      });
     });
   });
 
@@ -265,9 +319,34 @@ describe("ptz capability module", () => {
       });
     });
 
+    it("rotate360 dispatches the rotate frame with rotate_type 0", async () => {
+      const { acts, sent } = bind<PtzActions>("ptz", { ...ctx(3), model: "T8410" });
+      await acts.rotate360!();
+      expect(sent).toEqual([
+        { kind: "set-json", param: PTZ_CMD.PTZ_ROTATE, data: { cmd_type: 1, rotate_type: 0, zoom: 1.0 }, channel: 3 },
+      ]);
+    });
+
+    it("rotate360 is present only on the captured models", () => {
+      for (const model of ["T8410", "T8170", "T8E00"]) {
+        expect(typeof bind<PtzActions>("ptz", { ...ctx(3), model }).acts.rotate360).toBe("function");
+      }
+      expect(bind<PtzActions>("ptz", { ...ctx(3), model: "T8425" }).acts.rotate360).toBeUndefined();
+      expect(bind<PtzActions>("ptz", ctx(3)).acts.rotate360).toBeUndefined();
+    });
+
     it("zoom action is present only on a dual-lens (zoom-evidence) device", () => {
       expect(bind<PtzActions>("ptz", ctx(3)).acts.zoom).toBeUndefined(); // single-lens PT cam
       expect(typeof bind<PtzActions>("ptz", zoomCtx(3)).acts.zoom).toBe("function"); // dual-lens
+    });
+
+    it("zoom follows the description's set_picture_zoom over the dual-lens params", () => {
+      const listed = { ...ctx(3), model: "T0000", things: described("ptz_action_control", "set_picture_zoom") };
+      expect(typeof bind<PtzActions>("ptz", listed).acts.zoom).toBe("function");
+      expect(buildCommand("zoom", 2, listed)).toMatchObject({ cmd: PTZ_CMD.PTZ_ZOOM });
+      const unlisted = { ...zoomCtx(3), things: described("ptz_action_control") };
+      expect(bind<PtzActions>("ptz", unlisted).acts.zoom).toBeUndefined();
+      expect(buildCommand("zoom", 2, unlisted)).toBeUndefined();
     });
 
     it("preset().list is present only with a media provider and queries id 6034", async () => {

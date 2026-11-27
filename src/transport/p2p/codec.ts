@@ -91,6 +91,8 @@ export const P2P_DATA_HEADER_BYTES = 16;
 export interface P2PDataFrameHeader {
   commandId: number;
   bytesToRead: number;
+  /** Byte 10: 8 when the station speaks level 2 over ECC, which decides the 1100 unwrap; 1 otherwise. */
+  version: number;
   channel: number;
   signCode: number;
   type: number;
@@ -125,6 +127,17 @@ export function p2pDidToBuffer(p2pDid: string): Buffer {
   b2.writeUInt32BE(Number.parseInt(a[1], 10), 0); // 4-byte BE number
   const b3 = stringWithLength(a[2], 8); // 8-byte suffix
   return Buffer.concat([b1, b2, b3], 20);
+}
+
+/**
+ * The cloud lookup servers of a station's record, read as the app reads them: `app_conn` is the init string
+ * it hands the P2P connect, `p2p_conn` only a fallback. An empty field counts as absent.
+ */
+export function stationCloudAddresses(
+  raw: { app_conn?: string; p2p_conn?: string } | undefined,
+): Address[] | undefined {
+  const conn = raw?.app_conn || raw?.p2p_conn;
+  return conn ? decodeP2PCloudIPs(conn) : undefined;
 }
 
 /**
@@ -169,6 +182,18 @@ export function decryptP2PData(data: Buffer, key: Buffer): Buffer {
 /** The `cipher_id` named in a decrypted `CMD_GATEWAYINFO` (1100) payload (uint16 LE @0). */
 export function gatewayInfoCipherId(gwPayload: Buffer): number {
   return gwPayload.length >= 2 ? gwPayload.readUInt16LE(0) : 0;
+}
+
+/** The int32 result a `CMD_GATEWAYINFO` reply opens with when the device refuses level-2. */
+const GATEWAY_LEVEL2_REFUSED = -103;
+
+/**
+ * Whether a `CMD_GATEWAYINFO` (1100) reply is a level-2 refusal: int32 LE `GATEWAY_LEVEL2_REFUSED` (`99 ff
+ * ff ff`) in place of a cipher. {@link gatewayInfoCipherId} reads those bytes as `cipher_id` 65433. Any other
+ * opening is not a refusal.
+ */
+export function gatewayInfoRefused(gwPayload: Buffer): boolean {
+  return gwPayload.length >= 4 && gwPayload.readInt32LE(0) === GATEWAY_LEVEL2_REFUSED;
 }
 
 /**
@@ -304,14 +329,16 @@ export function deriveLevel2KeyFromGatewayInfo(gwPayload: Buffer, eccPrivateKeyH
  * key fails closed: under OpenSSL's implicit rejection, `RSA_PKCS1_PADDING` answers random bytes for it
  * instead of throwing, and those can be 16 bytes long.
  *
- * `rsaPrivateKey` is the `get_ciphers` `private_key`: base64 PKCS#8 DER.
+ * `rsaPrivateKey` is the `get_ciphers` `private_key`, PEM or base64 PKCS#8 DER.
  *
  * Returns the 16-byte key, or `undefined` when the key does not parse, the payload is short, or the
  * padding or key length is wrong (fails closed, never throws).
  */
 export function deriveLevel2KeyFromRsaGatewayInfo(gwPayload: Buffer, rsaPrivateKey: string): Buffer | undefined {
   try {
-    const key = createPrivateKey({ key: Buffer.from(rsaPrivateKey, "base64"), format: "der", type: "pkcs8" });
+    const key = rsaPrivateKey.includes("-----BEGIN")
+      ? createPrivateKey(rsaPrivateKey)
+      : createPrivateKey({ key: Buffer.from(rsaPrivateKey, "base64"), format: "der", type: "pkcs8" });
     const modulusBits = key.asymmetricKeyDetails?.modulusLength;
     if (!modulusBits) return undefined;
     const len = Math.ceil(modulusBits / 8);
@@ -550,6 +577,7 @@ export function parseDataFrameHeader(frame: Buffer): P2PDataFrameHeader {
   return {
     commandId: frame.subarray(4, 6).readUIntLE(0, 2),
     bytesToRead: frame.subarray(6, 10).readUIntLE(0, 4),
+    version: frame.readUInt8(10),
     channel: frame.readUInt8(12),
     signCode: frame.readUInt8(13),
     type: frame.readUInt8(14),
@@ -564,9 +592,9 @@ function readAddress(buf: Buffer, offset: number): Address {
   };
 }
 
-/** Parse a LOOKUP_ADDR or RLY_TO message's leading address record. */
-export function parseLookupAddr(msg: Buffer): Address {
-  return readAddress(msg, 4);
+/** A LOOKUP_ADDR message's leading address record, or `undefined` for a message too short to carry it. */
+export function parseLookupAddr(msg: Buffer): Address | undefined {
+  return msg.length >= 12 ? readAddress(msg, 4) : undefined;
 }
 
 /** The relay servers a LIST_REQ_ACK names, in the order listed, without the unspecified address; records past the message's end are dropped. */

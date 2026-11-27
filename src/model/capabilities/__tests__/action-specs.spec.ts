@@ -52,7 +52,6 @@ const DESCRIBED_MODULES = [
   "ptz",
   "rtsp",
   "siren",
-  "smart_drop",
   "smart_light",
   "suction",
   "vacuum_clean",
@@ -201,12 +200,16 @@ describe("described actions — what a stateful one reflects", () => {
    * The same guarantee for the member table — a write-only member has no state to reflect.
    *
    * `available`-gated members are excluded: the gates are MUTUALLY EXCLUSIVE (audio's camera half and
-   * its HomeBase half), so no single ctx installs both and `built()` can only ever be one device.
+   * its HomeBase half), so no single ctx installs both and `built()` can only ever be one device. So are
+   * `unverifiedFor` members, whose setter exists only for the families their own spec binds.
    */
   it.each(
     MODULES.flatMap((mod) =>
       Object.entries(mod.members ?? {})
-        .filter(([, m]) => "write" in m && m.write && !m.writeOnly && !m.unverified && !("available" in m))
+        .filter(
+          ([, m]) =>
+            "write" in m && m.write && !m.writeOnly && !m.unverified && !("available" in m) && !("unverifiedFor" in m),
+        )
         .map(([name, m]) => ({ mod, name, member: m as { writeAs?: string } })),
     ),
   )("$mod.capability.$name derives a setter that reflects itself", ({ mod, name, member }) => {
@@ -424,6 +427,9 @@ const SETTER_ELSEWHERE: Record<string, string> = {
   // Both halves of the doorbell's param 1705 (live-view quality + encoding format) must be written
   // together, so `videoQuality` is `writtenElsewhere` via setVideoQuality, which takes both.
   "doorbell.videoQuality": "setVideoQuality",
+  // An entry sensor's left-open alert and daily check each carry two fields in one base64 JSON param.
+  "contact.openAlertConfig": "setOpenAlert",
+  "contact.dailyCheckConfig": "setDailyCheck",
 };
 
 describe("published schema — every writable property has a reachable setter", () => {

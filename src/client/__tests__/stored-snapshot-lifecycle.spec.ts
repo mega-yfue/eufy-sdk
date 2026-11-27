@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PersistedSession, SessionStore } from "../../core/store.js";
 import type { EufyDevice } from "../../core/types.js";
 import type { ThumbnailCandidate } from "../../transport/push/types.js";
-import { LoginStatus, type LoginResult } from "../../transport/http/mega-client.js";
+import { LoginStatus, SessionExpiredError, type LoginResult } from "../../transport/http/mega-client.js";
 import { PushClient } from "../../transport/push/push-client.js";
 import { EufyMega } from "../eufy-mega.js";
 import { LiveSnapshotUnavailableError } from "../../core/contracts.js";
@@ -260,6 +260,54 @@ describe("stored snapshot client lifecycle", () => {
     await client.eufy.login();
 
     await expect(action()).rejects.toMatchObject({ reason: "not-observed" });
+  });
+
+  it("a successful login for the same account clears a session failure and keeps the retained bytes", async () => {
+    const client = makeClient();
+    await client.eufy.login();
+    const image = jpeg("before-expiry");
+    const action = await retainImage(client, image);
+    const expired = new SessionExpiredError("session expired");
+    client.download.mockRejectedValue(expired);
+    await client.internals.observeStoredImage({ ...exactCandidate(), url: `${IMAGE_URL}?next` });
+    await vi.waitFor(async () => expect(action()).rejects.toBe(expired));
+
+    await client.eufy.login();
+
+    await expect(action()).resolves.toBe(image);
+  });
+
+  it("ignores a session failure from a download that began before a same-account login", async () => {
+    const client = makeClient();
+    await client.eufy.login();
+    const image = jpeg("before-expiry");
+    const action = await retainImage(client, image);
+    const download = Promise.withResolvers<Buffer>();
+    client.download.mockReturnValueOnce(download.promise).mockReturnValueOnce(new Promise<Buffer>(() => {}));
+    await client.internals.observeStoredImage({ ...exactCandidate(), url: `${IMAGE_URL}?next` });
+
+    await client.eufy.login();
+    download.reject(new SessionExpiredError("session expired"));
+    await new Promise(setImmediate);
+
+    await expect(action()).resolves.toBe(image);
+  });
+
+  it("fetches again a download that began before a same-account login and failed with a session error", async () => {
+    const client = makeClient();
+    await client.eufy.login();
+    const action = await storedSnapshotAction(client.eufy);
+    const image = jpeg("after-login");
+    const download = Promise.withResolvers<Buffer>();
+    client.download.mockReturnValueOnce(download.promise).mockResolvedValueOnce(image);
+    await client.internals.observeStoredImage(exactCandidate());
+
+    await client.eufy.login();
+    download.reject(new SessionExpiredError("session expired"));
+    await new Promise(setImmediate);
+
+    expect(client.download).toHaveBeenCalledTimes(2);
+    await expect(action()).resolves.toBe(image);
   });
 });
 

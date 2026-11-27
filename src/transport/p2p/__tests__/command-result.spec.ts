@@ -9,7 +9,7 @@ const P2P_DID = "XXXXXXX-000000-XXXXX";
  */
 const results = (commandId: number, body: Buffer, signCode = 0) => {
   const session = new P2PSession({ stationSn: STATION_SN, p2pDid: P2P_DID });
-  const seen: { code: number; channel: number }[] = [];
+  const seen: { code: number; channel: number; commandId: number }[] = [];
   session.on("commandResult", (r) => seen.push(r));
   (session as unknown as { handleFrame(h: unknown, p: Buffer, d: number): void }).handleFrame(
     { commandId, channel: 0, signCode, bytesToRead: body.length },
@@ -42,24 +42,24 @@ const code = (value: number) => {
 
 describe("P2P frame — command result", () => {
   it("reads the result of a media command, sent over CMD_SET_PAYLOAD", () => {
-    expect(results(1350, code(0))).toEqual([{ code: 0, channel: 0 }]);
+    expect(results(1350, code(0))).toEqual([{ code: 0, channel: 0, commandId: 1350 }]);
   });
 
   it("reads the result of a device-control command, sent over CMD_CONTROL_PAYLOAD", () => {
     // The two wrappers answer identically, and only 1350 was read: a station refusing a control
     // command reached the caller as silence, which is also what an unanswered send looks like.
-    expect(results(1700, code(-108))).toEqual([{ code: -108, channel: 0 }]);
+    expect(results(1700, code(-108))).toEqual([{ code: -108, channel: 0, commandId: 1700 }]);
   });
 
   it("carries a failure code through as it arrives, negative and unmapped", () => {
-    expect(results(1350, code(-104))).toEqual([{ code: -104, channel: 0 }]);
+    expect(results(1350, code(-104))).toEqual([{ code: -104, channel: 0, commandId: 1350 }]);
   });
 
   it("reads the result of a direct command, which is no wrapper at all", () => {
     // 1246 is the param id itself carrying a direct-binary body, and it answers with four bytes just
     // as the wrappers do. An allowlist of wrappers would leave exactly the writes that have no other
     // confirmation path reporting nothing.
-    expect(results(1246, code(0))).toEqual([{ code: 0, channel: 0 }]);
+    expect(results(1246, code(0))).toEqual([{ code: 0, channel: 0, commandId: 1246 }]);
   });
 
   it("reports nothing for a media frame, whose body is never control plaintext", () => {
@@ -93,20 +93,20 @@ describe("P2P frame — command result", () => {
     // The lock answers a SET_PAYLOAD write in a fixed-size buffer on a sign-code-0 frame: the code, then
     // whatever the buffer held. Under a strict four-byte test the lock's own rejection was dropped and
     // read as silence, which is the one answer it never gives.
-    expect(results(1350, padded(-110))).toEqual([{ code: -110, channel: 0 }]);
+    expect(results(1350, padded(-110))).toEqual([{ code: -110, channel: 0, commandId: 1350 }]);
   });
 
   it("reads a success the same way", () => {
-    expect(results(1350, padded(0))).toEqual([{ code: 0, channel: 0 }]);
+    expect(results(1350, padded(0))).toEqual([{ code: 0, channel: 0, commandId: 1350 }]);
   });
 
   it("reads the code whatever the rest of the buffer holds", () => {
     // The bytes after the code are stale buffer content — all zero on most answers measured, a fragment
     // of the device's own HTTP traffic on one — so they are no part of the shape. A gate on an all-zero
     // tail dropped every answer whose buffer was not clean, success and refusal alike.
-    expect(results(1350, padded(-151, 132, STALE_TAIL))).toEqual([{ code: -151, channel: 0 }]);
-    expect(results(1350, padded(0, 132, STALE_TAIL))).toEqual([{ code: 0, channel: 0 }]);
-    expect(results(1350, padded(0, 132, Buffer.alloc(128, 0xa5)))).toEqual([{ code: 0, channel: 0 }]);
+    expect(results(1350, padded(-151, 132, STALE_TAIL))).toEqual([{ code: -151, channel: 0, commandId: 1350 }]);
+    expect(results(1350, padded(0, 132, STALE_TAIL))).toEqual([{ code: 0, channel: 0, commandId: 1350 }]);
+    expect(results(1350, padded(0, 132, Buffer.alloc(128, 0xa5)))).toEqual([{ code: 0, channel: 0, commandId: 1350 }]);
   });
 
   it("reports nothing for the same body on an encrypted frame", () => {
@@ -116,10 +116,16 @@ describe("P2P frame — command result", () => {
     expect(results(1350, padded(-110), 8)).toEqual([]);
   });
 
-  it("reports nothing for the padded shape on another wrapper or at another length", () => {
+  it("reads the clear 132-byte answer a standalone camera gives a CONTROL_PAYLOAD write", () => {
+    // Captured from the vendor app: the camera answers level-1 and level-2 1700 writes alike with a
+    // sign-code-0 132-byte body, the code first and stale buffer content after it.
+    expect(results(1700, padded(-108, 132, STALE_TAIL))).toEqual([{ code: -108, channel: 0, commandId: 1700 }]);
+  });
+
+  it("reports nothing for the padded shape on another command or at another length", () => {
     // The read is pinned to the shape measured, not generalised from it: that body under some other
     // command, or at some other length, is not the answer this device gives.
-    expect(results(1700, padded(-110))).toEqual([]);
+    expect(results(1246, padded(-110))).toEqual([]);
     expect(results(1350, padded(-110, 64))).toEqual([]);
     expect(results(1350, padded(-110, 148))).toEqual([]);
   });

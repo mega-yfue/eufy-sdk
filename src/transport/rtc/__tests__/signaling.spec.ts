@@ -145,14 +145,19 @@ describe("region rules", () => {
     });
   });
 
-  it("reports a refused sign with its HTTP status and API code", async () => {
+  it("reports a refused sign with both shards, its HTTP status and API code", async () => {
     const refused = vi.fn(async () => ({
       ok: false,
       status: 401,
       json: async () => ({ code: 26000, msg: "token not exist" }),
     })) as unknown as typeof fetch;
-    const { c } = client({ fetch: refused });
-    await expect(c.fetchSign()).rejects.toThrow("refused: HTTP 401 code 26000 token not exist");
+    const estimates = async () => ({ phone: "eu-pr", web: "ie-pr" });
+    const { c } = client({ estimates, fetch: refused });
+    const err = await c.fetchSign().catch((e: Error) => e);
+    expect((err as Error).message).toBe(
+      "RTC sign for T9000P0000000001 on eu-pr (phone eu-pr, web ie-pr) refused: HTTP 401 code 26000 token not exist",
+    );
+    expect((err as Error).message).toMatch(/ HTTP (\d+) code (\d+)?/);
   });
 
   it("drops the token the gateway echoes into a refused sign's message", async () => {

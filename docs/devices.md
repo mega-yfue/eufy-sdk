@@ -71,8 +71,8 @@ permanent-outdoor-light line: on/off/brightness/custom colour/effect — see the
 `ptz` (rotate + left/right/up/down, zoom, and a `preset()` sub-API — see the [PTZ guide](/ptz)), plus
 `arming`, `lock` (lock/unlock/setAutoLock on both the P2P video lock and the MQTT garage door; lock/unlock
 also on the classic Wi-Fi lock over its own keyed envelope, both directions hardware-confirmed, where
-`setAutoLock` is absent — optional accessor, `?.()`; plus setRainMode on the video lock only), `siren` (volume, alarm duration, and test/stop triggers — see below),
-and `smartDrop` (`openLid()` on a standalone SmartDrop T8790).
+`setAutoLock` is absent — optional accessor, `?.()`; plus setRainMode on the video lock only; `unlock()` alone
+opens a standalone SmartDrop lid), and `siren` (volume, alarm duration, and test/stop triggers — see below).
 
 > **Unverified writes are absent, they don't guess.** A write method present on a `dev.<cap>()` object
 > means its wire is verified — so you know at compile time what's settable. Where a write isn't yet
@@ -108,16 +108,17 @@ dev.arming?.()?.mode; // number | undefined — current guard mode
 ```
 
 Read getters live on every capability that has readable state (`battery`, `contact`, `lock`, `camera`,
-`light`, `motion`, `arming`, `siren`, the `leak`/`smoke`/`co`/`keypad` sensors, `storage`, `audio`,
+`light`, `motion`, `arming`, `siren`, the `leak`/`smoke`/`keypad` sensors, `storage`, `audio`,
 `doorbell`, `ptz`, RoboVac `vacuumClean`/`suction`, `personDetection`).
 
 A getter narrows the value's **type**; what the value **means** — a percentage, a temperature, an
 instant, one of a named set — is declared beside it and is what a host needs to render a reading. See
 [What a reading means](/value-kinds).
 
-**Getters are evidence-gated.** A getter is present only when the device actually reported the backing
-value — so a device advertises exactly the reads it has, never a phantom sub-feature of the capability
-it happens to own. A battery camera that reports its custom-recording settings exposes
+**Getters are evidence-gated.** A getter is present when the device reported the backing value, or when
+the product's thing description lists it, in which case it reads the description's default until a
+report arrives — so a device advertises exactly the reads it has, never a phantom sub-feature of the
+capability it happens to own. A battery camera that reports its custom-recording settings exposes
 `battery()?.recordDuration`; one that reports only a level and a temperature won't have that key at all:
 
 ```ts
@@ -269,5 +270,8 @@ The status method is absent without a query provider and the parent station's re
 timezone (`time_zone`). Auto-lock settings
 and Rain Mode are absent on this family; PIN management, schedules, calibration, and other settings
 are unverified.
+
+Its camera serves live view, `live()` and `openReadable()`, and behind a HomeBase 3 the recordings the
+station holds, `downloadRecording()`. Stills, talkback and camera settings are absent on this family.
 
 Next: [Events](/events) · [Live media](/live-media).

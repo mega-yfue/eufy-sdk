@@ -15,6 +15,7 @@ import { buildCommand } from "../index.js";
 import { propertiesOf } from "../members.js";
 import type { AvailabilityContext } from "../types.js";
 import { Device } from "../../device.js";
+import { parseThingsList, type ThingDescription } from "../thing-description.js";
 import { bind } from "./bind.js";
 import type { CommandContext } from "../types.js";
 import type { Capability } from "../../types.js";
@@ -59,6 +60,7 @@ describe("battery capability module", () => {
       "solarConnected24h",
       "batteryPowerStats",
       "cameraInfo",
+      "batteryLow",
     ]);
   });
 
@@ -227,6 +229,32 @@ describe("battery capability module", () => {
     expect(wm?.enumValues).toBeUndefined();
   });
 
+  it("reads workingMode against the domain published for the model, and raw where none is", () => {
+    const read = (model: string, value: number) =>
+      bind<BatteryActions>("battery", evidenced({ model }), { read: () => ({ value }) }).acts.workingMode;
+    expect(read("T8170P00", 2)).toBe(2);
+    expect(read("T8170P00", 9)).toBeUndefined();
+    expect(read("T8419P00", 9)).toBe(9);
+  });
+
+  it("reads a powerSource outside Battery/External Solar Panel as undefined", () => {
+    const read = (value: number) => bind<BatteryActions>("battery", evidenced(), { read: () => ({ value }) }).acts;
+    expect(read(1).powerSource).toBe(1);
+    expect(read(5).powerSource).toBeUndefined();
+  });
+
+  it("offers powerSource where the product's description lists power_charge_mode, and without a description", () => {
+    const described = (...ids: string[]) =>
+      parseThingsList({
+        things_list: [{ profile: { product_code: "T0000" }, properties: ids.map((identifier) => ({ identifier })) }],
+      }).T0000!;
+    const acts = (things?: ThingDescription) =>
+      Object.keys(bind<BatteryActions>("battery", evidenced({ things })).acts as object);
+    expect(acts(described("power_charge_mode"))).toContain("setPowerSource");
+    expect(acts(described("power_source_mode")), "reports 1293, lists none").not.toContain("powerSource");
+    expect(acts(), "no description").toContain("setPowerSource");
+  });
+
   it("resolveWorkingMode maps per model — cameras use DEFAULT, the T8214 doorbell its own map (confirmed live)", () => {
     // 3-mode cameras (identity) via DEFAULT fallback.
     expect(resolveWorkingMode("T8170T0000000000", 2)).toBe("Customize Recording");
@@ -272,6 +300,51 @@ describe("battery capability module", () => {
       mValue3: 0,
       form: "auto",
     });
+  });
+
+  it("writes powerSource only where the bundle sends {charge_mode}; the bundle-only {enable} has no setter", () => {
+    const things = parseThingsList({
+      things_list: [{ profile: { product_code: "T0000" }, properties: [{ identifier: "power_charge_mode" }] }],
+    }).T0000!;
+    const at = (model: string, homeBaseAttached: boolean) => evidenced({ channel: 0, model, homeBaseAttached, things });
+    const payload = (cmd: number, payload: object) => ({
+      kind: "set-payload",
+      cmd,
+      payload,
+      channel: 0,
+      mValue3: 0,
+      form: "auto",
+    });
+    expect(() => buildCommand("powerSource", 1, at("T8171", false)), "v2 sets nothing").toThrow(/unverified/);
+    expect(Object.keys(bind<BatteryActions>("battery", at("T8171", false)).acts as object)).not.toContain(
+      "setPowerSource",
+    );
+    for (const [model, attached] of [
+      ["T8150", true],
+      ["T8124R", false],
+    ] as const) {
+      expect(() => buildCommand("powerSource", 1, at(model, attached)), `${model} {enable}`).toThrow(/unverified/);
+      expect(Object.keys(bind<BatteryActions>("battery", at(model, attached)).acts as object)).not.toContain(
+        "setPowerSource",
+      );
+    }
+    expect(buildCommand("powerSource", 1, at("T8124R", true))).toEqual(payload(1293, { charge_mode: 1 }));
+    expect(buildCommand("powerSource", 0, at("T8140", false))).toEqual(payload(1293, { charge_mode: 0 }));
+    const t9000 = Object.keys(bind<BatteryActions>("battery", at("T9000", false)).acts as object);
+    expect(t9000, "lists it, builds no command").not.toContain("setPowerSource");
+  });
+
+  it("reads a v2 product's powerSource off the 6254 probe answer, -505 = Battery, as its bundle does", () => {
+    const of = (model: string, probe: string) =>
+      Device.fromRecord(`${model}P0000000000`, {
+        deviceType: 30,
+        model,
+        category: "eufy_security",
+        params: { 1101: "88", 1293: "1", 6254: probe },
+      } as never).getProperty("powerSource")?.value;
+    expect(of("T8171", "-505")).toBe(0);
+    expect(of("T8171", "0")).toBe(1);
+    expect(of("T8140", "-505"), "everyone else keeps 1293").toBe(1);
   });
 
   /**
@@ -401,10 +474,11 @@ const _noSetLevel: Exact<"setLevel" extends keyof BatteryActions ? true : false,
 const _noSetCharging: Exact<"setCharging" extends keyof BatteryActions ? true : false, false> = true;
 
 // Reported but unexposed: in the schema, reachable via getProperty, NOT on the typed surface. 1103 is
-// pinned here by BOTH names — a getter over it must not reappear under either.
+// pinned here by both names it has carried.
 const _noCameraInfo: Exact<"cameraInfo" extends keyof BatteryActions ? true : false, false> = true;
 const _noPowerStats: Exact<"batteryPowerStats" extends keyof BatteryActions ? true : false, false> = true;
-const _noBatteryLow: Exact<"batteryLow" extends keyof BatteryActions ? true : false, false> = true;
+// A sensor's low-battery flag: present only on the `sensor` codec, so optional on the surface.
+const _batteryLow: Exact<undefined extends typeof bat.batteryLow ? true : false, true> = true;
 
 export const _surfaceAssertions = [
   _level,
@@ -419,5 +493,5 @@ export const _surfaceAssertions = [
   _noSetCharging,
   _noCameraInfo,
   _noPowerStats,
-  _noBatteryLow,
+  _batteryLow,
 ];

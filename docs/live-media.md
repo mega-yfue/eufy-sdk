@@ -16,7 +16,7 @@ also requires snapshot capability evidence and the stored-image cache described 
 
 ## One pull, many consumers
 
-Every consumer of a given camera and optical view shares **one** underlying media session (one live pull), fanned out
+Every consumer of a given camera, optical view and output resolution shares **one** underlying media session (one live pull), fanned out
 to all of them. `cam.live()` twice, a `snapshotLive()` while a `recordFragments()` runs, a
 `openReadable()` alongside a `live()` — all attach to the **same** shared source. There is exactly one
 start on the wire regardless of how many consumers attach.
@@ -42,6 +42,9 @@ pull that finds the station's own session already carrying one gets **a connecti
 cameras on one HomeBase stream at full rate together. Measured on two attached cameras, one at 3840×2160:
 both held ~15 fps for the length of the run, where the same pair down one session could only take turns.
 
+A HomeBase 3 (T8030) can keep serving the camera it last served on a session, so there every live pull of an
+attached camera gets a connection of its own, even when the station's session is free.
+
 A **still** never opens a connection of its own: it wants one frame, and a socket plus a key negotiation per
 thumbnail is not worth it. So a still asked for while a sibling is being watched still yields, and the
 retained image answers it.
@@ -57,15 +60,15 @@ Worth knowing:
 - `record()` opens its own pull instead of joining the shared source, so it costs a second stream on a
   camera that is already streaming. `recordFragments()` is a shared consumer like everything else.
 
-## T8N00 PoE cameras
+## Cameras behind a T8N00
 
-T8E00 and T8P00 cameras attached to a T8N00 support `live()`, `openReadable()` and
-`snapshotLive()`. `live()` delivers H.265 video and AAC-LC or G.711 A-law audio;
+T8E00, T8P00, T8P10, T8162, T8410 and T8214 cameras attached to a T8N00 support `live()`,
+`openReadable()` and `snapshotLive()`. `live()` delivers H.265 video and AAC-LC or G.711 A-law audio;
 `openReadable()` provides video, and `snapshotLive()` captures a fresh still.
 Recording and talkback are not implemented for this route.
 
 `cam.views?.()` reports the optical view identifiers supported by this route: `[0, 1]`
-for the dual-lens T8E00 S4 and `[0]` for the T8P00 E40. On the S4, view `0` is fixed
+for the dual-lens T8E00 S4 and `[0]` for every other camera. On the S4, view `0` is fixed
 and view `1` is movable. Omitting `view` selects `0`.
 
 ```ts
@@ -141,9 +144,8 @@ model.
 
 Two things this does NOT establish. Whether the number of consumers influences it: a single-consumer
 session produced more changes than a two-consumer one, but on a different camera, so nothing here is a
-controlled comparison. And whether it can be pinned: no capability the SDK models sets a per-session cap —
-the camera's video-quality member is a persistent recording tier — but that is read off the modelled
-surface rather than measured against a device.
+controlled comparison. And whether it can be pinned: see [NVR output resolution](#nvr-output-resolution)
+for the per-pull 1080p request available on supported NVR routes.
 
 An encoder cannot change input geometry mid-stream, so a caller adapting this source to a fixed output
 has to tear down and rebuild on every change. `video-config` is how it learns:
@@ -368,11 +370,16 @@ collects its decode burst, and detaches before decoding. The JPEG decode uses ff
 convenience sink, resolved on `PATH` or configured with `ffmpegPath`. Raw frames remain available
 through `openReadable` and the event stream.
 
-## Recordings stored on a HomeBase 2
+## Recordings stored on a HomeBase
 
-A HomeBase 2 (T8010) keeps each event recording of its attached cameras, and names it in the event push:
-`payload.p` is the recording name and `cipher` the key id it was stored under. `downloadRecording`
-fetches that recording over the station's P2P session and decodes it; it does not wake the camera.
+A HomeBase 2 (T8010) or HomeBase 3 (T8030) keeps each event recording of its attached cameras.
+`downloadRecording` fetches one over the station's P2P session and decodes it; it does not wake the camera.
+`recording` is the file name the station stores the recording under, without its folder or extension, and
+`cipherId` is the cipher the station names for it. A HomeBase 3 stores its recordings in the clear and does
+not read `cipherId`.
+
+A HomeBase 2 names the recording in the event push: `payload.p` is the recording name and `cipher` the key
+id it was stored under.
 
 ```ts
 import { RecordingDownloadError } from "@mega-yfue/eufy-sdk";
@@ -383,7 +390,7 @@ eufy.on("push", async (ev) => {
   const cam = (await eufy.getDevice(ev.deviceSn)).camera?.();
   try {
     const clip = await cam?.downloadRecording?.({ recording, cipherId: ev.cipher });
-    // clip.video: Annex-B H.264 · clip.audio: AAC-LC 16 kHz mono ADTS · clip.fps, clip.durationMs
+    // clip.video: Annex-B, clip.codec "h264" | "h265" · clip.audio: AAC-LC 16 kHz mono ADTS · clip.fps, clip.durationMs
   } catch (error) {
     if (error instanceof RecordingDownloadError) console.log(error.reason);
   }
@@ -392,18 +399,48 @@ eufy.on("push", async (ev) => {
 
 The download is confirmed on recordings that had finished. How the station answers for a recording it is
 still writing is not established, so issue the download once the camera's configured clip length has
-elapsed since the push. Downloads queue one at a time per station, and the transfer runs faster than real
-time: a 12.8 s recording took about 6 s.
+elapsed since the push. On a HomeBase 2 a recording is named either as the push carries it
+(`yyyyMMddHHmmss`) or as a row of the station's own recording archive names it, with the codec prefixed
+(`h265_yyyyMMddHHmmss`); both reach the same file. Downloads queue one at a time per station, and the
+transfer runs faster than real time: a 12.8 s recording took about 6 s on a HomeBase 2.
 
-The result is elementary streams, not a container: `video` is Annex-B H.264 and `audio` (when present) is
-AAC-LC in ADTS framing. `fps` and `durationMs` come from the camera's own frame stamps, and `missingFrames`
-counts frames the camera numbered that never arrived. Muxing is the caller's; for example with ffmpeg,
-`-framerate <fps> -f h264 -i video.h264 -f aac -i audio.aac -c copy clip.mp4`.
+A row of the station's recording archive (`history_record_info`, as `session.queryRecordPage` answers it on a
+HomeBase 2 and `eufy.readStationTable` on a HomeBase 3) names the recording by its `storage_path` and
+`cipher_id`. A HomeBase 3 row's `storage_path` looks like
+`/zx/emmcdata/Camera02/202601/20260101120000/20260101120000.zxvideo`, and its `cipher_id` is 0. A HomeBase 2
+archive row can name a cipher id above 24 bits, which resolves through its low byte. The same derivation gives
+the recording name and cipher id on both stations:
 
-The download is confirmed on a HomeBase 2 only, so `downloadRecording` is absent on a camera attached to
-any other station. A transfer that ends without the station's finish frame (it went quiet, ran past
-`timeoutMs`, or reached the size ceiling) rejects with reason `incomplete` rather than returning a partial
-recording.
+<!-- typecheck: host rows -->
+
+```ts
+import path from "node:path";
+
+for (const row of rows) {
+  const cam = (await eufy.getDevice(row.device_sn)).camera?.();
+  const clip = await cam?.downloadRecording?.({
+    recording: path.posix.parse(row.storage_path).name,
+    cipherId: row.cipher_id > 0xffffff ? row.cipher_id & 0xff : row.cipher_id,
+  });
+}
+```
+
+A HomeBase 3 recording name is the bare `yyyyMMddHHmmss` stamp; a codec prefix, an extension or a full path
+rejects with reason `invalid-recording` before anything is sent.
+
+The result is elementary streams, not a container: `video` is Annex-B H.264 or H.265, as `codec` names it
+(`"h264"` or `"h265"`, absent when no keyframe carries a readable parameter set), and `audio` (when present) is AAC-LC in
+ADTS framing. `fps` and `durationMs` come from the camera's own frame stamps, and
+`missingFrames` counts frames the camera numbered that never arrived, with the numbering counted on across a
+change of frame size partway through a recording. Muxing is the caller's; for example with
+ffmpeg, `-r <fps> -f h264 -i video.h264 -f aac -i audio.aac -c copy clip.mp4`, with `-f hevc` and `-tag:v hev1`
+for an H.265 recording. The rate goes in `-r` before the `-i`, since ffmpeg ignores `-framerate` for this input,
+and an H.265 recording muxed this way with `-tag:v hvc1` decodes with errors.
+
+The download is confirmed on a HomeBase 2 and a HomeBase 3 only, so `downloadRecording` is absent on a camera
+attached to any other station. A transfer that ends without the station's finish frame (it went quiet, ran
+past `timeoutMs`, or reached the size ceiling) rejects with reason `incomplete` rather than returning a
+partial recording.
 
 ## Talkback — audio the other way
 
@@ -606,3 +643,23 @@ So the APIs here do not claim negotiation or timing guarantees the device source
 fragment duration is a keyframe-bounded **minimum**, prebuffer is available only from an already-warm
 retained source, and fragmented recordings are caller-owned evented async iterables — which is how a
 caller extends a shared battery budget without control notices mixing into media output.
+
+### NVR output resolution
+
+`cam.outputResolutions?.()` reports the output sizes supported by the bound media route.
+The native NVR route reports `["1080p"]` for T8E00 and T8P00 cameras. An omitted selection preserves the default
+output; it does not promise a particular maximum resolution.
+
+```ts
+if (cam.live && cam.outputResolutions?.().includes("1080p")) {
+  const stream = await cam.live({ view: 0, outputResolution: "1080p" });
+  stream.stop();
+}
+```
+
+The NVR start request carries `stitch_resolution: {width: 1920, height: 1080}`.
+This selects the NVR's output geometry, not a separately identified camera substream,
+and does not change persistent live-view or recording-quality settings.
+`openReadable()` and `snapshotLive()` accept the same selection. A route that does not
+advertise it refuses the request before opening media. Consumers with different output
+selections use separate sources, including while an earlier source is warm.

@@ -29,6 +29,7 @@ import type {
 import {
   DeviceChannelUnresolvedError,
   RecordingDownloadError,
+  CommandResultError,
   StationKeyUnavailableError,
   StationUnreachableError,
 } from "../../core/contracts.js";
@@ -42,7 +43,9 @@ import { noopLogger, type Logger } from "../../core/logger.js";
 import { assertNever } from "../../core/util.js";
 import { setTimeout as sleep } from "node:timers/promises";
 import { CONNECT_TIMEOUT_MS, P2PSession, type P2PFrame } from "./p2p-session.js";
+import { LEVEL2_SETTLE_MS } from "./level2-settle.js";
 import { buildDirectBinaryBody } from "./write-commands.js";
+import { buildDoorlockPassThrough } from "./doorlock-pass-through.js";
 import { CommandType } from "./commands.js";
 import {
   buildFf09Frame,
@@ -56,14 +59,15 @@ import {
   ff09TransferPayload,
   CMD_TRANSFER_PAYLOAD,
 } from "../ff09.js";
-import { decodeP2PCloudIPs } from "./codec.js";
+import { P2PDataType, stationCloudAddresses } from "./codec.js";
 import { P2P_ENVELOPE } from "./envelope.js";
 import { freshestLanIp } from "./lan-ip.js";
 import { captureSnapshotFromShared, recordClip } from "./media.js";
 import {
+  RECORDING_STATIONS,
   decodeRecording,
-  homeBase2RecordingPath,
   receiveRecording,
+  type RecordingStation,
   type RecordingTransfer,
 } from "./recording-download.js";
 import type { FfmpegLevel } from "../ffmpeg.js";
@@ -84,12 +88,21 @@ import { stationChannels, stationOf } from "./station-channels.js";
 
 /**
  * How many times each idempotent "direct" control command (camera on/off 1035, spotlight
- * brightness 1401 / color-temp 1410 / enable 1403) is repeated over P2P. Sends are fire-and-forget
- * over UDP with no app-level ACK we wait on, so we repeat for loss resilience on lossy RF. The app
+ * brightness 1401 / color-temp 1410 / enable 1403) is repeated over P2P. Sends are UDP datagrams the
+ * session does not retransmit, so we repeat for loss resilience on lossy RF. A send that awaits the
+ * device's answer is not repeated: it is retransmitted under one sequence instead. The app
  * itself sent 2–6× depending on the command; we standardize on the higher end (idempotent, so extra
  * sends are harmless). Bump if drops are seen on marginal links.
  */
 const DIRECT_CMD_SENDS = 5;
+
+/**
+ * `GET_CAMERA_INFO` (1103) body: `[u32 mValue = 255][u32 mValueSub = 903]`, the constants the app's request
+ * builder sets for this command (`msgType` 14, packed as two little-endian ints by its native sender). A
+ * HomeBase answers on channel 255 with its whole parameter table, every attached device's entries under
+ * its own channel.
+ */
+const STATION_TABLE_QUERY = Buffer.from("ff00000087030000", "hex");
 
 /**
  * How long each command is given where the level-2 key is a REQUIREMENT — the HomeBase-routed commands
@@ -98,15 +111,8 @@ const DIRECT_CMD_SENDS = 5;
  */
 const LEVEL2_GRACE_MS = 25_000;
 
-/**
- * The bound a caller waits for the level-2 negotiation to SETTLE, measured from connect.
- *
- * For a caller that picks its seal once from {@link P2PSession.hasLevel2Key} and has no second chance. A media
- * start reads the key on every send and is re-issued by the warm-up, so it needs no wait; a property write
- * framed level-1 to a family that only accepts level-2 is ignored, and nothing re-frames it. Session-scoped,
- * so a station that offers no key does not charge this to every later command.
- */
-const LEVEL2_SETTLE_MS = 8_000;
+/** Standalone stations whose level-1 session is not reset. */
+const KEEP_LEVEL1_SESSION_MODELS: ReadonlySet<string> = new Set(["T8423"]);
 
 /**
  * What a caller's own deadline on a station call has to clear, in milliseconds.
@@ -132,6 +138,14 @@ export const P2P_STATION_WAITS = {
 const RTSP_URL_READ_TIMEOUT_MS = 12_000;
 
 /**
+ * How a level-2 setting write is settled on the device's answer, as the vendor app's P2P request does by
+ * default (`P2PRequestConfig.Companion.from`, `KmmP2PRequest.canRetry`): success is code `0`, the answer is
+ * the device's reply to the command itself, awaited up to 30 s; a code from 1 to 20 is resent once while
+ * under 10 s from the first send.
+ */
+const WRITE_ANSWER = { timeoutMs: 30_000, retries: 1, retryWindowMs: 10_000, retryCodes: [1, 20] } as const;
+
+/**
  * How long a talkback waits for an audio frame, counted from the first frame of either kind its media session
  * delivers, to learn which codec the speaker plays. A live session delivers audio every 30–64 ms, so a running stream
  * answers at once. A stream that delivers video and no audio opens as `aac-lc` once this elapses; one that delivers
@@ -139,8 +153,17 @@ const RTSP_URL_READ_TIMEOUT_MS = 12_000;
  */
 const TALKBACK_CODEC_WAIT_MS = 3000;
 
+/**
+ * Stations that can keep serving the camera they last served on a session, so every continuous pull of an attached
+ * camera gets a connection of its own, even when the station's own session is free.
+ */
+const OWN_LIVE_SESSION_MODELS: ReadonlySet<string> = new Set(["T8030"]);
+
 /** Models whose speaker plays `aac-eld` talkback; every other model talks `aac-lc`. */
 const ELD_TALKBACK_MODELS: ReadonlySet<string> = new Set(["T8410C"]);
+
+/** Models whose own-session `ff09` frames go in the clear once the station refuses level-2. */
+const CLEAR_FF09_MODELS: ReadonlySet<string> = new Set(["T8506"]);
 
 /**
  * The codec a camera's speaker plays: `aac-eld` when the first audio frame `consumer` delivers is `aac-eld`, otherwise
@@ -223,6 +246,8 @@ interface ResolvedSession {
   channel: number;
   accountId: string;
   homeBaseAttached: boolean;
+  /** Set when `clearFallback` admitted a session whose station {@link P2PSession.refusedLevel2}. */
+  sendsClear?: boolean;
 }
 
 /** The options of one {@link MediaProvider.downloadRecording} call. */
@@ -257,6 +282,8 @@ export interface P2PRouterDeps {
   onClose: (stationSn: string) => void;
   onError: (err: Error) => void;
   onLevel2Ready: (stationSn: string, cipherId: number) => void;
+  /** The station answered on its own session at `atMs` — a PONG or an ACK from the connected peer. */
+  onPeerAnswer?: (stationSn: string, atMs: number) => void;
   /** A raw decoded frame — the client emits the low-level `p2p` event + runs the semantic decode. */
   onFrame: (stationSn: string, frame: P2PFrame) => void;
   /**
@@ -298,6 +325,18 @@ export class P2PCommandRouter {
    */
   private readonly liveSessionKeys = new Map<string, string>();
   /**
+   * The live source build in flight per `${parentSn}:${channel}`, settled once its connection is opened
+   * or refused.
+   *
+   * A build awaits its media session before it can file the source in {@link liveSources}, so a second
+   * request for the same camera in that window finds nothing cached. Building a second source there
+   * overwrites the first, and the orphan's teardown then closes the connection the cached one streams
+   * on. A request that finds a build here waits for it, until its own signal aborts, then resolves its
+   * session again and reuses what the build filed, or builds its own when that build failed. The entry
+   * is removed when the build settles and its promise never rejects, so each wait ends on a later state.
+   */
+  private readonly liveSourceBuilds = new Map<string, Promise<void>>();
+  /**
    * The open talkback per `${parentSn}:${channel}`, if any. The device plays one audio stream at a
    * time and the session carries one audio sequence, so this path is exclusive where a live pull is
    * shared — see {@link P2PCommandRouter.openTalkback}.
@@ -318,8 +357,8 @@ export class P2PCommandRouter {
    */
   private readonly keyedSequences = new Map<string, number>();
 
-  /** The keyed-payload command in flight per device, which the next one for that device waits on. */
-  private readonly keyedQueue = new Map<string, Promise<void>>();
+  /** The answered command in flight per {@link serializeAnswered} key, which the next one for that key waits on. */
+  private readonly answeredQueue = new Map<string, Promise<void>>();
 
   constructor(private readonly deps: P2PRouterDeps) {
     this.manager = new SessionManager({
@@ -356,7 +395,7 @@ export class P2PCommandRouter {
    * transport-neutral command. Keyed on the endpoint, NOT `classifyDevice`'s `realtime` tag: that tag is
    * `"p2p"` for the ENTIRE `eufy_security` category, so it can't tell a P2P lock (T8531, own `p2p_did`)
    * from an MQTT-only lock/garage (T85D0, empty `p2p_did`) — routing the latter to P2P throws
-   * `no P2P session`.
+   * `no P2P session`. A standalone video lock is claimed here but takes its `ff09` frames over secure MQTT.
    */
   static claimsDevice(dev: EufyDevice): boolean {
     return typeof dev.p2pDid === "string" && dev.p2pDid.length > 0;
@@ -421,12 +460,19 @@ export class P2PCommandRouter {
     return dev ? stationOf(dev) : sn;
   }
 
-  /** Reset only a standalone device's session; an attached device must not close its shared HomeBase. */
+  /**
+   * Reset only a standalone device's session; an attached device must not close its shared HomeBase.
+   *
+   * A {@link KEEP_LEVEL1_SESSION_MODELS} station whose open session holds no level-2 key is left open.
+   */
   async resetStandaloneSession(sn: string): Promise<void> {
     const device = this.recordFor(sn);
     if (!device) return;
     const station = stationOf(device);
-    if (station === sn) await this.manager.resetWhenUnused(station);
+    if (station !== sn) return;
+    const open = this.manager.get(station);
+    if (open && !open.hasLevel2Key && KEEP_LEVEL1_SESSION_MODELS.has(device.model ?? "")) return;
+    await this.manager.resetWhenUnused(station);
   }
 
   /**
@@ -478,16 +524,29 @@ export class P2PCommandRouter {
    * so a start issued before the key arrives is dropped as `media-command-unsent`, and the stream then
    * shows nothing until a later keepalive tick happens to find the key. A connected session that cannot
    * carry the start is not a connected session, so this refuses rather than returning one.
+   *
+   * A session refused its key within the grace, or never connected, is closed and dropped from the manager at
+   * once. Nothing else releases it: no source holds it, a wired station's session never idles out, and the
+   * manager hands the same session to every later open of the camera, so the next open dials a fresh
+   * connection instead. A session another open has since replaced is left to its own close.
    */
   private async openMediaSession(parentSn: string, channel: number, signal?: AbortSignal): Promise<P2PSession> {
-    const session = await this.openSession(P2PCommandRouter.mediaSessionKey(parentSn, channel), parentSn);
-    await this.awaitConnected(session, parentSn, signal);
-    let ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal);
-    if (!ready && session.repromptLevel2Key()) {
-      ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal);
+    const mediaKey = P2PCommandRouter.mediaSessionKey(parentSn, channel);
+    const session = await this.openSession(mediaKey, parentSn);
+    try {
+      await this.awaitConnected(session, parentSn, signal);
+      let ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal);
+      if (!ready && session.repromptLevel2Key()) {
+        ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"), signal);
+      }
+      if (!ready) throw new StationKeyUnavailableError(parentSn);
+      return session;
+    } catch (error) {
+      if (!signal?.aborted && this.manager.get(mediaKey) === session) {
+        void this.manager.close(mediaKey).catch((e) => this.reportError(e instanceof Error ? e : new Error(String(e))));
+      }
+      throw error;
     }
-    if (!ready) throw new StationKeyUnavailableError(parentSn);
-    return session;
   }
 
   /**
@@ -529,7 +588,7 @@ export class P2PCommandRouter {
         if (!did) throw new Error(`no P2P endpoint (p2p_did) for station ${parentSn}`);
         let dskKey: string | undefined;
         try {
-          dskKey = (await this.deps.mega.getDskKeys([parentSn]))[parentSn]?.dskKey;
+          dskKey = (await this.deps.mega.getDskKeys([stationDev]))[parentSn]?.dskKey;
         } catch (e) {
           this.deps.onError(e instanceof Error ? e : new Error(String(e)));
         }
@@ -552,6 +611,11 @@ export class P2PCommandRouter {
    * SUCCESSFUL lookup is cached — caching `undefined` after a transient failure would permanently
    * disable level-2 for the session's life.
    *
+   * The official app answers an eight-zero-byte CONTROL `CMD_GET_DEVICE_PING` with a clear
+   * int-plus-string body containing two zero integers and the account id, without opening live media.
+   * The reply is wired before connection on every session, where the station identity is available.
+   * Tested on standalone T8420. Not tested on any other device. Unknown what devices send this CONTROL.
+   *
    * The `close` handler drops the session from the {@link SessionManager} and disposes any shared live
    * source riding this station (consumers get `stop`; a later attach rebuilds via the factory).
    *
@@ -570,12 +634,11 @@ export class P2PCommandRouter {
     key: string,
     announces: boolean,
   ): P2PSession {
-    const conn = (raw?.p2p_conn ?? raw?.app_conn) as string | undefined;
     const adminUserId = ((raw?.member as any)?.admin_user_id as string) || this.deps.mega.auth?.userId || "";
     const session: P2PSession = new P2PSession({
       stationSn,
       p2pDid: did,
-      cloudAddresses: conn ? decodeP2PCloudIPs(conn) : undefined,
+      cloudAddresses: stationCloudAddresses(raw),
       localAddress,
       dskKey,
       noBroadcast: this.deps.noBroadcast,
@@ -583,6 +646,19 @@ export class P2PCommandRouter {
       logger: this.deps.logger ?? noopLogger,
     });
     session.on("error", (e: Error) => this.reportError(e));
+    session.on("data", (frame: P2PFrame) => {
+      if (
+        frame.commandId === CommandType.CMD_GET_DEVICE_PING &&
+        frame.dataType === P2PDataType.CONTROL &&
+        frame.channel === 0 &&
+        frame.raw.length === 8 &&
+        frame.raw.every((byte) => byte === 0) &&
+        adminUserId
+      ) {
+        session.sendIntStringCommand(CommandType.CMD_GET_DEVICE_PING, 0, 0, adminUserId, frame.channel, 0);
+      }
+      if (announces) this.deps.onFrame(stationSn, frame);
+    });
     if (!announces) {
       session.on("close", () => {
         if (this.manager.get(key) === session) this.tearDownMediaSession(key);
@@ -596,8 +672,13 @@ export class P2PCommandRouter {
       if (this.manager.get(stationSn) !== session) return;
       this.tearDownStation(stationSn);
     });
-    session.on("level2Ready", ({ cipherId }: { cipherId: number }) => this.deps.onLevel2Ready(stationSn, cipherId));
-    session.on("data", (f: P2PFrame) => this.deps.onFrame(stationSn, f));
+    session.on("level2Ready", ({ cipherId }: { cipherId: number }) => {
+      session.sendRawLevel2Bytes(STATION_TABLE_QUERY, 0, P2P_ENVELOPE.GET_CAMERA_INFO, 8);
+      this.deps.onLevel2Ready(stationSn, cipherId);
+    });
+    session.on("peerAnswer", (atMs: number) => {
+      if (this.manager.get(stationSn) === session) this.deps.onPeerAnswer?.(stationSn, atMs);
+    });
     return session;
   }
 
@@ -690,54 +771,62 @@ export class P2PCommandRouter {
 
   /**
    * Route a transport-neutral {@link Command} to its wire transport — the command-sink
-   * implementation. Capability modules emit intent; this is the one place that knows P2P.
+   * implementation. Capability modules emit intent; this is the one place that knows P2P. Answers `true`
+   * when the device answered the write with success ({@link sendAnswered}, the keyed lock actuation), `false`
+   * when it was sent unread.
    */
-  async dispatchCommand(sn: string, cmd: Command): Promise<void> {
+  async dispatchCommand(sn: string, cmd: Command): Promise<boolean> {
     switch (cmd.kind) {
       // ── Intents — the transport picks the encryption level (see resolveScalarParam / setJson). ──
       case "set-param":
-        await this.resolveScalarParam(sn, cmd.param, cmd.value, cmd.form);
-        return;
+        return (await this.resolveScalarParam(sn, cmd.param, cmd.value, cmd.form, !cmd.unanswered)) === true;
       case "set-json":
-        await this.routeControl(sn, P2P_ENVELOPE.CONTROL_PAYLOAD, { commandType: cmd.param, data: cmd.data });
-        return;
+        return (
+          (await this.routeControl(sn, P2P_ENVELOPE.CONTROL_PAYLOAD, { commandType: cmd.param, data: cmd.data })) ===
+          true
+        );
       case "set-json-raw":
         await this.sendJsonRaw(sn, cmd.cmd, cmd.data, cmd.channel);
-        return;
+        return false;
       case "set-payload":
-        await this.sendSetPayloadEnvelope(
-          sn,
-          cmd.cmd,
-          cmd.payload,
-          cmd.channel,
-          cmd.mValue3,
-          undefined,
-          cmd.form,
-          cmd.level2Sender,
+        return (
+          (await this.sendSetPayloadEnvelope(
+            sn,
+            cmd.cmd,
+            cmd.payload,
+            cmd.channel,
+            cmd.mValue3,
+            undefined,
+            cmd.form,
+            cmd.level2Sender,
+            true,
+          )) === true
         );
-        return;
       case "p2p-station-scalar":
-        await this.sendStationScalar(sn, cmd.cmd, cmd.value, cmd.channel);
-        return;
+        await this.sendStationScalar(sn, cmd.cmd, cmd.value, cmd.channel, cmd.form);
+        return false;
       case "p2p-int-string":
         await this.sendIntString(sn, cmd.cmd, cmd.value, cmd.valueSub, cmd.channel);
-        return;
+        return false;
       // ── Raw wire kinds — the privacy burst is a bespoke multi-frame sequence, not a set-param. ──
       case "p2p-privacy-burst":
         await this.sendPrivacyBurst(sn, cmd.enabled);
-        return;
+        return false;
       case "ff09-actuate":
         await this.sendFf09Actuate(sn, cmd);
-        return;
+        return false;
       case "keyed-payload-actuate":
         await this.sendKeyedPayloadActuate(sn, cmd);
-        return;
+        return true;
+      case "doorlock-pass-through-actuate":
+        await this.sendDoorlockPassThrough(sn, cmd);
+        return false;
       case "ff09-autolock":
         await this.sendFf09Autolock(sn, cmd);
-        return;
+        return false;
       case "ff09-setting-toggle":
         await this.sendFf09SettingToggle(sn, cmd);
-        return;
+        return false;
       case "aiot-dp":
         throw new Error(`aiot-dp command (DP ${cmd.dp}) not routable over P2P: AIoT MQTT devices use the MQTT router`);
       case "mqtt-dp":
@@ -764,24 +853,7 @@ export class P2PCommandRouter {
    * control here is.
    */
   async rebootStation(sn: string): Promise<void> {
-    await this.sendBySessionLevel(sn, {
-      l2: (resolved) =>
-        this.replayLevel2Send(
-          sn,
-          `reboot ${sn}`,
-          ({ session, accountId }) =>
-            session.sendRawLevel2Bytes(buildDirectBinaryBody(0, accountId), 255, P2P_ENVELOPE.RESTART_HUB, 8),
-          resolved,
-        ),
-      l1: (resolved) =>
-        this.replayLevel2Send(
-          sn,
-          `reboot ${sn}`,
-          ({ session, accountId }) =>
-            session.sendRawLevel1Bytes(buildDirectBinaryBody(0, accountId), 255, P2P_ENVELOPE.RESTART_HUB),
-          resolved,
-        ),
-    });
+    return this.sendStationScalar(sn, P2P_ENVELOPE.RESTART_HUB, 0, 255, "auto");
   }
 
   /**
@@ -796,8 +868,9 @@ export class P2PCommandRouter {
    * start has no level-1 form for.
    */
   mediaProviderFor(sn: string): MediaProvider {
-    const recordings = this.downloadsRecordings(sn)
-      ? { downloadRecording: (opts: RecordingDownloadOpts) => this.downloadRecording(sn, opts) }
+    const station = this.recordingStationFor(sn);
+    const recordings = station
+      ? { downloadRecording: (opts: RecordingDownloadOpts) => this.downloadRecording(sn, station, opts) }
       : {};
     return {
       ...recordings,
@@ -841,29 +914,35 @@ export class P2PCommandRouter {
   }
 
   /**
-   * Whether `sn` is a camera attached to a HomeBase 2 (T8010), the one station whose recording path layout
-   * and frame formats are confirmed.
+   * The {@link RecordingStation} of the station `sn` is attached to, when `sn` is a camera attached to a
+   * station with an entry in {@link RECORDING_STATIONS}. A standalone device, or a camera on any other
+   * station, answers `undefined`.
    */
-  private downloadsRecordings(sn: string): boolean {
+  private recordingStationFor(sn: string): RecordingStation | undefined {
     const dev = this.recordFor(sn);
-    if (!dev) return false;
+    if (!dev) return undefined;
     const parentSn = stationOf(dev);
-    return parentSn !== sn && this.recordFor(parentSn)?.model === "T8010";
+    if (parentSn === sn) return undefined;
+    return RECORDING_STATIONS.get(this.recordFor(parentSn)?.model ?? "");
   }
 
   /**
-   * Download one recording a HomeBase 2 holds for an attached camera, then decode it
-   * ({@link decodeRecording}). Downloads queue per station: the station streams one recording at a time
-   * on the camera's channel, so a download starts only once the previous one has drained
-   * ({@link RecordingTransfer.drained}), even when that one's caller already has its answer. An abort
-   * while waiting rejects without sending anything; an abort mid-transfer rejects at once and the station's
-   * turn is held until the transfer drains.
+   * Download one recording `station` holds for the attached camera `sn`, then decode it
+   * ({@link decodeRecording}). `station` is the entry {@link mediaProviderFor} bound. Downloads queue per
+   * station: the station streams one recording at a time on the camera's channel, so a download starts only
+   * once the previous one has drained ({@link RecordingTransfer.drained}), even when that one's caller already
+   * has its answer. An abort while waiting rejects without sending anything; an abort mid-transfer rejects at
+   * once and the station's turn is held until the transfer drains.
    */
-  private async downloadRecording(sn: string, opts: RecordingDownloadOpts): Promise<RecordingDownload> {
+  private async downloadRecording(
+    sn: string,
+    station: RecordingStation,
+    opts: RecordingDownloadOpts,
+  ): Promise<RecordingDownload> {
     opts.signal?.throwIfAborted();
     const parentSn = this.stationKeyOf(sn);
     const previous = this.recordingDownloads.get(parentSn) ?? Promise.resolve();
-    const started = this.waitTurn(previous, opts.signal).then(() => this.startRecordingDownload(sn, opts));
+    const started = this.waitTurn(previous, opts.signal).then(() => this.startRecordingDownload(sn, station, opts));
     const turn: Promise<unknown> = Promise.allSettled([previous, started.then((t) => t.drained)]).then(() => {
       if (this.recordingDownloads.get(parentSn) === turn) this.recordingDownloads.delete(parentSn);
     });
@@ -884,27 +963,38 @@ export class P2PCommandRouter {
 
   /**
    * Start one recording download, once the station's previous download has drained: the decoded recording,
-   * and when the station is done sending it.
+   * and when the station is done sending it. The path is `station.path(channel, opts.recording)`, and a name
+   * it refuses rejects `invalid-recording` before anything is sent. On a sealed station the cipher's ECC key
+   * is looked up, and its absence rejects `key-unavailable` before anything is sent. A station in the clear
+   * reads no cipher, and `opts.cipherId` is not read.
    */
   private async startRecordingDownload(
     sn: string,
+    station: RecordingStation,
     opts: RecordingDownloadOpts,
   ): Promise<{ recording: Promise<RecordingDownload>; drained: Promise<void> }> {
     const { session, parentSn, channel, accountId } = await this.resolveSession(sn, { signal: opts.signal });
-    const path = homeBase2RecordingPath(channel, opts.recording);
+    const path = station.path(channel, opts.recording);
     if (!path) throw new RecordingDownloadError("invalid-recording", `no recording named ${opts.recording}`);
-    const eccKey = (await this.cipherKeysFor(session, opts.cipherId, accountId, parentSn))?.ecc;
-    if (!eccKey) {
+    const eccKey = station.sealed
+      ? (await this.cipherKeysFor(session, opts.cipherId, accountId, parentSn))?.ecc
+      : undefined;
+    if (station.sealed && !eccKey) {
       throw new RecordingDownloadError("key-unavailable", `cipher ${opts.cipherId} could not be obtained`);
     }
     const transfer = receiveRecording(session, {
       path,
       accountId,
       channel,
+      finishChannel: station.finishChannel,
+      missingCode: station.missingCode,
       timeoutMs: opts.timeoutMs,
       signal: opts.signal,
     });
-    return { recording: transfer.frames.then((frames) => decodeRecording(frames, eccKey)), drained: transfer.drained };
+    return {
+      recording: transfer.frames.then((frames) => decodeRecording(frames, station, eccKey)),
+      drained: transfer.drained,
+    };
   }
 
   /**
@@ -1038,8 +1128,9 @@ export class P2PCommandRouter {
    * {@link releaseLingeringSiblings}. A pull with consumers is never touched. The release runs before the
    * reuse branch, so a reuse frees the station as a cold start does.
    *
-   * `mayOpenOwnSession` decides whether a camera that finds the station's own session claimed may open a
-   * connection of its own for it. Only the continuous-pull egresses pass it. A still must not: it wants one
+   * `continuous` decides whether a camera that finds the station's own session claimed may open a
+   * connection of its own for it; on an {@link OWN_LIVE_SESSION_MODELS} station it always gets one, and an
+   * unwatched source left on the station's session is rebuilt there. Only the continuous-pull egresses pass it. A still must not: it wants one
    * frame, and a socket plus a level-2 negotiation per thumbnail is a cost a tile refresh cannot justify —
    * so a still asked for while a sibling is being watched contends as it always did, and the caller's
    * retained image answers it. A live view still outranks a tile; what changed is that two live views no
@@ -1048,19 +1139,28 @@ export class P2PCommandRouter {
    * The session goes into a {@link HeldSession} cell, so it can be replaced under a source that stays in
    * place.
    */
-  async sharedLiveSourceFor(
-    sn: string,
-    opts: SharedLiveOpts = {},
-    mayOpenOwnSession = false,
-  ): Promise<SharedLiveSource> {
+  async sharedLiveSourceFor(sn: string, opts: SharedLiveOpts = {}, continuous = false): Promise<SharedLiveSource> {
     const { session, parentSn, channel, accountId, homeBaseAttached } = await this.resolveSession(sn, {
       waitLevel2: "soft",
       requireLevel2ForAttached: true,
       signal: opts.signal,
     });
     const key = `${parentSn}:${channel}`;
+    const build = this.liveSourceBuilds.get(key);
+    if (build) {
+      await abortable(build, opts.signal);
+      return this.sharedLiveSourceFor(sn, opts, continuous);
+    }
+    const ownSession = continuous && homeBaseAttached && this.ownsLiveSession(parentSn);
     let source = this.liveSources.get(key);
-    if (source && source.state === "stopped") {
+    if (
+      source &&
+      (source.state === "stopped" ||
+        (ownSession &&
+          source.state !== "idle" &&
+          source.consumerCount === 0 &&
+          this.liveSessionKeys.get(key) === parentSn))
+    ) {
       this.dropLiveSource(key);
       source = undefined;
     }
@@ -1068,10 +1168,12 @@ export class P2PCommandRouter {
     if (!source) {
       const logger = this.deps.logger ?? noopLogger;
       const sessionKey =
-        mayOpenOwnSession && homeBaseAttached && this.stationSessionInUse(parentSn, key)
+        ownSession || (continuous && homeBaseAttached && this.stationSessionInUse(parentSn, key))
           ? P2PCommandRouter.mediaSessionKey(parentSn, channel)
           : parentSn;
       this.liveSessionKeys.set(key, sessionKey);
+      const built = Promise.withResolvers<void>();
+      this.liveSourceBuilds.set(key, built.promise);
       let held: HeldSession;
       try {
         held = {
@@ -1080,6 +1182,9 @@ export class P2PCommandRouter {
       } catch (error) {
         this.liveSessionKeys.delete(key);
         throw error;
+      } finally {
+        this.liveSourceBuilds.delete(key);
+        built.resolve();
       }
       source = new SharedLiveSource({
         makeStream: (ctx) =>
@@ -1373,13 +1478,21 @@ export class P2PCommandRouter {
    * yield CMAF fragments (init segment first, then a `moof`+`mdat` per keyframe boundary) muxed by the
    * dependency-free internal fMP4 muxer. The returned recording handle exposes battery-budget notices
    * and detaches its consumer on `stop`, iterator return, or iterator throw. No ffmpeg.
+   *
+   * It is a continuous pull only on an {@link OWN_LIVE_SESSION_MODELS} station; elsewhere it never opens a
+   * connection of its own.
    */
   recordFragments(
     sn: string,
     opts: { fragmentSeconds?: number; eccPrivateKey?: Buffer; keepAliveMs?: number } & SharedSourceHints = {},
   ): FragmentRecording {
-    const source = this.sharedLiveSourceFor(sn, opts);
+    const source = this.sharedLiveSourceFor(sn, opts, this.ownsLiveSession(this.stationKeyOf(sn)));
     return new FragmentRecording(source, opts);
+  }
+
+  /** Whether `stationSn` is an {@link OWN_LIVE_SESSION_MODELS} station. */
+  private ownsLiveSession(stationSn: string): boolean {
+    return OWN_LIVE_SESSION_MODELS.has(this.recordFor(stationSn)?.model ?? "");
   }
 
   /**
@@ -1491,20 +1604,21 @@ export class P2PCommandRouter {
    * Resolve a scalar `"set-param"` intent to a concrete P2P frame — the ONE place that maps a
    * capability's *what* (param + value + {@link ScalarForm}) to the *how* (encryption level + wire):
    * `"auto"` defers the level to {@link sendBySessionLevel} — the ONE decision point — while
-   * `"int-string"` pins L1 and `"direct-binary"` pins L2.
+   * `"int-string"` and `"int-pair"` pin L1 and `"direct-binary"` pins L2. `answered` settles an L2 write on
+   * the device's answer ({@link sendAnswered}); without it the write is replayed and not read.
    */
-  private async resolveScalarParam(sn: string, param: number, value: number, form: ScalarForm): Promise<void> {
-    if (form === "int-string") {
-      await this.sendIntStringCommand(sn, param, value);
-      return;
-    }
-    if (form === "direct-binary") {
-      await this.sendDirectBinary(sn, param, value);
-      return;
-    }
-    await this.sendBySessionLevel(sn, {
+  private async resolveScalarParam(
+    sn: string,
+    param: number,
+    value: number,
+    form: ScalarForm,
+    answered = true,
+  ): Promise<boolean | void> {
+    if (form === "int-string" || form === "int-pair") return this.sendIntStringCommand(sn, param, value, form);
+    if (form === "direct-binary") return this.sendDirectBinary(sn, param, value, answered);
+    return this.sendBySessionLevel<boolean | void>(sn, {
       l1: () => this.sendIntStringCommand(sn, param, value),
-      l2: () => this.sendDirectBinary(sn, param, value),
+      l2: () => this.sendDirectBinary(sn, param, value, answered),
     });
   }
 
@@ -1516,8 +1630,8 @@ export class P2PCommandRouter {
    * for a matching-channel `CMD_NAS_SWITCH` push. This is the only source of the freshly-generated
    * credentials: the vendor app regenerates them on every publish toggle and the cloud record lags.
    *
-   * Both provokes go through {@link resolveScalarParam} `"auto"` — the ONE level decision — not a
-   * pinned level-1 send: a keyed HomeBase publishes 1145 on its level-2 seal, and the level-1 form is
+   * The provokes are read by that push, not by their answers. Both go through {@link resolveScalarParam}
+   * `"auto"` — the ONE level decision — not a pinned level-1 send: a keyed HomeBase publishes 1145 on its level-2 seal, and the level-1 form is
    * silently ignored there (the likely cause of attached-camera reads never answering). The shared
    * path also repeats the datagram for RF resilience, exactly as the normal publish does.
    *
@@ -1546,7 +1660,7 @@ export class P2PCommandRouter {
       // returns as soon as it arrives (or the deadline aborts), while the repeats run to completion.
       // The publish switch alone does not elicit the push; the livestream test paired with it does.
       for (const cmd of [CommandType.CMD_NAS_SWITCH, CommandType.CMD_NAS_TEST]) {
-        void this.resolveScalarParam(sn, cmd, 1, "auto").catch((e) =>
+        void this.resolveScalarParam(sn, cmd, 1, "auto", false).catch((e) =>
           log.debug(`[p2p] ${sn} RTSP provoke ${cmd} failed`, e),
         );
       }
@@ -1600,12 +1714,12 @@ export class P2PCommandRouter {
    * The key is waited for softly: a session that will not have one falls through to level-1, which is a
    * working wire here rather than a degraded guess, instead of spending a per-call grace to learn that.
    */
-  private async sendBySessionLevel(
+  private async sendBySessionLevel<T = void>(
     sn: string,
-    send: { l1: (r: ResolvedSession) => Promise<void>; l2: (r: ResolvedSession) => Promise<void> },
-  ): Promise<void> {
+    send: { l1: (r: ResolvedSession) => Promise<T>; l2: (r: ResolvedSession) => Promise<T> },
+  ): Promise<T> {
     const resolved = await this.resolveSession(sn, { waitLevel2: "settle" });
-    await (resolved.session.hasLevel2Key ? send.l2(resolved) : send.l1(resolved));
+    return resolved.session.hasLevel2Key ? send.l2(resolved) : send.l1(resolved);
   }
 
   /**
@@ -1634,11 +1748,15 @@ export class P2PCommandRouter {
    * why one settled negotiation is not the last word.
    *
    * A session whose {@link P2PSession.pathAnswering} is false is closed and re-resolved before it is handed
-   * over: the station answers every heartbeat, so a path silent past several of them is gone. A session
-   * reporting nothing about its path is not reporting that evidence and is handed over as it is. Cached live
+   * over: the station answers every heartbeat, so a path silent past several of them is gone. So is a session
+   * already {@link P2PSession.isClosed} but not yet dropped, which would be waited on for a connect it never
+   * makes. A session reporting nothing about its path is not reporting that evidence and is handed over as it is. Cached live
    * sources on the replaced session are discarded before closing it (see {@link tearDownStation}).
    * Replaced at most once per resolution, so a station whose replacement is silent too is returned rather
    * than closed again.
+   *
+   * `clearFallback` hands over a session whose station {@link P2PSession.refusedLevel2} instead of throwing, for
+   * a standalone device of a model in {@link CLEAR_FF09_MODELS}.
    */
   private async resolveSession(
     sn: string,
@@ -1646,6 +1764,7 @@ export class P2PCommandRouter {
       waitLevel2?: boolean | "soft" | "settle";
       requireLevel2ForAttached?: boolean;
       level2Sender?: "set-payload";
+      clearFallback?: boolean;
       signal?: AbortSignal;
     } = {},
     /** Whether this resolution has already replaced a silent path — see the check below. */
@@ -1663,8 +1782,8 @@ export class P2PCommandRouter {
       const stations = this.manager.keys().filter((k) => !P2PCommandRouter.isMediaSessionKey(k));
       throw new Error(`no P2P session for ${sn} (known: ${stations.join(", ") || "none"})`);
     }
-    if (session.pathAnswering === false && !rebuilt) {
-      (this.deps.logger ?? noopLogger).debug(`[p2p] ${parentSn} path stopped answering — rebuilding before use`);
+    if ((session.pathAnswering === false || session.isClosed) && !rebuilt) {
+      (this.deps.logger ?? noopLogger).debug(`[p2p] ${parentSn} path closed or silent — rebuilding before use`);
       for (const [key, sessionKey] of [...this.liveSessionKeys]) {
         if (sessionKey === parentSn) this.dropLiveSource(key);
       }
@@ -1710,7 +1829,13 @@ export class P2PCommandRouter {
       if (!ready && session.repromptLevel2Key()) {
         ready = await abortable(session.awaitLevel2Key(LEVEL2_GRACE_MS, "call", sender), opts.signal);
       }
-      if (!ready) throw new StationKeyUnavailableError(parentSn);
+      const sendsClear =
+        opts.clearFallback === true &&
+        !homeBaseAttached &&
+        CLEAR_FF09_MODELS.has(this.recordFor(sn)?.model ?? "") &&
+        session.refusedLevel2;
+      if (!ready && !sendsClear) throw new StationKeyUnavailableError(parentSn);
+      return { session, parentSn, channel, accountId, homeBaseAttached, sendsClear };
     }
     return { session, parentSn, channel, accountId, homeBaseAttached };
   }
@@ -1726,14 +1851,25 @@ export class P2PCommandRouter {
    * which resolves once up front to arm its GET-reply listener) skip a redundant re-resolve — cheap
    * once the level-2 key is ready (a Map lookup + already-satisfied waits), but still wasted work the
    * MQTT sibling doesn't do. Omit it to resolve fresh, as every other caller does.
+   *
+   * `answer` names the command id and channel the device answers this send under; given, and with the
+   * session holding the AES-256-GCM key that answer is sealed with, the frame goes once per attempt through
+   * {@link P2PSession.sendAcknowledged} instead of the replay, and settles on its answer through
+   * {@link sendAnswered}. A replayed frame is a new command each time, and each draws its own answer.
    */
   private async replayLevel2Send(
     sn: string,
     describe: string,
     send: (r: ResolvedSession) => boolean,
     resolved?: ResolvedSession,
-  ): Promise<void> {
+    answer?: { commandId: number; channel: number },
+  ): Promise<boolean | void> {
     resolved ??= await this.resolveSession(sn, { waitLevel2: true });
+    if (answer && resolved.session.hasLevel2Key) {
+      return this.sendAnswered(sn, resolved, answer, (r) => {
+        if (!r.session.sendAcknowledged(() => send(r))) throw new Error(`${describe} for ${sn} was never sent`);
+      });
+    }
     let sent = false;
     for (let i = 0; i < DIRECT_CMD_SENDS; i++) {
       if (send(resolved)) sent = true;
@@ -1747,11 +1883,23 @@ export class P2PCommandRouter {
   /**
    * **"Direct" binary control command** (camera on/off `1035`, spotlight brightness `1401` / color-temp
    * `1410` / enable `1403`, audio switches): the 136-byte body ({@link buildDirectBinaryBody} with the
-   * resolved device channel) on that channel at signCode 8, `outerCmd` = the param id.
+   * resolved device channel) on that channel at signCode 8, `outerCmd` = the param id. The device answers
+   * it under `outerCmd` on the same channel, which `answered` settles on.
    */
-  private async sendDirectBinary(sn: string, outerCmd: number, value: number): Promise<void> {
-    await this.replayLevel2Send(sn, `direct cmd ${outerCmd}`, ({ session, channel, accountId }) =>
-      session.sendRawLevel2Bytes(buildDirectBinaryBody(value, accountId, channel), channel, outerCmd, 8),
+  private async sendDirectBinary(
+    sn: string,
+    outerCmd: number,
+    value: number,
+    answered: boolean,
+  ): Promise<boolean | void> {
+    const resolved = await this.resolveSession(sn, { waitLevel2: true });
+    return this.replayLevel2Send(
+      sn,
+      `direct cmd ${outerCmd}`,
+      ({ session, channel, accountId }) =>
+        session.sendRawLevel2Bytes(buildDirectBinaryBody(value, accountId, channel), channel, outerCmd, 8),
+      resolved,
+      answered ? { commandId: outerCmd, channel: resolved.channel } : undefined,
     );
   }
 
@@ -1759,11 +1907,41 @@ export class P2PCommandRouter {
    * **Station-scoped scalar** (`p2p-station-scalar` intent): the 132-byte channel-less body
    * ({@link buildDirectBinaryBody} with no `channel`) on an EXPLICIT channel, signCode 8. The
    * HomeBase's own controls ride the station broadcast channel 255 (alarm/speaker volume 1235).
+   *
+   * `form` `"auto"` seals it at the session's level, as {@link sendBySessionLevel} defines it: level-2 on a
+   * keyed session, the same body sealed level-1 on a keyless one. Absent, the send waits for the level-2 key.
    */
-  private async sendStationScalar(sn: string, outerCmd: number, value: number, channel: number): Promise<void> {
-    await this.replayLevel2Send(sn, `station scalar cmd ${outerCmd}`, ({ session, accountId }) =>
-      session.sendRawLevel2Bytes(buildDirectBinaryBody(value, accountId), channel, outerCmd, 8),
-    );
+  private async sendStationScalar(
+    sn: string,
+    outerCmd: number,
+    value: number,
+    channel: number,
+    form?: "auto",
+  ): Promise<void> {
+    const describe = `station scalar cmd ${outerCmd}`;
+    const l2 = (resolved?: ResolvedSession) =>
+      this.replayLevel2Send(
+        sn,
+        describe,
+        ({ session, accountId }) =>
+          session.sendRawLevel2Bytes(buildDirectBinaryBody(value, accountId), channel, outerCmd, 8),
+        resolved,
+      );
+    if (form !== "auto") {
+      await l2();
+      return;
+    }
+    await this.sendBySessionLevel(sn, {
+      l2,
+      l1: (resolved) =>
+        this.replayLevel2Send(
+          sn,
+          describe,
+          ({ session, accountId }) =>
+            session.sendRawLevel1Bytes(buildDirectBinaryBody(value, accountId), channel, outerCmd),
+          resolved,
+        ),
+    });
   }
 
   /** Send a level-1 int-plus-string frame with authenticated account identity injected by the transport. */
@@ -1818,6 +1996,9 @@ export class P2PCommandRouter {
    * would tell a caller the write was lost rather than refused. The level-1 form reports delivery by
    * throwing (`sendSetPayload` throws when the session has no address) rather than by returning a
    * boolean, so the first pass carries the failure and the rest are repeats.
+   *
+   * `answered` settles a level-1 or GCM-sealed send on the device's `SET_PAYLOAD` answer on `channel`
+   * ({@link sendAnswered}), sent once per attempt rather than replayed.
    */
   private async sendSetPayloadEnvelope(
     sn: string,
@@ -1828,10 +2009,21 @@ export class P2PCommandRouter {
     resolved?: ResolvedSession,
     form?: ScalarForm,
     level2Sender?: "set-payload",
-  ): Promise<void> {
+    answered = false,
+  ): Promise<boolean | void> {
+    const answer = answered ? { commandId: P2P_ENVELOPE.SET_PAYLOAD, channel } : undefined;
     if (form === "auto") {
-      await this.sendBySessionLevel(sn, {
-        l1: async ({ session, accountId }) => {
+      return this.sendBySessionLevel<boolean | void>(sn, {
+        l1: async (resolved) => {
+          const { session, accountId } = resolved;
+          if (answer) {
+            return this.sendAnswered(sn, resolved, answer, (r) => {
+              r.session.sendAcknowledged(() => {
+                r.session.sendSetPayload(cmd, payload, { accountId: r.accountId, channel });
+                return true;
+              });
+            });
+          }
           for (let i = 0; i < DIRECT_CMD_SENDS; i++) {
             session.sendSetPayload(cmd, payload, { accountId, channel });
             await sleep(200);
@@ -1842,17 +2034,22 @@ export class P2PCommandRouter {
         // key may not be ready yet. Let replayLevel2Send re-resolve with waitLevel2:true and wait for
         // it, exactly as the non-`form` path below does; otherwise the send throws "never sent".
         l2: () =>
-          this.replayLevel2Send(sn, `set-payload cmd ${cmd}`, ({ session, accountId }) =>
-            session.sendControlLevel2(cmd, channel, accountId, payload, mValue3 ?? cmd),
+          this.replayLevel2Send(
+            sn,
+            `set-payload cmd ${cmd}`,
+            ({ session, accountId }) => session.sendControlLevel2(cmd, channel, accountId, payload, mValue3 ?? cmd),
+            undefined,
+            answer,
           ),
       });
-      return;
     }
-    await this.replayLevel2Send(
+    return this.replayLevel2Send(
       sn,
       `set-payload cmd ${cmd}`,
-      ({ session, accountId }) => session.sendControlLevel2(cmd, channel, accountId, payload, mValue3 ?? cmd),
+      ({ session, accountId, sendsClear }) =>
+        session.sendControlLevel2(cmd, channel, accountId, payload, mValue3 ?? cmd, sendsClear),
       resolved ?? (await this.resolveSession(sn, { waitLevel2: true, level2Sender })),
+      answer,
     );
   }
 
@@ -1873,7 +2070,7 @@ export class P2PCommandRouter {
    * another's.
    */
   private sendKeyedPayloadActuate(sn: string, cmd: Ff09Identity): Promise<void> {
-    return this.serializeKeyed(sn, async () => {
+    return this.serializeAnswered(sn, async () => {
       const dev = await this.deviceFor(sn);
       const member = ((dev.raw ?? {}) as Record<string, unknown>).member as Record<string, unknown> | undefined;
       const userName = typeof member?.nick_name === "string" && member.nick_name ? member.nick_name : cmd.username;
@@ -1891,19 +2088,119 @@ export class P2PCommandRouter {
     });
   }
 
-  /** Run `work` once every keyed-payload command already queued for `sn` has settled. */
-  private serializeKeyed<T>(sn: string, work: () => Promise<T>): Promise<T> {
-    const previous = this.keyedQueue.get(sn) ?? Promise.resolve();
+  /**
+   * Run `work` once every answered command already queued under `key` has settled. An answer carries no
+   * correlation id, so commands whose answers could be mistaken for each other share a key.
+   */
+  private serializeAnswered<T>(key: string, work: () => Promise<T>): Promise<T> {
+    const previous = this.answeredQueue.get(key) ?? Promise.resolve();
     const run = previous.then(work);
     const settled = run.then(
       () => undefined,
       () => undefined,
     );
-    this.keyedQueue.set(sn, settled);
+    this.answeredQueue.set(key, settled);
     void settled.then(() => {
-      if (this.keyedQueue.get(sn) === settled) this.keyedQueue.delete(sn);
+      if (this.answeredQueue.get(key) === settled) this.answeredQueue.delete(key);
     });
     return run;
+  }
+
+  /**
+   * Send one level-2 write and settle on the device's answer to it, as the vendor app does
+   * (`SingleRequestForP2P.doSingleRequest` applies a write only once `KmmP2pResponse.isSuccess`): the
+   * {@link P2PSession} `commandResult` the device returns on the write's channel under the write's own
+   * command id, read with {@link WRITE_ANSWER}. Code `0` resolves; a code from 1 to 20 is resent once
+   * within the retry window; any other code, or no answer by the deadline, rejects with a
+   * {@link CommandResultError}. A frame under the same command id and channel that carries no code (JSON,
+   * or a reply the decrypt could not open) is not the answer. Answers `true`.
+   *
+   * The answer names the channel and command id and nothing else — its header carries no sequence of the
+   * command it answers — so writes sharing both run one at a time on that station, as the app runs one
+   * request at a time per device (`KmmP2PClient.enqueueRequest`), and each attempt is one command
+   * ({@link P2PSession.sendAcknowledged}), whose copies go out only while it is unacknowledged. Writes
+   * differing in either run freely.
+   *
+   * The device answers a write once, however many copies of its sequence arrive, and repeats that answer
+   * under its own sequence until acknowledged; {@link P2PSession} drops the repeats.
+   *
+   * An answer arriving after its write timed out settles the next write under the same key: the frame carries
+   * nothing to bind an answer to its send.
+   *
+   * A session that closed before an attempt — between its resolution and the send, or across a retry — is
+   * resolved afresh, waiting for its connect, and the attempt goes on the new one.
+   *
+   * @param send sends the write once on the session it is given.
+   */
+  private sendAnswered(
+    sn: string,
+    resolved: ResolvedSession,
+    { commandId, channel }: { commandId: number; channel: number },
+    send: (r: ResolvedSession) => void,
+  ): Promise<boolean> {
+    const { timeoutMs, retries, retryWindowMs, retryCodes } = WRITE_ANSWER;
+    return this.serializeAnswered(`${resolved.parentSn}:${channel}:${commandId}`, async () => {
+      const started = Date.now();
+      let r = resolved;
+      for (let tries = 0; ; tries++) {
+        if (r.session.isClosed) r = await this.resolveSession(sn, { waitLevel2: "settle" });
+        const target = r;
+        const code = await this.awaitReply<number>(
+          target.session,
+          timeoutMs,
+          () => new CommandResultError(sn, commandId, undefined, timeoutMs),
+          () => send(target),
+          (done) => ({
+            result: (r) => r.channel === channel && r.commandId === commandId && done(r.code),
+          }),
+        );
+        if (code === 0) return true;
+        const retryable = code >= retryCodes[0] && code <= retryCodes[1] && tries < retries;
+        if (!retryable || Date.now() - started >= retryWindowMs) {
+          throw new CommandResultError(sn, commandId, code, timeoutMs);
+        }
+      }
+    });
+  }
+
+  /**
+   * Arm reply listeners on `session`, then `send`, and settle on what the listeners make of the replies.
+   * `read` receives `done`, which settles with an outcome, and `expire`, which (re)arms the deadline; the
+   * deadline starts at `timeoutMs` and rejects with `timeout()`. A `send` that fails rejects. Every listener
+   * is removed on settle, so nothing outlives the command.
+   */
+  private awaitReply<T>(
+    session: P2PSession,
+    timeoutMs: number,
+    timeout: () => Error,
+    send: () => void,
+    read: (
+      done: (outcome: T) => void,
+      expire: (ms: number, onExpiry: () => void) => void,
+    ) => { result?: (r: { code: number; channel: number; commandId: number }) => void; data?: (f: P2PFrame) => void },
+  ): Promise<T> {
+    return new Promise((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const settle = (outcome: () => void): void => {
+        if (timer) clearTimeout(timer);
+        if (listeners.result) session.off("commandResult", listeners.result);
+        if (listeners.data) session.off("data", listeners.data);
+        outcome();
+      };
+      const expire = (ms: number, onExpiry: () => void): void => {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(onExpiry, ms);
+      };
+      const listeners = read((outcome) => settle(() => resolve(outcome)), expire);
+      if (listeners.result) session.on("commandResult", listeners.result);
+      if (listeners.data) session.on("data", listeners.data);
+      expire(timeoutMs, () => settle(() => reject(timeout())));
+      try {
+        send();
+      } catch (e) {
+        settle(() => reject(e));
+      }
+    });
   }
 
   /**
@@ -1963,7 +2260,7 @@ export class P2PCommandRouter {
    * Both listeners are armed before the send, and only replies on `channel` are read. The channel names
    * the device, not the command: every other P2P write a lock takes waits for a level-2 key this device
    * never negotiates, so nothing else the SDK sends can draw a reply here, and a future intent on this
-   * wrapper has to share {@link serializeKeyed}.
+   * wrapper has to share {@link serializeAnswered}.
    */
   private awaitKeyedReply(
     sn: string,
@@ -1972,53 +2269,38 @@ export class P2PCommandRouter {
     engage: boolean,
     send: () => void,
   ): Promise<{ code: number; mark?: number }> {
-    return new Promise((resolve, reject) => {
-      let refused = false;
-      let mark: number | undefined;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const settle = (outcome: () => void): void => {
-        if (timer) clearTimeout(timer);
-        session.off("commandResult", onResult);
-        session.off("data", onData);
-        outcome();
-      };
-      const expire = (ms: number, onExpiry: () => void): void => {
-        if (timer) clearTimeout(timer);
-        timer = setTimeout(onExpiry, ms);
-      };
-      const refuse = (): void => {
-        if (refused) return;
-        refused = true;
-        expire(P2PCommandRouter.KEYED_REFUSAL_TWIN_MS, () =>
-          settle(() => resolve({ code: KEYED_PAYLOAD_SEQ_ERROR, mark })),
-        );
-      };
-      const onResult = (r: { code: number; channel: number }): void => {
-        if (r.channel !== channel) return;
-        if (r.code === KEYED_PAYLOAD_SEQ_ERROR) refuse();
-        else if (!refused) settle(() => resolve({ code: r.code }));
-      };
-      const onData = (f: P2PFrame): void => {
-        if (f.channel !== channel || f.commandId !== CommandType.CMD_NOTIFY_PAYLOAD) return;
-        const published = keyedPayloadSeqMark(f.json);
-        if (published !== undefined) {
-          mark = published;
-          return refuse();
-        }
-        const code = keyedPayloadReportCode(f.json, engage);
-        if (code !== undefined && !refused) settle(() => resolve({ code }));
-      };
-      session.on("commandResult", onResult);
-      session.on("data", onData);
-      expire(P2PCommandRouter.KEYED_REPLY_MS, () =>
-        settle(() => reject(new Error(`keyed-payload command to ${sn} drew no reply`))),
-      );
-      try {
-        send();
-      } catch (e) {
-        settle(() => reject(e));
-      }
-    });
+    return this.awaitReply(
+      session,
+      P2PCommandRouter.KEYED_REPLY_MS,
+      () => new Error(`keyed-payload command to ${sn} drew no reply`),
+      send,
+      (done, expire) => {
+        let refused = false;
+        let mark: number | undefined;
+        const refuse = (): void => {
+          if (refused) return;
+          refused = true;
+          expire(P2PCommandRouter.KEYED_REFUSAL_TWIN_MS, () => done({ code: KEYED_PAYLOAD_SEQ_ERROR, mark }));
+        };
+        return {
+          result: (r) => {
+            if (r.channel !== channel) return;
+            if (r.code === KEYED_PAYLOAD_SEQ_ERROR) refuse();
+            else if (!refused) done({ code: r.code });
+          },
+          data: (f) => {
+            if (f.channel !== channel || f.commandId !== CommandType.CMD_NOTIFY_PAYLOAD) return;
+            const published = keyedPayloadSeqMark(f.json);
+            if (published !== undefined) {
+              mark = published;
+              return refuse();
+            }
+            const code = keyedPayloadReportCode(f.json, engage);
+            if (code !== undefined && !refused) done({ code });
+          },
+        };
+      },
+    );
   }
 
   /** How long a keyed-payload command waits for any reply before it is taken as never having landed. */
@@ -2035,7 +2317,7 @@ export class P2PCommandRouter {
    * bytes and never the routing channel — that's re-resolved here from the device record.
    */
   private async sendFf09Actuate(sn: string, cmd: Ff09Identity): Promise<void> {
-    const resolved = await this.resolveSession(sn, { waitLevel2: true });
+    const resolved = await this.resolveSession(sn, { waitLevel2: true, clearFallback: true });
     const frame = buildFf09Frame({
       engage: cmd.engage,
       adminUserId: cmd.adminUserId,
@@ -2051,6 +2333,51 @@ export class P2PCommandRouter {
       0,
       resolved,
     );
+  }
+
+  /**
+   * **`doorlock-pass-through-actuate` intent** — `CMD_DOORLOCK_DATA_PASS_THROUGH` at level-2 inside the
+   * `CMD_SET_PAYLOAD` envelope, `mValue3=0`, on the lock's channel of the station it is paired to, its
+   * `payload` the sealed blob from {@link buildDoorlockPassThrough} keyed to that station and its owner's
+   * member record. Sent once: the blob carries its own sequence number, the clock in seconds + 1 as the app
+   * sends it. The key is the station owner's, so it reads the station's member record rather than the lock's
+   * `accountId` from `resolveSession`. Its `short_user_id` is hex, as on the `ff09` path, and anything
+   * but four hex digits throws rather than writing the wrong user.
+   */
+  private async sendDoorlockPassThrough(sn: string, cmd: Ff09Identity): Promise<void> {
+    const { session, parentSn, channel } = await this.resolveSession(sn, {
+      waitLevel2: true,
+      level2Sender: "set-payload",
+    });
+    const member = ((this.recordFor(parentSn)?.raw as Record<string, unknown> | undefined)?.member ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const adminUserId = typeof member.admin_user_id === "string" ? member.admin_user_id : cmd.adminUserId;
+    const shortUserIdHex = String(member.short_user_id ?? cmd.shortUserId);
+    if (!/^[0-9a-fA-F]{4}$/.test(shortUserIdHex)) {
+      throw new Error(
+        `door-lock pass-through: ${parentSn} has no 4-digit hex short_user_id for ${sn}, got ${JSON.stringify(shortUserIdHex)}`,
+      );
+    }
+    const shortUserId = Number.parseInt(shortUserIdHex, 16);
+    const nickname = typeof member.nick_name === "string" ? member.nick_name : cmd.username;
+    const blob = buildDoorlockPassThrough({
+      engage: cmd.engage,
+      adminUserId,
+      shortUserId,
+      nickname,
+      stationSn: parentSn,
+      seqNum: Math.trunc(Date.now() / 1000) + 1,
+    });
+    (this.deps.logger ?? noopLogger).debug(
+      `[p2p] ${parentSn} door-lock pass-through ${cmd.engage ? "lock" : "unlock"} ${sn} ch=${channel}`,
+    );
+    if (
+      !session.sendControlLevel2(CommandType.CMD_DOORLOCK_DATA_PASS_THROUGH, channel, adminUserId, { payload: blob }, 0)
+    ) {
+      throw new StationKeyUnavailableError(parentSn);
+    }
   }
 
   /**
@@ -2253,10 +2580,10 @@ export class P2PCommandRouter {
    * SoloCam-spotlight / Cam2C-3). No level-2 key needed (standalone level-1 ECB). Fire-and-forget,
    * repeated for RF resilience.
    */
-  private async sendIntStringCommand(sn: string, outerCmd: number, value: number): Promise<void> {
+  private async sendIntStringCommand(sn: string, outerCmd: number, value: number, form?: ScalarForm): Promise<void> {
     const { session, channel, accountId } = await this.resolveSession(sn);
     for (let i = 0; i < DIRECT_CMD_SENDS; i++) {
-      session.sendIntStringCommand(outerCmd, value, channel, accountId, channel);
+      session.sendIntStringCommand(outerCmd, value, channel, form === "int-pair" ? "" : accountId, channel);
       await sleep(200);
     }
   }
@@ -2281,10 +2608,9 @@ export class P2PCommandRouter {
       }),
       "utf-8",
     );
-    const camInfoPre = Buffer.from("ff00000087030000", "hex"); // 1103 GET_CAMERA_INFO precursor
     const gap = () => sleep(150);
 
-    session.sendRawLevel2Bytes(camInfoPre, 255, P2P_ENVELOPE.GET_CAMERA_INFO, 8); // precursor on the station channel
+    session.sendRawLevel2Bytes(STATION_TABLE_QUERY, 255, P2P_ENVELOPE.GET_CAMERA_INFO, 8); // precursor on the station channel
     await gap();
     for (let i = 0; i < 2; i++) {
       session.sendRawLevel2Bytes(setJson, 0, P2P_ENVELOPE.SET_PAYLOAD, 8); // SET on ch0 (station scope)
@@ -2294,32 +2620,39 @@ export class P2PCommandRouter {
       session.sendRawLevel2Bytes(setJson, channel, P2P_ENVELOPE.SET_PAYLOAD, 8); // SET on the camera channel
       await gap();
     }
-    session.sendRawLevel2Bytes(camInfoPre, 0, P2P_ENVELOPE.GET_CAMERA_INFO, 8); // 1103 companion on ch0
+    session.sendRawLevel2Bytes(STATION_TABLE_QUERY, 0, P2P_ENVELOPE.GET_CAMERA_INFO, 8); // 1103 companion on ch0
   }
 
   /**
    * Route a control command (`{commandType, data}`) to a device over P2P: HomeBase-attached →
    * level-2 GCM (bare plaintext, channel in the frame header), standalone → level-1 ECB. Waits for
-   * the session to connect + (for HomeBase) the level-2 key.
+   * the session to connect + (for HomeBase) the level-2 key. Either send settles on the device's answer
+   * under `outerCmd` ({@link sendAnswered}). The level-1 body carries no `transaction`, which the vendor
+   * app adds there and leaves out of the level-2 one.
    */
   private async routeControl(
     sn: string,
     outerCmd: number,
     inner: { commandType: number; data: unknown },
-  ): Promise<void> {
+  ): Promise<boolean> {
     // HomeBase-attached → level-2 GCM (wait for the key); standalone → level-1 ECB. The L1/L2 choice
     // itself lives in sendBySessionLevel; here we only supply the two JSON senders.
     const json = JSON.stringify(inner);
-    await this.sendBySessionLevel(sn, {
-      l1: ({ session, channel }) => {
-        session.sendStringPayloadCommand(outerCmd, json, channel);
-        return Promise.resolve();
-      },
-      l2: async ({ session, channel }) => {
-        if (!(await session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"))) {
+    return this.sendBySessionLevel<boolean>(sn, {
+      l1: (resolved) =>
+        this.sendAnswered(sn, resolved, { commandId: outerCmd, channel: resolved.channel }, (r) => {
+          r.session.sendAcknowledged(() => {
+            r.session.sendStringPayloadCommand(outerCmd, json, r.channel);
+            return true;
+          });
+        }),
+      l2: async (resolved) => {
+        if (!(await resolved.session.awaitLevel2Key(LEVEL2_GRACE_MS, "call"))) {
           throw new Error(`level-2 key not ready for ${sn} — cannot route HomeBase command`);
         }
-        session.sendRawLevel2(json, channel, outerCmd);
+        return this.sendAnswered(sn, resolved, { commandId: outerCmd, channel: resolved.channel }, (r) => {
+          r.session.sendAcknowledged(() => r.session.sendRawLevel2(json, r.channel, outerCmd));
+        });
       },
     });
   }

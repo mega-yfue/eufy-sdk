@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { StationKeyUnavailableError } from "../../../core/contracts.js";
 import { P2PCommandRouter, type P2PRouterDeps } from "../command-router.js";
-import { connectedSession, type FakeP2PSession } from "./session-fixtures.js";
+import { connectedSession, onFakeTime, type FakeP2PSession } from "./session-fixtures.js";
 
 const DEVICE_SN = "T8000P0000000000";
 const STATION_SN = "T8000P0000000001";
@@ -87,9 +87,9 @@ describe("resolving a session defers the level-2 wait to the session", () => {
    */
   it("waits for the negotiation to settle before choosing a seal, session-scoped", async () => {
     const { router, session } = setup(false);
-    await router
-      .dispatchCommand(DEVICE_SN, { kind: "set-param", param: 6, value: 0, form: "auto", channel: 1 })
-      .catch(() => undefined);
+    await onFakeTime(() =>
+      router.dispatchCommand(DEVICE_SN, { kind: "set-param", param: 6, value: 0, form: "auto", channel: 1 }),
+    ).catch(() => undefined);
     expect(session.awaitLevel2Key).toHaveBeenCalledWith(SETTLE_GRACE_MS, "session");
   });
 
@@ -139,18 +139,18 @@ describe("resolving a session defers the level-2 wait to the session", () => {
  * the session; these pin what that then does on each kind of station.
  */
 describe("a set-payload whose seal is the session's", () => {
-  /** How many times a fire-and-forget control is repeated on this router (`DIRECT_CMD_SENDS`). */
-  const REPLAYS = 5;
-
   const envelope = (form?: "auto") =>
     ({ kind: "set-payload", cmd: 1224, payload: { mode_type: 63 }, channel: 0, mValue3: 0, form }) as const;
 
-  it("sends it level-1 to a keyless own-session station, replayed, without a per-call wait", async () => {
+  it("sends it level-1 to a keyless own-session station, answered, without a per-call wait", async () => {
     const { router, session } = setup(false, false);
+    session.sendSetPayload.mockImplementation(() =>
+      queueMicrotask(() => session.emit("commandResult", { code: 0, channel: 0, commandId: 1350 })),
+    );
 
-    await router.dispatchCommand(DEVICE_SN, envelope("auto"));
+    await onFakeTime(() => router.dispatchCommand(DEVICE_SN, envelope("auto")));
 
-    expect(session.sendSetPayload).toHaveBeenCalledTimes(REPLAYS);
+    expect(session.sendSetPayload).toHaveBeenCalledTimes(1);
     expect(session.sendControlLevel2).not.toHaveBeenCalled();
     // The settle wait, charged from connect — never the per-call grace the required-key path spends.
     expect(session.awaitLevel2Key).toHaveBeenCalledWith(SETTLE_GRACE_MS, "session");
@@ -167,13 +167,17 @@ describe("a set-payload whose seal is the session's", () => {
     expect(session.sendSetPayload).not.toHaveBeenCalled();
   });
 
-  /** A keyed station is untouched by the downgrade: same envelope, same seal, same replay as before. */
+  /** A keyed station is untouched by the downgrade: same envelope, same seal, sent once and answered. */
   it("still seals it level-2 where the session holds a key", async () => {
     const { router, session } = setup(true, false);
+    session.sendControlLevel2.mockImplementation(() => {
+      queueMicrotask(() => session.emit("commandResult", { code: 0, channel: 0, commandId: 1350 }));
+      return true;
+    });
 
-    await router.dispatchCommand(DEVICE_SN, envelope("auto"));
+    await onFakeTime(() => router.dispatchCommand(DEVICE_SN, envelope("auto")));
 
-    expect(session.sendControlLevel2).toHaveBeenCalledTimes(REPLAYS);
+    expect(session.sendControlLevel2).toHaveBeenCalledTimes(1);
     expect(session.sendSetPayload).not.toHaveBeenCalled();
   });
 });

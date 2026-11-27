@@ -103,3 +103,49 @@ describe("P2P frame — the param report is scoped to a notify", () => {
     expect(withCommandId(1351, cameraInfo)?.params).toBeUndefined();
   });
 });
+
+describe("P2P frame — a station's camera-info table", () => {
+  /**
+   * A HomeBase answers `CMD_CAMERA_INFO` on its own channel with every channel's params in one root
+   * array, each entry's `dev_type` naming the channel it belongs to (255 is the station itself). Measured on
+   * a HomeBase with eight cameras: the battery, spotlight brightness and spotlight enable it reported per
+   * `dev_type` matched the attached cameras on those channels.
+   */
+  const handleOn = (json: unknown) => {
+    const session = new P2PSession({ stationSn: "T8030P0000000000", p2pDid: "XXXXXXX-000000-XXXXX" });
+    const frames: { params?: Record<number, string>; channelParams?: Record<number, Record<number, string>> }[] = [];
+    session.on("data", (f) => frames.push(f));
+    const body = Buffer.concat([Buffer.from(JSON.stringify(json), "utf8"), Buffer.from([0])]);
+    (session as unknown as { handleFrame(h: unknown, p: Buffer, d: number): void }).handleFrame(
+      { commandId: 1103, channel: 255, signCode: 2, bytesToRead: body.length },
+      body,
+      0,
+    );
+    return frames[0];
+  };
+  const table = {
+    main_sw_version: "0.0.0.0",
+    params: [
+      { dev_type: 0, param_type: 1400, param_value: "0" },
+      { dev_type: 0, param_type: 1401, param_value: "0" },
+      { dev_type: 5, param_type: 1400, param_value: "0" },
+      { dev_type: 5, param_type: 1401, param_value: "100" },
+      { dev_type: 7, param_type: 1400, param_value: "1" },
+      { dev_type: 7, param_type: 1401, param_value: "60" },
+      { dev_type: 255, param_type: 1176, param_value: "192.0.2.10" },
+    ],
+  };
+
+  it("splits the table by the channel each entry names", () => {
+    expect(handleOn(table)?.channelParams).toEqual({
+      0: { 1400: "0", 1401: "0" },
+      5: { 1400: "0", 1401: "100" },
+      7: { 1400: "1", 1401: "60" },
+      255: { 1176: "192.0.2.10" },
+    });
+  });
+
+  it("does not flatten the table into one device's params", () => {
+    expect(handleOn(table)?.params).toBeUndefined();
+  });
+});

@@ -7,6 +7,8 @@ import {
   type DoorbellActions,
 } from "../doorbell.js";
 import { buildCommand } from "../index.js";
+import { parseThingsList } from "../thing-description.js";
+import { resolveDevice } from "../../registry.js";
 import { bind } from "./bind.js";
 import type { CommandContext } from "../types.js";
 
@@ -46,10 +48,15 @@ describe("doorbell capability module", () => {
     expect(buildCommand("doorbellLedEnable", true, doorbellCtx)).toBeUndefined();
   });
 
-  it("detects via the doorbell model-name regex", () => {
-    const re = DOORBELL.detection!.modelHints![0];
-    expect(re.test("Video Doorbell")).toBe(true);
-    expect(re.test("Indoor Cam")).toBe(false);
+  it("detects from the device type or the product's description, never the owner's name", () => {
+    const things = (...ids: string[]) =>
+      parseThingsList({
+        things_list: [{ profile: { product_code: "T0000" }, properties: ids.map((identifier) => ({ identifier })) }],
+      }).T0000!;
+    const caps = (rec: object) => resolveDevice({ category: "eufy_security", model: "T0000", ...rec }).capabilities;
+    expect(caps({ deviceType: 7 })).toContain("doorbell");
+    expect(caps({ things: things("notification_ring_onoff") })).toContain("doorbell");
+    expect(caps({ name: "Front Doorbell", things: things("nightvision_type") })).not.toContain("doorbell");
   });
 
   describe("buildCommand — direct-binary chime/image toggles (wire captured live on T8214)", () => {
@@ -226,11 +233,11 @@ describe("doorbell capability module", () => {
 
     it("one setter carries both halves — the wire has no way to send one", async () => {
       const { acts, sent } = bind<DoorbellActions>("doorbell", ctx(2));
-      await acts.setVideoQuality(DoorbellVideoQuality.Low, true);
+      await acts.setVideoQuality!(DoorbellVideoQuality.Low, true);
       expect(sent[0]).toMatchObject({ param: DOORBELL_CMD.VIDEO_QUALITY, value: 6, channel: 2 });
-      await acts.setVideoQuality(DoorbellVideoQuality.High, false);
+      await acts.setVideoQuality!(DoorbellVideoQuality.High, false);
       expect(sent[1]).toMatchObject({ value: 3 });
-      await acts.setVideoQuality(DoorbellVideoQuality.Auto, true);
+      await acts.setVideoQuality!(DoorbellVideoQuality.Auto, true);
       expect(sent[2]).toMatchObject({ value: 5 });
     });
 
@@ -243,13 +250,13 @@ describe("doorbell capability module", () => {
       const { acts, sent } = bind<DoorbellActions>("doorbell", ctx(2), {
         read: (n) => (n === "videoQuality" ? { value: 8 } : undefined),
       });
-      await acts.setVideoQuality(DoorbellVideoQuality.Low, false);
+      await acts.setVideoQuality!(DoorbellVideoQuality.Low, false);
       expect(sent[0]).toMatchObject({ value: 1 });
     });
 
     it("refuses a quality outside the enum", async () => {
       const { acts, sent } = bind<DoorbellActions>("doorbell", ctx(2));
-      await expect(acts.setVideoQuality(9 as never, true)).rejects.toThrow(/videoQuality/);
+      await expect(acts.setVideoQuality!(9 as never, true)).rejects.toThrow(/videoQuality/);
       expect(sent).toHaveLength(0);
     });
   });

@@ -17,12 +17,14 @@
  */
 import {
   observeCommand,
+  reflectCommand,
   type Command,
   type CommandSink,
   type Ff09SettingsReader,
   type MediaProvider,
   type RawDpCodec,
 } from "../../core/contracts.js";
+import { asBool } from "../../core/util.js";
 import { describedAction, readBool, readNum, readStr } from "./access.js";
 import type { ActionArgSpec, ActionSpec, AvailabilityContext, CapabilityStateReader, CommandContext } from "./types.js";
 import type { Capability } from "../types.js";
@@ -57,6 +59,21 @@ export interface ValueMember {
    * static `enumValues` (or none) in place.
    */
   enumValuesFor?: (ctx: AvailabilityContext) => Record<number, string> | undefined;
+  /**
+   * The product thing-description identifiers this value is, in the app's order of preference
+   * (`nightvision_type_new` before `nightvision_type`), each grounded in the products' settings bundles
+   * reading it from this member's param. For an enum member without an {@link enumValuesFor} answer, the
+   * first one the device's resolved description has gives the options: its members' wire values that
+   * {@link enumValues} names, or 0 and 1 for a `bool` property.
+   */
+  thing?: readonly string[];
+  /**
+   * The getter exists where the device's resolved description lists the first {@link thing} identifier,
+   * reported or not, and answers that property's `defaultValue` (the app's model value, before any wire
+   * polarity) until the device reports the param. The settings bundles read the identifier the same way:
+   * a param never reported leaves the description's default in place.
+   */
+  thingDefault?: true;
   provenance?: PropertySpec["provenance"];
   invert?: boolean;
   /** Per-device read polarity; undefined retains the static default. */
@@ -145,14 +162,25 @@ export interface ValueMember {
    */
   unverified?: true;
   /**
+   * {@link unverified}, decided per device: the write wire is confirmed on some families and not on the
+   * one this predicate answers `true` for. There the setter is not installed and the intent path throws,
+   * exactly as for a member that is unverified everywhere. Like `available`, a member that declares this
+   * lands its setter OPTIONAL on the surface, because whether it exists is a runtime fact.
+   */
+  unverifiedFor?: (ctx: AvailabilityContext) => boolean;
+  /**
    * Extra names the intent path should route here, taking the caller's value as-is. Unlike
    * {@link aliases}, no value is supplied: it is the same write under a second name.
    */
   intentNames?: readonly string[];
-  /** Extra wire ids that also carry this value on some families, with their own polarity and family gate. */
+  /**
+   * Extra wire ids that also carry this value on some families, with their own polarity and family gate,
+   * and their own {@link coerce} where the alias stands in for an unavailable primary.
+   */
   readAliases?: readonly {
     paramType: number;
     invert?: boolean;
+    coerce?: ValueMember["coerce"];
     available?: (ctx: AvailabilityContext) => boolean;
   }[];
   /**
@@ -276,7 +304,8 @@ export interface ValueMember {
   /**
    * The option set of a decoded `enum` — the counterpart to a property schema's `enumValues`, for a
    * getter whose value that schema cannot express. Legal only alongside {@link decode}, since without
-   * one the property's own set is the answer and a second copy could only drift.
+   * one the property's own set is the answer and a second copy could only drift. A device whose context
+   * resolves its own enum domain is offered that domain instead.
    */
   decodedValues?: readonly (string | number)[];
 }
@@ -499,10 +528,11 @@ export type UnverifiedKeys<M extends Members> = {
 /**
  * Members whose presence is a runtime fact, so the surface must make a caller check: a write installed
  * only on the devices that prove they speak it ({@link ValueMember.requires}), or one whose wire is not
- * captured ({@link ValueMember.unverified}).
+ * captured ({@link ValueMember.unverified}) everywhere or on some families ({@link ValueMember.unverifiedFor}).
  */
 export type ConditionalKeys<M extends Members> =
   | UnverifiedKeys<M>
+  | { [K in keyof M]: M[K] extends { unverifiedFor: unknown } ? K : never }[keyof M]
   | { [K in keyof M]: M[K] extends { requires: readonly number[] } ? K : never }[keyof M]
   | { [K in keyof M]: M[K] extends { requiresRead: true } ? K : never }[keyof M]
   | { [K in keyof M]: M[K] extends { available: unknown } ? K : never }[keyof M];
@@ -579,17 +609,44 @@ export type Surface<M extends Members> = {
 // ── the derived RUNTIME ─────────────────────────────────────────────────────────────────────────
 
 /**
+ * The options a member's {@link ValueMember.thing} gives on this device: the first listed identifier the
+ * resolved description has, its members' wire values (0 and 1 for a `bool`) that `enumValues` names.
+ * `undefined` without a static domain, a description, a listed property or any named value, and for a
+ * property listing every member on one wire value, which states no wire.
+ */
+function thingEnum(m: ValueMember, ctx: AvailabilityContext): Record<number, string> | undefined {
+  const named = m.enumValues;
+  const property = named && m.thing?.map((id) => ctx.things?.properties[id]).find(Boolean);
+  if (!named || !property) return undefined;
+  const wire = property.type === "bool" ? [0, 1] : property.members.map((x) => Number(x.wireValue ?? NaN));
+  if (wire.length > 1 && new Set(wire).size === 1) return undefined;
+  const options = Object.fromEntries(wire.filter((v) => v in named).map((v) => [v, named[v]!]));
+  return Object.keys(options).length ? options : undefined;
+}
+
+/**
+ * A {@link ValueMember.thingDefault} member's description default, as the member's type: `undefined` for
+ * any other member, without a description listing its identifier, or for a listed one stating no default.
+ */
+function thingDefaultOf(m: ValueMember, ctx: AvailabilityContext): { value?: boolean | number | string } | undefined {
+  const raw = m.thingDefault && m.thing?.map((id) => ctx.things?.properties[id]).find(Boolean);
+  if (!raw) return undefined;
+  const d = raw.defaultValue;
+  return { value: d === undefined ? d : m.type === "bool" ? asBool(d) : m.type === "string" ? d : Number(d) };
+}
+
+/**
  * Resolve a member's enum options for a device, evaluating `enumValuesFor` at most once. Returns the
  * options and whether they came from the device context (`dynamic`), so the option set and the enum
- * `kind` both come from a single result. A context domain (`enumValuesFor(ctx)`) is
- * returned when present; absent that (or with no context) the static `enumValues`; a member with
- * neither yields no options.
+ * `kind` both come from a single result. A context domain — `enumValuesFor(ctx)`, else what the
+ * member's `thing` gives on the device — is returned when present; absent that (or with no context) the
+ * static `enumValues`; a member with neither yields no options.
  */
 export function resolvedEnum(
   m: ValueMember,
   ctx?: AvailabilityContext,
 ): { values?: Record<number, string>; dynamic: boolean } {
-  const dynamic = ctx ? m.enumValuesFor?.(ctx) : undefined;
+  const dynamic = ctx ? (m.enumValuesFor?.(ctx) ?? thingEnum(m, ctx)) : undefined;
   return dynamic ? { values: dynamic, dynamic: true } : { values: m.enumValues, dynamic: false };
 }
 
@@ -624,12 +681,12 @@ export function propertiesOf(members: Members, ctx?: AvailabilityContext): Prope
         enumValues,
         provenance: m.provenance,
         invert: promoted?.invert ?? (ctx ? m.invertFor?.(ctx) : undefined) ?? m.invert,
-        decode: m.coerce,
+        decode: promoted?.coerce ?? m.coerce,
         // A member with a getter-side `decode` reads a field out of a structured payload, so the
         // stored value is that payload — see `PropertySpec.raw`.
         raw: m.decode ? true : undefined,
         readAliases: aliases?.slice(promoted ? 1 : 0).map(({ paramType, invert }) => ({ paramType, invert })),
-        writable: m.write !== undefined || m.writtenElsewhere === true,
+        writable: (m.write !== undefined && !(ctx && m.unverifiedFor?.(ctx))) || m.writtenElsewhere === true,
         reported: ctx?.paramIds
           ? wasReported(m, borrowedBy(m, members), { ...ctx, paramIds: ctx.paramIds })
           : undefined,
@@ -657,10 +714,12 @@ export function memberWrite(
   value: boolean | number | string,
   ctx: CommandContext,
 ): Command {
-  if (!inDomain(m, value)) throw new Error(rejection(name, m, value));
-  const cmd = m.write?.(value, ctx);
-  if (!cmd) throw new Error(rejection(name, m, value));
+  if (!inDomain(m, value, ctx)) throw new Error(rejection(name, m, value, ctx));
+  const written = m.write?.(value, ctx);
+  if (!written) throw new Error(rejection(name, m, value, ctx));
   const reflected = m.observation?.reflects(value, ctx);
+  const readback = reflected ? { param: reflected.param, raw: String(reflected.expected) } : readbackOf(m, value, ctx);
+  const cmd = readback ? reflectCommand(written, readback) : written;
   return m.observation && reflected
     ? observeCommand(cmd, {
         event: m.observation.event,
@@ -672,6 +731,30 @@ export function memberWrite(
         timeoutMs: m.observation.timeoutMs,
       })
     : cmd;
+}
+
+/**
+ * The param this member's getter reads on this device and the raw value that reads back as `value`: what
+ * that param holds once the device answers the write with success, as the vendor app records it after a
+ * successful write (`UpdateParams.doUpdateParams`). The read param, not the written one — the two differ
+ * where a family reports under an alias. Absent where the getter decodes or coerces the raw value, which
+ * has no inverse here, where this device reads the member from no param, or where its read does not follow
+ * the write, which an observation that named no readback states.
+ */
+function readbackOf(
+  m: ValueMember,
+  value: boolean | number | string,
+  ctx: CommandContext,
+): { param: number; raw: string } | undefined {
+  if (m.param === undefined || m.writeOnly || m.decode || m.coerce || m.observation) return undefined;
+  const primary = !m.readAvailable || m.readAvailable(ctx);
+  const alias = primary ? undefined : m.readAliases?.find((a) => !a.available || a.available(ctx));
+  if (!primary && !alias) return undefined;
+  const invert = (alias?.invert ?? m.invertFor?.(ctx) ?? m.invert) === true;
+  return {
+    param: alias?.paramType ?? m.param,
+    raw: m.type === "bool" ? String(Number(asBool(value) !== invert)) : String(value),
+  };
 }
 
 /**
@@ -689,8 +772,15 @@ export function memberWrite(
  * One source for all three consumers — the check, the generated refusal, and the argument a caller is
  * offered — so a caller is never shown a value it will then be refused for sending.
  */
-function writeDomain(m: ValueMember): readonly (string | number)[] | undefined {
-  return m.args?.[0]?.values ?? m.decodedValues ?? (m.enumValues && Object.keys(m.enumValues).map(Number));
+function writeDomain(m: ValueMember, ctx: CommandContext): readonly (string | number)[] | undefined {
+  const values = resolvedEnum(m, ctx).values;
+  return m.args?.[0]?.values ?? decodedDomain(m, ctx) ?? (values && Object.keys(values).map(Number));
+}
+
+/** A decoded read's option set on this device: the domain its context resolves, else `decodedValues`. */
+export function decodedDomain(m: ValueMember, ctx?: AvailabilityContext): readonly (string | number)[] | undefined {
+  const { values, dynamic } = resolvedEnum(m, ctx);
+  return m.decodedValues && dynamic && values ? Object.keys(values).map(Number) : m.decodedValues;
 }
 
 /**
@@ -709,13 +799,13 @@ function writeDomain(m: ValueMember): readonly (string | number)[] | undefined {
  * unchecked `setProperty("power", 999999)` reads as "turn it off" and, on a fire-and-forget wire, looks
  * like success. The values it accepts are the ones `asBool` gives meaning to.
  */
-function inDomain(m: ValueMember, value: unknown): boolean {
+function inDomain(m: ValueMember, value: unknown, ctx: CommandContext): boolean {
   if (m.type === "bool") return BOOL_VALUES.has(typeof value === "string" ? value.toLowerCase() : value);
   if (typeof value === "number") {
     if (m.min !== undefined && value < m.min) return false;
     if (m.max !== undefined && value > m.max) return false;
   }
-  const domain = writeDomain(m)?.filter((v) => typeof v === typeof value);
+  const domain = writeDomain(m, ctx)?.filter((v) => typeof v === typeof value);
   return !domain?.length || domain.includes(value as string | number);
 }
 
@@ -727,8 +817,8 @@ function inDomain(m: ValueMember, value: unknown): boolean {
  * own set, so a mode the device reports but cannot be set is refused by naming the three that can — the
  * message and the offered argument answer from one declaration.
  */
-function rejection(name: string, m: ValueMember, value: unknown): string {
-  const options = writeDomain(m);
+function rejection(name: string, m: ValueMember, value: unknown, ctx: CommandContext): string {
+  const options = writeDomain(m, ctx);
   const domain = options?.length
     ? `one of ${options.join("/")}`
     : m.min !== undefined && m.max !== undefined
@@ -758,14 +848,15 @@ function rejection(name: string, m: ValueMember, value: unknown): string {
  * stands where it has one and the read's otherwise — the same precedence {@link writeDomain} enforces
  * with, which is what makes a stated `values` a NARROWING of the read rather than an unrelated second list.
  */
-function describeWrite(name: string, m: ValueMember, reported: boolean): ActionSpec {
+function describeWrite(name: string, m: ValueMember, reported: boolean, ctx: AvailabilityContext): ActionSpec {
   const stateful = !m.writeOnly && reported;
+  const values = decodedDomain(m, ctx);
   const derived: ActionArgSpec = {
     name,
     kind: m.decodedKind ?? m.kind ?? "text",
     ...(m.min === undefined ? {} : { min: m.min }),
     ...(m.max === undefined ? {} : { max: m.max }),
-    ...(m.decodedValues ? { values: m.decodedValues } : {}),
+    ...(values ? { values } : {}),
   };
   return {
     form: stateful ? "stateful" : "momentary",
@@ -815,6 +906,8 @@ function reports(requires: readonly number[] | undefined, ctx: CommandContext): 
  * is stored as a decoded object. Handing either through a getter typed `number` is the one lie this
  * table exists to prevent.
  *
+ * A number outside `values`, the options published for this device, answers `undefined`.
+ *
  * Exported so the ONE narrowing the getters use is also the one a property-change announcement carries.
  * A second conversion of the wire value is precisely how a payload comes to disagree with the getter
  * beside it, which would defeat the point of announcing the change at all.
@@ -824,10 +917,12 @@ export function narrow(
   type: PropertyValueType,
   read: CapabilityStateReader,
   prop: string,
+  values?: Record<number, string>,
 ): boolean | number | string | undefined {
   if (type === "bool") return readBool(read, prop);
   if (type === "string") return readStr(read, prop);
-  return readNum(read, prop);
+  const n = readNum(read, prop);
+  return values && n !== undefined && !(n in values) ? undefined : n;
 }
 
 /**
@@ -890,13 +985,79 @@ export function installs(
 }
 
 /**
+ * Whether a command of this kind can route over the device's primary transport. The client decides what
+ * a transport refuses — `ctx.refusedCommandKinds`, the kinds the device's primary transport cannot carry
+ * — so the model keeps no copy of the routing table: a kind absent from the set (and the whole set, the
+ * P2P default `undefined`) routes.
+ */
+export function kindRoutable(kind: Command["kind"], ctx: AvailabilityContext): boolean {
+  return !ctx.refusedCommandKinds?.has(kind);
+}
+
+/**
+ * Every in-domain probe value for a member whose command KIND can depend on the value written — both
+ * bools, every enum option, else one scalar (the stored minimum, or `0`). The write builders are pure,
+ * so emitting each to read back its `kind` touches no transport. In-domain matters: a builder that
+ * validates its argument returns `undefined` for an out-of-domain value, which `writeRoutable` reads as
+ * unprobeable and fails open on rather than as unroutable.
+ */
+function probeValues(m: ValueMember, ctx: CommandContext): (boolean | number | string)[] {
+  if (m.type === "bool") return [false, true];
+  const { values } = resolvedEnum(m, ctx);
+  const keys = values ? Object.keys(values).map(Number) : undefined;
+  if (m.type === "string") return keys && values ? keys.map((k) => values[k]) : [""];
+  if (m.type === "enum") return keys ?? [0];
+  return keys ?? [m.min ?? 0]; // number
+}
+
+/**
+ * Whether this device's PRIMARY transport can carry the setter — true when ANY in-domain value it would
+ * write routes. A member whose command kind depends on its value keeps its setter as long as one value
+ * reaches the device (test mode enters over `set-payload` but leaves over `set-param`, so probing only
+ * `false` would wrongly drop it behind an RTC-control station).
+ *
+ * Fails OPEN: a builder that throws or declines (returns `undefined`) for a probe leaves the setter
+ * installed, so a write we cannot probe is never silently dropped — the gate only ever withdraws a
+ * setter it positively knows no in-domain value can route.
+ */
+function writeRoutable(m: ValueMember, ctx: CommandContext): boolean {
+  if (!ctx.refusedCommandKinds) return true;
+  for (const value of probeValues(m, ctx)) {
+    let kind: Command["kind"] | undefined;
+    try {
+      kind = m.write?.(value, ctx)?.kind;
+    } catch {
+      return true;
+    }
+    if (kind === undefined || kindRoutable(kind, ctx)) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether this device's PRIMARY transport can carry a momentary action's command. Fails OPEN on a
+ * throwing builder, the same as {@link writeRoutable}.
+ */
+function actionRoutable(m: ActionMember, ctx: CommandContext): boolean {
+  if (!ctx.refusedCommandKinds) return true;
+  let kind: Command["kind"];
+  try {
+    kind = m.action(ctx).kind;
+  } catch {
+    return true;
+  }
+  return kindRoutable(kind, ctx);
+}
+
+/**
  * Bind the table: evidence-gated getters, derived setters, momentary actions.
  *
  * Three rules the loop enforces for every member, so no module restates them:
  *
  *  - **One evidence gate for every read, decoded or not.** A `decode` changes how a value is READ, never
  *    whether the device reports it, so gating only the plain branch would publish a getter for a param
- *    the device never sent — one answering `undefined` forever. `realtime` is the opt-out.
+ *    the device never sent — one answering `undefined` forever. `realtime` is the opt-out, and
+ *    `thingDefault` installs it where the description lists the value, reading its default.
  *  - **A provider builder answering nothing DECLINES.** The provider is there but the member is not
  *    available on it (an optional method, or one the device gave no evidence for), so the member is
  *    ABSENT rather than a key holding `undefined` — `"talkback" in cam` has to mean the camera can talk.
@@ -905,8 +1066,9 @@ export function installs(
  *    identity and says so by throwing) and a method returning `Promise<void>` must not surprise a caller
  *    chaining `.catch()`. Caught here once rather than in each module's own wrapper.
  *
- * A getter is skipped for a `writeOnly` or `unexposed` member, and a setter for an `unverified` one —
- * declared so the capability documents the device, never installed.
+ * A getter is skipped for a `writeOnly` or `unexposed` member, and a setter for an `unverified` one, or
+ * one whose `unverifiedFor` holds for this device — declared so the capability documents the device,
+ * never installed.
  */
 export function bindMembers<M extends Members>(members: M, deps: MemberDeps): Surface<M> {
   const { ctx, sink, read, rawDp } = deps;
@@ -928,7 +1090,8 @@ export function bindMembers<M extends Members>(members: M, deps: MemberDeps): Su
       continue;
     }
     if ("action" in m) {
-      if (installs(m, ctx)) out[name] = describe(m.description, () => sink.dispatch(m.action(ctx)), {});
+      if (installs(m, ctx) && actionRoutable(m, ctx))
+        out[name] = describe(m.description, () => sink.dispatch(m.action(ctx)), {});
       continue;
     }
     const prop = m.property ?? name;
@@ -940,21 +1103,25 @@ export function bindMembers<M extends Members>(members: M, deps: MemberDeps): Su
     // One availability decision across getter, setter and manifest: a member gated off by `available`
     // for this device is not exposed as a getter either (the manifest already omits it).
     const available = !m.available || m.available(ctx);
-    // The getter gate is the manifest's `reported`, plus the realtime opt-out (see `wasReported`).
-    const reported = available && (m.realtime === true || wasReported(m, from, ctx));
+    const listed = thingDefaultOf(m, ctx);
+    const reported = available && (m.realtime === true || wasReported(m, from, ctx) || listed !== undefined);
     if (reported && !m.writeOnly && !m.unexposed) {
       const decode = m.decode;
       // The member's own wire wins; the owner's payload is the fallback for a device that does not
       // speak it. One `decode` sees whichever arrived and discriminates on the value's shape.
       const raw = (): unknown => read(prop)?.value ?? (borrowed === undefined ? undefined : read(borrowed)?.value);
-      const get = decode ? () => decode(raw(), rawDp, ctx) : () => narrow(m.type, read, prop);
+      const { values, dynamic } = resolvedEnum(m, ctx);
+      const domain = (dynamic ? "enum" : m.kind) === "enum" ? values : undefined;
+      const get = decode
+        ? () => decode(raw(), rawDp, ctx)
+        : () => (listed && !read(prop) ? listed.value : narrow(m.type, read, prop, domain));
       Object.defineProperty(out, name, { get, enumerable: true, configurable: true });
     }
-    if (!m.write || m.unverified || !installs(m, ctx)) continue;
+    if (!m.write || m.unverified || m.unverifiedFor?.(ctx) || !installs(m, ctx) || !writeRoutable(m, ctx)) continue;
     if (m.writeOnly) unobservable.push(name);
     else if (m.readReflectsWrite && !m.readReflectsWrite(ctx)) unreflected.push(name);
     const setter = m.writeAs ?? `set${name[0].toUpperCase()}${name.slice(1)}`;
-    out[setter] = describedAction(describeWrite(name, m, reported), (value: boolean | number | string) => {
+    out[setter] = describedAction(describeWrite(name, m, reported, ctx), (value: boolean | number | string) => {
       try {
         return sink.dispatch(memberWrite(name, m, value, ctx));
       } catch (e) {

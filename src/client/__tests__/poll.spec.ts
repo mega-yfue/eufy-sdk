@@ -42,7 +42,7 @@ const batteryChange = (to: string): ParamChange => paramChange(1101, "88", to);
  * the `contact` capability is granted and `contact` is a schema property with a typed getter.
  */
 function liveContactSensor(eufy: EufyMega, sn = "T8000P0000000000"): Device {
-  const record = { model: "T8900", category: "eufy_security", params: { 1550: "0" }, paramUpdatedAt: {} };
+  const record = { model: "T8900", category: "eufy_security", params: { 1550: "0", 1141: "-70" }, paramUpdatedAt: {} };
   const dev = Device.fromRecord(sn, record);
   vi.spyOn((eufy as any).registry, "record").mockResolvedValue(record);
   (eufy as any).liveDevices.set(sn, new WeakRef(dev));
@@ -157,6 +157,27 @@ describe("cloud-param poll loop", () => {
 
     expect(applyParams).toHaveBeenCalledExactlyOnceWith(params);
     expect(dev.getProperty("rssi")?.value).toBe(-64);
+  });
+
+  /** One re-resolution per device, since each one reads the device's param list from the cloud. */
+  it("re-resolves a device once for a pass that saw several of its params move", async () => {
+    const eufy = makeClient();
+    liveContactSensor(eufy);
+    const record = vi.spyOn((eufy as any).registry, "record");
+    const params = { 1550: "1", 1141: "-64" };
+    vi.spyOn((eufy as any).registry, "pollChanges").mockResolvedValue({
+      params: [
+        { deviceSn: "T8000P0000000000", paramType: 1550, from: "0", to: "1", params },
+        { deviceSn: "T8000P0000000000", paramType: 1141, from: "-70", to: "-64", params },
+      ],
+      added: [],
+      removed: [],
+      reported: [],
+    });
+
+    await (eufy as any).pollOnce();
+
+    expect(record).toHaveBeenCalledExactlyOnceWith("T8000P0000000000");
   });
 
   /**

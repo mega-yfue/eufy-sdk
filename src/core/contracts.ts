@@ -190,11 +190,39 @@ export class DeviceChannelUnresolvedError extends Error {
 }
 
 /**
+ * A command the device did not apply: it answered with a result code other than success (`0`), or it did not
+ * answer within `timeoutMs`.
+ *
+ * `code` is the device's answer carried unmapped (negative codes such as `-104` and `-108` are refusals); it
+ * is absent when no answer came, which says nothing about whether the command landed.
+ */
+export class CommandResultError extends Error {
+  constructor(
+    /** The device the command addressed. */
+    readonly sn: string,
+    /** The wire command the answer was awaited for. */
+    readonly commandId: number,
+    /** The device's result code, absent when it never answered. */
+    readonly code: number | undefined,
+    /** How long the answer was awaited. */
+    readonly timeoutMs: number,
+  ) {
+    super(
+      code === undefined
+        ? `${sn} did not answer command ${commandId} within ${timeoutMs}ms`
+        : `${sn} refused command ${commandId} with code ${code}`,
+    );
+    this.name = "CommandResultError";
+  }
+}
+
+/**
  * Why {@link MediaProvider.downloadRecording} returned no recording.
  *
- * - `invalid-recording` — the recording name is not one the station could hold.
- * - `key-unavailable` — the key the recording was stored under could not be obtained.
- * - `no-data` — the station sent nothing within the wait.
+ * - `invalid-recording` — the recording name is not one the camera's station could hold.
+ * - `key-unavailable` — the station stores the recording sealed and the key it was sealed under could not be
+ *   obtained.
+ * - `no-data` — the station sent no recording: it answered that it holds none, or sent nothing within the wait.
  * - `incomplete` — the transfer ended before the station's finish frame.
  * - `undecodable` — data arrived but no video frame could be decoded from it.
  */
@@ -216,14 +244,16 @@ export class RecordingDownloadError extends Error {
 /**
  * A recording downloaded from the station, as elementary streams.
  *
- * `video` is Annex-B H.264 in decode order, `audio` AAC-LC 16 kHz mono in ADTS framing (absent when the
- * recording carried none that could be decoded). `frames` counts the distinct video sequences emitted.
- * `missingFrames` counts gaps between received sequences and received sequences that yielded no usable
- * picture, including at either end. `durationMs` spans the first to the last emitted picture by the
- * camera's own timestamps; `fps` is derived from those stamps.
+ * `video` is Annex-B H.264 or H.265 in decode order, `audio` AAC-LC 16 kHz mono in ADTS framing (absent
+ * when the recording carried none that could be decoded). `codec` is the codec of `video`, read off the parameter
+ * sets of its first keyframe that carries them, and is absent when no keyframe does. `frames` counts the pictures
+ * emitted, numbered by the camera's frame numbers counted on across a change of frame size. `missingFrames` counts
+ * gaps in that numbering and numbered frames that yielded no usable picture, including at either end. `durationMs`
+ * spans the first to the last emitted picture by the camera's own timestamps; `fps` is derived from those stamps.
  */
 export interface RecordingDownload {
   video: Buffer;
+  codec?: VideoCodec;
   audio?: Buffer;
   frames: number;
   missingFrames: number;
@@ -333,14 +363,14 @@ export class StateConvergenceError extends Error {
 }
 
 /**
- * Wire form for a scalar {@link Command} `"set-param"` intent — how the write is sealed. The BODY is the
- * same struct in every case — `[u32 channel][u32 value][account_id → 128B]` — so these choose only the
- * encryption.
+ * Wire form for a scalar {@link Command} `"set-param"` intent — how the write is sealed. The BODY is
+ * `[u32 channel][u32 value][account_id → 128B]` in every form but `"int-pair"`.
  *
  * - `"int-string"` pins level-1 (AES-128-ECB), `"direct-binary"` pins level-2 (AES-256-GCM).
+ * - `"int-pair"` pins level-1 with the bare `[u32 channel][u32 value]` body and no account id.
  * - `"auto"` lets the transport pick the level, which it resolves from the session it will send on.
  */
-export type ScalarForm = "auto" | "int-string" | "direct-binary";
+export type ScalarForm = "auto" | "int-string" | "int-pair" | "direct-binary";
 
 /**
  * The identity fields an actuation frame is built from — for `ff09`, the AES key/IV inputs
@@ -391,7 +421,18 @@ const COMMAND_OBSERVATION = Symbol("command-observation");
  * from the device record — nothing transport- or route-specific lives in the intent.
  */
 export type Command =
-  | { kind: "set-param"; param: number; value: number; form: ScalarForm; channel: number }
+  | {
+      kind: "set-param";
+      param: number;
+      value: number;
+      form: ScalarForm;
+      channel: number;
+      /**
+       * The device returns no result code under `param` for this write, so the write is sent unread. Absent,
+       * a write the transport can read an answer to settles on that answer.
+       */
+      unanswered?: true;
+    }
   | { kind: "set-json"; param: number; data: Record<string, unknown>; channel: number }
   // `set-json-raw` differs from `set-json` in ONE way: the wire's outer P2P command IS `cmd` itself
   // (no `1700` CONTROL_PAYLOAD wrapper, no `{commandType,data}` nesting) — the plaintext is exactly
@@ -411,7 +452,14 @@ export type Command =
       level2Sender?: "set-payload";
     }
   | { kind: "p2p-privacy-burst"; enabled: boolean; channel: number }
-  | { kind: "p2p-station-scalar"; cmd: number; value: number; channel: number }
+  | {
+      kind: "p2p-station-scalar";
+      cmd: number;
+      value: number;
+      channel: number;
+      /** `"auto"`: the seal follows the session, level-2 with a key and level-1 without. Absent, level-2 only. */
+      form?: Extract<ScalarForm, "auto">;
+    }
   /** P2P int-plus-string frame; the transport injects the authenticated account id string. */
   | { kind: "p2p-int-string"; cmd: number; value: number; valueSub: number; channel: number }
   | ({ kind: "ff09-actuate" } & Ff09Identity)
@@ -421,6 +469,12 @@ export type Command =
    * resolves the device key and the member display name from the device record.
    */
   | ({ kind: "keyed-payload-actuate" } & Ff09Identity)
+  /**
+   * `doorlock-pass-through-actuate` — a lock/unlock the device's station relays to the lock it is paired to,
+   * sealed under a key derived from the station owner and the station serial. P2P-only; the router resolves
+   * the station, its owner identity and the lock's channel from the device records.
+   */
+  | ({ kind: "doorlock-pass-through-actuate" } & Ff09Identity)
   | { kind: "ff09-autolock"; adminUserId: string; deviceSn: string; enabled: boolean; delaySeconds?: number }
   | { kind: "ff09-setting-toggle"; adminUserId: string; deviceSn: string; settingId: number; value: boolean }
   // `mqtt-dp` — an `eufy_life` secure-MQTT "DP" TLV write (smart lights + kin). The capability supplies
@@ -455,6 +509,27 @@ export function observeCommand(command: Command, observation: CommandObservation
 /** Read capability-owned observation policy at the client boundary. @internal */
 export function commandObservation(command: Command): CommandObservation | undefined {
   return (command as Command & { [COMMAND_OBSERVATION]?: CommandObservation })[COMMAND_OBSERVATION];
+}
+
+/**
+ * The raw value a write leaves under the param its member reads, which is what that param holds once the
+ * device answers the write with success. @internal
+ */
+export interface CommandReflection {
+  param: number;
+  raw: string;
+}
+
+const COMMAND_REFLECTION = Symbol("command-reflection");
+
+/** Attach the readback a write leaves on success, without changing its enumerable transport intent. @internal */
+export function reflectCommand(command: Command, reflection: CommandReflection): Command {
+  return Object.defineProperty(command, COMMAND_REFLECTION, { configurable: true, value: reflection });
+}
+
+/** Read the readback a write leaves on success at the client boundary. @internal */
+export function commandReflection(command: Command): CommandReflection | undefined {
+  return (command as Command & { [COMMAND_REFLECTION]?: CommandReflection })[COMMAND_REFLECTION];
 }
 
 /**
@@ -535,7 +610,7 @@ export interface TuyaDpInbound {
   onDps(sn: string, dps: Record<number, boolean | number | string>): void;
 }
 
-/** Elementary-stream video codec of a {@link LiveVideoFrame} — eufy cameras stream H.264 or H.265. */
+/** Elementary-stream video codec — eufy cameras stream H.264 or H.265. */
 export type VideoCodec = "h264" | "h265" | "av1";
 
 /**
@@ -802,9 +877,13 @@ export interface AbortableCall {
   signal?: AbortSignal;
 }
 
-/** Select an optical view; absence selects view 0. */
+/** NVR output size requested when a live pull starts. */
+export type MediaOutputResolution = "1080p";
+
+/** Select an optical view and output size; absence selects view 0 at the route's default output. */
 export interface MediaSourceSelection {
   view?: number;
+  outputResolution?: MediaOutputResolution;
 }
 
 export interface SharedSourceHints {
@@ -833,6 +912,8 @@ export interface SharedSourceHints {
  * because an unbound model has no live client (hence `?.` at the call site).
  */
 export interface MediaProvider {
+  /** Output sizes supported by this bound media route. Absence means no size selection. */
+  outputResolutions?: readonly MediaOutputResolution[];
   /** Optical view identifiers supported by this bound media route. */
   views?: readonly number[];
   /**
@@ -917,7 +998,9 @@ export interface MediaProvider {
    * {@link ReceivedVideoFrame} envelopes whose original source-arrival time survives retained replay.
    * Raw mode ignores arrivalTime. Audio is available separately through {@link live} or muxed through
    * {@link recordFragments}; it is never interleaved into raw video. The caller owns the Readable's
-   * lifetime, and destroying it releases the shared pull.
+   * lifetime, and destroying it releases the shared pull. On a battery-budgeted source the Readable
+   * emits a `budget` event with a {@link StreamBudgetNotice}; unless `extend()` is called within its
+   * grace, the Readable ends.
    */
   openReadable?(
     opts?: { objectMode?: boolean; arrivalTime?: boolean } & SharedSourceHints & AbortableCall & MediaSourceSelection,
@@ -940,9 +1023,11 @@ export interface MediaProvider {
    */
   talkback?(opts?: { encoder?: AacEncoder } & SharedSourceHints): Promise<TalkbackHandle>;
   /**
-   * Download one recording the camera's station stored, identified by the recording name and cipher id of
-   * the event. One download runs at a time per station. Rejects with {@link RecordingDownloadError}.
-   * Optional, and absent on a camera whose station's recording download is unverified.
+   * Download one recording the camera's station stored. `recording` names it: the file name the station stores
+   * it under, without the folder or the extension. `cipherId` is the cipher the station names for it, and is not
+   * read on a station that stores its recordings in the clear. One download runs at a time per station. Rejects with
+   * {@link RecordingDownloadError}. Optional, and absent on a camera whose station's recording download is
+   * unverified.
    */
   downloadRecording?(
     opts: { recording: string; cipherId: number; timeoutMs?: number } & AbortableCall,

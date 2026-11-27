@@ -32,7 +32,7 @@ const envelope = (d: Record<string, unknown> = data(), protocol: number = BIZ_PR
 describe("parseBizMapFrame", () => {
   it("unwraps a frame to its bytes and the numbers around it", () => {
     expect(parseBizMapFrame(envelope())).toEqual({
-      channelId: 9,
+      channelId: BIZ_CHANNEL.MAP_DATA,
       clearType: 0,
       dataType: 1,
       offset: 0,
@@ -98,16 +98,17 @@ describe("parseBizMapFrame", () => {
 });
 
 describe("the channel table", () => {
-  it("names the channels the vendor's ChanIds declares", () => {
+  it("names the channels a robot's frames identify", () => {
     expect(bizChannelName(0)).toBe("SCENES");
-    expect(bizChannelName(9)).toBe("MAP_DATA");
-    expect(bizChannelName(3)).toBe("ROOM_OUTLINE");
+    expect(bizChannelName(2)).toBe("MAP_DATA");
+    expect(bizChannelName(4)).toBe("ROOM_OUTLINE");
+    expect(bizChannelName(68)).toBe("MAP_BACKUP");
   });
 
   it("has no name for an id outside the table", () => {
     // Not a guess and not a throw: a device that renumbered its channels, or added one, produces an
     // id this table cannot name, and saying so is the honest answer.
-    expect(bizChannelName(11)).toBeUndefined();
+    expect(bizChannelName(9)).toBeUndefined();
     expect(bizChannelName(-1)).toBeUndefined();
   });
 

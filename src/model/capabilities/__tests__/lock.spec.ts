@@ -1,5 +1,8 @@
 import { LOCK, LOCK_SETTING_ID, type LockActions } from "../lock.js";
-import { isClassicWifiLock } from "../../device-family.js";
+import { isBluetoothLock, isClassicWifiLock } from "../../device-family.js";
+import { parseThingsList } from "../thing-description.js";
+import { resolveDevice } from "../../registry.js";
+import { DeviceType } from "../../device-types.js";
 import { bind } from "./bind.js";
 import { Device } from "../../device.js";
 import type { CommandContext } from "../types.js";
@@ -49,6 +52,47 @@ const classicCtx: CommandContext = {
   accountName: "someone+tag",
   hasP2p: true,
 };
+
+// A Bluetooth lock, DeviceType 50, paired to a station.
+const bluetoothCtx: CommandContext = {
+  channel: 0,
+  codec: "lock",
+  deviceType: 50,
+  model: "T8510",
+  serial: "T8510P0000000000",
+  stationSerial: "T8000P0000000000",
+  paramIds: new Set(),
+  adminUserId: "0000000000000000000000000000000000000000",
+  shortUserId: "0004",
+  accountName: "someone",
+  hasP2p: true,
+};
+
+describe("lock capability — Bluetooth lock family", () => {
+  it("classifies DeviceType 50 as the Bluetooth lock, and nothing else", () => {
+    expect(isBluetoothLock(bluetoothCtx)).toBe(true);
+    expect(isBluetoothLock({ deviceType: 52 })).toBe(false);
+    expect(isBluetoothLock({ deviceType: 51 })).toBe(false);
+    expect(isBluetoothLock({})).toBe(false);
+  });
+
+  it("lock/unlock emit the door-lock pass-through intent", async () => {
+    const { acts, sent } = lockOf(bluetoothCtx);
+    await acts.lock!();
+    await acts.unlock!();
+    expect(sent.map((c) => c.kind)).toEqual(["doorlock-pass-through-actuate", "doorlock-pass-through-actuate"]);
+    expect(sent[0]).toMatchObject({ engage: true, adminUserId: bluetoothCtx.adminUserId, shortUserId: "0004" });
+    expect(sent[1]).toMatchObject({ engage: false, deviceSn: bluetoothCtx.serial });
+  });
+
+  it("withholds the ff09 auto-lock members, which its bridge has no key to send", () => {
+    const ff09Settings = { getAutoLockState: vi.fn() } as unknown as Ff09SettingsReader;
+    const { acts } = lockOf(bluetoothCtx, ff09Settings);
+    expect("setAutoLock" in acts).toBe(false);
+    expect(acts.getAutoLockState).toBeUndefined();
+    expect(lockOf(p2pCtx, ff09Settings).acts.getAutoLockState).toBeTypeOf("function");
+  });
+});
 
 describe("lock capability — classic Wi-Fi lock family", () => {
   it("classifies the classic lock as DeviceType 51 in the driven T8520 serial range, and nothing else", () => {
@@ -104,7 +148,7 @@ describe("lock capability — classic Wi-Fi lock family", () => {
 describe("lock capability module", () => {
   it("declares the capability + schema", () => {
     expect(LOCK.capability).toBe("lock");
-    expect(LOCK.properties.map((p) => p.name)).toEqual(["locked", "battery", "rssi"]);
+    expect(LOCK.properties.map((p) => p.name)).toEqual(["locked", "battery"]);
   });
 
   it("lock/unlock on a P2P lock dispatch a transport-neutral ff09-actuate intent (no wire bytes, no routing key)", async () => {
@@ -157,6 +201,11 @@ describe("lock capability module", () => {
         value: true,
       },
     ]);
+  });
+
+  it("setRainMode is absent on a LOCK_85V0, which the app offers no Rain Mode", () => {
+    const { acts } = lockOf({ ...p2pCtx, deviceType: DeviceType.LOCK_85V0 });
+    expect("setRainMode" in acts).toBe(false);
   });
 
   it("setRainMode is absent on an MQTT-only device (no known Rain Mode on the garage door)", () => {
@@ -222,12 +271,23 @@ describe("lock capability module", () => {
     expect("getAutoLockState" in acts).toBe(false);
   });
 
-  it("detects via the lock and safe model-name regexes", () => {
-    const [lockRe, safeRe] = LOCK.detection!.modelHints!;
-    expect(lockRe.test("Smart Lock")).toBe(true);
-    expect(lockRe.test("Indoor Cam")).toBe(false);
-    expect(safeRe.test("Smart Safe")).toBe(true);
-    expect(safeRe.test("Indoor Cam")).toBe(false);
+  it("detects from the product's description over codec and params, never the owner's name", () => {
+    const things = (...ids: string[]) =>
+      parseThingsList({
+        things_list: [{ profile: { product_code: "T0000" }, properties: ids.map((identifier) => ({ identifier })) }],
+      }).T0000!;
+    const caps = (rec: object) => resolveDevice({ category: "eufy_security", model: "T0000", ...rec }).capabilities;
+    const video = { deviceType: DeviceType.LOCK_85V0, params: {} };
+    expect(caps({ ...video, things: things("smart_lock_onoff_status", "live_streaming_resolution") })).toContain(
+      "lock",
+    );
+    expect(
+      caps({ deviceType: DeviceType.LOCK_WIFI, params: { 6000: "4" }, things: things("battery_value") }),
+    ).not.toContain("lock");
+    expect(caps({ params: {}, name: "Front Door Lock", things: things("nightvision_type") })).not.toContain("lock");
+    expect(caps({ params: {}, name: "Smart Safe" })).not.toContain("lock");
+    expect(caps({ deviceType: DeviceType.LOCK_WIFI, params: {} })).toContain("lock");
+    expect(caps({ params: { 6000: "3" } })).toContain("lock");
   });
 
   it("maps locked property to verified param 6000 and battery to param 1101 with alias 6001", () => {
@@ -248,10 +308,6 @@ describe("lock capability module", () => {
       provenance: "verified",
       readAliases: [{ paramType: 6001 }],
     });
-  });
-
-  it("proves lock capability via param 6000", () => {
-    expect(LOCK.detection?.evidenceParams).toContain(6000);
   });
 
   describe("device integration: state and battery properties", () => {
@@ -323,6 +379,57 @@ describe("lock capability module", () => {
   });
 });
 
+describe("lock capability — SmartDrop lid", () => {
+  const things = parseThingsList({
+    things_list: [{ profile: { product_code: "T8790" }, properties: [{ identifier: "smart_lock_onoff_status" }] }],
+  }).T8790!;
+  const record = { model: "T8790", deviceType: DeviceType.SMART_DROP, params: {}, things };
+  const ctx: CommandContext = {
+    channel: 0,
+    codec: "camera",
+    deviceType: DeviceType.SMART_DROP,
+    paramIds: new Set(),
+    hasP2p: true,
+  };
+
+  it("is a lock opened with the level-2 set-payload 2100, never locked", async () => {
+    const sent: unknown[] = [];
+    const dev = Device.fromRecord("T8790P0000000000", record);
+    dev.bindActions(ctx, { dispatch: async (c) => void sent.push(c) });
+    const lid = dev.lock!()!;
+    await lid.unlock!();
+    expect(sent).toEqual([
+      {
+        kind: "set-payload",
+        cmd: 2100,
+        payload: { isOpen: 1, userIndex: 0 },
+        channel: 0,
+        mValue3: 0,
+        level2Sender: "set-payload",
+      },
+    ]);
+    expect(lid.lock).toBeUndefined();
+    expect(lid.setAutoLock).toBeUndefined();
+    expect(lid.setRainMode).toBeUndefined();
+    const ff09 = { getAutoLockState: vi.fn() } as unknown as Ff09SettingsReader;
+    expect("getAutoLockState" in lockOf(ctx, ff09).acts).toBe(false);
+  });
+
+  it("reads no lid state: no wire seen on a standalone box fills it", () => {
+    const dev = Device.fromRecord("T8790P0000000000", record);
+    dev.bindActions(ctx, { dispatch: async () => {} });
+    dev.applyParams({ 2105: "0" });
+    expect(dev.lock!()!.locked).toBeUndefined();
+    const lid = { source: "p2p-frame", stationSn: "T8790P0000000000", commandId: 1351, channel: 0 } as const;
+    const evt = { cmd: 2108, payload: { evt: 2 } };
+    expect(LOCK.decodeState!({ ...lid, deviceType: DeviceType.SMART_DROP, json: evt })).toBeNull();
+  });
+
+  it("is opened standalone only", () => {
+    expect(lockOf({ ...ctx, stationSerial: "T8030P0000000000" }).acts.unlock).toBeUndefined();
+  });
+});
+
 /**
  * The derived surface, pinned at COMPILE time. The honesty rule made type-level: an uncaptured wire is
  * declared but not installed, so a caller learns from the compiler — not a runtime rejection — which
@@ -333,7 +440,6 @@ declare const lk: LockActions;
 
 const _locked: Exact<typeof lk.locked, boolean | undefined> = true;
 const _battery: Exact<typeof lk.battery, number | undefined> = true;
-const _rssi: Exact<typeof lk.rssi, number | undefined> = true;
 
 // A read-only member gets no setter — `locked` has no confirmed write param.
 const _noSetLocked: Exact<"setLocked" extends keyof LockActions ? true : false, false> = true;
@@ -364,7 +470,6 @@ const _snapshot: Exact<
 export const _surfaceAssertions = [
   _locked,
   _battery,
-  _rssi,
   _noSetLocked,
   _lockRequired,
   _lockArgs,

@@ -67,6 +67,15 @@ describe("rtsp capability module", () => {
     expect(sent.map((c) => (c as { value: number }).value)).toEqual([1, 0]);
   });
 
+  it("sends the publish switch unread, in both directions", async () => {
+    const { acts: actions, sent } = bind<RtspActions>("rtsp", ctx);
+
+    await actions.publish!();
+    await actions.withdraw!();
+
+    expect(sent.map((c) => (c as { unanswered?: true }).unanswered)).toEqual([true, true]);
+  });
+
   it("builds the auth setting for a HomeBase-attached camera; enforcement belongs to the RTSP endpoint", async () => {
     const attached = { ...ctx, homeBaseAttached: true } as CommandContext;
     const { acts: actions, sent } = bind<RtspActions>("rtsp", attached);
@@ -88,14 +97,22 @@ describe("rtsp capability module", () => {
     expect(sent).toHaveLength(1);
   });
 
-  it("installs no publish switch, nor its read, on a camera behind a HomeBase S1 Pro, whose control channel cannot carry it", () => {
-    const behindS1Pro = { ...ctx, homeBaseAttached: true, stationDeviceType: 27 } as CommandContext;
-    const { acts: actions } = bind<RtspActions>("rtsp", behindS1Pro);
+  it("withholds the publish switch and its momentary methods behind a station that refuses a scalar, but keeps the read", () => {
+    // An S1 Pro / T8N00 control channel frames set-payload/set-json only, so the publish scalar
+    // (set-param) cannot route: its derived setter is withdrawn by the generic portal-reach gate, and
+    // `publish`/`withdraw` — `method` members that gate can't probe — ask `kindRoutable("set-param")`
+    // themselves. The READ stays installed, so the camera's publish state remains visible.
+    const behindNarrowStation = {
+      ...ctx,
+      homeBaseAttached: true,
+      refusedCommandKinds: new Set(["set-param", "set-json-raw", "p2p-station-scalar"]),
+    } as CommandContext;
+    const { acts: actions } = bind<RtspActions>("rtsp", behindNarrowStation);
 
     expect(actions.publish).toBeUndefined();
     expect(actions.withdraw).toBeUndefined();
     expect((actions as Record<string, unknown>).setPublished).toBeUndefined();
-    expect(actions.published).toBeUndefined();
+    expect(Object.getOwnPropertyDescriptor(actions, "published")?.get).toBeTypeOf("function");
   });
 
   it("toggles authentication through the mode field of the credential payload, sent form:auto", async () => {

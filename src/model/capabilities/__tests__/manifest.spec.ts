@@ -5,6 +5,7 @@ import type { CapabilityModule, CommandContext } from "../types.js";
 import { borrowedBy } from "../members.js";
 import type { ValueMember } from "../members.js";
 import type { Command, CommandSink, MediaProvider } from "../../../core/contracts.js";
+import { parseThingsList, type ThingDescription } from "../thing-description.js";
 
 /**
  * The manifest is the SDK's answer to "what does this device expose" for a caller outside the package,
@@ -19,7 +20,6 @@ import type { Command, CommandSink, MediaProvider } from "../../../core/contract
  *  6. a provider-gated method is described only on a device bound to that provider.
  */
 const MODULES = Object.values(CAPABILITY_MODULES);
-const BINDABLE = MODULES.filter((m) => m.actions || m.members);
 const sink: CommandSink = { dispatch: async () => undefined };
 const camelCase = (id: string): string => id.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
 
@@ -45,13 +45,26 @@ const ctxWith = (paramIds: Set<number>, model?: string): CommandContext => ({
   ...(model ? { model } : {}),
 });
 
-/** Describe the bound objects of a synthetic device that HAS every capability. */
-const describeAll = (paramIds: Set<number>, media?: MediaProvider): ReturnType<typeof describeCapabilities> =>
+/** The capabilities a synthetic device has by default — every one, so marker caps (e.g. `snapshot`,
+ *  which gates `snapshotStored`) are present. Binding a cap with no surface is a no-op. */
+const ALL_CAPS: readonly Capability[] = MODULES.map((m) => m.capability);
+
+/**
+ * Describe the bound objects of a synthetic device. By default it HAS every capability; pass `caps` to
+ * bind a realistic subset (e.g. a plain camera, where a lock would suppress the battery `level` read).
+ */
+const describeAll = (
+  paramIds: Set<number>,
+  caps: readonly Capability[] = ALL_CAPS,
+  media?: MediaProvider,
+): ReturnType<typeof describeCapabilities> =>
   describeCapabilities(
-    buildActions(
-      BINDABLE.map((m) => m.capability),
-      { ctx: ctxWith(paramIds), sink, read: () => undefined, media },
-    ),
+    buildActions(caps, {
+      ctx: { ...ctxWith(paramIds), capabilities: new Set(caps) },
+      sink,
+      read: () => undefined,
+      media,
+    }),
   );
 
 /**
@@ -147,14 +160,14 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
   it("describes only the reads the device reported, not the theoretical set", () => {
     const battery = CAPABILITY_MODULES.battery;
     const level = battery.members!.level as ValueMember;
-    const only = describeAll(new Set([level.param!])).find((d) => d.capability === "battery")!;
+    const only = describeAll(new Set([level.param!]), ["battery"]).find((d) => d.capability === "battery")!;
     expect(only.reads.map((r) => r.accessor)).toEqual(["level"]);
-    const all = describeAll(allParams()).find((d) => d.capability === "battery")!;
+    const all = describeAll(allParams(), ["battery"]).find((d) => d.capability === "battery")!;
     expect(all.reads.length).toBeGreaterThan(1);
   });
 
   it("publishes what a value means, not just how it is stored", () => {
-    const battery = describeAll(allParams()).find((d) => d.capability === "battery")!;
+    const battery = describeAll(allParams(), ["battery"]).find((d) => d.capability === "battery")!;
     expect(battery.reads.find((r) => r.accessor === "level")).toMatchObject({
       property: "battery",
       type: "number",
@@ -162,6 +175,17 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
       unit: "%",
       writable: false,
     });
+  });
+
+  it("gives a lock sole ownership of the `battery` property, the battery capability yielding its `level`", () => {
+    const paramIds = allParams();
+    const lockAndBattery = describeAll(paramIds, ["lock", "battery"]);
+    const owners = lockAndBattery.flatMap((cap) =>
+      cap.reads.filter((r) => r.property === "battery").map((r) => `${cap.accessor}.${r.accessor}`),
+    );
+    expect(owners).toEqual(["lock.battery"]);
+    const battery = lockAndBattery.find((d) => d.capability === "battery")!;
+    expect(battery.reads.some((r) => r.accessor === "temperature")).toBe(true);
   });
 
   it("describes a reported camera Wi-Fi signal as a read-only scalar without inferred units", () => {
@@ -235,7 +259,7 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
 
   it("describes a provider-gated method only on a device bound to that provider", () => {
     const withoutMedia = describeAll(allParams()).find((d) => d.capability === "camera")!;
-    const withMedia = describeAll(allParams(), {
+    const withMedia = describeAll(allParams(), ALL_CAPS, {
       snapshotStored: async () => Buffer.alloc(0),
     } as MediaProvider).find((d) => d.capability === "camera")!;
     const named = (d: typeof withMedia): string[] => [...d.actions.map((a) => a.name), ...d.undescribedActions];
@@ -251,7 +275,7 @@ describe("Device.describe — the manifest a caller renders from", () => {
   const record = { deviceType: 30, model: "T8114", category: "eufy_security", params: { 1101: "88", 1102: "1" } };
   const bound = (): Device => {
     const dev = Device.fromRecord("T8000P0000000000", record);
-    dev.bindActions(ctxWith(new Set([1101, 1102]), record.model), sink);
+    dev.bindActions({ ...ctxWith(new Set([1101, 1102]), record.model), capabilities: new Set(dev.capabilities) }, sink);
     return dev;
   };
 
@@ -382,7 +406,7 @@ describe("describeCapabilities — events claimed on evidence", () => {
   /** Unclaimed rows are the common case and must not be touched by the claim resolution. */
   it("leaves an unclaimed detection on every device that binds the capability", () => {
     for (const events of [motionEvents([PIR]), motionEvents([PIR, AI_DETECT_TYPE], { homeBaseAttached: true })]) {
-      expect(events).toEqual(expect.arrayContaining(["motion", "petDetection", "soundDetected", "cryingDetected"]));
+      expect(events).toEqual(expect.arrayContaining(["motion", "petDetection"]));
     }
   });
 
@@ -393,6 +417,54 @@ describe("describeCapabilities — events claimed on evidence", () => {
   it("claims no AI classification for a device outside the camera families", () => {
     const sensor = motionEvents([PIR], { codec: "sensor", homeBaseAttached: true });
     expect(sensor).toEqual(["motion"]);
+  });
+});
+
+/**
+ * The sound detections are described on the product's own word: its resolved thing description lists
+ * the property for each. A doorbell whose description has neither announces neither, and a device
+ * described without a description keeps both.
+ */
+describe("describeCapabilities — sound detections claimed on the thing description", () => {
+  const things = (...identifiers: string[]) =>
+    parseThingsList({
+      things_list: [
+        { profile: { product_code: "T0000" }, properties: identifiers.map((identifier) => ({ identifier })) },
+      ],
+    }).T0000!;
+  const cameraEvents = (description?: ThingDescription): readonly string[] =>
+    describeCapabilities(
+      buildActions(["camera"], { ctx: { ...ctxWith(new Set()), things: description }, sink, read: () => undefined }),
+      { codec: "camera", capabilities: new Set<Capability>(["camera"]), things: description },
+    ).find((entry) => entry.capability === "camera")!.events;
+
+  it("claims each detection where the description lists its property", () => {
+    expect(cameraEvents(things("sound_detection_status"))).toContain("soundDetected");
+    expect(cameraEvents(things("sound_detection_status"))).not.toContain("cryingDetected");
+    expect(cameraEvents(things("notification_ai_crying_switch"))).toContain("cryingDetected");
+  });
+
+  it("claims both where the description offers sound detection through its type alone", () => {
+    expect(cameraEvents(things("sound_detection_type", "sound_detection_sensitivity"))).toEqual(
+      expect.arrayContaining(["soundDetected", "cryingDetected"]),
+    );
+  });
+
+  it("withholds both where the description lists neither", () => {
+    const events = cameraEvents(things("nightvision_type"));
+    expect(events).not.toContain("soundDetected");
+    expect(events).not.toContain("cryingDetected");
+  });
+
+  it("keeps both on a device described without a description", () => {
+    expect(cameraEvents()).toEqual(expect.arrayContaining(["soundDetected", "cryingDetected"]));
+  });
+
+  it("describes a bound device against the description it was bound with", () => {
+    const dev = Device.fromRecord("T8000P0000000000", { deviceType: 30, model: "T8114", params: {} });
+    dev.bindActions({ ...ctxWith(new Set(), "T8114"), things: things("nightvision_type") }, sink);
+    const camera = dev.describe().details.find((d) => d.capability === "camera");
+    expect(camera?.events ?? []).not.toContain("soundDetected");
   });
 });
 

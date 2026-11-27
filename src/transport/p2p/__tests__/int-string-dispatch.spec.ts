@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { connectedSession, routerWithSession, ACCOUNT_ID, DEVICE_SN, type FakeP2PSession } from "./session-fixtures.js";
+import {
+  connectedSession,
+  onFakeTime,
+  routerWithSession,
+  ACCOUNT_ID,
+  DEVICE_SN,
+  type FakeP2PSession,
+} from "./session-fixtures.js";
 
 interface FakeSession extends FakeP2PSession {
   sendIntStringCommand: ReturnType<typeof vi.fn>;
@@ -25,6 +32,16 @@ describe("P2P int-plus-string command dispatch", () => {
     });
 
     expect(session.sendIntStringCommand).toHaveBeenCalledWith(1202, 10, 1, ACCOUNT_ID, 1);
+  });
+
+  it("sends an int-pair set-param as the bare level-1 [channel][value] body, with no account id", async () => {
+    const { router, session } = setup();
+
+    await onFakeTime(() =>
+      router.dispatchCommand(DEVICE_SN, { kind: "set-param", param: 1013, value: 3, form: "int-pair", channel: 1 }),
+    );
+
+    expect(session.sendIntStringCommand).toHaveBeenCalledWith(1013, 3, 1, "", 1);
   });
 
   it("rejects missing account identity without sending", async () => {

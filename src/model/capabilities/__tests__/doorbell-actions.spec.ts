@@ -1,4 +1,6 @@
 import { type DoorbellActions, type QuickResponse } from "../doorbell.js";
+import { CAMERA_CMD, type CameraActions } from "../camera.js";
+import type { AudioActions } from "../audio.js";
 import { bind } from "./bind.js";
 import type { CommandContext } from "../types.js";
 import type { MediaProvider } from "../../../core/contracts.js";
@@ -23,7 +25,7 @@ describe("doorbell actions", () => {
   it("playQuickResponse with {engage:false} emits a direct-binary set-param (1706, value = voiceId)", async () => {
     const { acts, sent } = doorbellOf();
     // Caller says they already have a stream open → skip engagement, just dispatch.
-    await acts.playQuickResponse(2, { engage: false });
+    await acts.playQuickResponse!(2, { engage: false });
     expect(sent).toEqual([{ kind: "set-param", param: 1706, value: 2, form: "direct-binary", channel: 3 }]);
   });
 
@@ -31,7 +33,7 @@ describe("doorbell actions", () => {
     const { acts, sent } = doorbellOf();
 
     // (a) engage default, but the device isn't bound to a live client (no media provider).
-    await expect(acts.playQuickResponse(2)).rejects.toThrow(/not bound to a live client/);
+    await expect(acts.playQuickResponse!(2)).rejects.toThrow(/not bound to a live client/);
 
     // (b) engage default, media present but live() fails → must reject, and NOT dispatch 1706.
     const media = {
@@ -39,7 +41,7 @@ describe("doorbell actions", () => {
         throw new Error("stream boom");
       },
     } as unknown as MediaProvider;
-    await expect(doorbellOf(media).acts.playQuickResponse(2)).rejects.toThrow(/could not engage a live stream/);
+    await expect(doorbellOf(media).acts.playQuickResponse!(2)).rejects.toThrow(/could not engage a live stream/);
     expect(sent).toEqual([]); // nothing fired into the void
   });
 
@@ -68,4 +70,39 @@ describe("doorbell actions", () => {
       { voiceId: 100, name: "hello", path: "/user/quick_respone_diy//QuickReply_4.aac", custom: true },
     ]);
   });
+});
+
+describe.each([
+  ["T8224", 95],
+  ["T85V0", 203],
+  ["T85M0", undefined],
+])("%s: gets doorbell, no doorbell write tried", (model, deviceType) => {
+  const dev: CommandContext = {
+    channel: 0,
+    codec: "camera",
+    deviceType,
+    model,
+    paramIds: new Set([CAMERA_CMD.DEV_LED_SWITCH]),
+    capabilities: new Set(["camera", "audio", "doorbell"]),
+  };
+
+  it("binds no doorbell write and no ringtone volume", () => {
+    const { acts } = bind<Record<string, unknown>>("doorbell", dev);
+    expect(Object.keys(acts).filter((k) => /^(set|play)/.test(k))).toEqual([]);
+    expect(bind<AudioActions>("audio", dev).acts.setRingtoneVolume).toBeUndefined();
+  });
+});
+
+it("T8224 writes the status LED on 1716, as its bundle does", async () => {
+  const c30: CommandContext = {
+    channel: 0,
+    codec: "camera",
+    deviceType: 95,
+    model: "T8224",
+    paramIds: new Set([CAMERA_CMD.DEV_LED_SWITCH]),
+    capabilities: new Set(["camera", "audio", "doorbell"]),
+  };
+  const { acts, sent } = bind<CameraActions>("camera", c30);
+  await acts.setStatusLed!(true);
+  expect(sent).toEqual([expect.objectContaining({ cmd: CAMERA_CMD.DOORBELL_LED, payload: { light_enable: 1 } })]);
 });

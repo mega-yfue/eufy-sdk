@@ -1,0 +1,695 @@
+{
+  "things_list": [
+    {
+      "actions": [
+        {
+          "available_conditions": {
+            "condition_list": [
+              {
+                "conditions": [
+                  {
+                    "qualifier": "RE",
+                    "type": "user_country",
+                    "value": "^(?i)(?!OM).*$"
+                  }
+                ]
+              },
+              {
+                "conditions": [
+                  {
+                    "qualifier": "RE",
+                    "type": "user_country",
+                    "value": "^(?i)OM.*"
+                  },
+                  {
+                    "qualifier": "<",
+                    "type": "sdk_version",
+                    "value": "2.3.3.0"
+                  }
+                ]
+              }
+            ]
+          },
+          "dispatch_type": "",
+          "identifier": "start_intercom",
+          "input_data": {
+            "specs": {},
+            "type": "string"
+          },
+          "output_data": {
+            "specs": {},
+            "type": "string"
+          },
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          }
+        }
+      ],
+      "events": [
+        {
+          "available_conditions": {},
+          "dispatch_type": "",
+          "event_type": "",
+          "identifier": "event_device_alarm",
+          "output_data": {
+            "specs": {
+              "defaultValue": "1201,1202,1164"
+            },
+            "type": "string"
+          },
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          }
+        }
+      ],
+      "is_filter": false,
+      "large_version": 169,
+      "large_version_update_time": 1794217964,
+      "profile": {
+        "plugin_id": "00000000000000000000000000000000",
+        "plugin_id_qjsc": "",
+        "plugin_id_zip": "00000000000000000000000000000000",
+        "plugin_path": "https://cdn.example/T8410Handle.mix.js",
+        "plugin_path_qjsc": "",
+        "plugin_path_zip": "https://cdn.example/T8410.zip",
+        "product_code": "T8410",
+        "version": "1.0.0"
+      },
+      "properties": [
+        {
+          "access_mode": "RW",
+          "available_conditions": {},
+          "data_type": {
+            "specs": {
+              "defaultValue": "2",
+              "max": "10",
+              "min": "0",
+              "step": "1"
+            },
+            "type": "int"
+          },
+          "dispatch_type": "",
+          "identifier": "arming_selected_mode",
+          "read_conditions": {},
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          },
+          "write_conditions": {}
+        },
+        {
+          "access_mode": "RW",
+          "available_conditions": {},
+          "data_type": {
+            "specs": {
+              "defaultValue": "false"
+            },
+            "type": "bool"
+          },
+          "dispatch_type": "",
+          "identifier": "led_on_off",
+          "read_conditions": {},
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          },
+          "write_conditions": {}
+        },
+        {
+          "access_mode": "RW",
+          "available_conditions": {},
+          "data_type": {
+            "specs": {
+              "eunmList": [
+                {
+                  "associatedValue": "1",
+                  "desc": "Auto Night Vision",
+                  "isDefault": 1,
+                  "value": "3"
+                },
+                {
+                  "associatedValue": "3",
+                  "desc": "INFRARED",
+                  "isDefault": 0,
+                  "value": "4"
+                },
+                {
+                  "associatedValue": "0",
+                  "desc": "OFF",
+                  "isDefault": 0,
+                  "value": "0"
+                }
+              ]
+            },
+            "type": "tenum"
+          },
+          "dispatch_type": "",
+          "identifier": "nightvision_type",
+          "read_conditions": {},
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          },
+          "write_conditions": {}
+        },
+        {
+          "access_mode": "RW",
+          "available_conditions": {},
+          "data_type": {
+            "specs": {
+              "defaultValue": "true"
+            },
+            "type": "bool"
+          },
+          "dispatch_type": "",
+          "identifier": "nightvision_type__v1",
+          "read_conditions": {
+            "condition_list": [
+              {
+                "conditions": [
+                  {
+                    "qualifier": "<=",
+                    "type": "device_version",
+                    "value": "2.1.7.7"
+                  }
+                ]
+              }
+            ]
+          },
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          },
+          "write_conditions": {}
+        },
+        {
+          "access_mode": "RW",
+          "available_conditions": {},
+          "data_type": {
+            "specs": {
+              "eunmList": [
+                {
+                  "associatedValue": "1",
+                  "desc": "sound only",
+                  "isDefault": 1,
+                  "value": "0"
+                },
+                {
+                  "associatedValue": "4",
+                  "desc": "homebase alarm",
+                  "isDefault": 0,
+                  "value": "3"
+                }
+              ]
+            },
+            "type": "enum"
+          },
+          "dispatch_type": "",
+          "identifier": "set_alarm_type__v1",
+          "read_conditions": {
+            "condition_list": [
+              {
+                "conditions": [
+                  {
+                    "qualifier": "RE",
+                    "type": "parent_sn",
+                    "value": "^(?!T8410|T8N00|T7000).*$"
+                  }
+                ]
+              }
+            ]
+          },
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          },
+          "write_conditions": {}
+        },
+        {
+          "access_mode": "RW",
+          "available_conditions": {},
+          "data_type": {
+            "specs": {
+              "eunmList": [
+                {
+                  "associatedValue": "0",
+                  "desc": "night_vision_off",
+                  "isDefault": 0,
+                  "value": "100"
+                },
+                {
+                  "associatedValue": "3",
+                  "desc": "night_vision_infrared",
+                  "isDefault": 0,
+                  "value": "101"
+                },
+                {
+                  "associatedValue": "1",
+                  "desc": "night_vision_infrared",
+                  "isDefault": 1,
+                  "value": "102"
+                }
+              ]
+            },
+            "type": "enum"
+          },
+          "dispatch_type": "",
+          "identifier": "nightvision_type_new",
+          "read_conditions": {},
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          },
+          "write_conditions": {}
+        }
+      ],
+      "update_time": 1793775202,
+      "version": "1.0"
+    }
+  ],
+  "wire": {
+    "arming_selected_mode": {
+      "reads": [
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "DEVICE_ARMING",
+            "id": 15200
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "ALARM_MODE",
+            "id": 1224
+          }
+        }
+      ],
+      "writes": [
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "SET_PAYLOAD",
+            "id": 1350
+          },
+          "subCmd": {
+            "name": "DEVICE_ARMING",
+            "id": 15200
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "DEVICE_ARMING",
+            "id": 15200
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "SET_PAYLOAD",
+            "id": 1350
+          },
+          "subCmd": {
+            "name": "ALARM_MODE",
+            "id": 1224
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "ALARM_MODE",
+            "id": 1224
+          }
+        }
+      ],
+      "versions": []
+    },
+    "set_alarm_type__v1": {
+      "reads": [
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "SET_TONE_FILE",
+            "id": 1201
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "SET_DEVS_TONE_FILE",
+            "id": 1202
+          }
+        }
+      ],
+      "writes": [
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "SET_PAYLOAD",
+            "id": 1350
+          },
+          "subCmd": {
+            "name": "SET_TONE_FILE",
+            "id": 1201
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "SET_DEVS_TONE_FILE",
+            "id": 1202
+          }
+        }
+      ],
+      "versions": []
+    },
+    "led_on_off": {
+      "reads": [
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "IC_LED_STATUS",
+            "id": 6014
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "SET_LED_STATUS",
+            "id": 1045
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "DOORBELL_SET_LED_ENABLE",
+            "id": 1716
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "APP_CMD_LIVEVIEW_LED_SWITCH",
+            "id": 1056
+          }
+        }
+      ],
+      "writes": [
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "DOOR_BELL_PAYLOAD",
+            "id": 1700
+          },
+          "subCmd": {
+            "name": "IC_LED_STATUS",
+            "id": 6014
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "IC_LED_STATUS",
+            "id": 6014
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "SET_LED_STATUS",
+            "id": 1045
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "SET_PAYLOAD",
+            "id": 1350
+          },
+          "subCmd": {
+            "name": "DOORBELL_SET_LED_ENABLE",
+            "id": 1716
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "DOORBELL_SET_LED_ENABLE",
+            "id": 1716
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "SET_PAYLOAD",
+            "id": 1350
+          },
+          "subCmd": {
+            "name": "SET_LED_STATUS",
+            "id": 1045
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "APP_CMD_LIVEVIEW_LED_SWITCH",
+            "id": 1056
+          }
+        }
+      ],
+      "versions": ["v1", "v2", "v3", "v4", "v5"]
+    },
+    "start_intercom": {
+      "reads": [],
+      "writes": [
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "DOOR_BELL_PAYLOAD",
+            "id": 1700
+          },
+          "subCmd": {
+            "name": "SUB_CMD_START_INTERCOM",
+            "id": 1001
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "START_TALK_BACK",
+            "id": 1005
+          }
+        }
+      ],
+      "versions": ["v1", "v2", "v3"]
+    },
+    "nightvision_type_new": {
+      "reads": [
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "NIGHT_VISION_TYPE",
+            "id": 1277
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "IC_NIGHT_VISION_TYPE",
+            "id": 1013
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "PARAM_TYPE_NIGHT_VISUAL",
+            "id": 2002
+          }
+        }
+      ],
+      "writes": [
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "SET_PAYLOAD",
+            "id": 1350
+          },
+          "subCmd": {
+            "name": "NIGHT_VISION_TYPE",
+            "id": 1277
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "NIGHT_VISION_TYPE",
+            "id": 1277
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "IC_NIGHT_VISION_TYPE",
+            "id": 1013
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "PARAM_TYPE_NIGHT_VISUAL",
+            "id": 2002
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "DOOR_BELL_PAYLOAD",
+            "id": 1700
+          },
+          "subCmd": {
+            "name": "NIGHT_VISION_TYPE",
+            "id": 1277
+          }
+        }
+      ],
+      "versions": [
+        "v1",
+        "v2",
+        "v4",
+        "v6",
+        "v10",
+        "v11",
+        "v5",
+        "v7",
+        "v9",
+        "v12",
+        "v13",
+        "v14",
+        "v16",
+        "v17",
+        "v3",
+        "v8",
+        "v15",
+        "v18"
+      ]
+    },
+    "nightvision_type": {
+      "reads": [
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "NIGHT_VISION_TYPE",
+            "id": 1277
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "IC_NIGHT_VISION_TYPE",
+            "id": 1013
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "PARAM_TYPE_NIGHT_VISUAL",
+            "id": 2002
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "APP_CMD_SET_NIGHT_VISION_COMPENSATION",
+            "id": 6252
+          }
+        }
+      ],
+      "writes": [
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "SET_PAYLOAD",
+            "id": 1350
+          },
+          "subCmd": {
+            "name": "NIGHT_VISION_TYPE",
+            "id": 1277
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "NIGHT_VISION_TYPE",
+            "id": 1277
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "IC_NIGHT_VISION_TYPE",
+            "id": 1013
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "PARAM_TYPE_NIGHT_VISUAL",
+            "id": 2002
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "DOOR_BELL_PAYLOAD",
+            "id": 1700
+          },
+          "subCmd": {
+            "name": "NIGHT_VISION_TYPE",
+            "id": 1277
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "SET_PAYLOAD",
+            "id": 1350
+          },
+          "subCmd": {
+            "name": "APP_CMD_SET_NIGHT_VISION_COMPENSATION",
+            "id": 6252
+          }
+        },
+        {
+          "via": "p2p",
+          "cmd": {
+            "name": "APP_CMD_SET_NIGHT_VISION_COMPENSATION",
+            "id": 6252
+          }
+        }
+      ],
+      "versions": [
+        "v1",
+        "v2",
+        "v4",
+        "v6",
+        "v10",
+        "v11",
+        "v5",
+        "v7",
+        "v9",
+        "v12",
+        "v13",
+        "v14",
+        "v16",
+        "v17",
+        "v3",
+        "v8",
+        "v15",
+        "v18"
+      ]
+    }
+  }
+}

@@ -53,6 +53,7 @@ function registryWith(opts: {
       return { devices: [rawDevice(opts.params()), rawDevice(opts.params(), OTHER_SN)] };
     },
     getDeviceParamList: overlay,
+    getThingsList: async () => ({ things_list: [] }),
   } as never;
   const registry = new DeviceRegistry({
     mega,

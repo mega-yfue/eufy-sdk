@@ -1,0 +1,139 @@
+{
+  "things_list": [
+    {
+      "actions": [
+        {
+          "available_conditions": {},
+          "dispatch_type": "",
+          "identifier": "radar_set_master_info",
+          "input_data": {
+            "specs": {},
+            "type": "string"
+          },
+          "output_data": {
+            "specs": {},
+            "type": "string"
+          },
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          }
+        },
+        {
+          "available_conditions": {},
+          "dispatch_type": "",
+          "identifier": "light_set_radar_associate",
+          "input_data": {
+            "specs": {},
+            "type": "string"
+          },
+          "output_data": {
+            "specs": {},
+            "type": "string"
+          },
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          }
+        }
+      ],
+      "events": [
+        {
+          "available_conditions": {},
+          "dispatch_type": "",
+          "event_type": "",
+          "identifier": "event_radar_upload_bind_progress",
+          "output_data": {
+            "specs": {},
+            "type": "string"
+          },
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          }
+        }
+      ],
+      "is_filter": false,
+      "large_version": 7,
+      "large_version_update_time": 1779105725,
+      "profile": {
+        "plugin_id": "00000000000000000000000000000000",
+        "plugin_id_qjsc": "",
+        "plugin_id_zip": "00000000000000000000000000000000",
+        "plugin_path": "https://cdn.example/T8C00Handle.mix.js",
+        "plugin_path_qjsc": "",
+        "plugin_path_zip": "https://cdn.example/T8C00.zip",
+        "product_code": "T8C00",
+        "version": "1.0.0"
+      },
+      "properties": [
+        {
+          "access_mode": "R",
+          "available_conditions": {},
+          "data_type": {
+            "specs": {},
+            "type": "string"
+          },
+          "dispatch_type": "",
+          "identifier": "radar_sn",
+          "read_conditions": {},
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          },
+          "write_conditions": {}
+        },
+        {
+          "access_mode": "R",
+          "available_conditions": {},
+          "data_type": {
+            "specs": {},
+            "type": "string"
+          },
+          "dispatch_type": "",
+          "identifier": "radar_mac",
+          "read_conditions": {},
+          "scene_config": {
+            "action_conditions": {},
+            "trigger_conditions": {}
+          },
+          "write_conditions": {}
+        }
+      ],
+      "update_time": 1774866256,
+      "version": "1.0"
+    }
+  ],
+  "wire": {
+    "radar_set_master_info": {
+      "reads": [],
+      "writes": [
+        {
+          "via": "mqtt",
+          "code": "0x021A"
+        }
+      ],
+      "versions": []
+    },
+    "light_set_radar_associate": {
+      "reads": [],
+      "writes": [
+        {
+          "via": "mqtt",
+          "code": "0x021B"
+        }
+      ],
+      "versions": []
+    },
+    "event_radar_upload_bind_progress": {
+      "reads": [
+        {
+          "via": "mqtt",
+          "code": "0x0219"
+        }
+      ],
+      "writes": [],
+      "versions": []
+    }
+  }
+}

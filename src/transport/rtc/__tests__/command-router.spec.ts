@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { zstdCompressSync } from "node:zlib";
 import { describe, expect, it, vi } from "vitest";
 import { LiveSnapshotUnavailableError } from "../../../core/contracts.js";
 import { RtcCommandRouter, type RtcCommandRouterDeps, type RtcLiveRoute, type RtcRoute } from "../command-router.js";
@@ -11,6 +12,7 @@ const PORTAL_STATION_CHANNEL = 255;
 const ACK_TIMEOUT_MS = 8_000;
 const CONNECT_TIMEOUT_MS = 12_000;
 const IDLE_CLOSE_MS = 60_000;
+const DB_TABLE_TIMEOUT_MS = 15_000;
 
 /** Run `fn` on fake timers, so the router's fixed deadlines can be crossed without waiting them out. */
 async function onFakeTimers(fn: () => Promise<void>): Promise<void> {
@@ -35,6 +37,8 @@ class FakeSession extends EventEmitter {
   closed = false;
   sent: Buffer[] = [];
   raw: Buffer[] = [];
+  stage = "calling";
+  peerState: string | undefined = undefined;
   /** Whether a raw keepalive is echoed back as the hub does (default) or goes unanswered. */
   echoKeepalive = true;
   /** What to do with a sent packet: "ack" (default), "nack" (errCode 1), "silent", or "close". */
@@ -135,7 +139,7 @@ const sent = (buf: Buffer) => ({
 const arming = (mode: number) => ({
   kind: "set-payload" as const,
   cmd: 1224,
-  payload: { mode_type: mode, user_name: "Home Assistant" },
+  payload: { mode_type: mode, user_name: "someone+tag" },
   channel: 0,
   mValue3: 0,
 });
@@ -167,6 +171,13 @@ describe("RtcCommandRouter", () => {
     expect(sessions).toHaveLength(0);
   });
 
+  it("opens the station session on a shard the provider resolves asynchronously", async () => {
+    const { router, sessions } = makeRouter({ shard: async () => "ie-pr" });
+    await router.dispatchCommand(ST, arming(1));
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]!.opts.shard).toBe("ie-pr");
+  });
+
   it("sends the app's 1350 envelope on the station channel and resolves on the ACK", async () => {
     const { router, sessions } = makeRouter();
     await router.dispatchCommand(ST, arming(1));
@@ -185,7 +196,7 @@ describe("RtcCommandRouter", () => {
       account_id: "adminid",
       cmd: 1224,
       mValue3: 0,
-      payload: { mode_type: 1, user_name: "Home Assistant" },
+      payload: { mode_type: 1, user_name: "someone+tag" },
     });
   });
 
@@ -404,7 +415,7 @@ describe("RtcCommandRouter", () => {
       expect(sessions[0]!.closed).toBe(true);
       FakeSession.connectMode = "never";
       const { router: r2, sessions: s2 } = makeRouter();
-      const late = new RegExp(`did not come up within ${CONNECT_TIMEOUT_MS}ms`);
+      const late = new RegExp(`did not come up within ${CONNECT_TIMEOUT_MS}ms \\(stage calling, peer not started\\)`);
       await onFakeTimers(() => rejectsAfter(r2.dispatchCommand(ST, arming(1)), late, CONNECT_TIMEOUT_MS));
       expect(s2[0]!.closed).toBe(true);
       // connect() that never settles at all: the bounded bring-up's deadline still fires and closes it
@@ -460,6 +471,54 @@ describe("RtcCommandRouter live view", () => {
     return Buffer.concat([buildPortalHeader(1300, body.length, 101, 0, 0), body]);
   };
   const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
+
+  it("opens a portal `call` media session on a shard resolved asynchronously (T8223 path)", async () => {
+    const { router, sessions } = makeRouter({ shard: async () => "ie-pr" });
+    try {
+      const handle = await router.trackMediaProviderFor({ ...CAM, signalingMode: "call" }).live();
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0]!.opts.shard).toBe("ie-pr");
+      handle.stop();
+    } finally {
+      router.close();
+    }
+  });
+
+  it("opens NVR camera media on the shard resolved asynchronously", async () => {
+    const { router, sessions } = makeRouter({ shard: async () => "ie-pr" });
+    try {
+      const media = router.nvrMediaProviderFor(
+        { ...CAM, cameraSn: "T8000P0000000003", channel: 3, signalingMode: "call" },
+        [0, 1],
+      );
+      const handle = await media.live({ view: 1 });
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0]!.opts.shard).toBe("ie-pr");
+      handle.stop();
+    } finally {
+      router.close();
+    }
+  });
+
+  it("a later call warm-up signs on the latest shard, not the one the first resolved", async () => {
+    let n = 0;
+    const { router, sessions } = makeRouter({ shard: async () => (n++ === 0 ? "eu-pr" : "ie-pr") });
+    await onFakeTimers(async () => {
+      try {
+        const media = router.trackMediaProviderFor({ ...CAM, signalingMode: "call" });
+        const first = await media.live();
+        expect(sessions[0]!.opts.shard).toBe("eu-pr");
+        first.stop();
+        await vi.advanceTimersByTimeAsync(8_000);
+        const second = await media.live();
+        expect(sessions).toHaveLength(2);
+        expect(sessions[1]!.opts.shard).toBe("ie-pr");
+        second.stop();
+      } finally {
+        router.close();
+      }
+    });
+  });
 
   it("shares one pull between concurrent viewers of the same camera", async () => {
     const { router, sessions } = makeRouter();
@@ -911,5 +970,212 @@ describe("RtcCommandRouter on a media-track route", () => {
     const sources = (router as unknown as { callSources: Map<string, { opts: Record<string, unknown> }> }).callSources;
     expect(sources.get("T8000P0000000002")!.opts).toMatchObject({ powered: "battery", preBufferSeconds: 10 });
     router.close();
+  });
+});
+
+describe("RtcCommandRouter database reads", () => {
+  const TABLE = "history_record_info";
+  const THUMB = "/zx/hdd_data0/Camera030000/event/202603/20260305/20260305081500_thumb.jpg";
+  const JPEG = Buffer.concat([
+    Buffer.from([0xff, 0xd8, 0xff, 0xe0]),
+    Buffer.alloc(60, 0x5a),
+    Buffer.from([0xff, 0xd9]),
+  ]);
+  const ROWS = [
+    { device_sn: "T8000P0000000002", record_id: 41, start_time: "20260305081500", thumb_path: THUMB },
+    { device_sn: "T8000P0000000002", record_id: 40, start_time: "20260305080000", thumb_path: THUMB },
+  ];
+  /** A notify-link frame as the hub sends it: a portal packet, zstd-compressed unless `plain`. */
+  const notify = (commandId: number, body: unknown, plain = false): Buffer => {
+    const json = Buffer.from(JSON.stringify(body), "utf8");
+    const pkt = Buffer.concat([buildPortalHeader(commandId, json.length, PORTAL_STATION_CHANNEL, 0, 0), json]);
+    return plain ? pkt : zstdCompressSync(pkt);
+  };
+  /** The unrelated station report the notify link carries between replies. */
+  const codecReport = () => notify(1351, { cmd: 1366, payload: { codec: 1, channel: 2 } }, true);
+  /** A read's request as sent, once the session carried it. */
+  const request = async (sessions: FakeSession[]) => {
+    await vi.waitFor(() => expect(sessions[0]?.sent).toHaveLength(1));
+    return sent(sessions[0]!.sent[0]!);
+  };
+
+  it("reads a table: the 1306 query on the station channel, answered by the compressed notify frame", async () => {
+    const { router, sessions } = makeRouter();
+    try {
+      const read = router.readTable(ST, TABLE);
+      const p = await request(sessions);
+      const s = sessions[0]!;
+      expect(p.commandId).toBe(PORTAL_CMD_SET_PAYLOAD);
+      expect(p.channel).toBe(PORTAL_STATION_CHANNEL);
+      const inner = p.body.payload as Record<string, unknown>;
+      expect(p.body).toMatchObject({ account_id: "adminid", cmd: 1306, mValue3: 0 });
+      expect(inner).toMatchObject({ cmd: 10000, table: TABLE, payload: { count: 2000, need_ai: 1, res_unzip: 1 } });
+      expect(inner.transaction).toMatch(/^\d{13,}$/);
+      s.emit("commandData", codecReport(), PortalLinkType.NOTIFY);
+      s.emit(
+        "commandData",
+        notify(1306, { cmd: 10000, table: TABLE, transaction: "1", data: [] }),
+        PortalLinkType.NOTIFY,
+      );
+      s.emit(
+        "commandData",
+        notify(1306, { cmd: 10000, count: 2, table: TABLE, transaction: inner.transaction, data: ROWS, mIntRet: 0 }),
+        PortalLinkType.NOTIFY,
+      );
+      expect(await read).toEqual(ROWS);
+      expect(s.listenerCount("commandData")).toBe(0);
+    } finally {
+      router.close();
+    }
+  });
+
+  it("rejects a table read with the hub's message when it refuses the query", async () => {
+    const { router, sessions } = makeRouter();
+    try {
+      const read = router.readTable(ST, TABLE);
+      const inner = (await request(sessions)).body.payload as Record<string, unknown>;
+      const s = sessions[0]!;
+      const refused = {
+        cmd: 10000,
+        mIntRet: -6001,
+        msg: "ERROR_ARGUMENT",
+        table: TABLE,
+        transaction: inner.transaction,
+      };
+      s.emit("commandData", notify(1306, refused, true), PortalLinkType.NOTIFY);
+      await expect(read).rejects.toThrow(/refused history_record_info: ERROR_ARGUMENT \(-6001\)/);
+    } finally {
+      router.close();
+    }
+  });
+
+  it("rejects a table read the hub never answers, and one the hub's ACK refuses", async () => {
+    await onFakeTimers(async () => {
+      const { router, sessions } = makeRouter();
+      try {
+        const read = router.readTable(ST, TABLE);
+        const assertion = expect(read).rejects.toThrow(new RegExp(`reply timed out after ${DB_TABLE_TIMEOUT_MS}ms`));
+        await request(sessions);
+        await vi.advanceTimersByTimeAsync(DB_TABLE_TIMEOUT_MS);
+        await assertion;
+        expect(sessions[0]!.listenerCount("commandData")).toBe(0);
+      } finally {
+        router.close();
+      }
+    });
+    const { router, sessions } = makeRouter();
+    try {
+      await router.dispatchCommand(ST, arming(1));
+      sessions[0]!.behaviour = "nack";
+      await expect(router.readTable(ST, TABLE)).rejects.toThrow(/rejected cmd 1306 \(err 1\)/);
+    } finally {
+      router.close();
+    }
+  });
+
+  it("fetches a stored image: the 1308 request, answered by the compressed frame naming its path", async () => {
+    const { router, sessions } = makeRouter();
+    try {
+      const read = router.readImage(ST, THUMB);
+      const p = await request(sessions);
+      const s = sessions[0]!;
+      expect(p.commandId).toBe(PORTAL_CMD_SET_PAYLOAD);
+      expect(p.channel).toBe(PORTAL_STATION_CHANNEL);
+      expect(p.body).toEqual({ account_id: "adminid", cmd: 1308, mValue3: 0, payload: [{ file: THUMB }] });
+      const other = THUMB.replace("081500", "080000");
+      s.emit("commandData", codecReport(), PortalLinkType.NOTIFY);
+      s.emit("commandData", notify(1308, { file: other, content: Buffer.alloc(8, 1).toString("base64") }), 3);
+      s.emit("commandData", notify(1308, { file: THUMB, content: JPEG.toString("base64") }), PortalLinkType.NOTIFY);
+      expect((await read).equals(JPEG)).toBe(true);
+      expect(s.listenerCount("commandData")).toBe(0);
+    } finally {
+      router.close();
+    }
+  });
+
+  it("serialises a read behind the station's other sends and honours the caller's abort", async () => {
+    const { router, sessions } = makeRouter();
+    try {
+      await router.dispatchCommand(ST, arming(1));
+      const s = sessions[0]!;
+      s.behaviour = "silent";
+      const command = router.dispatchCommand(ST, arming(2));
+      const read = router.readImage(ST, THUMB);
+      await vi.waitFor(() => expect(s.sent).toHaveLength(2));
+      expect(s.sent).toHaveLength(2);
+      s.ackSegment(sent(s.sent[1]!).segment);
+      await command;
+      await vi.waitFor(() => expect(s.sent).toHaveLength(3));
+      expect(sent(s.sent[2]!).body.cmd).toBe(1308);
+      s.emit("commandData", notify(1308, { file: THUMB, content: JPEG.toString("base64") }), PortalLinkType.NOTIFY);
+      expect((await read).equals(JPEG)).toBe(true);
+      const control = new AbortController();
+      const aborted = router.readTable(ST, TABLE, { signal: control.signal });
+      await vi.waitFor(() => expect(s.sent).toHaveLength(4));
+      control.abort(new Error("caller left"));
+      await expect(aborted).rejects.toThrow("caller left");
+      expect(s.listenerCount("commandData")).toBe(0);
+    } finally {
+      router.close();
+    }
+  });
+
+  it("does not answer a read with the late reply to an abandoned read of the same table", async () => {
+    const { router, sessions } = makeRouter();
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_767_225_600_000);
+    try {
+      const control = new AbortController();
+      const first = router.readTable(ST, TABLE, { signal: control.signal });
+      const firstInner = (await request(sessions)).body.payload as Record<string, unknown>;
+      const s = sessions[0]!;
+      control.abort(new Error("caller left"));
+      await expect(first).rejects.toThrow("caller left");
+      const second = router.readTable(ST, TABLE);
+      await vi.waitFor(() => expect(s.sent).toHaveLength(2));
+      const secondInner = sent(s.sent[1]!).body.payload as Record<string, unknown>;
+      expect(secondInner.transaction).not.toBe(firstInner.transaction);
+      s.emit("commandData", notify(1306, { cmd: 10000, table: TABLE, data: ROWS }), PortalLinkType.NOTIFY);
+      s.emit(
+        "commandData",
+        notify(1306, { cmd: 10000, table: TABLE, transaction: firstInner.transaction, data: ROWS }),
+        PortalLinkType.NOTIFY,
+      );
+      s.emit(
+        "commandData",
+        notify(1306, { cmd: 10000, table: TABLE, transaction: secondInner.transaction, data: [ROWS[0]] }),
+        PortalLinkType.NOTIFY,
+      );
+      expect(await second).toEqual([ROWS[0]]);
+    } finally {
+      now.mockRestore();
+      router.close();
+    }
+  });
+
+  it("rejects a read at once when its caller aborts while it waits behind another send, and never sends it", async () => {
+    const { router, sessions } = makeRouter();
+    try {
+      await router.dispatchCommand(ST, arming(1));
+      const s = sessions[0]!;
+      s.behaviour = "silent";
+      const pending = router.readTable(ST, TABLE);
+      await vi.waitFor(() => expect(s.sent).toHaveLength(2));
+      const control = new AbortController();
+      const queued = router.readImage(ST, THUMB, { signal: control.signal });
+      await new Promise((resolve) => setImmediate(resolve));
+      control.abort(new Error("caller left"));
+      await expect(queued).rejects.toThrow("caller left");
+      const pendingInner = sent(s.sent[1]!).body.payload as Record<string, unknown>;
+      s.emit(
+        "commandData",
+        notify(1306, { cmd: 10000, table: TABLE, transaction: pendingInner.transaction, data: ROWS }),
+        PortalLinkType.NOTIFY,
+      );
+      expect(await pending).toEqual(ROWS);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(s.sent).toHaveLength(2);
+    } finally {
+      router.close();
+    }
   });
 });
