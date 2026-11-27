@@ -59,7 +59,6 @@ describe("PPCS relay fallback", () => {
     const MARK = 0x01020304;
     let requested: Buffer | undefined;
     let hellos = 0;
-    let pingPort: number | undefined;
     const connected = vi.fn();
     vi.useFakeTimers({ toFake: ["setTimeout", "setInterval"] });
     const session = new P2PSession({
@@ -94,9 +93,6 @@ describe("PPCS relay fallback", () => {
         relay.send(frameMessage(ResponseMessageType.RLY_PORT_ACK, ack), remote.port, remote.address);
       }
     });
-    relayed.on("message", (msg, remote) => {
-      if (hasHeader(msg, RequestMessageType.PING)) pingPort = remote.port;
-    });
     try {
       await session.connect();
       await elapse(23_000);
@@ -106,8 +102,6 @@ describe("PPCS relay fallback", () => {
       expect(requested!.subarray(4, 24)).toEqual(p2pDidToBuffer(P2P_DID));
       expect(requested!.subarray(24, 40)).toEqual(loopbackRecord(relayed.address().port));
       expect(requested!.readUInt32BE(40)).toBe(MARK);
-      await elapse(200);
-      expect(pingPort).toBeDefined();
     } finally {
       vi.useRealTimers();
       await session.close();

@@ -1,6 +1,5 @@
 import { createDecipheriv } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { StationKeyUnavailableError } from "../../../core/contracts.js";
 import { P2PCommandRouter, type P2PRouterDeps } from "../command-router.js";
 import { buildDoorlockPassThrough, encodeLockOnOff, lockKey } from "../doorlock-pass-through.js";
 import { serialIv } from "../keyed-payload.js";
@@ -10,6 +9,8 @@ const LOCK_SN = "T8510P0000000000";
 const STATION_SN = "T8000P0000000000";
 const P2P_DID = "XXXXXXX-000000-XXXXX";
 const ADMIN = "0000000000000000000000000000000000000000";
+const STATION_ADMIN = "1111111111111111111111111111111111111111";
+const ME = "2222222222222222222222222222222222222222";
 
 const frame = {
   adminUserId: ADMIN,
@@ -55,16 +56,16 @@ describe("the door-lock pass-through blob", () => {
 });
 
 describe("a door-lock pass-through actuation", () => {
-  const makeRouter = (hasKey: boolean, shortUserId = "0004") => {
-    const session = connectedSession(hasKey) as FakeP2PSession & { sendControlLevel2: ReturnType<typeof vi.fn> };
-    session.sendControlLevel2 = vi.fn(() => true);
+  const makeRouter = (hasKey: boolean, lockMember: string = ME, firmware = "3.2.7.6") => {
+    const session = connectedSession(hasKey) as FakeP2PSession & { sendSetPayload: ReturnType<typeof vi.fn> };
+    session.sendSetPayload = vi.fn(() => true);
     const lock = {
       sn: LOCK_SN,
       model: "T8510",
       stationSn: STATION_SN,
       channel: 42,
       p2pDid: P2P_DID,
-      raw: { device_channel: 42, parent_sn: STATION_SN, member: { admin_user_id: ADMIN } },
+      raw: { device_channel: 42, parent_sn: STATION_SN, member: { admin_user_id: ADMIN, member_user_id: lockMember } },
     };
     const station = {
       sn: STATION_SN,
@@ -72,10 +73,14 @@ describe("a door-lock pass-through actuation", () => {
       stationSn: STATION_SN,
       channel: 0,
       p2pDid: P2P_DID,
-      raw: { member: { admin_user_id: ADMIN, short_user_id: shortUserId, nick_name: "someone" } },
+      // The station's own member is someone else: only the envelope's account id may come from it.
+      raw: {
+        main_sw_version: firmware,
+        member: { admin_user_id: STATION_ADMIN, member_user_id: ME, short_user_id: "0099", nick_name: "member-nick" },
+      },
     };
     const deps: P2PRouterDeps = {
-      mega: {} as P2PRouterDeps["mega"],
+      mega: { auth: { userId: ME } } as unknown as P2PRouterDeps["mega"],
       listDevices: () => [station, lock] as never,
       ensureDevices: async () => {},
       onConnect: () => {},
@@ -97,23 +102,39 @@ describe("a door-lock pass-through actuation", () => {
     engage: true,
     adminUserId: ADMIN,
     username: "someone",
-    shortUserId: "4",
+    shortUserId: "0004",
     deviceSn: LOCK_SN,
   } as const;
 
-  it("sends one pass-through at level-2 on the lock's channel, with channel 0 inside the sealed blob", async () => {
+  it("sends one pass-through on channel 0, keyed and attributed to the lock's member, enveloped as the station's", async () => {
     const { router, session } = makeRouter(true);
 
     await router.dispatchCommand(LOCK_SN, lockCmd);
 
-    expect(session.sendControlLevel2).toHaveBeenCalledTimes(1);
-    const [cmd, channel, account, payload, mValue3] = session.sendControlLevel2.mock.calls[0]!;
-    expect([cmd, channel, account, mValue3]).toEqual([1911, 42, ADMIN, 0]);
+    expect(session.sendSetPayload).toHaveBeenCalledTimes(1);
+    const [cmd, payload, opts] = session.sendSetPayload.mock.calls[0]!;
+    expect([cmd, opts.channel, opts.accountId, opts.mValue3]).toEqual([1911, 0, STATION_ADMIN, 0]);
     const decipher = createDecipheriv("aes-128-cbc", lockKey(ADMIN, STATION_SN), serialIv(STATION_SN));
     const plain = Buffer.concat([decipher.update(Buffer.from(payload.payload, "base64")), decipher.final()]);
     const inner = JSON.parse(plain.toString("utf-8").replace(/\0+$/, ""));
     expect(inner).toMatchObject({ channel: 0, lock_cmd: 8 });
-    expect(Buffer.from(inner.lock_payload, "base64").subarray(0, 7).toString("hex")).toBe("a1020004a20101");
+    const tlv = Buffer.from(inner.lock_payload, "base64");
+    expect(tlv.subarray(0, 7).toString("hex")).toBe("a1020004a20101");
+    // The A4 name is the account's (the app's AccountDelegate.i()), not the station member's nick_name.
+    expect(tlv.subarray(13).toString("hex")).toBe(
+      Buffer.concat([Buffer.from([0xa4, 7]), Buffer.from("someone")]).toString("hex"),
+    );
+  });
+
+  it("keys a lock shared through someone else's membership with the user's own id, as AnkerAccountManager.e gives it", async () => {
+    const { router, session } = makeRouter(true, "someone-else");
+
+    await router.dispatchCommand(LOCK_SN, lockCmd);
+
+    const decipher = createDecipheriv("aes-128-cbc", lockKey(ME, STATION_SN), serialIv(STATION_SN));
+    const sealed = Buffer.from(session.sendSetPayload.mock.calls[0]![1].payload, "base64");
+    const plain = Buffer.concat([decipher.update(sealed), decipher.final()]).toString("utf-8");
+    expect(JSON.parse(plain.replace(/\0+$/, ""))).toMatchObject({ lock_cmd: 8 });
   });
 
   const userField = (payload: { payload: string }): string => {
@@ -128,29 +149,66 @@ describe("a door-lock pass-through actuation", () => {
     ["000a", "a102000a"],
     ["00FF", "a10200ff"],
   ])("writes short_user_id %s as hex, not decimal", async (id, field) => {
-    const { router, session } = makeRouter(true, id);
+    const { router, session } = makeRouter(true);
 
-    await router.dispatchCommand(LOCK_SN, lockCmd);
+    await router.dispatchCommand(LOCK_SN, { ...lockCmd, shortUserId: id });
 
-    expect(userField(session.sendControlLevel2.mock.calls[0]![3])).toBe(field);
+    expect(userField(session.sendSetPayload.mock.calls[0]![1])).toBe(field);
   });
 
   it.each(["4", "00004", "00g4", ""])(
     "refuses a short_user_id of %j rather than writing the wrong user",
     async (id) => {
-      const { router, session } = makeRouter(true, id);
+      const { router, session } = makeRouter(true);
 
-      await expect(router.dispatchCommand(LOCK_SN, lockCmd)).rejects.toThrow(/4-digit hex short_user_id/);
+      await expect(router.dispatchCommand(LOCK_SN, { ...lockCmd, shortUserId: id })).rejects.toThrow(
+        /4-digit hex short_user_id/,
+      );
 
-      expect(session.sendControlLevel2).not.toHaveBeenCalled();
+      expect(session.sendSetPayload).not.toHaveBeenCalled();
     },
   );
 
-  it("refuses without a level-2 key", async () => {
-    const { router, session } = makeRouter(false);
+  const sealed = (call: unknown[], mode: "aes-128-cbc" | "aes-128-ecb" = "aes-128-cbc") => {
+    const decipher = createDecipheriv(
+      mode,
+      lockKey(ADMIN, STATION_SN),
+      mode === "aes-128-ecb" ? null : serialIv(STATION_SN),
+    );
+    decipher.setAutoPadding(mode === "aes-128-cbc");
+    const blob = Buffer.from((call[1] as { payload: string }).payload, "base64");
+    const plain = Buffer.concat([decipher.update(blob), decipher.final()]);
+    return JSON.parse(plain.toString("utf-8").replace(/\0+$/, "")) as { lock_cmd: number; seq_num: number };
+  };
 
-    await expect(router.dispatchCommand(LOCK_SN, lockCmd)).rejects.toBeInstanceOf(StationKeyUnavailableError);
+  it("counts seq_num per station, and resends the last lock_cmd under a P2P_SEQ notify's", async () => {
+    const { router, session } = makeRouter(true);
+    session.sendSetPayload.mockImplementation(() =>
+      queueMicrotask(() => session.emit("commandResult", { commandId: 1350, code: 0, channel: 0 })),
+    );
 
-    expect(session.sendControlLevel2).not.toHaveBeenCalled();
+    await router.dispatchCommand(LOCK_SN, lockCmd);
+    await router.dispatchCommand(LOCK_SN, { ...lockCmd, engage: false });
+    const [first, second] = session.sendSetPayload.mock.calls.map((call) => sealed(call).seq_num);
+    expect(second).toBe(first! + 1);
+
+    (router as unknown as { onStationFrame(sn: string, f: object): void }).onStationFrame(STATION_SN, {
+      json: { cmd: 1916, payload: { lock_cmd: 8, seq_num: 500 } },
+    });
+    await vi.waitFor(() => expect(session.sendSetPayload).toHaveBeenCalledTimes(3));
+    expect(sealed(session.sendSetPayload.mock.calls[2]!)).toMatchObject({ lock_cmd: 8, seq_num: 501 });
+    const tlv = Buffer.from(
+      (sealed(session.sendSetPayload.mock.calls[2]!) as { lock_payload?: string }).lock_payload!,
+      "base64",
+    );
+    expect(tlv.subarray(4, 7).toString("hex")).toBe("a20100");
+  });
+
+  it("seals AES-128-ECB for a station on firmware 2.1.2.2l_1.3", async () => {
+    const { router, session } = makeRouter(true, ME, "2.1.2.2l_1.3");
+
+    await router.dispatchCommand(LOCK_SN, lockCmd);
+
+    expect(sealed(session.sendSetPayload.mock.calls[0]!, "aes-128-ecb")).toMatchObject({ lock_cmd: 8 });
   });
 });

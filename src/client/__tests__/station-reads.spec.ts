@@ -5,8 +5,8 @@ import { EufyMega } from "../eufy-mega.js";
 /**
  * `readStationTable` and `readStationImage` resolve which station, which transport and which account
  * id, and hand the read to that transport, which owns assembling the reply and is specced with it.
- * These cover the facade's half: a HomeBase S1 Pro (T9000) reads over its control channel, a table on
- * any other station over its P2P session, an image only on a T9000, and both refuse a station they
+ * These cover the facade's half: a station on an RTC route reads over its data channel, a table on
+ * any other station over its P2P session, an image only on an RTC route, and both refuse a station they
  * cannot name.
  */
 const HUB = "T8010P0000000000";
@@ -15,13 +15,17 @@ const CAMERA = "T8000P0000000002";
 const THUMB = "/zx/hdd_data0/Camera020000/event/202604/20260410/20260410153000_thumb.jpg";
 const ROWS = [{ device_sn: CAMERA, record_id: 7, thumb_path: THUMB }];
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+/** The record inputs the native RTC route needs, synthetic. */
+const RTC_INPUTS = { p2p_did: "SYNTH-000000-AAAAA", p2p_license: "SYNLIC", signaling_servers: ["https://192.0.2.7"] };
 
-function harness(opts: { adminUserId?: string; session?: null } = {}) {
+function harness(opts: { signedOut?: true; session?: null; member?: Record<string, unknown> | null } = {}) {
   const eufy = new EufyMega({ email: "t@example.com", password: "x", autoRealtime: false, pollMs: 0 });
+  const auth = opts.signedOut ? undefined : { userId: "MEMBER-0000", authToken: "t" };
+  Object.defineProperty((eufy as unknown as { mega: object }).mega, "auth", { get: () => auth });
   const readDatabase = vi.fn().mockResolvedValue(ROWS);
   const session = opts.session === null ? null : { readDatabase };
   const internals = eufy as unknown as {
-    registry: { list: () => unknown[] };
+    registry: { list: () => unknown[]; thingsOf: (sn: string) => unknown };
     rtc: { readTable: unknown; readImage: unknown };
     p2p: {
       stationKeyOf: (sn: string) => string;
@@ -29,12 +33,19 @@ function harness(opts: { adminUserId?: string; session?: null } = {}) {
       getSessions: () => Map<string, unknown>;
     };
   };
-  const member = { admin_user_id: opts.adminUserId ?? "ADMIN-0000" };
+  // A station the signed-in member was shared: its database is queried as its owner.
+  const member =
+    opts.member === null
+      ? {}
+      : { member: opts.member ?? { admin_user_id: "ADMIN-0000", member_user_id: "MEMBER-0000", member_type: 1 } };
   vi.spyOn(internals.registry, "list").mockReturnValue([
-    { sn: HUB, model: "T8010", raw: { device_type: DeviceType.STATION, member } },
-    { sn: T9000, model: "T9000", raw: { device_type: DeviceType.STATION_9000, member } },
+    { sn: HUB, model: "T8010", raw: { device_type: DeviceType.STATION, ...member } },
+    { sn: T9000, model: "T9000", raw: { device_type: DeviceType.STATION_9000, ...member, ...RTC_INPUTS } },
     { sn: CAMERA, model: "T8425", stationSn: T9000, raw: { parent_sn: T9000, device_channel: 2 } },
   ]);
+  vi.spyOn(internals.registry, "thingsOf").mockImplementation((sn) =>
+    sn === T9000 ? { properties: { is_connect_webrtc: { defaultValue: "2" } } } : undefined,
+  );
   const rtcTable = vi
     .spyOn(internals.rtc as { readTable: () => Promise<unknown[]> }, "readTable")
     .mockResolvedValue(ROWS);
@@ -59,25 +70,39 @@ describe("readStationTable", () => {
     expect(rtcTable).not.toHaveBeenCalled();
   });
 
+  /**
+   * esiotkit's `p2pRequest` quotes the record's `FamilyMember.adminUserId` as is (`""` on a member stating none), with
+   * no member rule, and the signed-in user only on a record without a member.
+   */
+  it.each([
+    ["the stated admin, whoever the member is", { admin_user_id: "ADMIN-0000", member_user_id: "OTHER" }, "ADMIN-0000"],
+    ['"" on a member stating none', { member_user_id: "OTHER" }, ""],
+    ["the signed-in user on a record without a member", null, "MEMBER-0000"],
+  ])("quotes %s", async (_, member, accountId) => {
+    const { eufy, readDatabase } = harness({ member });
+    await eufy.readStationTable(HUB, "history_record_info");
+    expect(readDatabase).toHaveBeenCalledWith("history_record_info", { accountId });
+  });
+
   it("reads a T9000's table over its control channel, by the station route a camera on it resolves to", async () => {
     const { eufy, readDatabase, rtcTable } = harness();
     expect(await eufy.readStationTable(CAMERA, "history_record_info", { timeoutMs: 500 })).toEqual(ROWS);
     expect(rtcTable).toHaveBeenCalledExactlyOnceWith(
-      { stationSn: T9000, adminUserId: "ADMIN-0000", attached: false },
+      expect.objectContaining({ stationSn: T9000, adminUserId: "ADMIN-0000", attached: false }),
       "history_record_info",
       { timeoutMs: 500 },
     );
     expect(readDatabase).not.toHaveBeenCalled();
   });
 
-  it("refuses a station not in the device list, one stating no admin id, and one with no session", async () => {
+  it("refuses a station not in the device list, one without a member signed out, and one with no session", async () => {
     const { eufy: unknown, readDatabase, rtcTable } = harness();
     await expect(unknown.readStationTable("T8010P0000000009", "history_record_info")).rejects.toThrow(
       /not in the device list/,
     );
-    const { eufy: unnamed } = harness({ adminUserId: "" });
-    await expect(unnamed.readStationTable(T9000, "history_record_info")).rejects.toThrow(/admin_user_id/);
-    await expect(unnamed.readStationTable(HUB, "history_record_info")).rejects.toThrow(/admin_user_id/);
+    const { eufy: unnamed } = harness({ signedOut: true, member: null });
+    await expect(unnamed.readStationTable(T9000, "history_record_info")).rejects.toThrow(/login\(\) first/);
+    await expect(unnamed.readStationTable(HUB, "history_record_info")).rejects.toThrow(/login\(\) first/);
     const { eufy: sessionless } = harness({ session: null });
     await expect(sessionless.readStationTable(HUB, "history_record_info")).rejects.toThrow(/no P2P session/);
     expect(readDatabase).not.toHaveBeenCalled();
@@ -91,18 +116,18 @@ describe("readStationImage", () => {
     const control = new AbortController();
     expect((await eufy.readStationImage(T9000, THUMB, { signal: control.signal })).equals(JPEG)).toBe(true);
     expect(rtcImage).toHaveBeenCalledExactlyOnceWith(
-      { stationSn: T9000, adminUserId: "ADMIN-0000", attached: false },
+      expect.objectContaining({ stationSn: T9000, adminUserId: "ADMIN-0000", attached: false }),
       THUMB,
       { signal: control.signal },
     );
   });
 
-  it("refuses a station other than a T9000, one not in the device list and one stating no admin id", async () => {
+  it("refuses a station on no RTC route, one not in the device list, and one without a member signed out", async () => {
     const { eufy, rtcImage } = harness();
-    await expect(eufy.readStationImage(HUB, THUMB)).rejects.toThrow(/is not a T9000/);
+    await expect(eufy.readStationImage(HUB, THUMB)).rejects.toThrow(/is not an RTC station/);
     await expect(eufy.readStationImage("T8010P0000000009", THUMB)).rejects.toThrow(/not in the device list/);
-    const { eufy: unnamed, rtcImage: unnamedImage } = harness({ adminUserId: "" });
-    await expect(unnamed.readStationImage(T9000, THUMB)).rejects.toThrow(/admin_user_id/);
+    const { eufy: unnamed, rtcImage: unnamedImage } = harness({ signedOut: true, member: null });
+    await expect(unnamed.readStationImage(T9000, THUMB)).rejects.toThrow(/login\(\) first/);
     expect(rtcImage).not.toHaveBeenCalled();
     expect(unnamedImage).not.toHaveBeenCalled();
   });

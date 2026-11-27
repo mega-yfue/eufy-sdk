@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
-import { fakeFfmpeg, H264, H265, nalTypes, START_CODE } from "./live-source-fixtures.js";
+import { fakeFfmpeg, H264, H265, nalTypes, START_CODE, LIVE_FRAMES } from "./live-source-fixtures.js";
 import type { P2PFrame, P2PSession } from "../p2p-session.js";
 
 /**
@@ -33,7 +33,7 @@ class FakeSession extends EventEmitter {
 /** Record a zero-second clip: the run closes on the keyframe that starts it. */
 async function clipFrom(announce: readonly (readonly number[])[], then: readonly (readonly number[])[]) {
   const session = new FakeSession();
-  const clip = recordClip(session as unknown as P2PSession, 0, { keepAliveMs: 0, timeoutMs: 1000 });
+  const clip = recordClip(session as unknown as P2PSession, 0, { frames: LIVE_FRAMES, timeoutMs: 1000 });
   await Promise.resolve();
   const skippedFirstKeyframe = announce;
   const keyframeTheClipStartsAt = then;

@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { LIVE_FRAMES } from "./live-source-fixtures.js";
 import { P2PCommandRouter } from "../command-router.js";
+import { answeredSendFrame, connectedSession } from "./session-fixtures.js";
 
 /**
  * A shared live source is created once per station+channel; every later caller joins the existing one,
@@ -14,9 +16,11 @@ function poweredOf(source: unknown): string | undefined {
 
 function routerWithSession(
   logger: { warn: ReturnType<typeof vi.fn>; debug?: ReturnType<typeof vi.fn> },
-  session: Record<string, unknown> = { on: () => {}, off: () => {} },
+  session: object = { on: () => {}, off: () => {} },
+  frames = LIVE_FRAMES,
 ) {
   const router = new P2PCommandRouter({
+    liveFramesFor: () => frames,
     mega: {} as never,
     logger: logger as never,
     listDevices: () => [],
@@ -59,20 +63,16 @@ describe("shared live source construction", () => {
   it("uses the default linger when live() receives an invalid delay", async () => {
     vi.useFakeTimers();
     try {
-      const session = {
-        on: () => {},
-        off: () => {},
-        startLiveMedia: vi.fn(),
-        stopLiveMedia: vi.fn(),
-      };
+      const session = Object.assign(connectedSession(), { sendFrame: vi.fn() });
+      session.sendFrame = answeredSendFrame(session);
       const router = routerWithSession({ warn: vi.fn(), debug: vi.fn() }, session);
       const consumer = await router.mediaProviderFor("T8000P0000000000").live({ lingerMs: 3e9 });
       consumer.stop();
 
-      vi.advanceTimersByTime(7999);
-      expect(session.stopLiveMedia).not.toHaveBeenCalled();
-      vi.advanceTimersByTime(1);
-      expect(session.stopLiveMedia).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(7999);
+      expect(session.sendFrame).not.toHaveBeenCalledWith(LIVE_FRAMES.stop, 0, "");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(session.sendFrame).toHaveBeenCalledWith(LIVE_FRAMES.stop, 0, "");
     } finally {
       vi.useRealTimers();
     }
@@ -252,11 +252,11 @@ describe("shared live source options", () => {
     const logger = { warn: vi.fn() };
     const router = routerWithSession(logger);
 
-    await router.sharedLiveSourceFor("T8000P0000000000", { powered: "battery", keepAliveMs: 3000 });
-    await router.sharedLiveSourceFor("T8000P0000000000", { powered: "wired", keepAliveMs: 9000 });
+    await router.sharedLiveSourceFor("T8000P0000000000", { powered: "battery", lingerMs: 3000 });
+    await router.sharedLiveSourceFor("T8000P0000000000", { powered: "wired", lingerMs: 9000 });
 
     const msg = logger.warn.mock.calls[0][0] as string;
-    expect(msg).toMatch(/keepAliveMs/);
+    expect(msg).toMatch(/lingerMs/);
     expect(msg).toMatch(/powered/);
   });
 
@@ -300,5 +300,44 @@ describe("shared live source options", () => {
     expect(msg).toMatch(/powered/);
     expect(msg).not.toMatch(/timeoutMs/);
     expect(msg).not.toMatch(/skipKeyframes/);
+  });
+});
+
+/**
+ * The app's P2P player (`P2PLiveStreamPlayer.play`) sends the start as a request through the station's queue,
+ * connecting first when the station is not (`P2PConnectInterceptor`), and only reports its result: playback starts
+ * at once and ends on its own video timeout, not on the start's answer.
+ */
+describe("the live start's request", () => {
+  const frames = { ...LIVE_FRAMES, start: { ...LIVE_FRAMES.start, timeoutMs: 15_000 } };
+
+  it("leaves the stream to its warm-up deadline when the station refuses the open", async () => {
+    vi.useFakeTimers();
+    try {
+      const session = Object.assign(connectedSession(), { sendFrame: vi.fn() });
+      session.sendFrame = answeredSendFrame(session, -1);
+      const router = routerWithSession({ warn: vi.fn(), debug: vi.fn() }, session, frames);
+      const consumer = (await router.sharedLiveSourceFor("T8000P0000000000")).attach();
+      const failed = vi.fn();
+      consumer.on("error", failed);
+      await vi.advanceTimersByTimeAsync(24_999);
+      expect([session.sendFrame.mock.calls.length, failed.mock.calls.length]).toEqual([1, 0]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(failed.mock.calls[0]![0]).toMatchObject({ reason: "warm-timeout" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("sends the open once a station that was not connected connects", async () => {
+    const session = Object.assign(connectedSession(), { sendFrame: vi.fn() });
+    session.sendFrame = answeredSendFrame(session);
+    session.isConnected = false;
+    const router = routerWithSession({ warn: vi.fn(), debug: vi.fn() }, session, frames);
+    (await router.sharedLiveSourceFor("T8000P0000000000")).attach();
+    await new Promise((r) => setTimeout(r, 300));
+    expect(session.sendFrame).not.toHaveBeenCalled();
+    session.isConnected = true;
+    await vi.waitFor(() => expect(session.sendFrame).toHaveBeenCalledWith(frames.start, 0, "", 0, undefined));
   });
 });

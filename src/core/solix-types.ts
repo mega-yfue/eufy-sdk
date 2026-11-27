@@ -34,7 +34,7 @@ export interface SolixPowerCutoffOption {
 
 /**
  * The Solarbank's battery SOC-limit settings — the `param_data` block read from / written to
- * `site/get_site_device_param` under `param_type "27"` (verified live on an AE103). All values are
+ * `site/get_site_device_param` under `param_type "27"`. All values are
  * whole-percent integers. `chargeUpperLimit` caps charging (the app's "charge limit" / max SOC) and
  * `dischargeLowerLimit` floors discharging (the "discharge limit" / minimum SOC — the same quantity the
  * realtime `b5` telemetry blob reports). `backupReserve` (+ its switch) is the reserved-for-outage SOC;
@@ -108,8 +108,8 @@ export interface SolixSceneSolarbank {
   bat_soc?: string | number;
   /**
    * Number of ATTACHED expansion battery packs — the built-in battery is the host, not a pack. Read as
-   * `expansionPacks`. Observed live as `0` on a standalone AE103 main unit; a populated value (and the
-   * matching per-pack `bms_list` detail) has not yet been captured with a pack attached.
+   * `expansionPacks`. `0` with no pack attached; the shape of a populated value (and the matching
+   * per-pack `bms_list` detail) is not known.
    */
   sub_package_num?: string | number;
   [k: string]: unknown;

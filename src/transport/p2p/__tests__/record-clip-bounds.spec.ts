@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
-import { fakeFfmpeg, H264, START_CODE } from "./live-source-fixtures.js";
+import { fakeFfmpeg, H264, START_CODE, LIVE_FRAMES } from "./live-source-fixtures.js";
 import type { P2PFrame, P2PSession } from "../p2p-session.js";
 
 /**
@@ -54,7 +54,7 @@ async function clipUnderWay(): Promise<{ session: FakeSession; clip: Promise<Buf
 /** A clip whose stream is live and listening, before any keyframe has arrived. */
 async function clipAwaitingKeyframe(timeoutMs = 20_000): Promise<{ session: FakeSession; clip: Promise<Buffer> }> {
   const session = new FakeSession();
-  const clip = recordClip(session as unknown as P2PSession, 10, { keepAliveMs: 0, timeoutMs });
+  const clip = recordClip(session as unknown as P2PSession, 10, { frames: LIVE_FRAMES, timeoutMs });
   await vi.advanceTimersByTimeAsync(0); // let the collection attach its listeners to the started stream
   return { session, clip };
 }

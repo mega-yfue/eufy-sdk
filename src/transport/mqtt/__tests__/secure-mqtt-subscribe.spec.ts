@@ -121,3 +121,36 @@ describe("SecureMqtt.subscribe — explicit filters", () => {
     ]);
   });
 });
+
+describe("SecureMqtt resubscribe", () => {
+  beforeEach(() => {
+    fakeClients.length = 0;
+    refused = new Set();
+    broken = undefined;
+  });
+
+  it("retries a refused device topic every resubscribeMs until granted, as the app's checkSubFail", async () => {
+    vi.useFakeTimers();
+    try {
+      const m = new SecureMqtt({ credentials: CREDS, resubscribeMs: 5000 });
+      m.on("error", () => {});
+      const p = m.connect();
+      (await nextClient(fakeClients)).emit("connect");
+      await p;
+      const client = fakeClients[0]!;
+      const topic = "biz/eufy_home/T2000/T2000P0000000000/req";
+      refused = new Set([topic]);
+      await m.subscribeDevice(VACUUM);
+      const asked = () => client.subscribeAsync.mock.calls.filter(([t]) => t === topic).length;
+      expect(asked()).toBe(1);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(asked()).toBe(2);
+      refused = new Set();
+      await vi.advanceTimersByTimeAsync(5000);
+      await vi.advanceTimersByTimeAsync(15000);
+      expect(asked()).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

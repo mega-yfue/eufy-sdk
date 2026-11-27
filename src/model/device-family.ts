@@ -102,8 +102,8 @@ export const WALL_LIGHT_TYPES: ReadonlySet<number> = new Set<number>([
  * they own the hub-audio surface (alarm / voice-prompt volume). A deliberate SUBSET of the `station`
  * codec that EXCLUDES the NVRs (S4 Max, PoE NVR): those resolve to `station` for arming/storage but
  * have no speaker, so they must NOT expose the hub-audio controls (they'd fire at nothing). The
- * alarm/prompt wire is verified on HomeBase 3 (HB3); the other hubs, T9000 (`STATION_9000`) included,
- * share the hub hardware.
+ * hubs, T9000 (`STATION_9000`) included, share the HomeBase 3 (HB3) hub hardware and its alarm/prompt
+ * wire.
  */
 export const HOMEBASE_TYPES: ReadonlySet<number> = new Set<number>([
   DeviceType.STATION,
@@ -129,33 +129,16 @@ export const isOutdoorPanTilt = (ctx: FamilyContext): boolean => has(OUTDOOR_PT_
 export const isFloodLight = (ctx: FamilyContext): boolean => has(FLOODLIGHT_TYPES, ctx.deviceType);
 /** HomeBase-family hub (has a speaker/alarm) — a station EXCLUDING the NVRs, per `HOMEBASE_TYPES`. */
 export const isHomeBase = (ctx: FamilyContext): boolean => has(HOMEBASE_TYPES, ctx.deviceType);
-/** HomeBase S1 Pro (`STATION_9000`), the station the app drives over its WebRTC control channel. */
-export const isStation9000 = (ctx: FamilyContext): boolean => ctx.deviceType === DeviceType.STATION_9000;
-/** T8N00 NVR, identified by its reported model. */
-export const isNvrT8N00 = (ctx: FamilyContext): boolean => ctx.model === "T8N00";
-
-/** Camera models whose media a T8N00 serves over its call. */
-const NVR_MEDIA_CAMERA_MODELS: ReadonlySet<string> = new Set(["T8E00", "T8P00", "T8P10", "T8162", "T8410", "T8214"]);
-/** A camera attached to a T8N00 whose media the NVR's call serves. */
-export const isNvrMediaCamera = (ctx: FamilyContext): boolean =>
-  ctx.model !== undefined && NVR_MEDIA_CAMERA_MODELS.has(ctx.model);
-/** PoE S4 camera with independently streamed fixed and movable optical views. */
-export const isNvrDualLensCamera = (ctx: FamilyContext): boolean => ctx.model === "T8E00";
-
-/** NVR cameras verified to support an explicit 1080p live output. */
-export const isNvrFullHdCamera = (ctx: FamilyContext): boolean => ctx.model === "T8E00" || ctx.model === "T8P00";
-/** Video Doorbell C31 (T8223) or C30 (T8224), streamed by the app over the portal `call` route. */
-export const isCallDoorbell = (ctx: FamilyContext): boolean => ctx.model === "T8223" || ctx.model === "T8224";
 /** Gets `doorbell` but has run no doorbell write: the C30/C31 and the video locks T85V0/T85M0. */
 export const isUntriedDoorbell = (ctx: FamilyContext): boolean =>
-  isCallDoorbell(ctx) || ctx.model === "T85V0" || ctx.model === "T85M0";
+  ["T8223", "T8224", "T85V0", "T85M0"].includes(ctx.model ?? "");
 /** Wired doorbell (DeviceType.DOORBELL). */
 export const isWiredDoorbell = (ctx: FamilyContext): boolean => ctx.deviceType === DeviceType.DOORBELL;
 
 /**
  * Whether a vacuum uses the **Anker AIoT MQTT** transport (modern DP 150–180 protobuf scheme).
  *
- * A **negative exclusion**: returns `false` only for the one confirmed non-AIoT platform
+ * A **negative exclusion**: returns `false` only for the one non-AIoT platform
  * (`"eufy_home_tuya"` — ThingClips/Tuya Cloud). Any absent, unknown, or unrecognised category
  * defaults to `true`, matching the polarity of `routeCommand` which sends `aiot-dp` to MQTT
  * unless `category === "eufy_home_tuya"`. The two gates agree: an unknown-category AIoT
@@ -163,12 +146,9 @@ export const isWiredDoorbell = (ctx: FamilyContext): boolean => ctx.deviceType =
  *
  * | `category`          | platform                           | returns |
  * | ------------------- | ---------------------------------- | ------- |
- * | `"eufy_home"`       | Anker AIoT MQTT ✅ confirmed       | `true`  |
- * | `"eufy_home_tuya"`  | ThingClips/Tuya Cloud ✅ confirmed  | `false` |
+ * | `"eufy_home"`       | Anker AIoT MQTT                    | `true`  |
+ * | `"eufy_home_tuya"`  | ThingClips/Tuya Cloud              | `false` |
  * | absent / any other  | unknown — default to AIoT          | `true`  |
- *
- * Live-confirmed categories sourced from `get_devs_list` dumps: `"eufy_home_tuya"` from a T2266
- * X8 Pro (2026-08-04). Additional category strings are added here as devices are captured.
  */
 export const isAiotVacuum = (ctx: FamilyContext): boolean => ctx.category !== "eufy_home_tuya";
 
@@ -176,10 +156,23 @@ export const isAiotVacuum = (ctx: FamilyContext): boolean => ctx.category !== "e
  * Whether a vacuum is on the **ThingClips/Tuya Cloud** platform (`"eufy_home_tuya"` category).
  *
  * The positive complement of the negative-exclusion {@link isAiotVacuum}: returns `true` only for
- * the one confirmed non-AIoT platform. Used to extend capability `available` guards so Tuya
+ * the one non-AIoT platform. Used to extend capability `available` guards so Tuya
  * vacuums receive the same write actions as AIoT ones, routed by the facade's `routeCommand`.
  */
 export const isTuyaVacuum = (ctx: FamilyContext): boolean => ctx.category === "eufy_home_tuya";
+
+/**
+ * The secure-MQTT wire the app drives a lock's lock/unlock and auto-lock on, `undefined` where it takes none.
+ * `"native"`, its native lock screens' (`isSupportMqtt`, not `ESLDynamicConfig.isUseThingModel`): a T85D0, T85D2,
+ * T85F0, T85F1, T85F2, T85L0, T85L1, T85P0 or T85P1, and a T8531 or T85V0 that is its own station. `"bundle"`, its
+ * settings bundle's (`isUseThingModel`, `smart_lock_onoff` in the bundle's MQTT list): a T8532, T85M0 or T85M1 that is
+ * its own station.
+ */
+export function lockMqttWire(model: string | undefined, standalone: boolean): "native" | "bundle" | undefined {
+  const m = model ?? "";
+  if (/^T85(D[02]|F[0-2]|L[01]|P[01])/.test(m) || (standalone && /^T85(31|V0)/.test(m))) return "native";
+  return standalone && /^T85(32|M[01])/.test(m) ? "bundle" : undefined;
+}
 
 /** Video Smart Lock S330, identified by its distinct cloud device type. */
 export const isVideoSmartLock = (ctx: FamilyContext): boolean => ctx.deviceType === DeviceType.LOCK_8530;
@@ -196,8 +189,8 @@ export const isBluetoothLock = (ctx: FamilyContext): boolean => ctx.deviceType =
 
 /**
  * The classic Wi-Fi smart lock — the unit whose actuation rides a per-command ECDH-wrapped key rather than
- * the shared `ff09` frame: DeviceType 51 with a serial in the `T8520` range whose seventh character is `2`,
- * the one range driven on hardware. The DeviceType alone does not identify it, since later units share the
+ * the shared `ff09` frame: DeviceType 51 with a serial in the `T8520` range whose seventh character is `2`.
+ * The DeviceType alone does not identify it, since later units share the
  * number and take the `ff09` frame, and a device whose serial is unknown is not guessed either way.
  */
 export const isClassicWifiLock = (ctx: FamilyContext): boolean =>

@@ -21,7 +21,7 @@ import type { Capability, Codec, CloudRecord, PropertySpec, PropertyValue, Value
 import type { Members, MemberDeps } from "./members.js";
 // The transport boundary contract lives in core/ — imported by BOTH the capability layer (which
 // produces intent) and the transport layer (which consumes it), so neither imports the other.
-// Capability modules import Command/CommandSink/MediaProvider/ScalarForm straight from core/contracts.
+// Capability modules import Command/CommandSink/MediaProvider straight from core/contracts.
 import type { Command, Ff09SettingsReader, DpInboundFrame } from "../../core/contracts.js";
 
 /**
@@ -113,10 +113,6 @@ export type InboundSignal =
       dpParams?: Record<number, string>;
     };
 
-interface EventRefresh {
-  member: string;
-}
-
 /**
  * A **declarative** inbound-event mapping — the dual of {@link DetectionSpec} for events. A
  * capability lists which push `eventType`s / poll `paramType`s belong to it and the semantic event
@@ -130,8 +126,6 @@ export interface EventMapping {
   match: number | [number, number];
   /** The semantic SDK event name to emit (e.g. `"motion"`, `"doorbellPress"`, `"lockState"`). */
   emit: string;
-  /** @internal Refresh one reflected member before emitting a valueless transition. */
-  refresh?: EventRefresh;
   /**
    * Static fields folded into the emitted event payload — lets several ids emit the same event
    * name with a discriminator (e.g. battery pushes 6/7/11 all → `batteryAlert` with
@@ -257,6 +251,10 @@ export interface AvailabilityContext {
    * `undefined` as an empty set — `ctx.paramIds?.has(dp) ?? false`.
    */
   paramIds?: ReadonlySet<number>;
+  /** The raw value the device last reported for `param`, as the app's `device.params` holds it. */
+  paramValue?: (param: number) => string | undefined;
+  /** Whether the device is online now, worked out from its sessions and its station's params. @internal */
+  online?: () => boolean;
   /**
    * The product's thing description, when the cloud returned one for its product code: which values each
    * named property offers on this product. Absent when not fetched — fall back to static defaults rather
@@ -272,16 +270,10 @@ export interface AvailabilityContext {
    * cannot do what its name promises there.
    */
   homeBaseAttached?: boolean;
-  /** The command kinds this device's primary transport REFUSES (a setter emitting one is withheld); `undefined` when it refuses none (the P2P default). Set by the client, which owns the routing. */
-  refusedCommandKinds?: ReadonlySet<Command["kind"]>;
   /** Serial of the covering station, when the device record names one. */
   stationSerial?: string;
-  /**
-   * The vendor DeviceType of the station the device hangs off, when it is attached
-   * and the station's record states one. Answers which station family a command addressed to an
-   * attached device is carried through.
-   */
-  stationDeviceType?: number;
+  /** The zone on the device's own record (`time_zone`), which `timezone_set` reads when param 1215 is unreported. */
+  deviceTimezone?: string;
 }
 
 export interface CommandContext extends AvailabilityContext {
@@ -289,6 +281,8 @@ export interface CommandContext extends AvailabilityContext {
   timezone?: string;
   /** Device channel (0 for standalone, `device_channel` on a HomeBase). */
   channel: number;
+  /** The {@link AvailabilityContext.stationSerial} record's `device_channel`, 0 where it states none. */
+  stationChannel?: number;
   /** eufy DeviceType, when known. */
   deviceType?: number;
   /** Model / T-code, when known. */
@@ -329,18 +323,20 @@ export interface CommandContext extends AvailabilityContext {
    */
   capabilities?: ReadonlySet<Capability>;
   /**
-   * The lock owner's account id — the identity a lock command is authenticated against. Present on
-   * lock-family devices; absent elsewhere.
+   * The lock owner's account id — the record's `member.admin_user_id` as stated, which the app quotes in every lock
+   * command it builds (`OnOffRequestPayload.userId`, the bundle's `user_id`). Absent when the record states none.
    */
   adminUserId?: string;
   /** The acting member's short id (`member.short_user_id`, hex, e.g. `"0003"`) — the lock cmd `A5` field. */
   shortUserId?: string;
   /**
    * The acting name a command attributes itself to — the lock cmd acting-username `A4` field, and the
-   * `user_name` of the guard-mode and HomeBase-alarm writes. The logged-in account's display name
-   * (email local-part) unless the client pins a different label for it.
+   * `user_name` of the guard-mode write. The account's `nick_name` (email local-part when it has
+   * none) unless the client pins a different label for it.
    */
   accountName?: string;
+  /** The login reply's raw `nick_name`, `''` kept, no fallback: the name the HomeBase siren preview carries. */
+  nickName?: string;
   /**
    * Whether the device has a usable P2P endpoint (a non-empty `p2p_did`). A HomeBase-attached lock
    * (T8531) is P2P-reachable; a standalone garage/lock (T85D0, `p2p_did:""`) is MQTT-only. The lock
@@ -471,9 +467,9 @@ export interface CapabilityModule {
    * The capability belongs to whichever device OWNS the group, so a device that hangs off a parent
    * station must not claim it — even when a curated row grants it or the device mirrors the param.
    *
-   * Guard mode is the case that grounds this: a standalone SoloCam/Indoor cam owns its own mode (read
-   * live: `armingMode` answers on a standalone T8170/T8171/T8410), but behind a HomeBase the hub owns
-   * it and the app shows it there, not per camera — an attached T8170 reports no mode at all. Applied
+   * Guard mode is the case that grounds this: a standalone SoloCam/Indoor cam owns its own mode (`armingMode`
+   * answers on it), but behind a HomeBase the hub owns it and the app shows it there, not per camera —
+   * an attached camera reports no mode at all. Applied
    * AFTER the three tiers are unioned (see `resolveDevice`), because the point is to withhold a
    * control the device cannot answer for however it was granted.
    */
@@ -484,8 +480,8 @@ export interface CapabilityModule {
    */
   events?: EventMapping[];
   /**
-   * Semantic event names this capability emits from {@link decodeEvent}, which the flat {@link events}
-   * table cannot express — a frame the module parses itself has no id to list there.
+   * Semantic event names this capability emits from {@link decodeEvent} or a state change, which the flat
+   * {@link events} table cannot express — a frame the module parses itself has no id to list there.
    *
    * Declared so the published manifest can state what a capability emits without a caller subscribing
    * blind: the manifest's event list is this union'd with the table's own `emit` names. A capability

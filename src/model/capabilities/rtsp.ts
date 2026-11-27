@@ -1,16 +1,15 @@
 import type { Command } from "../../core/contracts.js";
 import { asBool, enumLabels } from "../../core/util.js";
 import { setJson, setPayload, setScalar } from "./access.js";
-import { kindRoutable, method, propertiesOf, type Members, type Surface } from "./members.js";
-import type { AvailabilityContext, CapabilityModule, CommandContext, DecodedState, InboundSignal } from "./types.js";
+import { method, propertiesOf, type Members, type Surface } from "./members.js";
+import type { CapabilityModule, CommandContext, DecodedState, InboundSignal } from "./types.js";
 
 /** The state params this capability owns — its OWN vocabulary, used by no other capability. */
 export const RTSP_PARAM = {
   /**
    * RTSP publish switch (app `NAS_STREAM_SWITHC`, the vendor's own typo for SWITCH). `1` publishes the
-   * camera's stream, `0` withdraws it. ✅ Verified live 2026-08-01 on a HomeBase-attached doorbell and
-   * two indoor cameras: written through this param's scalar wire, both directions confirmed by the
-   * stream appearing and disappearing on the serving device's RTSP port.
+   * camera's stream, `0` withdraws it, on the serving device's RTSP port. Written through this param's
+   * scalar wire.
    */
   STREAM_SWITCH: 1145,
   /**
@@ -34,18 +33,16 @@ export const RTSP_PARAM = {
    * RTSP credentials + the authentication switch (app `NAS_SEND_SECURITY_PASSWD`). A `SET_PAYLOAD`
    * (1350) envelope: `{cmd:1287, mChannel:<deviceCh>, mValue3:0, payload:{mode, passwd, username}}`.
    *
-   * ✅ Byte-exact against the app's own frame (confirmed 2026-08-03 on a T8425 behind a T8030): the app
-   * auto-generates BOTH a username and a password (16 chars each — its "13 char" UI rule is
+   * Byte-exact with the app's own frame. The app auto-generates BOTH a username and a password (16 chars each — its "13 char" UI rule is
    * frontend-only; the firmware accepts any length). The app maps `mode` as `0` = open, `1` = Basic,
-   * `2` = Digest and offers Basic/Digest but no "open" option. A standalone T8442 was observed serving
-   * a Digest challenge. A HomeBase-attached T8210 echoed freshly supplied Basic credentials in its URL,
-   * confirming storage, while unauthenticated `DESCRIBE` remained 200 with no challenge.
+   * `2` = Digest and offers Basic/Digest but no "open" option. A standalone camera serves a Digest
+   * challenge; a HomeBase-attached one stores the credentials (echoed in its URL) while an
+   * unauthenticated `DESCRIBE` may still answer 200 with no challenge.
    */
   SEND_SECURITY_PASSWD: 1287,
   /**
    * What the NAS records (app `NAS_VIDEO_TYPE_EVENT`): events only or continuously. The readable half
-   * of the app's two-frame recording-mode pair (6050 + 6010). ✅ Write verified live on a T8030 by
-   * param readback (0 → 1 → 0).
+   * of the app's two-frame recording-mode pair (6050 + 6010).
    */
   VIDEO_TYPE_EVENT: 6050,
   /** Second frame of the recording-mode pair — see {@link VIDEO_TYPE_EVENT}. Sent with it, never alone. */
@@ -55,7 +52,7 @@ export const RTSP_PARAM = {
 /**
  * The RTSP authentication scheme a caller can require. Maps to the credential write's `mode` field.
  *
- * - `"digest"` — request a hashed nonce challenge, observed on a standalone camera. The reader does
+ * - `"digest"` — request a hashed nonce challenge, served by a standalone camera. The reader does
  *   not send the plaintext password during RTSP authentication, though configuration still sends it
  *   to the device. The safer choice, and the app's default.
  * - `"basic"` — request Basic authentication, where the reader sends the password base64-encoded on
@@ -100,40 +97,24 @@ export type RtspRecordingModeValue = (typeof RtspRecordingMode)[keyof typeof Rts
  *   feeding a recorder.
  *
  * The stream itself is served over plain RTSP on the local network, by the station for a
- * HomeBase-attached camera or by the camera itself when standalone. A standalone camera has been
- * observed serving a Digest challenge. A tested HomeBase-attached camera echoed freshly supplied Basic
- * credentials in its URL but stayed open without them. Verify storage from the device-reported URL
+ * HomeBase-attached camera or by the camera itself when standalone. A standalone camera serves a Digest
+ * challenge; a HomeBase-attached camera stores supplied credentials (echoed in its URL) but may stay
+ * open without them. Verify storage from the device-reported URL
  * and the served effect on each endpoint with an RTSP `DESCRIBE`: 401 = challenged, 200 = open.
  */
 export type RtspActions = Surface<typeof RTSP_MEMBERS>;
 
-/**
- * Whether the device's transport can carry the publish switch — a plain `set-param` scalar. Gates the
- * `publish`/`withdraw` METHOD members: the generic portal-reach gate withholds the derived setter and the
- * write intents, but cannot reach a `method`, whose arbitrary signature it has no command kind to probe,
- * so the two momentary methods ask the same question explicitly. True on P2P; false behind any station
- * whose portal cannot frame a scalar (an S1 Pro or a T8N00, which take only the `1350`/`1700` envelopes).
- */
-function publishable(ctx: AvailabilityContext): boolean {
-  return kindRoutable("set-param", ctx);
-}
-
-/**
- * The RTSP publish switch, both directions — a plain scalar, verified live on both topologies. Sent unread: a
- * station returns no result code under the switch, and states the outcome in the published state it reports
- * and, once publishing, in the URL it pushes under the same id.
- */
+/** The RTSP publish switch, both directions — a plain scalar on both topologies, settled on the device's answer. */
 function publishCommand(on: boolean, ctx: CommandContext): Command {
-  return { ...setScalar(RTSP_PARAM.STREAM_SWITCH, on ? 1 : 0, ctx), unanswered: true };
+  return setScalar(RTSP_PARAM.STREAM_SWITCH, on ? 1 : 0, ctx);
 }
 
 /**
- * The credentials frame. `mValue3` is 0, byte-exact with the app's own frame (captured live 2026-08-03
- * on a T8425 behind a T8030): `{cmd:1287, mChannel:<deviceCh>, mValue3:0, payload:{mode,passwd,username}}`.
- * Passing 0 explicitly overrides the transport's `mValue3 ?? cmd` default, which would send 1287.
+ * The credentials frame. `mValue3` is 0, byte-exact with the app's own frame:
+ * `{cmd:1287, mChannel:<deviceCh>, mValue3:0, payload:{mode,passwd,username}}`.
  */
 function credentialsCommand(mode: number, username: string, password: string, ctx: CommandContext): Command {
-  return setPayload(RTSP_PARAM.SEND_SECURITY_PASSWD, { mode, username, passwd: password }, ctx, 0, undefined, "auto");
+  return setPayload(RTSP_PARAM.SEND_SECURITY_PASSWD, { mode, username, passwd: password }, ctx, 0);
 }
 
 /**
@@ -144,7 +125,7 @@ function credentialsCommand(mode: number, username: string, password: string, ct
  * of step with the advertised type. A member's `write` returns a single command, so the pair cannot be
  * expressed as one.
  *
- * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * Exported but NOT published: each entry states its wire id and its gate,
  * which the reference site does not carry.
  * @internal
  */
@@ -155,19 +136,16 @@ export const RTSP_MEMBERS = {
    * the station's URL push (which proves the stream is up) and the cloud poll reports it too. A caller
    * that needs "did *I* turn it on" tracks its own `publish()` call rather than reading this back.
    *
-   * `provenance` is name-trust: the name is the app's own typo'd constant (`NAS_STREAM_SWITHC`), so it
-   * is "apk". The verified live WRITE — both directions, HomeBase and standalone — is in the description.
+   * The name is the app's own typo'd constant (`NAS_STREAM_SWITHC`).
    */
   published: {
     param: RTSP_PARAM.STREAM_SWITCH,
     property: "rtspStream",
     type: "bool",
     kind: "boolean",
-    provenance: "apk",
     description:
-      "Whether this camera's stream is published over RTSP (1145 NAS_STREAM_SWITHC). Name from the " +
-      "apk; the WRITE is verified live on a HomeBase-attached doorbell and two indoor cameras, both " +
-      "directions (DESCRIBE 404→200 with a real SDP, and back).",
+      "Whether this camera's stream is published over RTSP (1145 NAS_STREAM_SWITHC): published, RTSP " +
+      "DESCRIBE answers 200 with an SDP; withdrawn, 404.",
     write: (v, ctx) => publishCommand(asBool(v), ctx),
     aliases: { publish: true, withdraw: false },
   },
@@ -182,17 +160,16 @@ export const RTSP_MEMBERS = {
    * generic `url` would claim that word SDK-wide. The fluent read stays `dev.rtsp()?.url` — the member
    * key qualifies it there.
    *
-   * The FRAME SHAPE — 1145 returning as a NUL-terminated `rtsp://user:pass@host/path` string — was
-   * OBSERVED live, so `decodeState` is grounded. The station pushes it only once the stream is asked to
-   * start, not from the publish switch alone (field-confirmed).
+   * The FRAME SHAPE — 1145 returning as a NUL-terminated `rtsp://user:pass@host/path` string — is what
+   * `decodeState` reads. The station pushes it only once the stream is asked to start, not from the
+   * publish switch alone.
    *
    * To FETCH the URL, the canonical call is `EufyMega.reportedRtspUrl(sn)` — it provokes and returns it.
    * This member is NOT a second fetch path: it surfaces whatever the station last pushed as inbound
    * state, for code that already holds a `dev.rtsp()` and reacts to `propertyChanged` (a getter that is
    * simply absent until a push has landed), rather than driving the read itself.
    *
-   * `provenance` below is `verified` for the VALUE and its frame — not for the id: {@link STREAM_URL}
-   * is synthetic and the wire never reports it, so no capture could have "verified" the id itself.
+   * {@link STREAM_URL} is synthetic: the wire never reports it.
    *
    * Arrives ONLY over the P2P notify wire and never in the cloud record, so it is absent until a push
    * lands and then reads back like any other state. Read-only: the device reports it, a caller does not
@@ -203,8 +180,6 @@ export const RTSP_MEMBERS = {
     property: "rtspUrl",
     type: "string",
     kind: "text",
-    // `verified` describes the value and its frame (observed live), not the synthetic id — see the note above.
-    provenance: "verified",
     description:
       "The device-reported rtsp://user:pass@host/path, with the credentials the device currently " +
       "enforces. P2P-notify only (pushed on the 1145 wire once published); absent until a push lands.",
@@ -220,13 +195,11 @@ export const RTSP_MEMBERS = {
     type: "enum",
     kind: "enum",
     enumValues: enumLabels(RtspRecordingMode),
-    provenance: "apk",
     writtenElsewhere: true,
     description:
       "What the NAS records: 0 = events only, 1 = continuous (6050 NAS_VIDEO_TYPE_EVENT). The app " +
       "sends a PAIR of 1700-wrapped frames (6050 + 6010) for one change; setRecordingMode sends both. " +
-      "6050 is the readable half. Name from the apk; the WRITE is verified live on a T8030 by param " +
-      "readback (0 → 1 → 0).",
+      "6050 is the readable half.",
   },
 
   /** Persistently publish this camera's stream. The enabling caller owns withdrawing it when done. */
@@ -235,7 +208,6 @@ export const RTSP_MEMBERS = {
       (): Promise<void> =>
         sink.dispatch(publishCommand(true, ctx)),
     "Publish the stream.",
-    publishable,
   ),
   /** Withdraw this camera's persistent publication; consumer retries do not ask the SDK to republish it. */
   withdraw: method(
@@ -243,7 +215,6 @@ export const RTSP_MEMBERS = {
       (): Promise<void> =>
         sink.dispatch(publishCommand(false, ctx)),
     "Withdraw the stream.",
-    publishable,
   ),
 
   /**
@@ -255,8 +226,8 @@ export const RTSP_MEMBERS = {
    * still sends it to the device. Pass `"basic"` only for a player that can't do Digest: Basic sends
    * the password base64-encoded on every request, readable by anyone on the LAN.
    *
-   * The write stores credentials on both topologies, but a tested HomeBase-attached endpoint did not
-   * enforce the requested mode. Verify storage from the device-reported URL, which embeds the
+   * The write stores credentials on both topologies, but a HomeBase-attached endpoint may not enforce
+   * the requested mode. Verify storage from the device-reported URL, which embeds the
    * credentials, and enforcement with a `DESCRIBE` (401 = challenged, 200 = open).
    */
   requireAuth: method(

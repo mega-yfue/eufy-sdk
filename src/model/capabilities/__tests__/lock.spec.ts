@@ -1,4 +1,4 @@
-import { LOCK, LOCK_SETTING_ID, type LockActions } from "../lock.js";
+import { LOCK, type LockActions } from "../lock.js";
 import { isBluetoothLock, isClassicWifiLock } from "../../device-family.js";
 import { parseThingsList } from "../thing-description.js";
 import { resolveDevice } from "../../registry.js";
@@ -81,7 +81,7 @@ describe("lock capability — Bluetooth lock family", () => {
     await acts.lock!();
     await acts.unlock!();
     expect(sent.map((c) => c.kind)).toEqual(["doorlock-pass-through-actuate", "doorlock-pass-through-actuate"]);
-    expect(sent[0]).toMatchObject({ engage: true, adminUserId: bluetoothCtx.adminUserId, shortUserId: "0004" });
+    expect(sent[0]).toMatchObject({ engage: true, shortUserId: "0004" });
     expect(sent[1]).toMatchObject({ engage: false, deviceSn: bluetoothCtx.serial });
   });
 
@@ -123,7 +123,6 @@ describe("lock capability — classic Wi-Fi lock family", () => {
     const { acts } = lockOf(classicCtx);
     expect(acts.setAutoLock).toBeUndefined();
     expect("setAutoLock" in acts).toBe(false);
-    expect(acts.setRainMode).toBeUndefined();
     expect(lockOf(p2pCtx).acts.setAutoLock).toBeTypeOf("function");
   });
 
@@ -170,81 +169,35 @@ describe("lock capability module", () => {
     expect(sent[1]).toEqual({ ...sent[0], engage: true }); // lock (engage)
   });
 
-  it("lock/unlock on an MQTT-only device dispatch the SAME transport-neutral ff09-actuate intent", async () => {
-    // dev.lock()/.unlock() are byte-for-byte the same intent as the P2P case — the capability names no
-    // transport; the sink routes P2P vs MQTT by topology, so the host never has to know this is a garage
-    // door rather than a deadbolt.
-    const { acts, sent } = lockOf(mqttCtx);
+  it("lock/unlock on a lock its bundle drives over MQTT dispatch the SAME transport-neutral ff09-actuate intent", async () => {
+    const own = { ...mqttCtx, model: "T85M0", serial: "T85M0K0000000000", homeBaseAttached: false };
+    const { acts, sent } = lockOf(own);
     await acts.unlock!();
     await acts.lock!();
     expect(sent).toHaveLength(2);
     expect(sent[0]).toEqual({
       kind: "ff09-actuate",
       engage: false, // unlock (release)
-      adminUserId: mqttCtx.adminUserId,
-      username: mqttCtx.accountName,
-      shortUserId: mqttCtx.shortUserId,
-      deviceSn: mqttCtx.serial,
+      adminUserId: own.adminUserId,
+      username: own.accountName,
+      shortUserId: own.shortUserId,
+      deviceSn: own.serial,
     });
     expect(sent[1]).toEqual({ ...sent[0], engage: true }); // lock (engage)
-  });
-
-  it("setRainMode on a P2P lock dispatches a transport-neutral ff09-setting-toggle intent", async () => {
-    const { acts, sent } = lockOf(p2pCtx);
-    await acts.setRainMode?.(true);
-    expect(sent).toEqual([
-      {
-        kind: "ff09-setting-toggle",
-        adminUserId: p2pCtx.adminUserId,
-        deviceSn: p2pCtx.serial,
-        settingId: LOCK_SETTING_ID.RAIN_MODE,
-        value: true,
-      },
-    ]);
-  });
-
-  it("setRainMode is absent on a LOCK_85V0, which the app offers no Rain Mode", () => {
-    const { acts } = lockOf({ ...p2pCtx, deviceType: DeviceType.LOCK_85V0 });
-    expect("setRainMode" in acts).toBe(false);
-  });
-
-  it("setRainMode is absent on an MQTT-only device (no known Rain Mode on the garage door)", () => {
-    const { acts } = lockOf(mqttCtx);
-    expect(acts.setRainMode).toBeUndefined();
-    expect("setRainMode" in acts).toBe(false);
-  });
-
-  it.each([
-    "setOneTouchLock",
-    "setScramblePasscode",
-    "setWifiStatus",
-    "setLogEnabled",
-    "setPrivacyMode",
-    "setOneTouchRearLock",
-  ] as const)(
-    "%s is ABSENT until captured — source-confirmed-but-uncaptured toggles are not installed as keys, on either transport",
-    (method) => {
-      for (const ctx of [p2pCtx, mqttCtx]) {
-        const acts = lockOf(ctx).acts as Record<string, unknown>;
-        expect(acts[method]).toBeUndefined();
-        expect(method in acts).toBe(false);
-      }
-    },
-  );
-
-  it("all 7 setting-id constants are distinct (no accidental collision)", () => {
-    const ids = Object.values(LOCK_SETTING_ID);
-    expect(new Set(ids).size).toBe(ids.length);
-  });
-
-  it("setRainMode rejects on missing member identity", async () => {
-    const { acts } = lockOf({ ...p2pCtx, adminUserId: undefined });
-    await expect(acts.setRainMode?.(true)).rejects.toThrow(/member identity/);
   });
 
   it("lock/unlock reject on missing member identity, on either transport", async () => {
     await expect(lockOf({ ...p2pCtx, adminUserId: undefined }).acts.lock!()).rejects.toThrow(/member identity/);
     await expect(lockOf({ ...mqttCtx, shortUserId: undefined }).acts.unlock!()).rejects.toThrow(/member identity/);
+  });
+
+  it("lock/unlock go without an admin id where the app's frame does: keyed (userId left out) and pass-through", async () => {
+    for (const ctx of [classicCtx, bluetoothCtx]) {
+      const { acts, sent } = lockOf({ ...ctx, adminUserId: undefined });
+      await acts.lock!();
+      expect(sent).toHaveLength(1);
+      expect((sent[0] as { adminUserId?: string }).adminUserId).toBeUndefined();
+    }
   });
 
   it("getAutoLockState delegates to the injected ff09Settings reader, on either transport", async () => {
@@ -296,7 +249,6 @@ describe("lock capability module", () => {
       paramType: 6000,
       type: "bool",
       kind: "boolean",
-      provenance: "verified",
       writable: true,
     });
 
@@ -305,7 +257,6 @@ describe("lock capability module", () => {
       paramType: 1101,
       type: "number",
       kind: "percent",
-      provenance: "verified",
       readAliases: [{ paramType: 6001 }],
     });
   });
@@ -405,12 +356,10 @@ describe("lock capability — SmartDrop lid", () => {
         payload: { isOpen: 1, userIndex: 0 },
         channel: 0,
         mValue3: 0,
-        level2Sender: "set-payload",
       },
     ]);
     expect(lid.lock).toBeUndefined();
     expect(lid.setAutoLock).toBeUndefined();
-    expect(lid.setRainMode).toBeUndefined();
     const ff09 = { getAutoLockState: vi.fn() } as unknown as Ff09SettingsReader;
     expect("getAutoLockState" in lockOf(ctx, ff09).acts).toBe(false);
   });
@@ -448,20 +397,21 @@ const _noSetLocked: Exact<"setLocked" extends keyof LockActions ? true : false, 
 const _lockRequired: Exact<undefined extends typeof lk.lock ? true : false, true> = true;
 const _lockArgs: Exact<Parameters<NonNullable<typeof lk.lock>>, []> = true;
 
-// Topology-gated: rain mode exists on the P2P video lock, not on the MQTT garage door.
-const _rainOptional: Exact<undefined extends typeof lk.setRainMode ? true : false, true> = true;
-
-// UNVERIFIED writes are declared, not installed → optional, and the compiler says so.
-const _oneTouchOptional: Exact<undefined extends typeof lk.setOneTouchLock ? true : false, true> = true;
-const _scrambleOptional: Exact<undefined extends typeof lk.setScramblePasscode ? true : false, true> = true;
-// …and being write-only, they have no getter even so.
-const _noOneTouchGetter: Exact<"oneTouchLock" extends keyof LockActions ? true : false, false> = true;
-
 // A provider-backed member is optional (absent unbound) and keeps the provider's own signature.
 // setAutoLock dispatches to the sink, not the ff09 reader, and is absent on the T8530 and on the classic
-// Wi-Fi lock, which never takes the ff09 settings frame — family-gated, it lands optional like setRainMode.
+// Wi-Fi lock, which never takes the ff09 settings frame — family-gated, it lands optional.
 const _autoLockRequired: Exact<undefined extends typeof lk.setAutoLock ? true : false, true> = true;
-const _autoLockArgs: Exact<Parameters<NonNullable<typeof lk.setAutoLock>>, [boolean, (number | undefined)?]> = true;
+const _autoLockArgs: Exact<
+  Parameters<NonNullable<typeof lk.setAutoLock>>,
+  [
+    boolean,
+    (number | undefined)?,
+    Pick<
+      import("../../../core/contracts.js").AutoLockSnapshot,
+      "isSchedule" | "scheduleStartTime" | "scheduleEndTime"
+    >?,
+  ]
+> = true;
 const _snapshot: Exact<
   ReturnType<NonNullable<typeof lk.getAutoLockState>>,
   Promise<import("../../../core/contracts.js").AutoLockSnapshot>
@@ -473,11 +423,70 @@ export const _surfaceAssertions = [
   _noSetLocked,
   _lockRequired,
   _lockArgs,
-  _rainOptional,
-  _oneTouchOptional,
-  _scrambleOptional,
-  _noOneTouchGetter,
   _autoLockRequired,
   _autoLockArgs,
   _snapshot,
 ];
+
+/** A T8531 that is its own station, or a T85D0: lock/unlock and auto-lock go through the lock's MQTT settings service. */
+describe("lock capability — a lock that is its own station", () => {
+  const own: CommandContext = { ...p2pCtx, model: "T8531", deviceType: DeviceType.LOCK_8531, homeBaseAttached: false };
+  const service = { kind: "mqtt-dp", mqttCmdCode: 9, lockService: true, subVersion: 3, functionType: 2, encrypt: true };
+  const fields = (c: unknown) =>
+    (c as { fields: { tag: number; value: Buffer }[] }).fields.map((f) => [f.tag, f.value.toString("hex")]);
+
+  it("sends lock/unlock as opcode 35 under apiCommand 6018, the user's name and short id after the operation", async () => {
+    for (const ctx of [own, mqttCtx]) {
+      const { acts, sent } = lockOf(ctx);
+      await acts.lock!();
+      await acts.unlock!();
+      expect(sent[0]).toMatchObject({ ...service, cmdCode: 35, apiCommand: 6018, timeoutS: 20 });
+      expect(fields(sent[0])).toEqual([
+        [0xa3, "00"],
+        [0xa4, Buffer.from("someone+tag").toString("hex")],
+        [0xa5, "0003"],
+      ]);
+      expect(fields(sent[1])[0]).toEqual([0xa3, "01"]);
+    }
+  });
+
+  it("writes auto-lock as its settings frame, re-sending the schedule, door-state check and, unless given, the delay", async () => {
+    const { acts, sent } = lockOf(own);
+    await acts.setAutoLock!(true);
+    await acts.setAutoLock!(false, 60);
+    expect(sent[0]).toMatchObject({
+      ...service,
+      cmdCode: 52,
+      apiCommand: 6015,
+      preserve: [0xa2, 0xa3, 0xa4, 0xa5, 0xb4],
+    });
+    expect(fields(sent[0])).toEqual([
+      [0xa3, "00"],
+      [0xa4, "01"],
+    ]);
+    expect(sent[1]).toMatchObject({ preserve: [Buffer.from("3c00", "hex"), 0xa3, 0xa4, 0xa5, 0xb4] });
+    expect(fields(sent[1])).toEqual([
+      [0xa3, "00"],
+      [0xa4, "00"],
+    ]);
+  });
+
+  it("writes the schedule flag, start and end [hour, minute] in the same frame, the delay and door-state check read", async () => {
+    const { acts, sent } = lockOf(own);
+    const at = (start: [number, number]) => ({
+      isSchedule: true,
+      scheduleStartTime: start,
+      scheduleEndTime: [6, 30] as [number, number],
+    });
+    await acts.setAutoLock!(true, undefined, at([23, 0]));
+    expect(sent[0]).toMatchObject({
+      cmdCode: 52,
+      apiCommand: 6015,
+      preserve: [0xa2, Buffer.from([1]), Buffer.from([23, 0]), Buffer.from([6, 30]), 0xb4],
+    });
+    await expect(acts.setAutoLock!(true, 30, at([24, 0]))).rejects.toThrow();
+    const { acts: hb } = lockOf({ ...own, homeBaseAttached: true, stationSerial: "T8030P0000000000" });
+    await expect(hb.setAutoLock!(true, 30, at([23, 0]))).rejects.toThrow();
+    expect(sent).toHaveLength(1);
+  });
+});

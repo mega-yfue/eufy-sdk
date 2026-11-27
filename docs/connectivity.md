@@ -132,27 +132,11 @@ tail cancels the timer and starts again, so a camera detecting more often than t
 human detection only fires `personDetected` as often as a busier one fires raw `motion`. Pick the events
 a user actually looks at within the window, and read the rate off your own fleet.
 
-## Read-through cache
+## Cached reads
 
-Reads are served from an in-memory cache and only re-fetched when stale. A `getProperty` /
-`getProperties` on a value older than the freshness window schedules **one** coalesced background
-refresh (via the cheapest available path) and returns the last-known value immediately — reads never
-block, and a burst of reads collapses to a single refresh.
-
-- **Realtime keeps values fresh.** Push and P2P updates land in the same cache, so a device kept fresh
-  by realtime is never considered stale and never triggers a fetch — a wired camera with a live P2P
-  session serves reads with zero cloud calls.
-- **Reuse the `Device`.** The cache lives on the `Device` object, so hold onto the one from
-  `getDevice(sn)` and read from it repeatedly; calling `getDevice(sn)` afresh each time re-fetches.
-
-```ts
-new EufyMega({
-  email,
-  password,
-  countryCode,
-  cacheTtlMs: 15_000, // freshness window for cached reads (default 15 s)
-});
-```
+Reads are served from memory and never fetch, as in the app. The device list is fetched on first use and on
+your own `getDevices()`; after that, realtime reports and the poll (`pollMs`) keep values current. Hold onto
+the `Device` from `getDevice(sn)`: it is the one those updates are announced against.
 
 ## Is a device reachable?
 
@@ -281,7 +265,6 @@ re-authenticating.
 | --------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------- |
 | `autoRealtime`        | `true`                | Auto-start push/MQTT on login + on-demand P2P. `false` opts out.                                              |
 | `p2pIdleMs`           | `300000` (5 min)      | Idle window before a **battery** station detaches.                                                            |
-| `cacheTtlMs`          | `15000` (15 s)        | Freshness window for cached reads.                                                                            |
 | `prewarmEvents`       | `[]` (off)            | Which semantic events speculatively open P2P. Empty disables pre-warm.                                        |
 | `prewarmTiers`        | `["wired","battery"]` | Which station power tiers `prewarmEvents` may open. `["wired"]` spares batteries.                             |
 | `prewarmMs`           | `28000` (28 s)        | How long a pre-warm holds the session it opened; the tier's idle window follows.                              |

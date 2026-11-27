@@ -17,8 +17,7 @@ import type { P2PSession } from "../p2p-session.js";
  * gap: an idle-detach and a deferred reset are closes with no caller to clean up after them.
  *
  * The router therefore also tears down on {@link SessionManagerOpts.onAutoClose}. A close a CALLER made is
- * deliberately NOT routed there, because `closeAll` disposes its own sources and
- * `replaceUnreachableSession` keeps its source on purpose to rewarm it on the replacement.
+ * deliberately NOT routed there, because `closeAll` disposes its own sources.
  */
 const STATION = "T8000P0000000000";
 
@@ -78,43 +77,17 @@ describe("a station's session closing without a caller", () => {
     expect(closedStations, "an open with no matching close makes the pair useless").toEqual([STATION]);
   });
 
-  it("drops them when a deferred reset falls due instead, which fires inside the linger window", async () => {
-    const { manager, sources, talkbacks, closedStations } = routerFor();
-    manager.register(STATION, fakeSession());
-    const { dispose } = seedRiders(sources, talkbacks);
-
-    manager.retain(STATION);
-    const reset = manager.resetWhenUnused(STATION);
-    manager.release(STATION);
-    await reset;
-
-    expect(dispose).toHaveBeenCalled();
-    expect(closedStations).toEqual([STATION]);
-  });
-
-  it("drops them when a reset finds only expiring holds left, which its caller never cleans up after", async () => {
-    const { manager, sources, talkbacks, closedStations } = routerFor();
-    manager.register(STATION, fakeSession());
-    const { dispose } = seedRiders(sources, talkbacks);
-
-    manager.bumpCommand(STATION, STATION);
-    await manager.resetWhenUnused(STATION);
-
-    expect(dispose, "a source lingering with no viewer survives over the dead session otherwise").toHaveBeenCalled();
-    expect(closedStations).toEqual([STATION]);
-  });
-
   it("says nothing about a station that never opened, so a close is never reported without an open", async () => {
     const { manager, sources, talkbacks, closedStations } = routerFor();
     seedRiders(sources, talkbacks);
 
-    manager.hold(STATION, 100, STATION);
+    manager.hold(STATION, 100);
     await vi.advanceTimersByTimeAsync(100 + 1000);
 
     expect(closedStations).toEqual([]);
   });
 
-  it("leaves a caller's own close alone, so a session being replaced keeps its source to rewarm", async () => {
+  it("leaves a caller's own close alone", async () => {
     const { manager, sources, talkbacks, closedStations } = routerFor();
     const { dispose, stop } = seedRiders(sources, talkbacks);
 
@@ -123,7 +96,7 @@ describe("a station's session closing without a caller", () => {
     manager.register(STATION, fakeSession());
     await manager.closeAll();
 
-    expect(dispose, "replaceUnreachableSession closes, then rewarms the SAME source").not.toHaveBeenCalled();
+    expect(dispose).not.toHaveBeenCalled();
     expect(stop).not.toHaveBeenCalled();
     expect(closedStations).toEqual([]);
   });

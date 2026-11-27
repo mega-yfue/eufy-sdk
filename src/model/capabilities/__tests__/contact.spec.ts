@@ -81,7 +81,7 @@ describe("contact capability module", () => {
       const { acts: a, sent } = bind<ContactActions>("contact", ctx());
       await a.setAlarmSoundType!(4);
       expect(sent).toEqual([
-        { kind: "set-param", param: CONTACT_CMD.ALARM_SOUND_TYPE, value: 4, form: "auto", channel: 27 },
+        { kind: "set-param", stationAccount: true, param: CONTACT_CMD.ALARM_SOUND_TYPE, value: 4, channel: 27 },
       ]);
     });
 

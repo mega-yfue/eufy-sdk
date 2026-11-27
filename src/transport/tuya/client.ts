@@ -165,7 +165,8 @@ export class TuyaClient {
   async login(eufyUserId: string, phoneCode?: string): Promise<TuyaLoginResult> {
     const account: TuyaAccount = deriveTuyaAccount(eufyUserId, phoneCode);
 
-    const attempt = async (password: string): Promise<(TuyaLoginResult & { ecode?: string }) | "PASSWD_WRONG"> => {
+    type Login = TuyaLoginResult & { ecode?: string; phoneCode?: string };
+    const attempt = async (password: string): Promise<Login | "PASSWD_WRONG"> => {
       const tokenRes = await this.call<{ token?: string; publicKey?: string; exponent?: string }>(
         buildUsernameTokenGetAction(account.countryCode, account.username),
       );
@@ -183,11 +184,16 @@ export class TuyaClient {
       if (!publicKey || !exponent) throw new Error("tuya token.get: missing publicKey/exponent");
 
       const encPasswd = rsaEncryptPassword(password, publicKey, exponent);
-      const loginRes = await this.call<{ sid?: string; uid?: string; ecode?: string }>(
+      const loginRes = await this.call<{ sid?: string; uid?: string; ecode?: string; phoneCode?: string }>(
         buildPasswordLoginRegAction(account.countryCode, account.username, encPasswd, token),
       );
       if (loginRes.success && loginRes.result?.sid && loginRes.result?.uid) {
-        return { sid: loginRes.result.sid, uid: loginRes.result.uid, ecode: loginRes.result.ecode };
+        return {
+          sid: loginRes.result.sid,
+          uid: loginRes.result.uid,
+          ecode: loginRes.result.ecode,
+          phoneCode: loginRes.result.phoneCode,
+        };
       }
       if ((loginRes.errorCode ?? loginRes.errorMsg) === "USER_PASSWD_WRONG") return "PASSWD_WRONG";
       throw new Error(`tuya password.login.reg failed: ${loginRes.errorMsg ?? loginRes.errorCode ?? "no sid/uid"}`);
@@ -199,7 +205,7 @@ export class TuyaClient {
       throw new Error("tuya login: USER_PASSWD_WRONG on both derived password and fallback '12345678'");
     }
 
-    this.session = { ...this.session, sid: result.sid, ecode: result.ecode };
+    this.session = { ...this.session, sid: result.sid, ecode: result.ecode, phoneCode: result.phoneCode };
     return { sid: result.sid, uid: result.uid };
   }
 
@@ -220,8 +226,8 @@ export class TuyaClient {
    * ({@link buildPublishDpsAction}) is derived, NOT pinned against a confirmed exchange,
    * and the login round-trip that yields a real `sid` is unproven too. A wrong shape comes back as a
    * generic Tuya error indistinguishable from a real device rejection, so blindly sending would hide
-   * that ambiguity. Pass `{ allowUnverified: true }` to send anyway; the gate drops when the write is
-   * captured + confirmed against a device.
+   * that ambiguity. Pass `{ allowUnverified: true }` to send anyway; the gate drops once the shape is
+   * pinned against the app's own exchange.
    */
   async publishDps<T = unknown>(
     devId: string,

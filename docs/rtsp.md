@@ -23,9 +23,7 @@ rtsp?.published; // boolean | undefined — current state
 ```
 
 `published` is a typed read, present only when the device actually reports the backing state and
-the publish switch has a wire to it. `publish`, `withdraw` and `published` are all absent on a camera
-behind a HomeBase S1 Pro: its control channel carries only the `1350`/`1700` envelopes, and the publish
-switch is a plain parameter write.
+the publish switch has a wire to it.
 
 The device does not stream to your process here — it serves an RTSP endpoint on your LAN that any
 recorder can open. Which host serves it depends on how the camera is installed:

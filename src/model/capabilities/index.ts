@@ -11,7 +11,6 @@ import {
   bindMembers,
   hasRequiredCapabilities,
   installs,
-  kindRoutable,
   memberWrite,
   propertiesOf,
   type MemberDeps,
@@ -29,7 +28,9 @@ import type {
   CommandContext,
   AvailabilityContext,
 } from "./types.js";
-import type { Command } from "../../core/contracts.js";
+import { reflectCommand, type Command } from "../../core/contracts.js";
+import { asBool } from "../../core/util.js";
+import { thingRead, thingReadback, thingWrite } from "./bundle.js";
 
 import { VIDEO } from "./video.js";
 import { RTSP } from "./rtsp.js";
@@ -38,29 +39,12 @@ import { MOTION } from "./motion.js";
 import { PERSON_DETECTION } from "./person-detection.js";
 import { BATTERY } from "./battery.js";
 export { RtspRecordingMode, type RtspRecordingModeValue, type RtspAuthScheme } from "./rtsp.js";
-export { SirenVolume, type SirenVolumeValue, SirenAlarmDuration, type SirenAlarmDurationValue } from "./siren.js";
+export { SirenVolume, type SirenVolumeValue } from "./siren.js";
 /**
  * Ask what a bound capability can be told to change but can never report back, and what it reports without
  * that value reflecting its own setter.
  */
 export { unobservableMembers, unreflectedMembers } from "./members.js";
-export {
-  Watermark,
-  type WatermarkValue,
-  NightVision,
-  type NightVisionValue,
-  RecordingQuality,
-  type RecordingQualityName,
-  RECORDING_QUALITY_TIERS,
-  StreamingQuality,
-  type StreamingQualityName,
-  STREAMING_QUALITY_TIERS,
-  resolveStreamingQuality,
-  resolveStreamingQualityTier,
-  resolveRecordingQuality,
-  resolveRecordingQualityValue,
-  resolveRecordingQualityTier,
-} from "./camera.js";
 export {
   WorkingMode,
   PowerSource,
@@ -371,12 +355,20 @@ export const STATION_OWNED_CAPABILITIES: ReadonlySet<Capability> = new Set(
   MODULES.filter((m) => m.ownedByStation).map((m) => m.capability),
 );
 
-/** @internal */
-interface ResolvedEventRefresh {
-  param: number;
-  property: string;
-  timeoutMs: number;
-}
+/**
+ * The event each {@link CapabilityModule.ownedByStation} member's write announces, keyed by the param it reads:
+ * the same event announces the param moving on a report the station volunteers.
+ * @internal
+ */
+export const STATION_PARAM_EVENTS: Readonly<Record<number, string>> = Object.fromEntries(
+  MODULES.filter((m) => m.ownedByStation).flatMap((m) =>
+    Object.values(m.members ?? {}).flatMap((member) =>
+      "param" in member && typeof member.param === "number" && member.observation
+        ? [[member.param, member.observation.event] as const]
+        : [],
+    ),
+  ),
+);
 
 /**
  * An index hit: the semantic event name, the capability that claims the id, and any static payload
@@ -386,7 +378,6 @@ interface ResolvedEventRefresh {
 export type EventHit = Pick<EventMapping, "payload" | "derive"> & {
   emit: string;
   capability: Capability;
-  refresh?: ResolvedEventRefresh;
 };
 type EventIndex = { exact: Map<number, EventHit[]>; ranges: Array<{ lo: number; hi: number } & EventHit> };
 
@@ -411,22 +402,7 @@ export function buildEventIndex(modules: readonly CapabilityModule[]): Record<"p
   const idx: Record<"push" | "poll", EventIndex> = { push: mk(), poll: mk() };
   for (const m of modules) {
     for (const e of m.events ?? []) {
-      const declaredMember = e.refresh && m.members?.[e.refresh.member];
-      const refresh =
-        declaredMember &&
-        "param" in declaredMember &&
-        typeof declaredMember.param === "number" &&
-        declaredMember.observation?.event === e.emit
-          ? {
-              param: declaredMember.param,
-              property: declaredMember.property ?? e.refresh!.member,
-              timeoutMs: declaredMember.observation.timeoutMs,
-            }
-          : undefined;
-      if (e.refresh && !refresh) {
-        throw new TypeError(`${m.capability}.${e.emit} refreshes an unknown readable member ${e.refresh.member}`);
-      }
-      const hit = { emit: e.emit, capability: m.capability, payload: e.payload, derive: e.derive, refresh };
+      const hit = { emit: e.emit, capability: m.capability, payload: e.payload, derive: e.derive };
       if (Array.isArray(e.match)) idx[e.source].ranges.push({ lo: e.match[0], hi: e.match[1], ...hit });
       else {
         const at = idx[e.source].exact;
@@ -478,8 +454,6 @@ export function resolveHits(hits: EventHit[], capabilities?: ReadonlySet<Capabil
   return hits.filter((h) => capabilities.has(h.capability));
 }
 
-type DecodedCapabilityEvent = CapabilityEvent & { refresh?: ResolvedEventRefresh };
-
 /**
  * Normalize an inbound {@link InboundSignal} (push / P2P frame / poll) into the semantic
  * {@link CapabilityEvent}s to emit. Push/poll resolve via the declarative index (pure data);
@@ -505,11 +479,10 @@ type DecodedCapabilityEvent = CapabilityEvent & { refresh?: ResolvedEventRefresh
  * Omitted (undefined) = run all escape-hatch modules and accept any single-claimant id.
  * @internal
  */
-export function decodeEvent(signal: InboundSignal, capabilities?: ReadonlySet<Capability>): DecodedCapabilityEvent[] {
+export function decodeEvent(signal: InboundSignal, capabilities?: ReadonlySet<Capability>): CapabilityEvent[] {
   if (signal.source === "push") {
     return resolveHits(lookupEvents("push", signal.eventType), capabilities).map((hit) => ({
       event: hit.emit,
-      refresh: hit.refresh,
       payload: {
         deviceSn: signal.deviceSn,
         stationSn: signal.stationSn,
@@ -524,7 +497,6 @@ export function decodeEvent(signal: InboundSignal, capabilities?: ReadonlySet<Ca
   if (signal.source === "poll") {
     return resolveHits(lookupEvents("poll", signal.paramType), capabilities).map((hit) => ({
       event: hit.emit,
-      refresh: hit.refresh,
       payload: {
         deviceSn: signal.deviceSn,
         paramType: signal.paramType,
@@ -538,7 +510,7 @@ export function decodeEvent(signal: InboundSignal, capabilities?: ReadonlySet<Ca
   // p2p-frame / mqtt → escape-hatch decoders on the modules (binary parsing, bespoke payloads).
   // (No module maps `mqtt` yet — the Tuya-DP realtime format isn't reversed; the branch is ready.)
   const scope = signal.source === "p2p-frame" ? { stationSn: signal.stationSn } : { deviceSn: signal.deviceSn };
-  const events: DecodedCapabilityEvent[] = [];
+  const events: CapabilityEvent[] = [];
   for (const m of MODULES) {
     if (!m.decodeEvent) continue;
     if (capabilities && !capabilities.has(m.capability)) continue; // gate on the device's caps
@@ -580,11 +552,18 @@ export function hasRealtimeReads(capabilities: ReadonlySet<Capability>): boolean
  * the reporting device's capabilities exactly as events are, so one product line's decoder never runs
  * against another line's traffic. One entry per module that recognised the signal; a module that
  * decoded no fields is dropped.
+ *
+ * `station` selects the {@link CapabilityModule.ownedByStation} modules alone, whose state belongs to the
+ * station the signal came from whichever device or channel it names; without it they are skipped.
  */
-export function decodeState(signal: InboundSignal, capabilities?: ReadonlySet<Capability>): DecodedState[] {
+export function decodeState(
+  signal: InboundSignal,
+  capabilities?: ReadonlySet<Capability>,
+  station = false,
+): DecodedState[] {
   const out: DecodedState[] = [];
   for (const m of MODULES) {
-    if (!m.decodeState) continue;
+    if (!m.decodeState || !!m.ownedByStation !== station) continue;
     if (capabilities && !capabilities.has(m.capability)) continue;
     const st = m.decodeState(signal);
     if (st && Object.keys(st.params).length) out.push(st);
@@ -627,7 +606,48 @@ export function buildCommand(
     const cmd = memberCommand(m, action, value, ctx) ?? m.buildCommand?.(action, value, ctx);
     if (cmd !== undefined) return cmd;
   }
-  return undefined;
+  return thingCommand(action, value, ctx, has);
+}
+
+/** Whether a member of a capability in `has` claims `identifier` through its `thing`. */
+function claimed(identifier: string, has: ReadonlySet<Capability>): boolean {
+  return MODULES.some(
+    (m) =>
+      has.has(m.capability) &&
+      Object.values(m.members ?? {}).some((x) => (x as { thing?: readonly string[] }).thing?.includes(identifier)),
+  );
+}
+
+/**
+ * A described `RW` identifier no member claims, written by its identifier as the app does: the value as
+ * the description states it, sent as the product's settings bundle sends it and read back on the param
+ * it reads first. `undefined` where the bundle sends nothing for that value on this topology.
+ */
+function thingCommand(
+  identifier: string,
+  value: boolean | number | string,
+  ctx: CommandContext,
+  has: ReadonlySet<Capability>,
+): Command | undefined {
+  const property = ctx.things?.properties[identifier];
+  if (property?.accessMode !== "RW" || claimed(identifier, has)) return undefined;
+  const v = property.type === "bool" ? (asBool(value) ? "1" : "0") : String(value);
+  const cmd = thingWrite(identifier, v, ctx);
+  const readback = cmd && thingReadback(identifier, v, ctx);
+  return readback ? reflectCommand(cmd, readback) : cmd;
+}
+
+/**
+ * A described identifier no member claims, read as the product's settings bundle reads it from the raw
+ * params `raw` answers, as the description states the value. @internal
+ */
+export function thingValue(
+  identifier: string,
+  ctx: CommandContext,
+  raw: (param: number) => string | undefined,
+): string | undefined {
+  if (!ctx.things?.properties[identifier] || claimed(identifier, ctx.capabilities ?? new Set())) return undefined;
+  return thingRead(identifier, ctx, raw);
 }
 
 /**
@@ -728,8 +748,7 @@ export interface DeviceEventMap {
    * "this moved, re-read it". No wire id travels with it: several ids resolve to one property, which is
    * the point.
    *
-   * Announced from the cloud poll, from a realtime report, and from the read-through cache's own
-   * background re-read, for a change with any cause — the SDK cannot tell its own write's echo from a
+   * Announced from the cloud poll and from a realtime report, for a change with any cause — the SDK cannot tell its own write's echo from a
    * change made in the vendor app, and suppressing on a guess would lose a real external change in
    * exchange for one redundant re-read. Not announced on first sight of a device (that is discovery, not
    * a transition), nor inside a write's own confirmation (already reported through that command's
@@ -744,8 +763,7 @@ export interface DeviceEventMap {
    *
    * Latency is the inbound path's: seconds for a property a device reports over realtime. For one that
    * only ever arrives as a cloud param — which is most of them — it is whichever comes first of the poll
-   * (`EufyMegaOptions.pollMs`, `EufyMega.setPollInterval`) and the cache's re-read
-   * (`EufyMegaOptions.cacheTtlMs`), both the caller's to choose.
+   * (`EufyMegaOptions.pollMs`, `EufyMega.setPollInterval`), the caller's to choose.
    */
   propertyChanged: SemanticEventBase & PropertyChange & { deviceSn: string };
   /** Battery alert — `state` discriminates low / hot / full. */
@@ -795,11 +813,11 @@ export interface DeviceActionMap {
   audio: AudioActions;
   /** Battery/power: power source, working mode, and the custom-mode clip/interval/auto-stop settings. */
   battery: BatteryActions;
-  /** Smart lock: `lock()`/`unlock()` + verified `setRainMode`/`setAutoLock`. The 6 source-confirmed-but-uncaptured setting toggles are ABSENT until captured (present method ⇒ wire verified). */
+  /** Smart lock: `lock()`/`unlock()` + `setAutoLock`. The 6 source-confirmed-but-uncaptured setting toggles are ABSENT until captured (present method ⇒ wire verified). */
   lock: LockActions;
   /** Siren: reads `active`, `volume`, `alarmDuration`, `doNotDisturb`; writes `setVolume`, `setAlarmDuration`, `test`, `stop` (config setters present when the param is reported). No direct "sound the alarm" wire — a real alarm is driven by the `arming` system; `test` is the on-demand trigger. */
   siren: SirenActions;
-  /** Guard mode: `setMode(ArmingMode)` + `setAlarmDelayConfig(mode, config)`. Of the 9 modes a station reports, only `away`/`home`/`custom1`/`disarmed` are confirmed as writes (`ArmingMode`); the alarm-delay write takes the narrower byte-captured `AlarmDelayMode`. */
+  /** Guard mode: the `mode` a station reports + `setAlarmDelayConfig(mode, config)`; a house is armed by `setHouseMode`. */
   arming: ArmingActions;
   /** Doorbell: `playQuickResponse(voiceId)` (the canned voice replies). */
   doorbell: DoorbellActions;
@@ -949,9 +967,7 @@ function memberCommand(
       );
     }
     if (!member.write || !installs(member, ctx)) continue;
-    const cmd = memberWrite(name, member, claims ? value : (aliased as boolean | number | string), ctx);
-    if (!kindRoutable(cmd.kind, ctx)) continue;
-    return cmd;
+    return memberWrite(name, member, claims ? value : (aliased as boolean | number | string), ctx);
   }
   return undefined;
 }
@@ -959,7 +975,7 @@ function memberCommand(
 // Nothing ptz-specific leaks out of the barrel: PtzDirection, PTZ_ROTATE and the rotate
 // command builder all stay PRIVATE to ptz.ts. Callers go through buildActions / buildCommand
 // (generic), never a ptz symbol.
-// The transport boundary contract (Command/CommandSink/MediaProvider/ScalarForm) is NOT re-exported
+// The transport boundary contract (Command/CommandSink/MediaProvider) is NOT re-exported
 // here — it lives in core/contracts (imported directly by capabilities that emit intent), so it has
 // a single source at the root barrel.
 export type {
@@ -1128,7 +1144,7 @@ export type { PtzPresetActions, ZoomRegion, PtzPreset, PtzPresetImage } from "./
 
 // Named argument constants for the fluent actions (value + companion type): `ArmingMode.home`,
 // `PtzDirection.left`. The on-wire `PTZ_ROTATE` map stays private — not re-exported here.
-export { AlarmDelayMode, ArmingMode } from "./arming.js";
+export { ArmingMode } from "./arming.js";
 export type { AlarmDelayConfig, AlarmDelayCountdown, AlarmDelayDeviceAction, AlarmDelaySeconds } from "./arming.js";
 export { PtzDirection } from "./ptz.js";
 export { AiDetectType, encodeAiDetectType, decodeAiDetectType, type AiDetectFlags } from "./motion.js";

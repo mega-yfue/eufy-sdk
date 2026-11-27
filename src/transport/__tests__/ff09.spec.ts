@@ -1,4 +1,4 @@
-import { buildFf09Frame, LOCK_API_COMMAND } from "../ff09.js";
+import { buildFf09Frame, buildFf09TlvFrame, LOCK_API_COMMAND } from "../ff09.js";
 
 /**
  * Byte-exact reproduction of a captured T8531 video-lock command.
@@ -137,5 +137,18 @@ describe("ff09 frame encoder", () => {
         }),
       ).toThrow(/shortUserId must be an even-length hex string/);
     }
+  });
+});
+
+/** The app derives the key from the admin id alone and uses it only to seal: an unsealed frame needs none. */
+describe("ff09 TLV frame without an admin id", () => {
+  const input = { cmdCode: 0x23, fields: [], userId: "1".repeat(40), adminUserId: "", deviceSn: "T8531Q0000000000" };
+  const frame = { ...input, subVersion: 3, functionType: 2, unixTime: 1, nonce: 0 };
+  it("goes out unsealed, A2 the user id", () => {
+    const out = Buffer.from(buildFf09TlvFrame({ ...frame, encrypt: false }).lockPayload, "hex");
+    expect(out.includes(Buffer.from([0xa2, 40, ...Buffer.from(input.userId)]))).toBe(true);
+  });
+  it("is refused sealed", () => {
+    expect(() => buildFf09TlvFrame({ ...frame, encrypt: true })).toThrow(/adminUserId/);
   });
 });

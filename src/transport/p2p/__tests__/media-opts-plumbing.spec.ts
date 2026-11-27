@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { LIVE_FRAMES } from "./live-source-fixtures.js";
 
 /**
  * What the router hands each media egress, and why an omission there is never cosmetic.
@@ -31,6 +32,7 @@ const CAMERA_CHANNEL = 2;
 
 function routerWith(ffmpegPath?: string, homeBaseAttached = false) {
   const router = new P2PCommandRouter({
+    liveFramesFor: () => LIVE_FRAMES,
     mega: {} as never,
     ffmpegPath,
     listDevices: () => [],

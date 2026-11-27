@@ -68,27 +68,17 @@ export interface SharedLiveSourceOptions {
    * Factory that builds a fresh, **un-started** {@link LiveStreamHandle}. Called on every (re)warm so
    * a reconnect rebuilds the stream rather than reusing a dead one. `SharedLiveSource` calls
    * `.start()` itself.
-   *
-   * `ctx.reassertWanted` answers whether this pull still has anyone attached. A stream that re-asserts a
-   * channel to hold it open should consult it, so a pull nothing is watching stops competing for a session
-   * that serves one camera at a time.
    */
-  makeStream: (ctx: { reassertWanted: () => boolean }) => LiveStreamHandle;
-  /** No-consumer grace before teardown (default 8000ms; 0 schedules teardown next tick). Distinct from the stream's keepalive. */
+  makeStream: () => LiveStreamHandle;
+  /** No-consumer grace before teardown (default 8000ms; 0 schedules teardown next tick). */
   lingerMs?: number;
   /** Per-consumer bounded queue depth; overflow → drop-to-keyframe (default 900 ≈ 30s @ 30fps). */
   maxQueue?: number;
   /** Rolling prebuffer window in seconds, 0 = off (default 0). */
   preBufferSeconds?: number;
   /**
-   * Warm-up start retry interval (default 2000ms). After warming, if no keyframe has arrived, the source
-   * re-issues the start ({@link LiveStreamHandle.nudge}) every interval — self-healing a start that
-   * raced the level-2 key negotiation, independent of any caller keepalive.
-   */
-  warmRetryMs?: number;
-  /**
-   * Warm-up deadline (default 20000ms). If no keyframe arrives within it, the source emits `error` to
-   * consumers ("failed to start") and tears down, so `live()` never hangs silently on a dead start.
+   * Warm-up deadline (default 25000ms, the app's live player timeout). The start goes once; if no keyframe
+   * arrives within the deadline, the source emits `error` to consumers ("failed to start") and tears down.
    */
   warmTimeoutMs?: number;
   /**
@@ -140,14 +130,6 @@ export interface SharedLiveSourceOptions {
    * alive. This fires when it is not.
    */
   onStopped?: () => void;
-  /**
-   * This session is not serving the warm-up: a media start was abandoned unacknowledged, or forced starts went
-   * unanswered by any media, before anything was delivered. The owner answers whether it is replacing the
-   * session, and calls {@link SharedLiveSource.rewarm} once it has the replacement.
-   *
-   * Asked at most once per warm-up: further evidence is the same session saying the same thing.
-   */
-  onSessionUnreachable?: () => boolean;
 }
 
 /**
@@ -373,29 +355,12 @@ export class SharedLiveSource {
   /** Rolling prebuffer, keyframe-alignable on drain. */
   private ring: TimedMediaFrame[] = [];
 
-  /** Warm-up start-retry ticker (interval) + single-shot deadline; cleared once the first keyframe arrives. */
-  private warmRetryTimer?: ReturnType<typeof setInterval>;
-  /** Whether this warm-up has already asked its owner to replace the session. */
-  private sessionReplacementAsked = false;
   /** A reuse watch settles on upstream media independently of each consumer's keyframe gate. */
   private reuseWatch = false;
   /** This source's opaque handle for tracing — see {@link SharedLiveSource.trace}. */
   private readonly traceId: string;
-  /**
-   * How many re-issues this watch has spent with nothing arriving since it was armed.
-   *
-   * What a stream delivered BEFORE the current watch is no evidence about now — a reused stream's upstream may
-   * have served plenty and since been dropped by the station. Only a frame arriving after the watch was
-   * armed proves current delivery, and {@link delivered}
-   * is reset to track exactly that.
-   *
-   * The first re-issue is therefore a keepalive: a reuse cannot yet know which case it is in, and a keepalive
-   * is right where the station is still serving and harmless where it is not. A second one due with nothing
-   * arrived is the answer — no bound of its own, the retry's own cadence.
-   */
-  private fruitlessReissues = 0;
+  /** Warm-up deadline; cleared once the first keyframe arrives. */
   private readonly warmDeadlineTimer = new Timer();
-  private warmAttempts = 0;
   /** Battery budget timer + post-notice grace timer (battery/solar sources only). */
   private readonly budgetTimer = new Timer();
   private readonly budgetGraceTimer = new Timer();
@@ -403,7 +368,6 @@ export class SharedLiveSource {
   private readonly lingerMs: number;
   private readonly maxQueue: number;
   private readonly preBufferMs: number;
-  private readonly warmRetryMs: number;
   private readonly warmTimeoutMs: number;
   private readonly powered: "wired" | "battery";
   private readonly batteryBudgetMs: number;
@@ -415,8 +379,7 @@ export class SharedLiveSource {
     this.lingerMs = opts.lingerMs === 0 ? 1 : timerMs(opts.lingerMs, 8000);
     this.maxQueue = opts.maxQueue ?? 900;
     this.preBufferMs = timerMs((opts.preBufferSeconds ?? 0) * 1000, 0);
-    this.warmRetryMs = timerMs(opts.warmRetryMs, 2000);
-    this.warmTimeoutMs = timerMs(opts.warmTimeoutMs, 20000);
+    this.warmTimeoutMs = timerMs(opts.warmTimeoutMs, 25000);
     this.powered = opts.powered ?? "wired";
     this.batteryBudgetMs = timerMs(opts.batteryBudgetMs, 45000);
     this.budgetGraceMs = timerMs(opts.budgetGraceMs, 10000);
@@ -505,13 +468,12 @@ export class SharedLiveSource {
    * the events the first attempt did.
    */
   private openStream(): void {
-    const stream = this.opts.makeStream({ reassertWanted: () => this.consumerCount > 0 });
+    const stream = this.opts.makeStream();
     this.stream = stream;
     stream.on("video", (frame) => this.onVideo(frame));
     stream.on("audio", (frame) => this.onAudio(frame));
     stream.on("stop", () => this.onUpstreamEnd());
     stream.on("error", (err) => this.onUpstreamError(err));
-    stream.on("unacknowledged", () => this.askForFreshSession("start unacknowledged"));
     stream.start();
   }
 
@@ -520,124 +482,24 @@ export class SharedLiveSource {
    */
   private warm(): void {
     this._state = "warming";
-    this.sessionReplacementAsked = false;
     this.reuseWatch = false;
-    this.fruitlessReissues = 0;
     this.delivered = { keyframe: false, video: false, audio: false };
-    this.warmAttempts = 1;
-    this.logger.debug(`${this.tag} warming (retry=${this.warmRetryMs}ms deadline=${this.warmTimeoutMs}ms)`);
-    this.trace({ phase: "warming", retryMs: this.warmRetryMs, deadlineMs: this.warmTimeoutMs });
+    this.logger.debug(`${this.tag} warming (deadline=${this.warmTimeoutMs}ms)`);
+    this.trace({ phase: "warming", deadlineMs: this.warmTimeoutMs });
     this.openStream();
-    this.armWarmWatch();
-  }
-
-  /**
-   * Ask the owner for a replacement session where nothing has been delivered yet, answering whether one is coming.
-   *
-   * An unacknowledged start is roughly twenty byte-identical sends with no reply, against acknowledgement latencies
-   * of 4–37 ms awake and 238 ms waking, so it is the session that is not being heard rather than a slow device: the
-   * camera was never told to stream. Where media has already flowed the abandonment means something else and this
-   * does nothing. The DEADLINE is left running: the window belongs to the attempt, not to the session it started on.
-   *
-   * The retry ticker is stopped only once the owner has said it is replacing the session: an owner that cannot
-   * (an attached camera shares its HomeBase session) leaves the source re-issuing as it always did.
-   */
-  private askForFreshSession(why: string): boolean {
-    if (this.disposed || this.sessionReplacementAsked) return false;
-    if (this.delivered.video || this.delivered.audio || this.delivered.keyframe) return false;
-    if (!this.opts.onSessionUnreachable) return false;
-    this.sessionReplacementAsked = true;
-    if (!this.opts.onSessionUnreachable()) return false;
-    this.logger.debug(`${this.tag} ${why} with nothing delivered — warming again on a fresh session`);
-    if (this.warmRetryTimer) clearInterval(this.warmRetryTimer);
-    this.warmRetryTimer = undefined;
-    return true;
-  }
-
-  /**
-   * Warm again on a session the owner has replaced, inside the deadline the first attempt started.
-   *
-   * The previous stream is dropped rather than stopped through the state machine: it speaks to a session that
-   * is gone, and its `stop` would be read as an upstream end. Only a warm-up that asked for a replacement
-   * rewarms, so this is inert on a source that is streaming or has already failed. Each call replaces the
-   * re-issue ticker rather than adding one, so the start goes out once per interval however often it runs.
-   */
-  rewarm(): void {
-    if (this.disposed || !this.sessionReplacementAsked || this._state !== "warming") return;
-    const previous = this.stream;
-    this.stream = undefined;
-    previous?.stop();
-    this.fruitlessReissues = 0;
-    this.openStream();
-    this.warmAttempts++;
-    this.logger.debug(`${this.tag} warming again on a replacement session (attempt ${this.warmAttempts})`);
-    if (this.warmRetryTimer) clearInterval(this.warmRetryTimer);
-    this.warmRetryTimer = setInterval(() => this.reissueStart(), this.warmRetryMs);
-  }
-
-  /**
-   * Arm the deadline a stream must deliver within, and the ticker that re-issues its start until it does.
-   *
-   * The deadline is armed before the ticker so that a retry falling on the same instant as the deadline is
-   * never issued, which keeps `attempts` on {@link LiveStreamStartError} equal to the number of media starts
-   * actually sent. A stream with no `nudge` cannot be retried, so its watch stays at one attempt however long
-   * the deadline is.
-   */
-  private armWarmWatch(): void {
     this.warmDeadlineTimer.arm(this.warmTimeoutMs, () => this.onWarmTimeout());
-    this.warmRetryTimer = setInterval(() => this.reissueStart(), this.warmRetryMs);
   }
 
   /**
-   * Re-issue this stream's media start, asking for a REAL start while nothing has arrived.
-   *
-   * On an own-session camera a re-issue is a keepalive once the session believes the channel is started, and
-   * that belief outlives a station which acknowledged a start and then served nothing: every later re-issue is
-   * then a keepalive holding a stream that was never started. Nothing arriving since this watch was armed, across
-   * more than one re-issue, is this source's own evidence that the channel is not being served — see
-   * {@link fruitlessReissues} for why one is not enough and why what the stream delivered earlier is not
-   * evidence. Once media arrives the keepalive is what is wanted, and an attached camera re-sends a full start
-   * either way.
-   *
-   * A forced start that a whole interval later has still produced nothing is a session that acknowledges and
-   * does not serve: a fresh session on the same camera delivers a keyframe within a second, so a warm-up asks
-   * for one rather than forcing starts onto this one until its deadline. Wired only: a cold battery camera is
-   * slow rather than deaf, measured at about 8 s to first media, and replacing its session would cost a wake.
-   */
-  private reissueStart(): void {
-    const current = this.stream;
-    if (!current?.nudge) return;
-    const arrivedSinceWatch = this.delivered.video || this.delivered.audio;
-    if (arrivedSinceWatch) this.fruitlessReissues = 0;
-    else this.fruitlessReissues++;
-    if (
-      this.fruitlessReissues > 2 &&
-      this._state === "warming" &&
-      this.powered === "wired" &&
-      this.askForFreshSession("forced start served nothing")
-    )
-      return;
-    this.warmAttempts++;
-    current.nudge(!arrivedSinceWatch && this.fruitlessReissues > 1);
-  }
-
-  /**
-   * Watch an existing upstream with the warm-up retry and deadline. Any video or audio received after
-   * the watch begins confirms delivery and settles it. Each consumer's keyframe gate remains separate.
-   * Concurrent joins share a pending watch; the first join reissues the start immediately.
+   * Watch an existing upstream with the warm-up deadline. Any video or audio received after the watch begins
+   * confirms delivery and settles it. Each consumer's keyframe gate remains separate. Concurrent joins share a
+   * pending watch.
    */
   private watchReusedStream(): void {
-    if (this.warmDeadlineTimer.pending || this.warmRetryTimer !== undefined) return;
+    if (this.warmDeadlineTimer.pending) return;
     this.delivered = { keyframe: false, video: false, audio: false };
-    this.fruitlessReissues = 0;
     this.reuseWatch = true;
-    this.warmAttempts = 0;
-    this.armWarmWatch();
-    const current = this.stream;
-    if (current?.nudge) {
-      this.warmAttempts++;
-      current.nudge();
-    }
+    this.warmDeadlineTimer.arm(this.warmTimeoutMs, () => this.onWarmTimeout());
   }
 
   /** Arm the battery budget timer (battery/solar sources) — replaces any pending budget/grace. */
@@ -685,10 +547,8 @@ export class SharedLiveSource {
     this.clearWarmWatch();
   }
 
-  /** Stop the warm-up retry + deadline (the stream is confirmed live). */
+  /** Stop the warm-up deadline (the stream is confirmed live). */
   private clearWarmWatch(): void {
-    if (this.warmRetryTimer) clearInterval(this.warmRetryTimer);
-    this.warmRetryTimer = undefined;
     this.warmDeadlineTimer.cancel();
   }
 
@@ -718,14 +578,12 @@ export class SharedLiveSource {
       reason,
       stage: this.delivered.video ? "awaiting-keyframe" : this.delivered.audio ? "audio-only" : "awaiting-first-frame",
       timeoutMs: this.warmTimeoutMs,
-      attempts: this.warmAttempts,
       cause,
     });
     this.trace({
       phase: "start-failed",
       reason,
       stage: err.stage,
-      attempts: err.attempts,
       ...(cause ? { errorName: cause.name } : {}),
     });
     return err;
@@ -733,13 +591,12 @@ export class SharedLiveSource {
 
   private onVideo(frame: LiveVideoFrame): void {
     this.delivered.video = true;
-    this.fruitlessReissues = 0;
     this.settleReuseWatch();
     this.lastParamSets = updatedParamSets(frame.data, this.lastParamSets);
     const item = { kind: "video", frame, timestampMs: Date.now(), config: this.configOf(frame) } as const;
     if (frame.keyframe) {
       this.hasKeyframe = true;
-      const wasWarming = this.warmRetryTimer !== undefined || this.warmDeadlineTimer.pending;
+      const wasWarming = this.warmDeadlineTimer.pending;
       this.delivered.keyframe = true;
       if (this._state === "warming") this._state = "live";
       if (wasWarming) {
@@ -790,7 +647,6 @@ export class SharedLiveSource {
   private onAudio(frame: LiveAudioFrame): void {
     const item = { kind: "audio", frame, timestampMs: Date.now() } as const;
     this.delivered.audio = true;
-    this.fruitlessReissues = 0;
     this.settleReuseWatch();
     this.pushRing(item);
     for (const c of this.consumers) c.deliverAudio(frame, item.timestampMs);

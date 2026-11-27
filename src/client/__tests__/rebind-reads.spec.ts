@@ -46,7 +46,7 @@ describe("rebindReads", () => {
   /**
    * A robot's report is decoded by two capabilities over disjoint id sets. Handled slice by slice, each
    * one widens the evidence on its own and the first report costs two concurrent
-   * `get_device_param_list` POSTs — and announces itself twice.
+   * device-list reads — and announces itself twice.
    */
   it("re-binds once for a report two capabilities decoded", async () => {
     const { eufy, context, record, report, settle } = withDevice();

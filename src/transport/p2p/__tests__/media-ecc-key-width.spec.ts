@@ -31,7 +31,7 @@ describe("the session's P-256 media key", () => {
       p2pDid: "XXXXXXX-000000-XXXXX",
       noBroadcast: true,
     });
-    const key = session.mediaEccPrivateKey!;
+    const key = (session as unknown as { mediaEccPair(): { privateKey: Buffer } }).mediaEccPair().privateKey;
     expect(key).toEqual(LEADING_ZERO_SCALAR);
     expect(() => new VideoFrameDecoder(key)).not.toThrow();
   });

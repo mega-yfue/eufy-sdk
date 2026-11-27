@@ -38,6 +38,15 @@ or a JSON object (`json_match`). The catalogue uses no write condition and no `u
 Identifier families: security products use plain names (`nightvision_type`, `led_on_off`), vacuums
 `ecl_*`, mowers `ecl_mow_*`, smart lights `light_*` and `device_*`.
 
+## The catalog
+
+`@mega-yfue/eufy-sdk/catalog` exports `catalog` (type `ThingCatalog`): every product's described properties,
+generated with the bundle wires from the same corpus (`catalog.source`). Under `catalog.properties[identifier]`
+each distinct variant lists `type`, `access`, `min` / `max` / `step` / `unit` when stated, `options`
+(`[value, label]` pairs in the description's order, the label its text or key verbatim) and its `products`. It is
+build-time data for declaring controls ahead of a device; the SDK's runtime never loads it. A bound device's
+`dev.describe()` and its members' enum values stay the authority on what that device offers.
+
 ## The settings bundle — where the wire is
 
 A description names no wire. `profile` points at the product's **settings bundle**, the app's own

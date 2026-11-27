@@ -2,13 +2,12 @@ import { createDecipheriv, createECDH } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { eciesUnwrap } from "../codec.js";
 import { CommandType } from "../commands.js";
-import { KEYED_PAYLOAD_SEQ_ERROR, serialIv } from "../keyed-payload.js";
+import { serialIv } from "../keyed-payload.js";
 import {
   ACCOUNT_ID,
   DEVICE_SN,
   STATION_SN,
   connectedSession,
-  onFakeTime,
   routerWithSession,
   type FakeP2PSession,
 } from "./session-fixtures.js";
@@ -29,8 +28,8 @@ const devicePrivateKeyHex = Buffer.alloc(32, 7).toString("hex");
 
 /** The device channel the fixture record declares, and so the channel every reply has to arrive on. */
 const CHANNEL = 1;
-const REPLY_MS = 6000;
-const TWIN_MS = 500;
+/** The app's 20 s overtime for a lock command. */
+const REPLY_MS = 20_000;
 const FIRST_SEQ = 42;
 
 interface Inner {
@@ -106,13 +105,13 @@ function reply(session: FakeSession, answer: Answer, slState = "4"): void {
 
 /** The device's echo and report for a command it carried out. */
 const accepted: Answer[] = [{ echo: 0, report: 0 }];
-/** The device's echo and mark twin for a command whose sequence was not above the mark it holds. */
-const refusedAt = (mark: number): Answer[] => [{ echo: KEYED_PAYLOAD_SEQ_ERROR, mark }];
+/** The int32 a lock answers a `seq_num` not above the mark it holds with. */
+const SEQ_REFUSED = -151;
 
 /**
  * A router on a fake session whose device answers each send from `script` — a function of the send and its
  * index, so a device can keep a sequence mark. The sequence starts at a known number so every `seq_num` is
- * predictable. `nickName` puts a display name on the device record's member.
+ * predictable. `nickName` puts a display name on the device record's member, which the app never sends.
  */
 function harness(script: (sent: Sent, index: number) => Answer[], opts: { nickName?: string } = {}) {
   const session = connectedSession(false) as FakeSession;
@@ -128,7 +127,7 @@ function harness(script: (sent: Sent, index: number) => Answer[], opts: { nickNa
   const member = { admin_user_id: ACCOUNT_ID, ...(opts.nickName ? { nick_name: opts.nickName } : {}) };
   const router = routerWithSession(session, {
     deps: {
-      mega: { getDevicePublicKey: vi.fn(async () => devicePublicKeyHex) } as never,
+      mega: { auth: { userId: ACCOUNT_ID }, getDevicePublicKey: vi.fn(async () => devicePublicKeyHex) } as never,
       listDevices: () =>
         [
           {
@@ -142,8 +141,7 @@ function harness(script: (sent: Sent, index: number) => Answer[], opts: { nickNa
         ] as never,
     },
   });
-  const sequences = (router as unknown as { keyedSequences: Map<string, number> }).keyedSequences;
-  sequences.set(DEVICE_SN, FIRST_SEQ - 1);
+  (router as unknown as { keyedSeq: number }).keyedSeq = FIRST_SEQ;
   const actuate = (engage = true) =>
     router.dispatchCommand(DEVICE_SN, {
       kind: "keyed-payload-actuate",
@@ -153,19 +151,10 @@ function harness(script: (sent: Sent, index: number) => Answer[], opts: { nickNa
       shortUserId: "0003",
       deviceSn: DEVICE_SN,
     });
-  return { session, sent, sequences, actuate, lastSequence: () => sequences.get(DEVICE_SN) };
-}
-
-/**
- * A device that refuses every sequence at or below `mark`, publishing `mark` in the refusal's twin, and
- * moves the mark to each number it accepts.
- */
-function deviceWithMark(mark: number) {
-  return (sent: Sent): Answer[] => {
-    if (sent.inner.seq_num <= mark) return refusedAt(mark);
-    mark = sent.inner.seq_num;
-    return accepted;
-  };
+  const lastSequence = () => sent.at(-1)?.inner.seq_num;
+  const notify = (frame: unknown) =>
+    (router as unknown as { onStationFrame(sn: string, f: unknown): void }).onStationFrame(STATION_SN, frame);
+  return { session, sent, actuate, lastSequence, notify };
 }
 
 describe("P2PCommandRouter.sendKeyedPayloadActuate (keyed-payload-actuate command-router branch)", () => {
@@ -173,7 +162,7 @@ describe("P2PCommandRouter.sendKeyedPayloadActuate (keyed-payload-actuate comman
     vi.useRealTimers();
   });
 
-  it("sends the sealed fields as a keyed SET_PAYLOAD envelope on the device channel, and settles on the echo", async () => {
+  it("sends the sealed fields as a keyed SET_PAYLOAD envelope on the device channel, in the account's name, and settles on the echo", async () => {
     const { sent, actuate, lastSequence } = harness(() => accepted, { nickName: "Front Door Admin" });
     await actuate(true);
 
@@ -185,13 +174,13 @@ describe("P2PCommandRouter.sendKeyedPayloadActuate (keyed-payload-actuate comman
       shortUserId: "0003",
       slOperation: 1,
       userId: ACCOUNT_ID,
-      userName: "Front Door Admin",
+      userName: "account-name",
       seq_num: FIRST_SEQ,
     });
     expect(lastSequence()).toBe(FIRST_SEQ);
   });
 
-  it("releases with slOperation 0, and names the acting member by the account name when the record has no nick_name", async () => {
+  it("releases with slOperation 0", async () => {
     const { sent, actuate } = harness(() => accepted);
     await actuate(false);
     expect(sent[0]!.inner).toMatchObject({ slOperation: 0, userName: "account-name" });
@@ -245,52 +234,27 @@ describe("P2PCommandRouter.sendKeyedPayloadActuate (keyed-payload-actuate comman
     expect(sent).toHaveLength(1);
   });
 
-  it("resends once at the published mark + 1 after a refusal, and records where it landed", async () => {
-    // The first send is below the device's mark and is refused; the refusal publishes the mark, so the
-    // resend goes straight to mark + 1 — two round trips whatever the distance, no climb.
-    const { sent, actuate, lastSequence } = harness(deviceWithMark(9500));
+  /** The app sends a lock command once (`ESLAnkerP2PService.q`); a refusal fails it. */
+  it("rejects a sequence refusal without resending", async () => {
+    const { sent, actuate } = harness(() => [{ echo: SEQ_REFUSED, mark: 9500 }]);
+    await expect(actuate(true)).rejects.toThrow(`code ${SEQ_REFUSED}`);
+    expect(sent).toHaveLength(1);
+  });
+
+  /** One counter for every lock (`ESLP2pHelper`), set to `seq_num + 1` by each `P2P_SEQ` notify. */
+  it("takes the next number from a P2P_SEQ notify, whenever it arrives", async () => {
+    const { sent, actuate, notify } = harness(() => accepted);
+    notify({
+      commandId: CommandType.CMD_NOTIFY_PAYLOAD,
+      channel: 255,
+      json: {
+        cmd: CommandType.CMD_DOORLOCK_P2P_SEQ,
+        payload: { lock_cmd: CommandType.P2P_ON_OFF_LOCK, seq_num: 9500 },
+      },
+    });
     await actuate(true);
-
-    expect(sent.map((s) => s.inner.seq_num)).toEqual([42, 9501]);
-    expect(lastSequence()).toBe(9501);
-    // The next command starts just above the number the device accepted.
     await actuate(false);
-    expect(sent.at(-1)!.inner.seq_num).toBe(9502);
-  });
-
-  it("rejects when the resend at mark + 1 is refused too", async () => {
-    // Two refusals and the command gives up with the device's code — it does not keep resending.
-    const { sent, actuate } = harness((sent) => refusedAt(sent.inner.seq_num + 100));
-    await expect(onFakeTime(() => actuate(true))).rejects.toThrow(`code ${KEYED_PAYLOAD_SEQ_ERROR}`);
-    expect(sent).toHaveLength(2);
-  });
-
-  it("rejects a refusal that publishes no mark, without resending", async () => {
-    // A -151 with no `CMD_DOORLOCK_P2P_SEQ` twin leaves nothing to resend above, so the command rejects on it.
-    const { sent, actuate } = harness(() => [{ echo: KEYED_PAYLOAD_SEQ_ERROR }]);
-    await expect(actuate(true)).rejects.toThrow(`code ${KEYED_PAYLOAD_SEQ_ERROR}`);
-    expect(sent).toHaveLength(1);
-  });
-
-  it("holds the resend until the refusal's twin window passes, so a trailing statement is never read as the resend's answer", async () => {
-    vi.useFakeTimers();
-    const { sent, actuate } = harness((_, index) => (index === 0 ? refusedAt(1000) : accepted));
-    const done = actuate(true);
-    await vi.advanceTimersByTimeAsync(TWIN_MS - 1);
-    expect(sent).toHaveLength(1);
-    await vi.advanceTimersByTimeAsync(1);
-    await expect(done).resolves.toBe(true);
-    expect(sent.map((s) => s.inner.seq_num)).toEqual([FIRST_SEQ, 1001]);
-  });
-
-  it("resolves a refusal on its echo alone when no mark twin arrives, after the twin window", async () => {
-    vi.useFakeTimers();
-    const { sent, actuate } = harness(() => [{ echo: KEYED_PAYLOAD_SEQ_ERROR }]);
-    const done = actuate(true);
-    const outcome = expect(done).rejects.toThrow(`code ${KEYED_PAYLOAD_SEQ_ERROR}`);
-    await vi.advanceTimersByTimeAsync(TWIN_MS);
-    await outcome;
-    expect(sent).toHaveLength(1);
+    expect(sent.map((s) => s.inner.seq_num)).toEqual([9501, 9502]);
   });
 
   it("runs commands for one device one at a time, so a second waits for the first to settle", async () => {

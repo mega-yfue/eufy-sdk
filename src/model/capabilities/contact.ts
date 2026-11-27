@@ -29,11 +29,8 @@ export const CONTACT_CMD = {
 /**
  * The station's unsolicited sensor-status notify — inner `cmd` of a P2P notify frame
  * (`APP_CMD_DEV_SENSOR_NOTIFY`). It carries a `params` array of `{dev_type, param_type, param_value}` for
- * one attached sensor, volunteered on an IDLE session with no subscription, stream or stimulus.
- *
- * Verified live on a T8900 behind a T8010: five door movements across four sessions produced this
- * notify 2 to 2.7 s BEFORE the matching FCM push, over a LAN-direct session. Polarity locked by
- * anti-correlation with the push's own value field.
+ * one attached sensor, volunteered on an IDLE session with no subscription, stream or stimulus. It
+ * arrives seconds BEFORE the matching FCM push, with the same polarity as the push's value field.
  */
 const SENSOR_STATUS_CMD = 1829;
 
@@ -64,7 +61,7 @@ function statusParam(signal: InboundSignal, paramType: number): string | undefin
 /**
  * Normalise a raw contact value to `{ open }`, or `{}` when the signal didn't carry one. `"1"` is open,
  * anything else closed, as the app's `CusPushMode.isSensorOpen()` (`"1".equals(e)`) and the bundle's
- * `asBoolean` read it; confirmed on a T8900 through three open/close cycles. An absent value yields no
+ * `asBoolean` read it. An absent value yields no
  * field, so "closed" stays distinguishable from "this signal said nothing about the contact".
  */
 function contactOpen(raw: unknown): Record<string, unknown> {
@@ -119,23 +116,20 @@ export const CONTACT_MEMBERS = {
     property: "contact",
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
     description: "Contact state, true=open (1550, sensor_door_status).",
   },
-  /** The sensor was removed from its mount. Reported by a T8900; the meaning of a set value is the product bundle's. */
+  /** The sensor was removed from its mount. The meaning of a set value is the product bundle's. */
   tampered: {
     param: CONTACT_CMD.TAMPER,
     type: "bool",
     kind: "boolean",
-    provenance: "apk",
     description: "Removed from its mount (61015, sensor_disassemble_status).",
   },
-  /** The alarm currently skips this sensor. Reported by a T8900; the meaning of a set value is the product bundle's. */
+  /** The alarm currently skips this sensor. The meaning of a set value is the product bundle's. */
   bypassed: {
     param: CONTACT_CMD.BYPASS,
     type: "bool",
     kind: "boolean",
-    provenance: "apk",
     description: "Bypassed by the alarm (61016, sensor_door_bypass_status).",
   },
   /**
@@ -146,7 +140,6 @@ export const CONTACT_MEMBERS = {
     param: CONTACT_CMD.OPEN_ALERT,
     type: "string",
     kind: "text",
-    provenance: "verified",
     unexposed: true,
     writtenElsewhere: true,
     description: "Left-open alert config, base64 JSON {door_enable,door_time_point} (1290).",
@@ -156,7 +149,6 @@ export const CONTACT_MEMBERS = {
     readsFrom: "openAlertConfig",
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
     decode: (raw) => {
       const c = config(raw);
       return c === undefined ? undefined : asBool(c.door_enable);
@@ -168,7 +160,6 @@ export const CONTACT_MEMBERS = {
     readsFrom: "openAlertConfig",
     type: "number",
     kind: "scalar",
-    provenance: "verified",
     decode: (raw) => {
       const n = Number(config(raw)?.door_time_point);
       return Number.isInteger(n) ? n : undefined;
@@ -180,7 +171,6 @@ export const CONTACT_MEMBERS = {
     param: CONTACT_CMD.DAILY_CHECK,
     type: "string",
     kind: "text",
-    provenance: "verified",
     unexposed: true,
     writtenElsewhere: true,
     description: "Daily check config, base64 JSON {door_enable,door_time_interval} (1291).",
@@ -190,7 +180,6 @@ export const CONTACT_MEMBERS = {
     readsFrom: "dailyCheckConfig",
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
     decode: (raw) => {
       const c = config(raw);
       return c === undefined ? undefined : asBool(c.door_enable);
@@ -202,7 +191,6 @@ export const CONTACT_MEMBERS = {
     readsFrom: "dailyCheckConfig",
     type: "string",
     kind: "text",
-    provenance: "verified",
     decode: (raw) => {
       const times = config(raw)?.door_time_interval;
       return Array.isArray(times) ? times.map((t) => hhmm(Number(t) || 0)).join(",") : undefined;
@@ -212,7 +200,7 @@ export const CONTACT_MEMBERS = {
   /**
    * Turn the left-open alert on or off, with its delay. One frame carries both: `1350` SET_PAYLOAD,
    * sub-command 1290, `{door_enable, door_time_point}` — the product's settings bundle's own frame.
-   * Verified live on a T8900: param 1290 read back the written value and the app showed it.
+   * Reported back on param 1290.
    */
   setOpenAlert: method(
     ({ ctx, sink }) =>
@@ -230,7 +218,7 @@ export const CONTACT_MEMBERS = {
    * Turn the daily state check on or off, with its times of day. One frame carries both: `1350`
    * SET_PAYLOAD, sub-command 1291, `{door_enable, door_time_interval}` with each time as minutes since
    * midnight — the product's settings bundle's own frame.
-   * Verified live on a T8900: param 1291 read back the written times and the app showed them.
+   * Reported back on param 1291.
    */
   setDailyCheck: method(
     ({ ctx, sink }) =>
@@ -248,7 +236,7 @@ export const CONTACT_MEMBERS = {
   /**
    * The built-in alarm tone, offered where the product's description lists it: a sensor may report the
    * param while the app offers no such setting on it. Rejected, not clamped, outside the listed tones.
-   * Write: a direct-binary scalar `[ch][value][acct]` at signCode 8, captured live on a T90E0.
+   * Write: a direct-binary scalar `[ch][value][acct]` at signCode 8.
    */
   alarmSoundType: {
     param: CONTACT_CMD.ALARM_SOUND_TYPE,
@@ -256,25 +244,23 @@ export const CONTACT_MEMBERS = {
     kind: "enum",
     enumValues: enumLabels(ALARM_TONES),
     thing: ["device_alarm_sound_type"],
-    provenance: "verified",
     available: described("device_alarm_sound_type"),
     args: [{ name: "tone", kind: "enum", description: "Silent (0) or one of the four tones." }],
     description: "Alarm tone (1507, device_alarm_sound_type): 0=None,1=Water,2=Classics,3=Light,4=Ding.",
     write: (v, ctx) => {
       const tone = coerceEnumValue(ALARM_TONES, v);
-      return tone === undefined ? undefined : setScalar(CONTACT_CMD.ALARM_SOUND_TYPE, tone, ctx, "auto");
+      return tone === undefined ? undefined : setScalar(CONTACT_CMD.ALARM_SOUND_TYPE, tone, ctx);
     },
   },
   /**
    * The built-in alarm volume, a device level 1-26, offered where the product's description lists it.
    * Write: `1350` SET_PAYLOAD with `mChannel` the device channel, `mValue3` 0, payload `{channel, volume,
-   * transaction}` — the app's own captured frame on a T90E0. Out of range is refused, not clamped.
+   * transaction}` — the app's own frame. Out of range is refused, not clamped.
    */
   alarmVolume: {
     param: CONTACT_CMD.ALARM_VOLUME,
     type: "number",
     kind: "scalar",
-    provenance: "verified",
     available: described("alarm_volume_value"),
     min: ALARM_VOLUME_MIN,
     max: ALARM_VOLUME_MAX,
@@ -304,11 +290,11 @@ export const CONTACT: CapabilityModule = {
     "daily state check, and the built-in alarm where the product has one.",
   members: CONTACT_MEMBERS,
   properties: propertiesOf(CONTACT_MEMBERS),
-  /** A reported entry-sensor contact param (1550) is the verified proof of a contact sensor. */
+  /** A reported entry-sensor contact param (1550) is the proof of a contact sensor. */
   detection: { evidenceParams: [CONTACT_CMD.STATUS] },
   /**
    * Inbound `contactState`: the contact param changing on a cloud poll, and the FCM door-sensor push
-   * (`CusPushEvent.DOOR_SENSOR`), whose state is the single-letter `e` — both verified live on a T8900.
+   * (`CusPushEvent.DOOR_SENSOR`), whose state is the single-letter `e`.
    */
   events: [
     {

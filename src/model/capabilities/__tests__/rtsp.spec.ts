@@ -23,9 +23,6 @@ describe("rtsp capability module", () => {
     expect(prop.paramType).toBe(1145);
     expect(prop.type).toBe("bool");
     expect(prop.writable).toBe(true);
-    // provenance is NAME-trust: the name is the app's own typo'd constant, so it is "apk"; the
-    // verified live effect lives in the note (see the resolved review thread on #111).
-    expect(prop.provenance).toBe("apk");
   });
 
   /**
@@ -67,13 +64,21 @@ describe("rtsp capability module", () => {
     expect(sent.map((c) => (c as { value: number }).value)).toEqual([1, 0]);
   });
 
-  it("sends the publish switch unread, in both directions", async () => {
+  it("sends the publish switch as a plain write that settles on the device's answer, as the app does", async () => {
     const { acts: actions, sent } = bind<RtspActions>("rtsp", ctx);
 
     await actions.publish!();
     await actions.withdraw!();
 
-    expect(sent.map((c) => (c as { unanswered?: true }).unanswered)).toEqual([true, true]);
+    expect(sent).toEqual(
+      [1, 0].map((value) => ({
+        kind: "set-param",
+        stationAccount: true,
+        param: RTSP_PARAM.STREAM_SWITCH,
+        value,
+        channel: 2,
+      })),
+    );
   });
 
   it("builds the auth setting for a HomeBase-attached camera; enforcement belongs to the RTSP endpoint", async () => {
@@ -97,25 +102,7 @@ describe("rtsp capability module", () => {
     expect(sent).toHaveLength(1);
   });
 
-  it("withholds the publish switch and its momentary methods behind a station that refuses a scalar, but keeps the read", () => {
-    // An S1 Pro / T8N00 control channel frames set-payload/set-json only, so the publish scalar
-    // (set-param) cannot route: its derived setter is withdrawn by the generic portal-reach gate, and
-    // `publish`/`withdraw` — `method` members that gate can't probe — ask `kindRoutable("set-param")`
-    // themselves. The READ stays installed, so the camera's publish state remains visible.
-    const behindNarrowStation = {
-      ...ctx,
-      homeBaseAttached: true,
-      refusedCommandKinds: new Set(["set-param", "set-json-raw", "p2p-station-scalar"]),
-    } as CommandContext;
-    const { acts: actions } = bind<RtspActions>("rtsp", behindNarrowStation);
-
-    expect(actions.publish).toBeUndefined();
-    expect(actions.withdraw).toBeUndefined();
-    expect((actions as Record<string, unknown>).setPublished).toBeUndefined();
-    expect(Object.getOwnPropertyDescriptor(actions, "published")?.get).toBeTypeOf("function");
-  });
-
-  it("toggles authentication through the mode field of the credential payload, sent form:auto", async () => {
+  it("toggles authentication through the mode field of the credential payload", async () => {
     const { acts: actions, sent } = bind<RtspActions>("rtsp", ctx);
 
     await actions.requireAuth("eufy", "hunter2");
@@ -126,15 +113,12 @@ describe("rtsp capability module", () => {
       kind: string;
       cmd: number;
       payload: Record<string, unknown>;
-      form?: string;
     }[];
     for (const cmd of payloads) {
       expect(cmd.kind).toBe("set-payload");
       expect(cmd.cmd).toBe(RTSP_PARAM.SEND_SECURITY_PASSWD);
       expect(cmd.payload.username).toBe("eufy");
       expect(cmd.payload.passwd).toBe("hunter2");
-      // "auto" so a standalone camera (no level-2 key) can still receive it — the whole point of creds.
-      expect(cmd.form).toBe("auto");
       // mValue3 = 0, byte-exact with the app's captured frame (not the transport's `?? cmd` default).
       expect((cmd as unknown as { mValue3: number }).mValue3).toBe(0);
     }

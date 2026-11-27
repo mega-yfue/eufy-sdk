@@ -9,12 +9,14 @@ const STANDALONE = "T85V0K0000000000";
 const ATTACHED = "T85V0K0000000001";
 const S330 = "T8531K0000000000";
 const HUB = "T8010P0000000000";
+const C30 = "T85D0K0000000000";
+const THING = "T85M0K0000000000";
 const ADMIN = "0000000000000000000000000000000000000000";
 
 afterEach(() => vi.restoreAllMocks());
 
 describe("video lock ff09 routing", () => {
-  it("sends a standalone video lock's lock frames and auto-lock read over secure MQTT, an attached one's over P2P", async () => {
+  it("reads a native lock's auto-lock through its MQTT settings service, a thing-model one through its bundle, an attached one over P2P", async () => {
     const client = new EufyMega({
       email: "test@example.com",
       password: "synthetic",
@@ -39,7 +41,9 @@ describe("video lock ff09 routing", () => {
     internals.registry.devices = [
       { sn: STANDALONE, model: "T85V0", api: "mega", p2pDid: "XXXXXXX-000000-XXXXX", raw: raw(STANDALONE) },
       { sn: ATTACHED, model: "T85V0", api: "mega", p2pDid: "XXXXXXX-000001-XXXXX", raw: raw(HUB) },
-      { sn: S330, model: "T8531", api: "mega", p2pDid: "XXXXXXX-000002-XXXXX", raw: raw(S330, DeviceType.LOCK_8530) },
+      { sn: S330, model: "T8531", api: "mega", p2pDid: "XXXXXXX-000002-XXXXX", raw: raw(S330, DeviceType.LOCK_8531) },
+      { sn: C30, model: "T85D0C", api: "mega", raw: raw(C30, DeviceType.LOCK_85D0) },
+      { sn: THING, model: "T85M0", api: "mega", p2pDid: "XXXXXXX-000003-XXXXX", raw: raw(THING, 299) },
     ] as EufyDevice[];
     const mqtt = vi.spyOn(internals.mqtt, "dispatchCommand").mockResolvedValue();
     const p2p = vi.spyOn(internals.p2p, "dispatchCommand").mockResolvedValue();
@@ -61,14 +65,22 @@ describe("video lock ff09 routing", () => {
       hasP2p: true,
     });
 
-    await internals.routeCommand(STANDALONE, unlock(STANDALONE));
-    await internals.routeCommand(S330, unlock(S330));
     await internals.ff09SettingsReaderFor(STANDALONE, ctx(STANDALONE))!.getAutoLockState();
-    expect(mqtt.mock.calls).toEqual([
-      [STANDALONE, unlock(STANDALONE)],
-      [S330, unlock(S330)],
+    await internals.ff09SettingsReaderFor(S330, ctx(S330))!.getAutoLockState();
+    await internals.ff09SettingsReaderFor(C30, { ...ctx(C30), hasP2p: false })!.getAutoLockState();
+    await internals.ff09SettingsReaderFor(THING, ctx(THING))!.getAutoLockState();
+    expect(mqttRead.mock.calls).toEqual([
+      [STANDALONE, { adminUserId: ADMIN, deviceSn: STANDALONE, lockService: true }],
+      [S330, { adminUserId: ADMIN, deviceSn: S330, lockService: true }],
+      [C30, { adminUserId: ADMIN, deviceSn: C30, lockService: true }],
+      [THING, { adminUserId: ADMIN, deviceSn: THING }],
     ]);
-    expect(mqttRead).toHaveBeenCalledExactlyOnceWith(STANDALONE, { adminUserId: ADMIN, deviceSn: STANDALONE });
+    expect(mqtt).not.toHaveBeenCalled();
+    await internals.routeCommand(THING, unlock(THING));
+    expect(mqtt, "a standalone thing-model lock takes its bundle's MQTT wire").toHaveBeenCalledExactlyOnceWith(
+      THING,
+      unlock(THING),
+    );
 
     await internals.routeCommand(ATTACHED, unlock(ATTACHED));
     await internals.ff09SettingsReaderFor(ATTACHED, ctx(ATTACHED))!.getAutoLockState();

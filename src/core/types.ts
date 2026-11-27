@@ -55,7 +55,7 @@ export interface EufyDevice {
    * The station this device's traffic belongs to: its parent HomeBase, or its own serial when it has none.
    *
    * `parent_sn` carries the parent on an attached device. `station_sn` is frequently absent there — empty on
-   * every attached sensor of a T8010 — and serves only as a fallback for a device naming no parent.
+   * an attached sensor — and serves only as a fallback for a device naming no parent.
    */
   stationSn?: string;
   /** The device's channel on its station, as its record states it (`device_channel`); absent where it states none. */
@@ -63,14 +63,22 @@ export interface EufyDevice {
   /** Present (and non-empty) for P2P devices. */
   p2pDid?: string;
   /**
+   * This account's role on the device, its record's `member.member_type`, the one field the app's `isSuperAdmin()`
+   * (2), `isAdmin()` (1) and `isGuest()` (0) test; 0 where the member states none, as esiotkit's `FamilyMember`
+   * defaults it. 2 is the owner's own account. A guest cannot change the security mode or open some camera settings;
+   * only the owner can share the device. Absent when the record names no member.
+   */
+  memberType?: number;
+  /** The house the device list places the device in (`house_id`, an id of `get_house_list`); absent where none. */
+  houseId?: string;
+  /**
    * Device state data points (param_type → param_value), exactly as the cloud record carries them.
    * Raw and unnamed: the capability surface resolves these into named properties. `Device.inspect`
    * labels them for troubleshooting.
    *
    * **Not a realtime source.** These are refreshed server-side on the device's own cloud heartbeat,
-   * which is slow: measured across a live fleet, the freshest param on an active device was ~12 minutes
-   * old, and the per-device `get_device_param_list` call returns the same staleness as the bulk list
-   * (so fetching harder does not make them fresher). They are a coarse state snapshot plus liveness
+   * which is slow: the freshest param on an active device runs minutes old, so fetching harder
+   * does not make them fresher. They are a coarse state snapshot plus liveness
    * evidence ({@link paramUpdatedAt}); realtime state arrives over push / P2P / MQTT.
    */
   params?: Record<number, string>;

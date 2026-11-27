@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { LiveStream } from "../live-stream.js";
 import type { P2PSession } from "../p2p-session.js";
-import { FakeP2PSession, p2pAudioFrame, p2pVideoFrame } from "./live-source-fixtures.js";
+import { FakeP2PSession, p2pAudioFrame, p2pVideoFrame, LIVE_FRAMES } from "./live-source-fixtures.js";
 
 /**
  * A camera attached to a station receives its own media and nothing else, unconditionally.
@@ -35,7 +35,7 @@ function attachedStream(channel: number) {
   const stream = new LiveStream(session as unknown as P2PSession, {
     channel,
     homeBaseAttached: true,
-    keepAliveMs: 0,
+    frames: LIVE_FRAMES,
     logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   });
   const video: number[] = [];
@@ -91,7 +91,7 @@ describe("an attached camera's channel filter", () => {
     const stream = new LiveStream(session as unknown as P2PSession, {
       channel: 0,
       homeBaseAttached: false,
-      keepAliveMs: 0,
+      frames: LIVE_FRAMES,
       logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     });
     const video: number[] = [];

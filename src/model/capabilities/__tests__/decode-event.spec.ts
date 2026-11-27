@@ -318,11 +318,8 @@ describe("decodeEvent — detection sub-events and station events", () => {
     expect(push(3304)[0]).toMatchObject({ event: "packageStranded" });
   });
 
-  it("reports a guard-mode change and the alarm lifecycle", () => {
-    expect(push(9)[0]).toMatchObject({
-      event: "armingModeChanged",
-      refresh: { param: 1224, property: "armingMode", timeoutMs: 20_000 },
-    });
+  it("reports the alarm lifecycle, and nothing for the mode-switch push", () => {
+    expect(push(9).map((e) => e.event)).not.toContain("armingModeChanged");
     expect(push(10)[0]).toMatchObject({ event: "alarm", payload: { phase: "triggered" } });
     expect(push(16)[0]).toMatchObject({ event: "alarm", payload: { phase: "delayed" } });
   });

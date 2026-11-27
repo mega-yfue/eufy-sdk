@@ -25,6 +25,17 @@ import { isHomeBase } from "../device-family.js";
 import { VACUUM_DP } from "../capabilities/vacuum-clean.js";
 import { parseThingsList } from "../capabilities/thing-description.js";
 
+// The product's settings-bundle data, synthetic: the spec is about the code, not the shipped data.
+vi.mock("../../model/capabilities/bundle-wires.generated.json", async () => {
+  const f = await import("../../model/capabilities/__tests__/bundle-fixture.js");
+  return f.bundleData("T8124R T8114", {
+    led_on_off: f.toggle(1045),
+    microphone_on_off: f.toggle(1240),
+    speaker_on_off: f.toggle(1241),
+    audio_recording_on_off: f.toggle(1288),
+  });
+});
+
 /** A description of product `code` listing only the given identifiers. */
 const described = (code: string, ...identifiers: string[]) =>
   parseThingsList({
@@ -274,7 +285,6 @@ describe("vacuum / clean line (separate Tuya-DP namespace)", () => {
     expect(r.capabilities).toEqual(expect.arrayContaining(["vacuum_clean", "suction", "locate"]));
     const battery = r.properties.find((p) => p.name === "battery");
     expect(battery?.paramType).toBe(163); // vacuum namespace
-    expect(battery?.provenance).toBe("mega"); // cloud-authoritative (get_product_data_point)
   });
 
   it("a vacuum device decodes its own DP params", () => {
@@ -327,7 +337,6 @@ describe("doorbell — confirmed against real T8214", () => {
     expect(r.capabilities).toContain("doorbell");
     const chime = r.properties.find((p) => p.name === "chimeSwitch");
     expect(chime?.paramType).toBe(1702);
-    expect(chime?.provenance).toBe("verified");
     // the stale ids must NOT be in the doorbell schema anymore
     expect(r.properties.some((p) => [2015, 2022, 1306].includes(p.paramType))).toBe(false);
   });
@@ -468,9 +477,8 @@ describe("Device — state + graceful unknown params", () => {
 });
 
 describe("param dictionary — full real-device coverage", () => {
-  it("has the verified anchors with correct names + provenance", () => {
+  it("has the verified anchors with correct names", () => {
     expect(SECURITY_PARAMS[1101].name).toBe("battery");
-    expect(SECURITY_PARAMS[1101].provenance).toBe("verified");
     expect(SECURITY_PARAMS[1550].name).toBe("contact");
     expect(SECURITY_PARAMS[1141].name).toBe("rssi");
   });
@@ -480,10 +488,9 @@ describe("param dictionary — full real-device coverage", () => {
     expect(ids.length).toBeGreaterThan(150);
   });
 
-  it("namespaces are separate — clean DP 163 = battery, mega-sourced", () => {
+  it("namespaces are separate — clean DP 163 = battery", () => {
     expect(VACUUM_DP.BATTERY).toBe(163);
     expect(CLEAN_PARAMS[VACUUM_DP.BATTERY].name).toBe("battery");
-    expect(CLEAN_PARAMS[VACUUM_DP.BATTERY].provenance).toBe("mega");
     expect(paramDef("security", VACUUM_DP.BATTERY)).toBeUndefined(); // 163 is not a security id
     expect(paramDef("clean", 1101)).toBeUndefined(); // 1101 is not a clean id
   });
@@ -491,8 +498,20 @@ describe("param dictionary — full real-device coverage", () => {
   it("a curated camera property takes precedence over its generic dictionary name", () => {
     const def = SECURITY_PARAMS[1045];
     expect(def).toBeDefined();
-    expect(def.provenance).toBe("apk");
-    const dev = Device.fromRecord("cam", { deviceType: 9, model: "T8124R", params: { 1045: "1" } });
+    const dev = Device.fromRecord("cam", {
+      deviceType: 9,
+      model: "T8124R",
+      parentSn: "T8010P0000000000",
+      params: { 1045: "1" },
+      things: parseThingsList({
+        things_list: [
+          {
+            profile: { product_code: "T0000" },
+            properties: ["led_on_off"].map((identifier) => ({ identifier })),
+          },
+        ],
+      }).T0000,
+    });
     expect(dev.getProperty("statusLed")?.value).toBe(true);
     expect(dev.getProperty(def.name)).toBeUndefined();
     expect(dev.getProperty(`unknown_1045`)).toBeUndefined();
@@ -522,7 +541,6 @@ describe("inspectParams — enrichment export", () => {
 
   it("emits dictionary snippets for the unknown params", () => {
     expect(rep.dictionarySnippet).toContain("987654");
-    expect(rep.dictionarySnippet).toContain('provenance: "guessed"');
     expect(rep.dictionarySnippet).toContain("reported by T8214");
   });
 });
@@ -538,25 +556,37 @@ describe("mergeProperties — shared props dedupe across capabilities", () => {
     expect(detectCapabilities({ model: "cam" }, "camera")).toContain("video");
   });
 
-  it("resolves attached camera alarm output from topology and EAS evidence without a model row", () => {
-    expect(resolveDevice({ model: "T8114", deviceType: DeviceType.CAMERA2, params: {} }).capabilities).not.toContain(
-      "siren",
-    );
-    expect(
-      resolveDevice({
-        model: "T8999",
-        deviceType: DeviceType.BATTERY_DOORBELL,
-        parentSn: "T8000P0000000000",
-        params: { 1015: "0" },
-      }).capabilities,
-    ).toContain("siren");
+  it("resolves camera alarm output from the description's set_alarm_type, not from EAS evidence", () => {
+    const camera = {
+      model: "T8114",
+      deviceType: DeviceType.CAMERA2,
+      parentSn: "T8010P0000000000",
+      params: { 1015: "0" },
+    };
+    expect(resolveDevice(camera).capabilities).not.toContain("siren");
+    const things = parseThingsList({
+      things_list: [{ profile: { product_code: "T8114" }, properties: [{ identifier: "set_alarm_type" }] }],
+    }).T8114;
+    expect(resolveDevice({ ...camera, things }).capabilities).toContain("siren");
   });
 
   /** Camera audio and HomeBase siren schemas retain their independently evidenced members. */
   it("honours per-member `available` through resolveDevice — a hub omits camera-only audio props", () => {
-    const camNames = resolveDevice({ deviceType: 9, model: "T8114", params: { 1240: "1", 1241: "1" } }).properties.map(
-      (p) => p.name,
-    );
+    const camNames = resolveDevice({
+      deviceType: 9,
+      model: "T8114",
+      params: { 1240: "1", 1241: "1" },
+      things: parseThingsList({
+        things_list: [
+          {
+            profile: { product_code: "T0000" },
+            properties: ["microphone_on_off", "speaker_on_off", "speaker_volume", "audio_recording_on_off"].map(
+              (identifier) => ({ identifier }),
+            ),
+          },
+        ],
+      }).T0000,
+    }).properties.map((p) => p.name);
     expect(camNames).toEqual(expect.arrayContaining(["microphone", "speaker", "speakerVolume", "audioRecording"]));
     expect(camNames).not.toContain("hubAlarmTone");
 

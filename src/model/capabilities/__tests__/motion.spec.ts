@@ -67,7 +67,6 @@ describe("motion capability module", () => {
         payload: { only_ai: 1 },
         channel: 3,
         mValue3: 0,
-        form: "auto",
       });
       expect(intent("humanOnlyAtNight", false, H(3))).toMatchObject({ payload: { only_ai: 0 } });
     });
@@ -79,7 +78,6 @@ describe("motion capability module", () => {
         payload: { radar_wd_switch: 1 },
         channel: 2,
         mValue3: 0,
-        form: "auto",
       });
       expect(intent("loiteringDetection", false, L(2))).toMatchObject({
         payload: { radar_wd_switch: 0 },
@@ -119,27 +117,26 @@ describe("motion capability module", () => {
   });
 
   describe("motionDetection buildCommand", () => {
-    it("emits the auto 1011 scalar (on=1/off=0) — the capture-verified watermark-class wire with session fallback", () => {
+    it("emits the direct-binary 1011 scalar (on=1/off=0) — the capture-verified watermark-class wire", () => {
       expect(intent("motionDetection", true, ctx([], 3))).toEqual({
         kind: "set-param",
+        stationAccount: true,
         param: MOTION_CMD.CAMERA_PIR, // 1011
         value: 1,
-        form: "auto",
         channel: 3,
       });
       expect(intent("motionDetection", false, ctx([], 3))).toMatchObject({
-        form: "auto",
         value: 0,
       });
     });
-    it("actions.setDetection dispatches the same auto 1011 scalar", async () => {
+    it("actions.setDetection dispatches the same direct-binary 1011 scalar", async () => {
       const sent: any[] = [];
       const acts = bindMotion(ctx([], 3), sent);
       await acts.setDetection(true);
       expect(sent[0]).toMatchObject({
         kind: "set-param",
+        stationAccount: true,
         param: MOTION_CMD.CAMERA_PIR,
-        form: "auto",
         value: 1,
       });
     });
@@ -218,11 +215,11 @@ describe("motion capability module", () => {
       });
     });
 
-    it("a camera reporting only 1011 keeps the 1011 auto switch", () => {
+    it("a camera reporting only 1011 keeps the 1011 direct-binary switch", () => {
       expect(intent("motionDetection", true, { ...ctx([1011], 3), model: "T8425" })).toMatchObject({
         kind: "set-param",
+        stationAccount: true,
         param: MOTION_CMD.CAMERA_PIR,
-        form: "auto",
       });
     });
   });
@@ -237,7 +234,6 @@ describe("motion capability module", () => {
         payload: { ai_detect_type: 0x3000f, channel: 3 },
         channel: 0,
         mValue3: 0,
-        form: "auto",
       });
     });
 
@@ -292,9 +288,10 @@ describe("motion capability module", () => {
       >;
       expect(cmd).toMatchObject({
         kind: "set-json-raw",
+        stationAccount: true,
         cmd: MOTION_CMD.SNOOZE_TIME, // 1271
         channel: 2,
-        data: { snooze_time: 3600, chime_onoff: 0, homebase_onoff: 0, motion_notify_onoff: 1 },
+        data: { account_id: "$userId", snooze_time: 3600, chime_onoff: 0, homebase_onoff: 0, motion_notify_onoff: 1 },
       });
       // startTime is "now" (the app sends the current time, not a fixed capture timestamp).
       expect(cmd!.data.startTime).toBeCloseTo(Math.floor(Date.now() / 1000), -1);
@@ -303,9 +300,10 @@ describe("motion capability module", () => {
     it("0 (or omitted) → the bare captured clear/cancel shape, no extra fields", () => {
       expect(intent("snoozeTime", 0, ctx([], 2))).toEqual({
         kind: "set-json-raw",
+        stationAccount: true,
         cmd: MOTION_CMD.SNOOZE_TIME,
         channel: 2,
-        data: { snooze_time: 0 },
+        data: { account_id: "$userId", snooze_time: 0 },
       });
     });
 
@@ -318,7 +316,15 @@ describe("motion capability module", () => {
       const sent: any[] = [];
       const acts = bindMotion(ctx([], 2), sent);
       await acts.setSnoozeTime(0);
-      expect(sent).toEqual([{ kind: "set-json-raw", cmd: 1271, channel: 2, data: { snooze_time: 0 } }]);
+      expect(sent).toEqual([
+        {
+          kind: "set-json-raw",
+          stationAccount: true,
+          cmd: 1271,
+          channel: 2,
+          data: { account_id: "$userId", snooze_time: 0 },
+        },
+      ]);
     });
 
     it(
@@ -412,8 +418,8 @@ describe("motion — sensor test mode", () => {
     await actions.setTestMode(false);
     expect(sent[0]).toMatchObject({
       kind: "set-param",
+      stationAccount: true,
       param: MOTION_CMD.SENSOR_EXIT_TEST_MODE,
-      form: "direct-binary",
     });
   });
 

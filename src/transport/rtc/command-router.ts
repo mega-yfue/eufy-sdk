@@ -1,40 +1,45 @@
 /**
- * RTC command router: drives a station over the portal's WebRTC data channel instead of P2P.
+ * RTC command router: drives a station the vendor app connects natively over the app's own RTC client.
  *
- * The T9000 answers no P2P lookup, but it accepts the portal's control channel: sign → WS join → scall →
- * SDP answer → ICE over the relay the hub grants → DTLS → SCTP data channels, with commands riding
- * `WebrtcDataChannel` as portal packets (see {@link buildPortalPacket}).
+ * One {@link RtcSignalClient} per station, logged in on first use and kept, as the app keeps one client per hub.
+ * Commands ride the PRIV1 call's KCP data channel ({@link priv1}), placed on the first command; a live view places a
+ * PM call of its own ({@link pmIce}, {@link RtcPmLiveStream}). Both seal under the station's one
+ * {@link RtcCommandCounter}.
  *
- * `set-payload` rides the `1350` SET_PAYLOAD envelope, inner `{account_id, cmd, mValue3, payload}`;
- * `set-json` rides the `1700` CONTROL_PAYLOAD envelope, inner `{account_id, cmd, commandType, data}`.
- * A command to the station goes on the station channel `255`; an attached device's command shares the
- * station's session and keeps the device's channel. Other command kinds are refused.
+ * Commands go as the app's RTC sender frames them ({@link RtcCommandRouter.dispatchCommand}). A command waits for the
+ * data channel in 20 ms steps, as the app's `getRtcFileChannelConnectedStatus` wait does, and settles on its reply,
+ * which is not an observation of the resulting state. A wait that runs out drops the data channel (before login, the
+ * station's client keeps retrying as the app's does); a data channel that closes (its KCP detect or watchdog failing, {@link RtcDataChannel.detect}) is
+ * dropped too, and the next command places a fresh PRIV1 call, as the app's request wait re-calls a disconnected file
+ * channel, after the app's backoff from the third failure on.
  *
- * One session per station, reused across commands and closed after {@link IDLE_CLOSE_MS} without one;
- * a live pull holds it open. Sends on a session are serialised; an ACK is correlated by its outer command
- * and segment, since it carries no inner command. An ACK is not an observation of the resulting state.
+ * The station's database: a `1350` with inner `1306` (CMD_DATABASE) answers a table and inner `1308`
+ * (CMD_DATABASE_IMAGE) a stored image, each as the station's notify under that command id, matched by its content
+ * (`transaction`, `file`) since the notify stream carries other reports between them.
  *
- * The station's own database is read over the same channel: a `set-payload` with inner `1306`
- * (CMD_DATABASE) answers a table and inner `1308` (CMD_DATABASE_IMAGE) a stored image, each as one
- * notify frame carrying the whole document, zstd-compressed when large. The notify link carries
- * unrelated station reports between them, so a reply is matched by its content, never by arrival order.
- *
- * Live view of an attached camera rides the same session (the hub accepts one RTC session per account),
- * through one shared live source per station: the station serves one camera at a time, so a second
- * camera is refused until the first one's view ends.
+ * One live view per station, as the app plays one: a second camera is refused while the first one's view has consumers.
+ * With {@link RtcCommandRouterDeps.sessionPerCamera} each camera's view places a PM call of its own on the station's
+ * client instead, so several cameras on one station stream at once.
  */
+import { createECDH, randomInt } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import {
+  CommandResultError,
   LiveSnapshotUnavailableError,
-  type AbortableCall,
   type Command,
-  type MediaOutputResolution,
+  type TalkbackHandle,
+  type AacEncoder,
   type MediaProvider,
-  type LiveStreamHandle,
+  type SessionFrame,
   type SharedSourceHints,
-  type MediaSourceSelection,
+  type AbortableCall,
 } from "../../core/contracts.js";
 import type { Logger } from "../../core/logger.js";
 import { abortable } from "../abortable.js";
+import { P2PDataType, parseDataFrameHeader } from "../p2p/codec.js";
+import { CommandType } from "../p2p/commands.js";
+import { decodeFrame } from "../p2p/frame.js";
+import type { P2PFrame } from "../p2p/p2p-session.js";
 import { captureSnapshotFromShared } from "../p2p/media.js";
 import {
   CMD_DATABASE,
@@ -44,271 +49,285 @@ import {
   fullTableQuery,
 } from "../p2p/database-wire.js";
 import { openReadableFromConsumer } from "../p2p/readable-egress.js";
-import { SharedLiveSource, attachUnlessAborted } from "../p2p/shared-live-source.js";
-import { RtcLiveStream } from "./live.js";
-import { PORTAL_KEEPALIVE, PORTAL_KEEPALIVE_MS } from "./portal-keepalive.js";
-import { RtcCallLiveStream } from "./call-live.js";
-import { RtcSession, type RtcSessionOptions } from "./session.js";
-import {
-  buildPortalPacket,
-  parsePortalPacket,
-  PORTAL_CMD_SET_PAYLOAD,
-  PORTAL_STATION_CHANNEL,
-  PortalLinkType,
-  SegmentCounter,
-} from "./portal-packet.js";
+import { SharedLiveSource, attachUnlessAborted, type Consumer } from "../p2p/shared-live-source.js";
+import { Talkback } from "../p2p/talkback.js";
+import { buildDirectBinaryBody, buildStringBody, renderFrame, setPayloadJson } from "../p2p/write-commands.js";
+import { RtcCallType } from "./call.js";
+import { cmdGcm, kcpMulti, priv1, type RtcCommandCounter, type RtcDataChannel } from "./data-channel.js";
+import { pmIce } from "./ice.js";
+import { RtcPmLiveStream, mediaGcm, type RtcLiveCommand } from "./pm-live.js";
+import { RtcSignalClient, type RtcSignalOptions, type RtcToken } from "./signal-client.js";
 
-/** The CONTROL_PAYLOAD envelope for a commandType/data request. */
-const PORTAL_CMD_CONTROL_PAYLOAD = 1700;
-/** The envelope carrying a correlated JSON control result. */
-const PORTAL_CMD_NOTIFY_PAYLOAD = 1351;
+const STATION_CHANNEL = 255;
+/** ponytail: one bound for login + data channel; the app's per-request `time_out` is not pinned. */
+const CONNECT_TIMEOUT_MS = 20_000;
 
-/** How long a command waits for its envelope ACK. */
-const ACK_TIMEOUT_MS = 8_000;
-/**
- * How long a session has to come up. A healthy hub answers in ~2 s; the bound sits under the ~15 s a
- * service call is commonly given, so a hub outage surfaces as this router's error.
- */
-const CONNECT_TIMEOUT_MS = 12_000;
-/** An idle station session is closed after this long. */
-const IDLE_CLOSE_MS = 60_000;
-
-export interface RtcIdentity {
-  authToken: string;
-  userId: string;
-  /** The `gtoken` header value the mega session's authed HTTP calls carry. */
-  gtoken: string;
-}
-
-/** Where a command goes: the station's session, and whether it addresses the station or a device on it. */
+/** Where a command goes: the station's RTC inputs, and whether it addresses the station or a device on it. */
 export interface RtcRoute {
-  /** The station's signaling exchange; defaults to compact SDP. */
-  signalingMode?: "call" | "scall";
-  /** Candidate policy used by the station's exchange; defaults to relay-only. */
-  iceTransportPolicy?: "relay" | "all";
-  /**
-   * The station streams video as RTP on its offer's video track and serves no data channel, so it takes
-   * no portal command; see `RtcPeerOptions.mediaTrack`.
-   */
-  mediaTrack?: boolean;
   stationSn: string;
-  /**
-   * The station's `member.admin_user_id`, the account the session and the payload name; the logged-in
-   * user when the station's record carries none.
-   */
-  adminUserId?: string;
   /** True for a device attached to the station, which keeps the command's own channel. */
   attached: boolean;
+  /** The payload's `account_id`: the target record's stated `admin_user_id`; the logged-in user when absent. */
+  adminUserId?: string;
+  /** The station record's member account id, which a command stating `stationAccount` carries instead. */
+  stationAccountId?: string;
+  /** The station record's `p2p_did`, `p2p_license` and first IPv4 `signaling_servers` host, `""` where it states none. */
+  did: string;
+  lic: string;
+  host: string;
+  /** Its first host-name `signaling_servers` entry. */
+  domain?: string;
+  /** The station's `main_sw_version` with its dots removed. */
+  version: number;
+  /** The station's `webrtc_sdk_version`. */
+  sdkVersion?: string;
 }
+
+/** A live frame with the `rtc_type` its bundle parser gave it (`rtcSendRoute`, absent 0). */
+export type RtcLiveFrame = SessionFrame & { rtcSendRoute?: number };
 
 /** The camera a live view is for, on its station's route. */
 export interface RtcLiveRoute extends RtcRoute {
   cameraSn: string;
   /** The camera's `device_channel` on the station. */
   channel: number;
+  /**
+   * The bundle frames the app's RTC player starts and stops the view with, without which the view is refused, and its
+   * talkback with, without which there is no talkback.
+   */
+  live?: Record<"start" | "stop", RtcLiveFrame> & Partial<Record<"startTB" | "talkStart" | "talkStop", RtcLiveFrame>>;
+  /** The camera's lens ids (its param 9240 sensor list, in order) when it has any: its view is the lens page. */
+  sensors?: readonly number[];
 }
 
 export interface RtcCommandRouterDeps {
-  /** The logged-in session's credentials; `undefined` while logged out. */
-  identity: () => RtcIdentity | undefined;
-  /** The signing shard for the route (`"ie-pr"`, `"eu-pr"`, `"us-pr"`); picks the smart host. */
-  shard: (route: RtcRoute) => string | Promise<string>;
-  /** Both `estimate_domain` shards, named in a refused sign. */
-  estimates?: RtcSessionOptions["estimates"];
-  /** ISO country sent on the sign request (default `US`). */
-  country?: string;
+  /** The logged-in user's id (the app's `user_uuid`); `undefined` while logged out. */
+  userId: () => string | undefined;
+  /** This install's stable id, the app's `app_id`. */
+  appId: string;
+  /** Each station's signalling cache (the app's `sp_webrtc` and `sp_webrtc_servers`), read at start and written on a change. */
+  tokens?: { get(sn: string): RtcToken | undefined; set(sn: string, token: RtcToken): void };
   logger?: Logger;
   onError?: (e: Error) => void;
   /** ffmpeg for the live still (`ffmpeg` on PATH by default). */
   ffmpegPath?: string;
-  createSession?: (opts: RtcSessionOptions) => RtcSession;
+  /** Each station notify off the data channel, read as a P2P frame is: the app hands both to one receiver. */
+  onFrame?: (stationSn: string, frame: P2PFrame) => void;
+  /** The native layers, replaceable in a spec. */
+  layers?: { signal?: (o: RtcSignalOptions) => RtcSignalClient; priv1?: typeof priv1; pmIce?: typeof pmIce };
+  /** Camera wall: one live view per camera rather than per station, each on its own PM call. */
+  sessionPerCamera?: boolean;
 }
 
-/** A station's live pull: the camera it serves and its shared source. */
-interface StationLive {
-  cameraSn: string;
-  source: SharedLiveSource;
-}
-
-interface StationSession {
-  session: RtcSession;
-  seg: SegmentCounter;
+interface Station {
+  signal: RtcSignalClient;
   ready: Promise<void>;
-  /** Serialises sends so ACKs can't be attributed to the wrong command. */
-  queue: Promise<unknown>;
-  idle?: ReturnType<typeof setTimeout>;
-  /** Live pulls holding the session open. */
-  leases: number;
+  counter: RtcCommandCounter;
+  /** The event-stream flag, `rtc_get_stream_flag(ctx, 1)` (ctx+61): 0 until first used. */
+  flag: number;
+  data?: RtcDataChannel;
+  /** The app's PRIV1 `call_fail_count` and `scall_sleep` end (ms): see {@link RtcCommandRouter.dataChannel}. */
+  fails: number;
+  sleepUntil: number;
 }
 
-/** What a send waits for instead of its ACK: the notify body `pick` claims, its bound, and its abort. */
-interface StationReply<T> {
-  pick: (body: Record<string, unknown>) => T | undefined;
-  timeoutMs?: number;
-  signal?: AbortSignal;
-}
-
-/**
- * A {@link RtcCommandRouter.keepWarm} hold on one station: the keepalive timer sending
- * {@link PORTAL_KEEPALIVE}, the session listeners that end it and record the hub's echo, and whether the
- * last keepalive sent is still unechoed.
- */
-interface WarmHold {
-  keepalive?: ReturnType<typeof setInterval>;
-  /** The station session the hold leases, and its `close` and `keepaliveEcho` listeners the disposer removes. */
-  watch?: { st: StationSession; onClose: () => void; onEcho: () => void };
-  /** A keepalive went out and the hub has not echoed it since. */
-  awaitingEcho: boolean;
-  dispose: () => void;
-}
-
-/**
- * A live start for one camera while the station streams another: the station streams one camera at a
- * time. A live still refused this way is a {@link LiveSnapshotUnavailableError} with `source-failed`.
- */
 class StationStreamBusyError extends Error {
   constructor(stationSn: string, servingSn: string) {
-    super(`rtc live: ${stationSn} is serving ${servingSn}; the station streams one camera at a time`);
+    super(`rtc live: ${stationSn} is serving ${servingSn}; one camera at a time without sessionPerCamera`);
     this.name = "StationStreamBusyError";
   }
 }
 
 /**
- * The portal command kinds the RTC control channel frames — `set-payload` over the `1350` envelope,
- * `set-json` over the `1700` one, and nothing else. The single source for both {@link
- * RtcCommandRouter.dispatchCommand}'s guard and the client's portal-reach, so the two cannot disagree
- * on what the channel carries.
+ * The app's RTC sender (`cmd_sender_send_command`) frames a native command by its id, over the same ids and groups
+ * as its P2P sender: `A` `[u32 channel][u32 value][account_id → 128]` on the device channel, `B` `[u32 value]
+ * [account_id → 128]` on 255, `C` that on the device channel, `I` `[u32 channel][u32 value]` on the device channel,
+ * `J` `[u32 value][u32 value_sub]` on 255, `E` the JSON text (on the device channel for 1204, 1271 and 1350, else
+ * 255), `G` the P2P string body ({@link buildStringBody}) and a fresh P-256 public key on 255. Every other id is
+ * framed some other way, sent nowhere, or not implemented (-103).
  */
-export const RTC_CONTROL_COMMAND_KINDS: ReadonlySet<Command["kind"]> = new Set<Command["kind"]>([
-  "set-payload",
-  "set-json",
-]);
+const NATIVE_GROUPS: Record<string, readonly number[]> = {
+  A: [
+    1011, 1015, 1017, 1019, 1035, 1045, 1056, 1145, 1146, 1152, 1200, 1207, 1210, 1213, 1214, 1226, 1227, 1229, 1230,
+    1233, 1236, 1240, 1241, 1243, 1246, 1272, 1273, 1275, 1400, 1401, 1402, 1403, 1408, 1409, 1410, 1412, 1413, 1506,
+    1507, 1607, 1609, 1610, 1611, 1702, 1703, 1704, 1705, 1706, 1707, 1708, 1709,
+  ],
+  B: [
+    1029, 1034, 1036, 1043, 1057, 1203, 1218, 1219, 1220, 1221, 1222, 1223, 1224, 1232, 1234, 1235, 1237, 1238, 1248,
+    1253, 1257, 1269, 1800,
+  ],
+  C: [1249, 1250, 1251, 1252, 9258],
+  E: [1060, 1204, 1254, 1255, 1256, 1258, 1259, 1260, 1261, 1262, 1264, 1271, 1350, 1404],
+  G: [1025, 1132, 1215, 1216, 1217, 1414],
+  I: [1013, 1202, 1205, 1206],
+  J: [1026, 1164, 1201],
+};
+const nativeGroup = (id: number) => Object.keys(NATIVE_GROUPS).find((g) => NATIVE_GROUPS[g]!.includes(id));
+const JSON_ON_DEVICE_CHANNEL = [1204, 1271, 1350];
 
-/** Narrow a command to the two kinds {@link RTC_CONTROL_COMMAND_KINDS} names, so the body can read their fields. */
-const isRtcControlCommand = (cmd: Command): cmd is Extract<Command, { kind: "set-payload" | "set-json" }> =>
-  RTC_CONTROL_COMMAND_KINDS.has(cmd.kind);
+/** `x` as JSON, a `"$userId"` a bundle's parser put in it the account id, as the P2P sender fills it. */
+const withUser = (x: unknown, accountId: string) => JSON.stringify(x, (_, v) => (v === "$userId" ? accountId : v));
+
+/** A reply's code as the app's `ack_processor_process_response` reads it: its first int32, 0 for an empty body. */
+const replyCode = (reply: Buffer) => (reply.length >= 4 ? reply.readInt32LE(0) : 0);
+
+const u32s = (...v: number[]) => Buffer.from(new Uint32Array(v.map((x) => x >>> 0)).buffer);
+
+/**
+ * The app's `rtc_crypto_get_ecc_crypto`: a fresh P-256 key pair per command (`GenerateKeyForECC`, micro-ecc), its
+ * 64-byte public key (X ‖ Y) as 128 upper-case hex characters. ponytail: the private half, which the app keeps on the
+ * device context, is dropped: nothing the SDK sends reads it back.
+ */
+const eccPublicHex = () =>
+  Buffer.from(createECDH("prime256v1").generateKeys().subarray(1).toString("hex").toUpperCase());
 
 export class RtcCommandRouter {
-  private readonly sessions = new Map<string, StationSession>();
-  private readonly lives = new Map<string, StationLive>();
-  private readonly warm = new Map<string, WarmHold>();
-  private readonly callSources = new Map<string, SharedLiveSource>();
+  private readonly stations = new Map<string, Station>();
+  private readonly lives = new Map<string, { cameraSn: string; source: SharedLiveSource; stream?: RtcPmLiveStream }>();
+  private readonly talking = new Set<string>();
+  /** The app's `RtcLivePlayerBridge.msgIdMap`: the last live `msg_id` per station, process-wide. */
+  private readonly msgIds = new Map<string, number>();
   private lastTransaction = 0;
-  /** The latest shard each `call` source resolved, read by its `makeStream` (see {@link callMediaProviderFor}). */
-  private readonly callShards = new Map<string, string>();
 
   constructor(private readonly deps: RtcCommandRouterDeps) {}
 
-  async dispatchCommand(route: RtcRoute, cmd: Command): Promise<void> {
-    if (!isRtcControlCommand(cmd)) {
-      throw new Error(`rtc: ${cmd.kind} is not routable over the RTC control channel (only set-payload or set-json)`);
+  /**
+   * Send a command as the app's RTC sender frames it: `set-payload` as `1350` ({@link setPayloadJson}), `set-json` as
+   * `1700` `{commandType, data}`, both on 255 for the station and the device's channel for an attached one; the native
+   * kinds by their id's group in {@link NATIVE_GROUPS}. Refused: a kind or id the app's RTC sender does not frame, a
+   * lock-sealed payload, a payload with a header counter. Answers `true` on the station's reply, as the app's RTC
+   * bridge waits for it (`ack_reader_get_ack`): its first int32 is the code, and a non-zero one rejects with a
+   * {@link CommandResultError}, as does no reply within the data channel's wait.
+   */
+  async dispatchCommand(route: RtcRoute, cmd: Command): Promise<boolean> {
+    const { id, body, channel } = this.frame(route, cmd);
+    const data = await this.dataChannel(route);
+    const code = replyCode(await data.command(id, body, channel));
+    if (code !== 0) throw new CommandResultError(route.stationSn, id, code, 20_000);
+    return true;
+  }
+
+  private frame(route: RtcRoute, cmd: Command): { id: number; body: string | Buffer; channel: number } {
+    const own = (channel: number) => (route.attached ? channel : STATION_CHANNEL);
+    switch (cmd.kind) {
+      case "set-json":
+        return {
+          id: 1700,
+          body: withUser({ commandType: cmd.param, data: cmd.data }, this.accountId(route)),
+          channel: own(cmd.channel),
+        };
+      case "set-payload": {
+        if (cmd.lock || cmd.counter) break;
+        const { channel, mValue3, unzip } = cmd;
+        const body = setPayloadJson(cmd.cmd, cmd.payload, {
+          accountId: this.accountId(route, cmd.stationAccount),
+          channel,
+          mValue3,
+          unzip,
+        });
+        return { id: 1350, body, channel: own(channel) };
+      }
+      case "set-json-raw": {
+        if (nativeGroup(cmd.cmd) !== "E") break;
+        const accountId = this.accountId(route, cmd.stationAccount);
+        const body = withUser(cmd.cmd === 1255 ? { ...cmd.data, account_id: accountId } : cmd.data, accountId);
+        return { id: cmd.cmd, body, channel: JSON_ON_DEVICE_CHANNEL.includes(cmd.cmd) ? cmd.channel : STATION_CHANNEL };
+      }
+      case "p2p-string": {
+        if (nativeGroup(cmd.cmd) !== "G") break;
+        const body = Buffer.concat([
+          buildStringBody(cmd.channel, cmd.value, this.accountId(route, cmd.stationAccount), cmd.int),
+          eccPublicHex(),
+        ]);
+        return { id: cmd.cmd, body, channel: STATION_CHANNEL };
+      }
+      case "p2p-int-string": {
+        const { cmd: id, form, value, channel } = cmd;
+        if (form && nativeGroup(id) === "J") return { id, body: u32s(cmd.valueSub, value), channel: STATION_CHANNEL };
+        if (!form && nativeGroup(id) === "I") return { id, body: u32s(channel, value), channel };
+        break;
+      }
+      case "set-param":
+      case "p2p-station-scalar": {
+        const { value, channel, stationAccount } = cmd;
+        const id = cmd.kind === "set-param" ? cmd.param : cmd.cmd;
+        const account = this.accountId(route, stationAccount);
+        const group = nativeGroup(id);
+        if (group === "I") return { id, body: u32s(channel, value), channel };
+        if (cmd.kind === "set-param" && cmd.form) break;
+        if (group === "A") return { id, body: buildDirectBinaryBody(value, account, channel), channel };
+        if (group === "B" || group === "C")
+          return {
+            id,
+            body: buildDirectBinaryBody(value, account),
+            channel: group === "B" ? STATION_CHANNEL : channel,
+          };
+      }
     }
-    if (route.mediaTrack) throw new Error(`rtc: ${route.stationSn} serves media only and takes no portal command`);
-    const channel = route.attached ? cmd.channel : PORTAL_STATION_CHANNEL;
-    if (cmd.kind === "set-json") {
-      return this.sendQueued(route, PORTAL_CMD_CONTROL_PAYLOAD, cmd.param, channel, {
-        cmd: cmd.param,
-        commandType: cmd.param,
-        data: cmd.data,
-      });
-    }
-    return this.sendQueued(route, PORTAL_CMD_SET_PAYLOAD, cmd.cmd, channel, {
-      cmd: cmd.cmd,
-      mValue3: cmd.mValue3 ?? 0,
-      payload: cmd.payload,
-    });
+    const id = "cmd" in cmd ? cmd.cmd : "param" in cmd ? cmd.param : "";
+    throw new Error(`rtc: ${cmd.kind} ${id} is not framed by the app's RTC sender`);
   }
 
   /**
-   * Query one on-station table over the station's control channel and answer its rows.
-   *
-   * Sends the `1350` envelope with inner `{cmd: 1306, payload: {cmd: 10000, table, payload, transaction}}`,
-   * the whole-table query, on the station channel. The hub ACKs on the command link and answers with one notify frame whose body
-   * carries `{cmd, table, data, mIntRet, msg, transaction, …}`, echoing the read's `transaction`; that echo
-   * is the only thing a reply is attributed by, and every read sends a `transaction` no other read on this
-   * router has sent. Resolves with the reply's `data` rows. Rejects with the hub's `msg` on a non-zero
-   * `mIntRet`, on an ACK refusing the envelope, at once when `signal` aborts (queued or sent), when the
-   * session closes, and when `timeoutMs` (default {@link DB_TABLE_TIMEOUT_MS}) elapses with no reply.
-   *
-   * One read or command at a time per station: the read holds the station's send queue until it settles.
+   * Query one on-station table and answer its rows: inner `{cmd: 1306, payload: {cmd: 10000, table, payload,
+   * transaction}}`, answered by the notify echoing `transaction`. Rejects with the station's `msg` on a non-zero
+   * `mIntRet`, when `signal` aborts, and when `timeoutMs` (default {@link DB_TABLE_TIMEOUT_MS}) passes.
    */
   readTable(
     route: RtcRoute,
     table: string,
     opts: { timeoutMs?: number; signal?: AbortSignal } = {},
   ): Promise<unknown[]> {
-    const transaction = this.nextTransaction();
-    const inner = {
-      cmd: DB_QUERY.FULL_TABLE,
-      table,
-      payload: fullTableQuery(),
-      transaction,
-    };
-    return this.sendQueued(
-      route,
-      PORTAL_CMD_SET_PAYLOAD,
-      CMD_DATABASE,
-      PORTAL_STATION_CHANNEL,
-      { cmd: CMD_DATABASE, mValue3: 0, payload: inner },
-      {
-        timeoutMs: opts.timeoutMs,
-        signal: opts.signal,
-        pick: (body) => {
-          if (String(body.transaction) !== transaction) return undefined;
-          if (typeof body.mIntRet === "number" && body.mIntRet !== 0) {
-            throw new Error(`rtc: ${route.stationSn} refused ${table}: ${body.msg ?? body.mIntRet} (${body.mIntRet})`);
-          }
-          return Array.isArray(body.data) ? body.data : undefined;
-        },
-      },
-    );
+    this.lastTransaction = Math.max(Date.now(), this.lastTransaction + 1);
+    const transaction = String(this.lastTransaction);
+    const payload = { cmd: DB_QUERY.FULL_TABLE, table, payload: fullTableQuery(), transaction };
+    return this.readJson(route, CMD_DATABASE, payload, opts, (body) => {
+      if (String(body.transaction) !== transaction) return undefined;
+      if (typeof body.mIntRet === "number" && body.mIntRet !== 0)
+        throw new Error(`rtc: ${route.stationSn} refused ${table}: ${body.msg ?? body.mIntRet} (${body.mIntRet})`);
+      return Array.isArray(body.data) ? body.data : undefined;
+    });
   }
 
-  /**
-   * Fetch one stored image by its on-station path over the station's control channel.
-   *
-   * Sends the `1350` envelope with inner `{cmd: 1308, payload: [{file}]}` on the station channel. The hub
-   * ACKs on the command link and answers with one notify frame whose body is `{file, content}`, `content`
-   * the image in base64, and no `transaction`; the reply is the one whose `file` equals `filePath`. A reply
-   * arriving after an abandoned read of the same path carries that path's bytes, which are the bytes a
-   * later read of it asks for. Resolves with the decoded bytes. Rejects on an ACK refusing the envelope,
-   * at once when `signal` aborts (queued or sent), when the session closes, and when `timeoutMs` (default
-   * {@link DB_TABLE_TIMEOUT_MS}) elapses with no reply.
-   *
-   * One read or command at a time per station: the read holds the station's send queue until it settles.
-   */
+  /** Fetch one stored image by its on-station path: inner `{cmd: 1308, payload: [{file}]}`, answered `{file, content}`. */
   readImage(
     route: RtcRoute,
     filePath: string,
     opts: { timeoutMs?: number; signal?: AbortSignal } = {},
   ): Promise<Buffer> {
-    return this.sendQueued(
-      route,
-      PORTAL_CMD_SET_PAYLOAD,
-      CMD_DATABASE_IMAGE,
-      PORTAL_STATION_CHANNEL,
-      { cmd: CMD_DATABASE_IMAGE, mValue3: 0, payload: [{ file: filePath }] },
-      {
-        ...opts,
-        pick: (body) =>
-          body.file === filePath && typeof body.content === "string" ? Buffer.from(body.content, "base64") : undefined,
-      },
+    return this.readJson(route, CMD_DATABASE_IMAGE, [{ file: filePath }], opts, (body) =>
+      body.file === filePath && typeof body.content === "string" ? Buffer.from(body.content, "base64") : undefined,
     );
   }
 
   /**
-   * A `transaction` stamp in the vendor app's shape, a decimal epoch-in-milliseconds string, strictly
-   * greater than the last one this router issued, so two reads in the same millisecond never share one.
+   * Read a camera's live RTSP URL as the app's URL read goes over RTC: one publish switch `1145` value 1 on the
+   * camera's channel, answered on the data channel, settled by the station's notify on that channel under `1145` or
+   * `1146` (`isNotifyMatches`) carrying the `rtsp://` text; a refusal ends it. Bounded by `timeoutMs` (30 s).
    */
-  private nextTransaction(): string {
-    this.lastTransaction = Math.max(Date.now(), this.lastTransaction + 1);
-    return String(this.lastTransaction);
+  readRtspUrl(
+    route: RtcRoute,
+    channel: number,
+    opts: { timeoutMs?: number; signal?: AbortSignal } = {},
+  ): Promise<string> {
+    const nas = [CommandType.CMD_NAS_SWITCH, CommandType.CMD_NAS_TEST];
+    const send = () => this.dispatchCommand(route, { kind: "set-param", param: nas[0]!, value: 1, channel });
+    return this.read(route, nas, send, { timeoutMs: 30_000, ...opts }, (body, head) => {
+      const url = body.toString("latin1").split("\0")[0]!;
+      return head[12] === channel && url.startsWith("rtsp://") ? url : undefined;
+    });
   }
 
   /**
-   * The media of a camera on a T9000: live video, a readable feed and a live still over the station's
-   * session. Recording has no wire here and is refused; the optional members it has no wire for are absent.
+   * Bring the station's data channel up now, so a command fires without a cold connect. The station stays connected
+   * until {@link close}, so the disposer has nothing to release.
    */
+  keepWarm(route: RtcRoute): () => void {
+    this.dataChannel(route).catch((e: unknown) => this.deps.onError?.(e instanceof Error ? e : new Error(String(e))));
+    return () => undefined;
+  }
+
+  /** Live view, a readable feed and a live still of a camera over a PM call. Recording has no wire here. */
   mediaProviderFor(route: RtcLiveRoute): MediaProvider {
     return {
       live: (opts) => this.withLiveSource(route, opts ?? {}, (source) => attachUnlessAborted(source, opts?.signal)),
@@ -324,154 +343,261 @@ export class RtcCommandRouter {
           throw new LiveSnapshotUnavailableError("source-failed", e.message, { cause: e });
         }),
       record: async () => {
-        throw new Error(`record is not available for ${route.cameraSn} over the T9000 control channel`);
+        throw new Error(`record is not available for ${route.cameraSn} over RTC`);
       },
+      ...(route.live?.talkStart && { talkback: (opts) => this.openTalkback(route, opts ?? {}) }),
     };
   }
 
   /**
-   * Live view of a station on a {@link RtcRoute.mediaTrack} route: a live feed, a readable feed and a live
-   * still, from one shared source per station whose every warm-up places a fresh `call` on its own
-   * session. Recording has no wire here and is refused.
+   * Talk to a camera as the app's RTC player does, inside its live view: once the view shows video, `start_intercom`
+   * goes out, and once it succeeds (its `ANKE` answer, or its answer on the data channel) one 20 ms Opus packet per
+   * write follows on the view's PM call ({@link RtcPmLiveStream.sendAudio}), paced by {@link Talkback}; audio before
+   * that is dropped, as the app's mic track stays off. A failed start is reported as `error` and leaves the talkback
+   * open and silent, as the app's player sits in its Failed state: `stop_intercom` goes out only when it is stopped or
+   * its view ends, as the app's `stopTalk` / `release` send it from any state but Idle. The view is held while talking
+   * and ends the talkback with it. One talkback per station: its PM call carries one audio track.
    */
-  trackMediaProviderFor(route: RtcRoute): MediaProvider {
-    return this.callMediaProviderFor(
-      route,
-      route.stationSn,
-      (session) => new RtcCallLiveStream(session, this.deps.logger),
-      `record is not available for ${route.stationSn} over a portal call`,
-      45_000,
-    );
-  }
-
-  /** NVR media uses a dedicated call per camera, independent of station commands. */
-  nvrMediaProviderFor(
+  private async openTalkback(
     route: RtcLiveRoute,
-    views: readonly number[],
-    outputResolutions?: readonly MediaOutputResolution[],
-  ): MediaProvider {
-    return {
-      ...this.callMediaProviderFor(
-        route,
-        route.cameraSn,
-        (session, accountId, view, outputResolution) =>
-          new RtcLiveStream({
-            session,
-            seg: new SegmentCounter(),
-            stationSn: route.stationSn,
-            channel: route.channel,
-            accountId,
-            logger: this.deps.logger,
-            nvr: true,
-            view,
-            outputResolution,
-          }),
-        "record is not available over an NVR portal call",
-      ),
-      views,
-      outputResolutions,
-    };
+    opts: SharedSourceHints & { encoder?: AacEncoder },
+  ): Promise<TalkbackHandle> {
+    const sn = route.stationSn;
+    if (this.talking.has(sn)) throw new Error(`talkback: ${sn} is already talking; stop it before starting another`);
+    const { talkStart, talkStop } = route.live!;
+    const pm = () => this.lives.get(this.liveKey(route))?.stream;
+    let consumer: Consumer | undefined;
+    let speaking = false;
+    const talk: Talkback = new Talkback(
+      {
+        sendFrame: (frame) => {
+          const st = this.stations.get(sn);
+          const sent = st && pm()?.command(this.liveCommand(route, st, frame, 0));
+          if (frame !== talkStart) return;
+          void (sent ?? Promise.resolve(false)).then((ok) => {
+            if (ok) return void (speaking = true);
+            const e = new Error(`talkback: ${route.cameraSn} did not take start_intercom`);
+            if (talk.listenerCount("error")) talk.emit("error", e);
+            else this.deps.logger?.warn(e.message);
+          });
+        },
+        sendAudioFrame: (_channel, packet) => speaking && pm()?.sendAudio(packet),
+      },
+      {
+        channel: route.channel,
+        start: talkStart!,
+        stop: talkStop!,
+        encoder: opts.encoder,
+        releaseMedia: () => consumer?.stop(),
+        logger: this.deps.logger,
+      },
+    );
+    this.talking.add(sn);
+    talk.on("stop", () => this.talking.delete(sn));
+    try {
+      consumer = await this.withLiveSource(route, opts, (source) => source.attach());
+      await new Promise<void>((resolve, reject) => {
+        const settle = (e?: Error) => {
+          consumer!.off("video", onVideo).off("error", settle).off("stop", onStop);
+          if (e) reject(e);
+          else resolve();
+        };
+        const onVideo = () => settle();
+        const onStop = () => settle(new Error(`talkback: ${route.cameraSn}'s live view stopped`));
+        consumer!.on("video", onVideo).on("error", settle).on("stop", onStop);
+      });
+      consumer.on("stop", () => void talk.stop());
+      consumer.on(
+        "error",
+        (e) => void (talk.listenerCount("error") ? talk.emit("error", e) : this.deps.logger?.warn(e.message)),
+      );
+      consumer.on("budget", (notice) => talk.emit("budget", notice));
+      return talk.start("opus");
+    } catch (e) {
+      this.talking.delete(sn);
+      consumer?.stop();
+      throw e;
+    }
   }
 
-  /**
-   * Share a dedicated-call source and its consumer operations under one route key.
-   *
-   * `SharedLiveSource` calls `makeStream` synchronously, so the shard cannot be awaited inside it. Each
-   * async entry point resolves the shard and records it in {@link callShards} before touching the source;
-   * `makeStream` reads the latest recorded value.
-   */
-  private callMediaProviderFor(
-    route: RtcRoute,
-    key: string,
-    makeStream: (
-      session: RtcSession,
-      accountId: string,
-      view: number,
-      outputResolution?: MediaOutputResolution,
-    ) => LiveStreamHandle,
-    recordError: string,
-    warmTimeoutMs?: number,
-  ): MediaProvider {
-    const sourceFor = (opts: SharedSourceHints & AbortableCall & MediaSourceSelection = {}): SharedLiveSource => {
-      opts.signal?.throwIfAborted();
-      const view = opts.view ?? 0;
-      const viewKey = view === 0 ? key : `${key}:view:${view}`;
-      const sourceKey = opts.outputResolution ? `${viewKey}:output:${opts.outputResolution}` : viewKey;
-      let source = this.callSources.get(sourceKey);
-      if (!source) {
-        source = new SharedLiveSource({
-          makeStream: () => {
-            const identity = this.deps.identity();
-            if (!identity) throw new Error(`rtc: not logged in, cannot call ${route.stationSn}`);
-            const accountId = route.adminUserId || identity.userId;
-            return makeStream(
-              this.newSession(route, accountId, identity, this.callShards.get(key)!),
-              accountId,
-              view,
-              opts.outputResolution,
-            );
-          },
-          label: sourceKey,
-          logger: this.deps.logger,
-          powered: opts.powered,
-          preBufferSeconds: opts.preBufferSeconds,
-          warmTimeoutMs,
-        });
-        this.callSources.set(sourceKey, source);
-      }
-      return source;
-    };
-    const resolveShard = async (): Promise<void> => {
-      this.callShards.set(key, await this.deps.shard(route));
-    };
-    return {
-      live: async (opts) => {
-        await resolveShard();
-        return attachUnlessAborted(sourceFor(opts), opts?.signal);
-      },
-      openReadable: async (opts) => {
-        await resolveShard();
-        return openReadableFromConsumer(attachUnlessAborted(sourceFor(opts), opts?.signal), opts);
-      },
-      snapshotLive: async (opts) => {
-        await resolveShard();
-        return captureSnapshotFromShared(sourceFor(opts), {
-          ...opts,
-          logger: this.deps.logger,
-          ffmpegPath: this.deps.ffmpegPath,
-        });
-      },
-      record: async () => {
-        throw new Error(recordError);
-      },
-    };
-  }
-
-  /**
-   * Tear down every station session (logout / shutdown). Each live source is disposed before its session
-   * closes, so its consumers end cleanly and its stop still rides the session.
-   */
+  /** Tear every station down (logout / shutdown), each live source first so its stop still goes out. */
   close(): void {
-    for (const [sn, src] of this.callSources) {
-      this.callSources.delete(sn);
-      src.dispose();
-    }
-    this.callShards.clear();
-    for (const [sn, live] of this.lives) {
-      this.lives.delete(sn);
-      live.source.dispose();
-    }
-    for (const [sn, st] of this.sessions) this.drop(sn, st);
+    for (const live of this.lives.values()) live.source.dispose();
+    this.lives.clear();
+    for (const sn of [...this.stations.keys()]) this.drop(sn);
+  }
+
+  private accountId(route: RtcRoute, station?: true): string {
+    const id = (station ? route.stationAccountId : route.adminUserId) ?? this.deps.userId();
+    if (id === undefined) throw new Error(`rtc: not logged in, cannot drive ${route.stationSn}`);
+    return id;
+  }
+
+  /** The station's client, created and started on first use; a route missing its did, license or host throws. */
+  private station(route: RtcRoute): Station {
+    const sn = route.stationSn;
+    const known = this.stations.get(sn);
+    if (known) return known;
+    const userId = this.deps.userId();
+    if (!userId) throw new Error(`rtc: not logged in, cannot reach ${sn}`);
+    const { did, lic, host } = route;
+    if (!did || !lic || !host)
+      throw new Error(`rtc: ${sn}'s record states no p2p_did, p2p_license or IPv4 signalling host`);
+    const signal = (this.deps.layers?.signal ?? ((o) => new RtcSignalClient(o)))({
+      sn,
+      did,
+      lic,
+      host,
+      domain: route.domain,
+      userId,
+      appId: this.deps.appId,
+      token: this.deps.tokens?.get(sn),
+      logger: this.deps.logger,
+    });
+    signal.on("token", (t) => this.deps.tokens?.set(sn, t));
+    const ready = new Promise<void>((resolve, reject) => {
+      signal.once("login", () => resolve());
+      signal.start().catch((e: unknown) => {
+        if (this.stations.get(sn) === st) this.stations.delete(sn);
+        reject(e instanceof Error ? e : new Error(String(e)));
+      });
+    });
+    ready.catch(() => undefined);
+    const st: Station = { signal, ready, counter: { word: 0x01020304 }, flag: 0, fails: 0, sleepUntil: 0 };
+    this.stations.set(sn, st);
+    return st;
   }
 
   /**
-   * Hand `use` the station's live source for this camera, in the same turn the source is created or reused,
-   * so a consumer it attaches is counted before any other caller looks.
-   *
-   * The station streams one camera at a time. Another camera whose source has consumers refuses this one,
-   * before the session is awaited and again after; one with none (never attached or lingering)
-   * holds nothing a viewer needs, so it is disposed and the slot taken. The first caller's
-   * {@link SharedSourceHints} configure a new source.
+   * Wait for the station's login until `deadline`: a failed start rejects with its own error, a deadline that runs
+   * out names the last answer the signalling heard.
+   */
+  private async loggedIn(sn: string, st: Station, deadline: AbortSignal, signal?: AbortSignal): Promise<void> {
+    try {
+      await abortable(st.ready, deadline);
+    } catch (e) {
+      if (signal?.aborted) throw signal.reason;
+      if (!deadline.aborted) throw e;
+      throw new Error(
+        `rtc: ${sn} signalling did not log in within ${CONNECT_TIMEOUT_MS} ms (last answer: ${st.signal.heard})`,
+        { cause: e },
+      );
+    }
+  }
+
+  /**
+   * The station's connected data channel, its PRIV1 call placed once the signalling is logged in. A channel that
+   * closes counts a failure, which the station's answer to a PRIV1 call clears; from the third failure on, the next
+   * call waits as the app's `scall_sleep` does: 20 s, then 50 s, then 100 s, each plus 0 to 9 s.
+   */
+  private async dataChannel(route: RtcRoute, signal?: AbortSignal): Promise<RtcDataChannel> {
+    const sn = route.stationSn;
+    const st = this.station(route);
+    const deadline = AbortSignal.any([AbortSignal.timeout(CONNECT_TIMEOUT_MS), ...(signal ? [signal] : [])]);
+    await this.loggedIn(sn, st, deadline, signal);
+    try {
+      const flag = kcpMulti(sn, route.sdkVersion) ? 3 : 0;
+      if (!st.data) await sleep(Math.max(0, st.sleepUntil - Date.now()), undefined, { signal: deadline });
+      let data = st.data;
+      if (!data) {
+        const placed =
+          (data =
+          st.data =
+            (this.deps.layers?.priv1 ?? priv1)(st.signal, {
+              sn,
+              version: route.version,
+              flag,
+              counter: st.counter,
+              answered: () => (st.fails = 0),
+            }));
+        placed.on("notify", (_cmd, body, head) =>
+          this.deps.onFrame?.(sn, decodeFrame(sn, parseDataFrameHeader(head), body, body, P2PDataType.DATA)),
+        );
+        placed.once("close", () => {
+          if (st.data === placed) st.data = undefined;
+          const n = st.fails++;
+          if (n >= 2) st.sleepUntil = Date.now() + 1000 * (randomInt(10) + (n === 2 ? 20 : n === 3 ? 50 : 100));
+        });
+      }
+      while (!data.connected) await sleep(20, undefined, { signal: deadline });
+      return data;
+    } catch (e) {
+      if (signal?.aborted) throw signal.reason;
+      if (st.data) {
+        st.data.close();
+        st.data = undefined;
+      }
+      throw new Error(`rtc: ${sn} data channel did not connect within ${CONNECT_TIMEOUT_MS} ms`, { cause: e });
+    }
+  }
+
+  /** Send a `1350` with inner `cmd` on the station channel and answer the first JSON notify of `cmd` that `pick` claims. */
+  private async readJson<T>(
+    route: RtcRoute,
+    cmd: number,
+    payload: unknown,
+    opts: { timeoutMs?: number; signal?: AbortSignal },
+    pick: (body: Record<string, unknown>) => T | undefined,
+  ): Promise<T> {
+    const json = setPayloadJson(cmd, payload, { accountId: this.accountId(route), channel: STATION_CHANNEL });
+    const send = (data: RtcDataChannel) => data.command(1350, json, STATION_CHANNEL).catch(() => undefined);
+    return this.read(route, [cmd], send, opts, (body) => {
+      try {
+        return pick(JSON.parse(body.toString()) as Record<string, unknown>);
+      } catch (e) {
+        if (e instanceof SyntaxError) return undefined;
+        throw e;
+      }
+    });
+  }
+
+  /** Arm a wait on the station's notifies under `cmds`, then `send`; answer the first one `pick` claims. */
+  private async read<T>(
+    route: RtcRoute,
+    cmds: readonly number[],
+    send: (data: RtcDataChannel) => Promise<unknown>,
+    opts: { timeoutMs?: number; signal?: AbortSignal },
+    pick: (body: Buffer, head: Buffer) => T | undefined,
+  ): Promise<T> {
+    const cmd = cmds[0];
+    const timeoutMs = opts.timeoutMs ?? DB_TABLE_TIMEOUT_MS;
+    const signal = AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(opts.signal ? [opts.signal] : [])]);
+    const data = await this.dataChannel(route, opts.signal);
+    return new Promise<T>((resolve, reject) => {
+      const settle = (fn: () => void) => {
+        data.off("notify", onNotify).off("close", onClose);
+        signal.removeEventListener("abort", onAbort);
+        fn();
+      };
+      const onNotify = (id: number, body: Buffer, head: Buffer) => {
+        if (!cmds.includes(id)) return;
+        try {
+          const value = pick(body, head);
+          if (value !== undefined) settle(() => resolve(value));
+        } catch (e) {
+          settle(() => reject(e));
+        }
+      };
+      const onClose = () =>
+        settle(() => reject(new Error(`rtc: ${route.stationSn} data channel closed before cmd ${cmd} answered`)));
+      const onAbort = () =>
+        settle(() =>
+          reject(
+            opts.signal?.aborted
+              ? opts.signal.reason
+              : new Error(`rtc: ${route.stationSn} cmd ${cmd} not answered within ${timeoutMs} ms`),
+          ),
+        );
+      data.on("notify", onNotify).once("close", onClose);
+      signal.addEventListener("abort", onAbort, { once: true });
+      send(data).catch((e: unknown) => settle(() => reject(e)));
+    });
+  }
+
+  /**
+   * Hand `use` the station's live source for this camera in the same turn it is created or reused, so a consumer it
+   * attaches is counted before another caller looks. Another camera whose source has consumers refuses this one; one
+   * with none is disposed and the slot taken. A `view` the camera's lens list does not hold is refused.
    */
   private async withLiveSource<T>(
     route: RtcLiveRoute,
@@ -479,420 +605,164 @@ export class RtcCommandRouter {
     use: (source: SharedLiveSource) => T,
   ): Promise<Awaited<T>> {
     opts.signal?.throwIfAborted();
+    const live = route.live;
+    if (!live) throw new Error(`rtc live: no RTC start frame for ${route.cameraSn} in the bundle data`);
+    if (opts.view !== undefined && !route.sensors?.includes(opts.view))
+      throw new Error(`rtc live: ${route.cameraSn} lists no lens ${opts.view}`);
+    const sn = route.stationSn;
+    const key = this.liveKey(route);
     this.refuseIfWatched(route);
-    const identity = this.deps.identity();
-    if (!identity) throw new Error(`rtc: not logged in, cannot open ${route.stationSn}`);
-    const accountId = route.adminUserId || identity.userId;
-    const st = await abortable(this.stationSession(route, accountId, identity), opts.signal);
+    const st = this.station(route);
+    await this.loggedIn(
+      sn,
+      st,
+      AbortSignal.any([AbortSignal.timeout(CONNECT_TIMEOUT_MS), ...(opts.signal ? [opts.signal] : [])]),
+      opts.signal,
+    );
     this.refuseIfWatched(route);
-    const current = this.lives.get(route.stationSn);
+    const current = this.lives.get(key);
     if (current && current.cameraSn !== route.cameraSn) {
-      this.deps.logger?.debug?.(
-        `[rtc] ${route.stationSn} releasing the unwatched source of ${current.cameraSn} for ${route.cameraSn}`,
-      );
-      this.lives.delete(route.stationSn);
+      this.lives.delete(key);
       current.source.dispose();
     }
-    let live = this.lives.get(route.stationSn);
-    if (!live) {
-      live = { cameraSn: route.cameraSn, source: this.newLiveSource(route, st, accountId, opts) };
-      this.lives.set(route.stationSn, live);
+    let entry = this.lives.get(key);
+    if (!entry) {
+      const source: SharedLiveSource = new SharedLiveSource({
+        makeStream: () => (entry!.stream = this.pmStream(route, st, live, opts.entryType ?? 0, opts.view)),
+        label: `${sn}#${route.channel}`,
+        logger: this.deps.logger,
+        powered: opts.powered,
+        preBufferSeconds: opts.preBufferSeconds,
+        onStopped: () => {
+          if (this.lives.get(key)?.source === source) this.lives.delete(key);
+        },
+      });
+      entry = { cameraSn: route.cameraSn, source };
+      this.lives.set(key, entry);
     }
-    return await use(live.source);
+    return await use(entry.source);
   }
 
-  /** Refuse a camera while another camera on its station has consumers. */
+  /** A live view's slot: its station, or its camera with {@link RtcCommandRouterDeps.sessionPerCamera}. */
+  private liveKey(route: RtcLiveRoute): string {
+    return this.deps.sessionPerCamera ? route.cameraSn : route.stationSn;
+  }
+
   private refuseIfWatched(route: RtcLiveRoute): void {
-    const current = this.lives.get(route.stationSn);
-    if (current && current.cameraSn !== route.cameraSn && current.source.consumerCount > 0) {
+    const current = this.lives.get(this.liveKey(route));
+    if (current && current.cameraSn !== route.cameraSn && current.source.consumerCount > 0)
       throw new StationStreamBusyError(route.stationSn, current.cameraSn);
-    }
   }
 
-  private newLiveSource(
+  /**
+   * One live view on a fresh PM call; its ICE closes and the call hangs up when the view stops or fails. A camera with
+   * lenses opens its lens page (`startTB`), or with a `view` the single-camera page on that lens. The station's answer
+   * sets the remote description ({@link pmIce} `ownSdp`) except on a T8223 at 3319 or below and a T8224 below 3420,
+   * whose INFO `sdp` does, as `WebrtcApp_Event_RtcTrying` gates it.
+   */
+  private pmStream(
     route: RtcLiveRoute,
-    st: StationSession,
-    accountId: string,
-    hints: SharedSourceHints,
-  ): SharedLiveSource {
-    let leased = false;
-    const release = () => {
-      if (!leased) return;
-      leased = false;
-      st.leases = Math.max(0, st.leases - 1);
-      this.touch(route.stationSn, st);
-    };
-    const source: SharedLiveSource = new SharedLiveSource({
-      makeStream: () =>
-        new RtcLiveStream({
-          session: st.session,
-          seg: st.seg,
-          stationSn: route.stationSn,
-          channel: route.channel,
-          accountId,
-          logger: this.deps.logger,
-        }),
-      label: `${route.stationSn}#${route.channel}`,
-      logger: this.deps.logger,
-      powered: hints.powered,
-      preBufferSeconds: hints.preBufferSeconds,
-      onActive: () => {
-        if (leased) return;
-        leased = true;
-        st.leases++;
-        if (st.idle) clearTimeout(st.idle);
-      },
-      onStopped: () => {
-        release();
-        if (this.lives.get(route.stationSn)?.source === source) this.lives.delete(route.stationSn);
-      },
-    });
-    return source;
-  }
-
-  /**
-   * Send one envelope on the station's session, queued behind its other sends, and settle as
-   * {@link sendAwaitAck} does. `body` is the inner payload; the station session, the `account_id` it is
-   * stamped with and the packet are resolved here, so a command and a read reach the wire through the same
-   * steps. With `reply.signal`, the caller's wait rejects the moment it aborts, also while the send is still
-   * queued; a send not yet made by then is skipped.
-   */
-  private async sendQueued<T = void>(
-    route: RtcRoute,
-    outerCmd: number,
-    innerCmd: number,
-    channel: number,
-    body: Record<string, unknown>,
-    reply?: StationReply<T>,
-  ): Promise<T> {
-    reply?.signal?.throwIfAborted();
-    const identity = this.deps.identity();
-    if (!identity) throw new Error(`rtc: not logged in, cannot drive ${route.stationSn}`);
-    const adminUserId = route.adminUserId || identity.userId;
-    const st = await abortable(this.stationSession(route, adminUserId, identity), reply?.signal);
-    const segment = st.seg.next();
-    const packet = buildPortalPacket({
-      commandId: outerCmd,
-      channel,
-      segment,
-      payload: { account_id: adminUserId, ...body },
-    });
-    const run = st.queue.then(() =>
-      this.sendAwaitAck(route.stationSn, st, packet, outerCmd, innerCmd, channel, segment, reply),
-    );
-    st.queue = run.catch(() => undefined);
-    return abortable(run, reply?.signal);
-  }
-
-  /**
-   * Without `reply`, completes on the command ACK or a correlated control-result notification. The
-   * notification must match the request channel, parameter and segment and contain a structured payload.
-   * Receipt does not establish physical actuation. Bounded by {@link ACK_TIMEOUT_MS}.
-   *
-   * With `reply`, a zero-result ACK is not the answer: the first notify body (an object) for which
-   * `reply.pick` answers a value resolves with it, one `pick` throws on rejects with that error, and every
-   * other notify frame is left alone. Bounded by `reply.timeoutMs` (default {@link DB_TABLE_TIMEOUT_MS}),
-   * and ended by `reply.signal`; one already aborted is not sent.
-   *
-   * Either way an ACK with a non-zero result code rejects, and the command is sent once.
-   */
-  private sendAwaitAck<T = void>(
-    sn: string,
-    st: StationSession,
-    packet: Buffer,
-    outerCmd: number,
-    innerCmd: number,
-    channel: number,
-    segment: number,
-    reply?: StationReply<T>,
-  ): Promise<T> {
-    const timeoutMs = reply ? (reply.timeoutMs ?? DB_TABLE_TIMEOUT_MS) : ACK_TIMEOUT_MS;
-    const awaited = reply ? "reply" : "ACK";
-    return new Promise<T>((resolve, reject) => {
-      const onData = (frame: Buffer, linkType: number) => {
-        const p = parsePortalPacket(frame, linkType);
-        if (!p) return;
-        if (reply && linkType === PortalLinkType.NOTIFY && typeof p.data === "object" && p.data !== null) {
-          let picked: T | undefined;
-          try {
-            picked = reply.pick(p.data as Record<string, unknown>);
-          } catch (e) {
-            cleanup();
-            reject(e instanceof Error ? e : new Error(String(e)));
-            return;
-          }
-          if (picked === undefined) return;
-          cleanup();
-          this.deps.logger?.debug?.(`[rtc] ${sn} cmd ${innerCmd} answered`);
-          resolve(picked);
-          return;
-        }
-        if (p.segment !== segment) return;
-        const acknowledgement = linkType === PortalLinkType.COMMAND && p.commandId === outerCmd && !!p.isResponse;
-        const d = p.data as { payload?: unknown } | null | undefined;
-        const notification =
-          outerCmd === PORTAL_CMD_CONTROL_PAYLOAD &&
-          linkType === PortalLinkType.NOTIFY &&
-          p.commandId === PORTAL_CMD_NOTIFY_PAYLOAD &&
-          p.isResponse === 0 &&
-          p.channel === channel &&
-          p.cmd === innerCmd &&
-          typeof d?.payload === "object" &&
-          d.payload !== null;
-        if (!acknowledgement && !notification) return;
-        if (reply && p.errCode === 0) return;
-        cleanup();
-        if (acknowledgement && p.errCode !== 0) {
-          reject(new Error(`rtc: ${sn} rejected cmd ${innerCmd} (err ${p.errCode})`));
-        } else {
-          this.deps.logger?.debug?.(`[rtc] ${sn} cmd ${innerCmd} acked`);
-          resolve(undefined as T);
-        }
-      };
-      const onClose = () => {
-        cleanup();
-        reject(new Error(`rtc: ${sn} session closed while waiting for cmd ${innerCmd} ${awaited}`));
-      };
-      const onAbort = () => {
-        cleanup();
-        reject(reply?.signal?.reason);
-      };
-      const timer = setTimeout(() => {
-        cleanup();
-        reject(new Error(`rtc: ${sn} cmd ${innerCmd} ${awaited} timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-      const cleanup = () => {
-        clearTimeout(timer);
-        st.session.off("commandData", onData);
-        st.session.off("close", onClose);
-        reply?.signal?.removeEventListener("abort", onAbort);
-        this.touch(sn, st);
-      };
-      if (reply?.signal?.aborted) {
-        onAbort();
-        return;
-      }
-      st.session.on("commandData", onData);
-      st.session.on("close", onClose);
-      reply?.signal?.addEventListener("abort", onAbort, { once: true });
-      if (!st.session.sendCommand(packet)) {
-        cleanup();
-        reject(new Error(`rtc: ${sn} command channel not open, cmd ${innerCmd} not sent`));
-      }
-    });
-  }
-
-  private newSession(route: RtcRoute, adminUserId: string, identity: RtcIdentity, shard: string): RtcSession {
-    return (this.deps.createSession ?? ((o: RtcSessionOptions) => new RtcSession(o)))({
-      authToken: identity.authToken,
-      gtoken: identity.gtoken,
-      stationSn: route.stationSn,
-      adminUserId,
-      shard,
-      estimates: this.deps.estimates,
-      country: this.deps.country ?? "US",
-      logger: this.deps.logger,
-      signalingMode: route.signalingMode,
-      peer: { logger: this.deps.logger, iceTransportPolicy: route.iceTransportPolicy, mediaTrack: route.mediaTrack },
-    });
-  }
-
-  /** A connected session for `sn` to reuse, or undefined (dropping a dead one). */
-  private async reusable(sn: string): Promise<StationSession | undefined> {
-    const st = this.sessions.get(sn);
-    if (!st) return undefined;
-    await st.ready;
-    if (st.session.isConnected) {
-      this.touch(sn, st);
-      return st;
-    }
-    this.drop(sn, st);
-    return undefined;
-  }
-
-  /**
-   * Get or open the station's session. A connected session is reused before the shard is awaited, so a
-   * command on an already-connected station never waits on the unauthenticated `estimate_domain` round
-   * trip — only the create path awaits it. After the await the map is re-checked, with no `await` between
-   * the lookup and `this.sessions.set`, so concurrent creators still share one session.
-   */
-  private async stationSession(route: RtcRoute, adminUserId: string, identity: RtcIdentity): Promise<StationSession> {
+    st: Station,
+    live: NonNullable<RtcLiveRoute["live"]>,
+    entryType: number,
+    view?: number,
+  ): RtcPmLiveStream {
+    const call = st.signal.call(RtcCallType.PM);
     const sn = route.stationSn;
-    const reused = await this.reusable(sn);
-    if (reused) return reused;
-    const shard = await this.deps.shard(route);
-    if (this.sessions.has(sn)) {
-      const again = await this.reusable(sn);
-      if (again) return again;
-    }
-    const session = this.newSession(route, adminUserId, identity, shard);
-    const ready = this.bringUp(sn, session);
-    const st: StationSession = { session, seg: new SegmentCounter(), ready, queue: Promise.resolve(), leases: 0 };
-    session.on("error", (e) => this.deps.onError?.(e));
-    session.on("close", () => {
-      if (this.sessions.get(sn) === st) this.sessions.delete(sn);
+    const ownSdp = !/^T822[34]/.test(sn) || route.version > (sn.startsWith("T8223") ? 3319 : 3419);
+    const agent = (this.deps.layers?.pmIce ?? pmIce)(st.signal, call, ownSdp);
+    const stream = new RtcPmLiveStream(agent, {
+      call,
+      gcm: mediaGcm(route.stationSn, route.version),
+      cmdGcm: cmdGcm(route.stationSn, route.version),
+      start: () =>
+        this.liveCommand(
+          route,
+          st,
+          (view === undefined && route.sensors && live.startTB) || live.start,
+          entryType,
+          view,
+        ),
+      stop: () => this.liveCommand(route, st, live.stop, entryType, view),
+      counter: st.counter,
+      logger: this.deps.logger,
     });
-    this.sessions.set(sn, st);
-    try {
-      await ready;
-    } catch (e) {
-      this.drop(sn, st);
-      throw e;
-    }
-    this.touch(sn, st);
-    return st;
+    const end = () => {
+      agent.close();
+      st.signal.hangup(call.uuid);
+    };
+    return stream.once("stop", end).once("error", end);
   }
 
   /**
-   * One bounded bring-up: the session is up when its command channel opens, and it fails, with the
-   * session closed and every listener gone, when `connect()` throws, the session closes first (rejecting
-   * with the failure that closed it, when it carries one), or {@link CONNECT_TIMEOUT_MS} passes, naming the
-   * stage the session reached and its peer's last state. A single
-   * promise, so an early failure cannot leave a second one rejecting unheard.
-   */
-  private bringUp(sn: string, session: RtcSession): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      let settled = false;
-      const finish = (err?: Error) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        session.off("connected", onConnected);
-        session.off("close", onClose);
-        if (err) {
-          try {
-            session.close();
-          } catch {
-            /* already gone */
-          }
-          reject(err);
-        } else {
-          this.deps.logger?.info?.(`[rtc] ${sn} command channel up`);
-          resolve();
-        }
-      };
-      const onConnected = () => finish();
-      const onClose = (err?: Error) =>
-        finish(err ?? new Error(`rtc: ${sn} session closed before the command channel opened`));
-      const timer = setTimeout(
-        () =>
-          finish(
-            new Error(
-              `rtc: ${sn} did not come up within ${CONNECT_TIMEOUT_MS}ms ` +
-                `(stage ${session.stage}, peer ${session.peerState ?? "not started"})`,
-            ),
-          ),
-        CONNECT_TIMEOUT_MS,
-      );
-      session.once("connected", onConnected);
-      session.once("close", onClose);
-      Promise.resolve()
-        .then(() => session.connect())
-        .catch((e: unknown) => finish(e instanceof Error ? e : new Error(String(e))));
-    });
-  }
-
-  /**
-   * Hold a station's command session open: one hold per station, its idle-close ({@link IDLE_CLOSE_MS})
-   * suppressed, {@link PORTAL_KEEPALIVE} sent every {@link PORTAL_KEEPALIVE_MS}, and the session dropped
-   * on a tick that finds the previous keepalive unechoed. A closed session ends the hold.
+   * A live frame as the app's RTC sender frames it ({@link renderFrame}), its page the one
+   * `LiveParamHelper.getLiveParams` builds: `$chnList` one `{cameraType: 0, chn, index, sensor}` per lens (index 0 for lens 0, else 1) on the lens page,
+   * else the single-camera page's one `{cameraType: lens, chn, index: 0, sensor: lens}`, and `$cameraType` that lens: the
+   * `view` as `MediaLiveStreamVideoView.startPlay` puts it, else 0 (camera id `CameraFixed`); `$msgId` the next
+   * `getNextMsgId` of the player device's parent (1 to 255, then 1 again): the station, or the camera itself on a lens
+   * page (a sensor device's parent), `$entryType` the view's. Header byte 14 is the
+   * station's event-stream flag for a `1700` of inner `1000`, moved on per use as `rtc_get_stream_flag` does (10 when
+   * `(flag + 5) & 0xff < 15`, else up one), else 0.
    *
-   * Answers an idempotent disposer that releases the hold. Throws when no account is logged in.
+   * It goes over `ANKE` or the data channel as the app's RTC sender (`cmd_sender_send_command`) routes it on the
+   * station's context, `rtc_type` the frame's `rtcSendRoute` (absent 0): a `1350` when it is 1, or with inner 1003 or
+   * 1004 on an `is_specific_device_model` station; a `1700` of inner 1000 to 1002 when it is 1 or the station is
+   * `is_livecmd_support_media_rtcp` (a T8223, T8224 or T8030 above its {@link cmdGcm} floor); a `1004` when it is 1 or
+   * the station is `is_rtcp_solo` (a T8223/T8224 by its key mode, the same floor); anything else over the data channel.
    */
-  keepWarm(route: RtcRoute): () => void {
+  private liveCommand(
+    route: RtcLiveRoute,
+    st: Station,
+    frame: RtcLiveFrame,
+    entryType: number,
+    view?: number,
+  ): RtcLiveCommand {
     const sn = route.stationSn;
-    const existing = this.warm.get(sn);
-    if (existing) return existing.dispose;
-    const identity = this.deps.identity();
-    if (!identity) throw new Error(`rtc: not logged in, cannot warm ${sn}`);
-    const hold: WarmHold = {
-      awaitingEcho: false,
-      dispose: () => {
-        if (this.warm.get(sn) !== hold) return;
-        this.warm.delete(sn);
-        const st = hold.watch?.st;
-        this.unwatch(hold);
-        if (st) {
-          st.leases = Math.max(0, st.leases - 1);
-          this.touch(sn, st);
-        }
-      },
-    };
-    this.warm.set(sn, hold);
-    void this.warmUp(sn, route, identity, hold);
-    return hold.dispose;
-  }
-
-  /**
-   * Bring a station session up for a {@link keepWarm} hold and start its keepalive. A bring-up that fails,
-   * or a hold disposed before it completes, clears the hold and arms no timer. Each tick first checks
-   * that the hub echoed the previous keepalive, and drops the session when it did not. The keepalive
-   * stops when the session closes, which also clears the hold so the next command or `keepWarm`
-   * rebuilds cleanly.
-   */
-  private async warmUp(sn: string, route: RtcRoute, identity: RtcIdentity, hold: WarmHold): Promise<void> {
-    const adminUserId = route.adminUserId || identity.userId;
-    let st: StationSession;
-    try {
-      st = await this.stationSession(route, adminUserId, identity);
-    } catch (e) {
-      if (this.warm.get(sn) === hold) this.warm.delete(sn);
-      this.deps.onError?.(e instanceof Error ? e : new Error(String(e)));
-      return;
-    }
-    if (this.warm.get(sn) !== hold) {
-      this.touch(sn, st);
-      return;
-    }
-    st.leases++;
-    this.touch(sn, st);
-    const onClose = (): void => {
-      this.unwatch(hold);
-      if (this.warm.get(sn) === hold) this.warm.delete(sn);
-    };
-    const onEcho = (): void => {
-      hold.awaitingEcho = false;
-    };
-    hold.watch = { st, onClose, onEcho };
-    st.session.once("close", onClose);
-    st.session.on("keepaliveEcho", onEcho);
-    hold.keepalive = setInterval(() => {
-      if (hold.awaitingEcho) {
-        this.deps.logger?.warn?.(`[rtc] ${sn} warm keepalive went unechoed, dropping the session`);
-        this.drop(sn, st);
-        return;
+    const lenses = view === undefined ? route.sensors : undefined;
+    const lens = view ?? 0;
+    const parent = lenses ? route.cameraSn : sn;
+    const { cmd, body, header } = renderFrame(frame, route.channel, this.accountId(route), {
+      $chnList: () =>
+        lenses?.map((s) => ({ cameraType: 0, chn: route.channel, index: s === 0 ? 0 : 1, sensor: s })) ?? [
+          { cameraType: lens, chn: route.channel, index: 0, sensor: lens },
+        ],
+      $cameraType: () => lens,
+      $msgId: () => this.msgIds.set(parent, ((this.msgIds.get(parent) ?? 0) % 255) + 1).get(parent),
+      $entryType: () => entryType,
+      // `RtcLivePlayerBridge` starts with the camera's stated admin, else `""`; the envelope keeps esiotkit's.
+      $userId: () => route.adminUserId ?? "",
+    });
+    const bump = cmd === 1700 && frame.subCmd === 1000;
+    if (bump) st.flag = ((st.flag + 5) & 0xff) < 15 ? 10 : st.flag + 1;
+    const flag = bump ? st.flag : 0;
+    // ponytail: the native's 900-byte RTCP ceiling is not checked; every live frame is far below it.
+    const type = frame.rtcSendRoute === 1;
+    const floor = /^T(8223|8224|8030)/.test(sn) && cmdGcm(sn, route.version);
+    const solo = /^T(8180|8172|8215|8170|86C1|8174|8L60|8217|8404)/.test(sn) || (floor && !sn.startsWith("T8030"));
+    const inner = frame.subCmd ?? (frame.payload as { cmd?: number } | undefined)?.cmd;
+    const rtcp =
+      cmd === 1350
+        ? type || ((inner === 1003 || inner === 1004) && (solo || /^T(8030|8N00|9000|7000|8040)/.test(sn)))
+        : cmd === 1700
+          ? inner !== undefined && inner >= 1000 && inner <= 1002 && (type || floor)
+          : cmd === 1004 && (type || solo);
+    const send = async () => {
+      try {
+        const window = frame.timeoutMs ? AbortSignal.timeout(frame.timeoutMs) : undefined;
+        const d = st.data?.connected ? st.data : await this.dataChannel(route, window);
+        return replyCode(await abortable(d.command(cmd, body, header, flag), window)) === 0;
+      } catch (e) {
+        this.deps.logger?.warn(`[rtc] ${sn} live ${cmd} over the data channel: ${String(e)}`);
+        return false;
       }
-      hold.awaitingEcho = true;
-      st.session.sendRaw(PORTAL_KEEPALIVE);
-    }, PORTAL_KEEPALIVE_MS);
-    hold.keepalive.unref?.();
+    };
+    return { cmd, body, channel: header, flag, ...(!rtcp && { send }) };
   }
 
-  /** Stop a hold's keepalive and remove its listeners from the session it watches. */
-  private unwatch(hold: WarmHold): void {
-    if (hold.keepalive) clearInterval(hold.keepalive);
-    hold.keepalive = undefined;
-    if (hold.watch) {
-      hold.watch.st.session.off("close", hold.watch.onClose);
-      hold.watch.st.session.off("keepaliveEcho", hold.watch.onEcho);
-    }
-    hold.watch = undefined;
-  }
-
-  private touch(sn: string, st: StationSession): void {
-    if (st.idle) clearTimeout(st.idle);
-    if (st.leases > 0) return;
-    st.idle = setTimeout(() => this.drop(sn, st), IDLE_CLOSE_MS);
-    st.idle.unref?.();
-  }
-
-  private drop(sn: string, st: StationSession): void {
-    if (st.idle) clearTimeout(st.idle);
-    if (this.sessions.get(sn) === st) this.sessions.delete(sn);
-    try {
-      st.session.close();
-    } catch {
-      /* already gone */
-    }
+  private drop(sn: string): void {
+    const st = this.stations.get(sn);
+    this.stations.delete(sn);
+    st?.data?.close();
+    st?.signal.close();
   }
 }

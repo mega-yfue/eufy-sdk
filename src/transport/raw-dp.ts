@@ -9,7 +9,7 @@
  * UTF-8 string, an opaque blob or a nested message. That is the reader's call, and the reader is the
  * capability — the same split `DpInboundFrame` already draws for inbound TLV frames.
  *
- * ## Wire (confirmed against a T2351 over AIoT MQTT)
+ * ## Wire (AIoT MQTT)
  *
  * A Raw DP's value is `base64( varint(len) ++ protobufMessage )` — the length prefix is the exact byte
  * length of the message that follows, so it doubles as a validity check: a value whose prefix disagrees

@@ -9,7 +9,7 @@
  * Same reason `ff09.ts` sits here. It builds FIELDS, not a frame — the DP framing + envelope stay in
  * `mqtt/dp-codec.ts`, and nothing here names a capability or a transport.
  *
- * Header + trailer are byte-exact vs. real captures; colours run through {@link rgbcwBlock}, a
+ * Header + trailer are byte-exact to the app's frames; colours run through {@link rgbcwBlock}, a
  * physically-grounded approximation of the device's on-device 5-channel (R,G,B,WarmWhite,ColdWhite)
  * mixing engine — EXACT on pure red and blue, ~18/255 mean on mixed colours, because the engine's
  * nonlinear gamut expansion isn't fully reversed.
@@ -150,9 +150,9 @@ export function rgbcwBlock(hex: string): Buffer | null {
  * `[0,0]`, since a field the catalog omits genuinely has no value to pack.
  *
  * Each component goes through {@link b8}, so a value the cloud stringified is accepted and a value of
- * an unreversed SHAPE throws instead of collapsing to zero. That distinction matters here: this is a
- * fire-and-forget write, so a silently zeroed range would be advertised `buildable` and then reported
- * as sent while the light ignored it.
+ * an unreversed SHAPE throws instead of collapsing to zero. That distinction matters here: the write is done
+ * on the light's answer whatever its status byte says, so a silently zeroed range would be advertised
+ * `buildable` and then reported as applied while the light ignored it.
  */
 function rangeBytes2(v: unknown): [number, number] {
   if (v === undefined || v === null) return [0, 0];
@@ -164,7 +164,7 @@ function rangeBytes2(v: unknown): [number, number] {
  * reverse-engineering validated, but some nature/moods effects carry a `[min,max]` pair in one of
  * these slots (e.g. `interval_value: [1,1]`), and how the app packs that into the fixed-width header
  * is NOT reversed. Silently collapsing the pair to a byte would ship a mis-packed frame that the light
- * ignores while the fire-and-forget write reports success — worse than failing. Refuse it, exactly as
+ * ignores while the write reports success on its answer — worse than failing. Refuse it, exactly as
  * {@link layerTrailer} bails on an unknown layer type, until a capture pins the packing down.
  */
 export const b8 = (v: unknown): number => {

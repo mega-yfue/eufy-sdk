@@ -33,7 +33,12 @@ function fleetWithS1Pro(): EufyDevice[] {
     model: "T9000",
     deviceClass: "homebase",
     stationSn: S1_PRO_SN,
-    raw: { device_type: DeviceType.STATION_9000 },
+    raw: {
+      device_type: DeviceType.STATION_9000,
+      p2p_did: "SYNTH-000000-AAAAA",
+      p2p_license: "SYNLIC",
+      signaling_servers: ["https://192.0.2.7"],
+    },
   };
   return [...fleet(), s1Pro] as unknown as EufyDevice[];
 }
@@ -41,6 +46,9 @@ function fleetWithS1Pro(): EufyDevice[] {
 function makeClient(devices: EufyDevice[] = fleet()) {
   const eufy = new EufyMega({ email: "t@example.com", password: "x" });
   vi.spyOn((eufy as any).registry, "list").mockReturnValue(devices);
+  vi.spyOn((eufy as any).registry, "thingsOf").mockImplementation((sn: unknown) =>
+    String(sn).startsWith("T9000") ? { properties: { is_connect_webrtc: { defaultValue: "2" } } } : undefined,
+  );
   vi.spyOn((eufy as any).registry, "p2pDevices").mockReturnValue(devices);
   vi.spyOn(eufy as any, "startRealtimeGeneration").mockResolvedValue(undefined);
   (eufy as any).ensureRealtimeGeneration();

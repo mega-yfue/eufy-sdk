@@ -82,6 +82,13 @@ export interface EufyMegaOptions extends MegaClientConfig {
    */
   noBroadcast?: boolean;
   /**
+   * Camera wall: each live pull of a camera behind a station gets a connection of its own (a P2P connection, or a PM
+   * call on the station's RTC client), so several cameras on one station stream at once. Off by default, as the app
+   * holds one connection per station and streams one camera at a time on it. A media connection carries that
+   * camera's media alone and closes with its pull.
+   */
+  sessionPerCamera?: boolean;
+  /**
    * Auto-manage connectivity (default `true`). When on, a successful {@link EufyMega.login} brings up
    * the always-on event channels itself — FCM push + secure MQTT (if the account has appliances) — and
    * eagerly warms P2P only for **wired** stations (HomeBases / mains cameras). Battery cameras stay
@@ -91,12 +98,6 @@ export interface EufyMegaOptions extends MegaClientConfig {
    * (advanced/testing).
    */
   autoRealtime?: boolean;
-  /**
-   * Read-through cache freshness window in ms (default 15000). A `getProperty`/`getProperties` read of
-   * a value older than this schedules ONE coalesced background refresh and returns the last-known value
-   * immediately; realtime (push/P2P) updates keep values fresh so a live device rarely refetches.
-   */
-  cacheTtlMs?: number;
   /**
    * How long {@link EufyMega.getDevice} waits (ms, default `4000`) for a device whose state exists ONLY
    * on its realtime wire to make its first report, before resolving it.
@@ -180,10 +181,9 @@ export interface EufyMegaOptions extends MegaClientConfig {
    * Opt into unverified Tuya DP writes for `eufy_home_tuya` clean-line devices (G-series / X8).
    *
    * By default `TuyaCommandRouter` refuses to send `dp.publish` because the request shape
-   * has been reversed but not yet confirmed from a live on-device capture — a wrong shape comes back
-   * as a generic Tuya error indistinguishable from an actual device rejection. `true` sends it anyway,
-   * which is sound only where the full round-trip has been confirmed on a real device, or that
-   * ambiguity is accepted.
+   * has been reversed but not pinned against the app's exchange — a wrong shape comes back as a
+   * generic Tuya error indistinguishable from an actual device rejection. `true` sends it anyway and
+   * accepts that ambiguity.
    */
   tuyaAllowUnverified?: boolean;
   /**
@@ -196,6 +196,22 @@ export interface EufyMegaOptions extends MegaClientConfig {
    * path is not probed, so a wrong one surfaces as the media call's own "not runnable" rejection.
    */
   ffmpegPath?: string;
+}
+
+/**
+ * One station's part in {@link EufyMega.setHouseMode}: `skipped` where it was offline or already in the mode
+ * and nothing was sent, `answered` where it answered the write with success, else `failed` with the reason.
+ */
+export interface HouseModeResult {
+  sn: string;
+  /** The station's name, as the device list carries it. */
+  name?: string;
+  /** The guard mode the station is left in, by its `armingMode` label: the mode written once answered, else its own. */
+  mode: string;
+  /** That mode's arm delay in seconds as the station reports it, 0 where it reports none. */
+  armDelay: number;
+  result: "skipped" | "answered" | "failed";
+  error?: unknown;
 }
 
 /**
@@ -363,32 +379,10 @@ export type EufyMegaEventMap = {
    * reports the SET step's fire-and-forget ack. `dispatch()`/`lock()`/`unlock()`/`setAutoLock()` stay
    * `Promise<void>` and never throw on a missing SET ack (fire-and-forget, same as every other write) —
    * this event is the optional channel for delivery visibility, without the dispatch
-   * contract itself changing shape. Secure-MQTT DP writes use the persistent account connection and
-   * report broker publication (`acked: true`) without an `instanceIp`; that is not device convergence.
+   * contract itself changing shape. A lock's `mqtt-dp` write reports whether the device's reply came within the
+   * descriptor's timeout; a light's DP write reports broker publication (`acked: true`), not device convergence.
    */
-  commandAck: [info: { sn: string; kind: string; acked: boolean; instanceIp?: string; getAcked?: boolean }];
-  /**
-   * A write was acknowledged and its declared observation then never converged, so the device never
-   * reported the state the write asked for.
-   *
-   * This is the answer to the question `dispatch` deliberately does not wait for. A command resolves once the
-   * transport has carried it, and the observation a member declares decides separately whether the device
-   * applied it; where that observation times out, the wire accepted the write and the device ignored it — seen
-   * on a battery camera whose power write is acknowledged and never acted on. It is reported here rather than
-   * on `error` because it is an outcome and not a fault, for the same reason `commandAck` has its own
-   * channel. `observed` is what the param read when the deadline passed, absent where the
-   * device reported none at all.
-   */
-  commandUnconfirmed: [
-    info: {
-      sn: string;
-      property: string;
-      param: number;
-      expected: boolean | number | string;
-      observed?: boolean | number | string;
-      timeoutMs: number;
-    },
-  ];
+  commandAck: [info: { sn: string; kind: string; acked: boolean; getAcked?: boolean }];
   /**
    * The cloud session was kicked or invalidated — another client logged into the same account, or the
    * token expired. The SDK has already cleared the persisted session, so recovery is a fresh `login()`

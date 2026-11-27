@@ -1,41 +1,11 @@
-import { isBluetoothLock, isClassicWifiLock, isSmartDrop, isVideoSmartLock } from "../device-family.js";
-import { DeviceType } from "../device-types.js";
-import { asBool } from "../../core/util.js";
+import { isBluetoothLock, isClassicWifiLock, isSmartDrop, isVideoSmartLock, lockMqttWire } from "../device-family.js";
+import { u16le } from "../../core/util.js";
 import { LockPushEvent } from "../push-events.js";
 import { describeDevice } from "./access.js";
+import { thingWrite } from "./bundle.js";
 import { method, propertiesOf, provided, type Members, type Surface } from "./members.js";
-import type { AvailabilityContext, CapabilityModule, CommandContext, InboundSignal } from "./types.js";
+import type { CapabilityModule, CommandContext, InboundSignal } from "./types.js";
 import type { Command, CommandSink, AutoLockSnapshot, MediaProvider } from "../../core/contracts.js";
-
-/**
- * Setting-id selectors for the compact `ff09-setting-toggle` write — this capability's OWN wire
- * vocabulary, named not inlined per the capability wire-id convention, so `setRainMode`
- * below references `LOCK_SETTING_ID.RAIN_MODE` and this module's own spec can import it too, instead
- * of a bare `7` at either call site.
- *
- * Unlike a normal capability id (owned by exactly one layer, crossing into `transport/` only as an
- * opaque number), this value is a GENUINE duplicate of `transport/ff09.ts`'s `FF09_SETTING_ID.RAIN_MODE`
- * — the capability↔transport decorrelation rule (`model/` never imports `transport/`) leaves no way to
- * share one source of truth across the boundary, and no test can cross-check them without violating
- * that same rule (`guard:decorrelation` forbids any `transport/` import under `src/model`, including
- * tests). If a future capture revises this id, BOTH copies must be updated by hand.
- */
-export const LOCK_SETTING_ID = {
-  /** One-touch lock toggle. Structurally confirmed via the app's own JS (2026-07-18) — see the module doc. */
-  ONE_TOUCH_LOCK: 1,
-  /** Scramble-passcode toggle. Structurally confirmed via the app's own JS (2026-07-18) — see the module doc. */
-  SCRAMBLE_PASSCODE: 3,
-  /** Wifi-status toggle. Structurally confirmed via the app's own JS (2026-07-18) — see the module doc. */
-  WIFI_STATUS: 5,
-  /** Event-log-enable toggle. Structurally confirmed via the app's own JS (2026-07-18) — see the module doc. */
-  ENABLE_LOG: 6,
-  /** Rain Mode toggle on the T8531 video lock. Verified live 2026-07-18. */
-  RAIN_MODE: 7,
-  /** Privacy-mode toggle. Structurally confirmed via the app's own JS (2026-07-18) — see the module doc. */
-  PRIVACY_MODE: 9,
-  /** One-touch rear-lock toggle. Structurally confirmed via the app's own JS (2026-07-18) — see the module doc. */
-  ONE_TOUCH_REAR_LOCK: 11,
-} as const;
 
 /**
  * Bound lock controls — the object returned by `dev.lock()`.
@@ -44,20 +14,18 @@ export const LOCK_SETTING_ID = {
  * wire its family takes: the shared `ff09` frame on the T8531 video smart lock and the T85D0 garage door,
  * the T8530 video lock's own `set-payload`, the keyed-payload envelope on the classic Wi-Fi lock (the
  * `T8520`-range unit that never negotiates a session key), and the station's door-lock pass-through on the
- * Bluetooth lock. The setting toggles ride `ff09` only. This module emits ONE transport-neutral intent per
+ * Bluetooth lock. This module emits ONE transport-neutral intent per
  * wire (identity fields only, no wire bytes, no cipher, no routing key) and names no transport: the command
  * sink routes P2P vs MQTT by the device's topology, and the chosen transport's command router builds the
  * frame + envelope and re-resolves its own routing tail.
  * Which pipe it is does not reach `dev.lock()` — its surface is identical either way, the same way
  * P2P-vs-cloud is hidden for live media.
  *
- * Classic Wi-Fi lock: `lock()` and `unlock()` are both confirmed on hardware — the bolt moved each way, the
- * device answered result code 0, and the cloud status followed. That device answers every command, so on it
- * the two reject on a refusal or an unanswered command as well as on missing identity.
+ * Classic Wi-Fi lock: it answers every command with a result code (0 = done), so on it the two reject on a refusal or an unanswered command as well as on missing identity.
  */
 export type LockActions = Surface<typeof LOCK_MEMBERS>;
 
-/** Native video-lock command vocabulary verified on T8530 attached to HomeBase 3. */
+/** Native video-lock command vocabulary, sent to its station under the station's member account. */
 const VIDEO_LOCK_CMD = { ACTUATE: 1961, STATUS: 1955, NOTIFY: 1351 } as const;
 
 /**
@@ -71,28 +39,37 @@ function openLid(ctx: CommandContext, sink: CommandSink): Promise<void> {
     payload: { isOpen: 1, userIndex: 0 },
     channel: ctx.channel,
     mValue3: 0,
-    level2Sender: "set-payload",
   });
 }
 
 /**
  * The actuation intent, or a refusal naming what is missing. Identity is a genuine precondition — the
- * frame carries the member fields — and a generated "not a valid value" message would misreport it.
+ * frame carries the member fields — and a generated "not a valid value" message would misreport it. Only the
+ * `ff09` frame needs an admin id (its key is built from it); the video lock's and the keyed payload's `userId`
+ * is left out on a member stating none, as the app's Gson does, and the pass-through keys with the user's own id.
  */
 function actuate(engage: boolean, ctx: CommandContext, sink: CommandSink): Promise<void> {
-  if (!ctx.adminUserId || !ctx.shortUserId || (isVideoSmartLock(ctx) && !ctx.accountName)) {
+  const kind = isVideoSmartLock(ctx)
+    ? undefined
+    : isClassicWifiLock(ctx)
+      ? "keyed-payload-actuate"
+      : isBluetoothLock(ctx)
+        ? "doorlock-pass-through-actuate"
+        : "ff09-actuate";
+  if (!ctx.shortUserId || (!kind && !ctx.accountName) || (kind === "ff09-actuate" && !ctx.adminUserId)) {
     return Promise.reject(
       new Error(
-        `lock: missing member identity (admin_user_id/short_user_id, and user name on video locks) [${describeDevice(ctx)}]`,
+        `lock: missing member identity (short_user_id, user name on video locks, admin_user_id on ff09 locks) [${describeDevice(ctx)}]`,
       ),
     );
   }
-  if (isVideoSmartLock(ctx)) {
+  if (!kind) {
     return sink.dispatch({
       kind: "set-payload",
       cmd: VIDEO_LOCK_CMD.ACTUATE,
       channel: ctx.channel,
       mValue3: 0,
+      stationAccount: true,
       payload: {
         shortUserId: ctx.shortUserId,
         slOperation: engage ? 1 : 0,
@@ -101,49 +78,97 @@ function actuate(engage: boolean, ctx: CommandContext, sink: CommandSink): Promi
       },
     });
   }
-  return sink.dispatch({
-    kind: isClassicWifiLock(ctx)
-      ? "keyed-payload-actuate"
-      : isBluetoothLock(ctx)
-        ? "doorlock-pass-through-actuate"
-        : "ff09-actuate",
+  const identity = {
     engage,
-    adminUserId: ctx.adminUserId,
     username: ctx.accountName ?? "",
     shortUserId: ctx.shortUserId,
     deviceSn: ctx.serial ?? "",
-  });
-}
-
-/** The compact single-setting write (`ff09-setting-toggle`), or a refusal naming the missing identity. */
-function settingToggle(settingId: number, name: string, enabled: boolean, ctx: CommandContext, sink: CommandSink) {
-  if (!ctx.adminUserId) {
-    return Promise.reject(new Error(`lock.${name}: missing member identity (admin_user_id) [${describeDevice(ctx)}]`));
-  }
-  return sink.dispatch({
-    kind: "ff09-setting-toggle",
-    adminUserId: ctx.adminUserId,
-    deviceSn: ctx.serial ?? "",
-    settingId,
-    value: enabled,
-  });
+  };
+  if (kind === "ff09-actuate" && nativeMqtt(ctx))
+    return sink.dispatch(
+      serviceWrite(35, 6018, [
+        tlv(0xa3, Buffer.from([engage ? 0 : 1])),
+        tlv(0xa4, Buffer.from(identity.username, "utf8")),
+        tlv(0xa5, Buffer.from(ctx.shortUserId, "hex")),
+      ]),
+    );
+  if (kind === "doorlock-pass-through-actuate") return sink.dispatch({ kind, ...identity });
+  if (kind === "keyed-payload-actuate") return sink.dispatch({ kind, adminUserId: ctx.adminUserId, ...identity });
+  return sink.dispatch({ kind, adminUserId: ctx.adminUserId!, ...identity });
 }
 
 /**
- * Whether the device is reachable over P2P — the topology fact that decides which lock settings exist.
- * The compact toggles are only known on the P2P video lock; the MQTT garage door does not expose them in
- * the app, so offering them there would guess a frame shape that likely does not exist.
+ * A lock the app's native lock screens drive over secure MQTT ({@link lockMqttWire}): its lock/unlock and auto-lock go
+ * through the lock's own MQTT settings service ({@link serviceWrite}), not as an `ff09-*` intent.
  */
-const overP2p = (ctx: AvailabilityContext): boolean =>
-  ctx.hasP2p === true && !isVideoSmartLock(ctx) && !isSmartDrop(ctx);
+const nativeMqtt = (ctx: CommandContext): boolean =>
+  lockMqttWire(ctx.model, !(ctx.homeBaseAttached ?? ctx.stationSerial !== undefined)) === "native";
+
+const tlv = (tag: number, value: Buffer) => ({ tag, value });
 
 /**
- * Native actuation is verified only on the HomeBase 3 route; a SmartDrop lid opens only standalone and never
- * engages. Other lock families retain their controls.
+ * A write through the lock's own MQTT settings service: `ff09` opcode `cmdCode` under `apiCommand`, its result awaited
+ * 20 s, once; `preserve` the settings read tags whose bytes follow `fields`.
  */
+function serviceWrite(
+  cmdCode: number,
+  apiCommand: number,
+  fields: { tag: number; value: Buffer }[],
+  preserve?: (number | Buffer)[],
+): Command {
+  return {
+    kind: "mqtt-dp",
+    mqttCmdCode: 9,
+    cmdCode,
+    fields,
+    subVersion: 3,
+    functionType: 2,
+    encrypt: true,
+    lockService: true,
+    apiCommand,
+    ...(preserve && { preserve }),
+    timeoutS: 20,
+  };
+}
+
+/** A SmartDrop lid opens only standalone and never engages. Other lock families retain their controls. */
 function actuationAvailable(ctx: CommandContext, engage: boolean): boolean {
-  if (isSmartDrop(ctx)) return !engage && ctx.stationSerial === undefined;
-  return !isVideoSmartLock(ctx) || ctx.stationSerial?.startsWith("T8030") === true;
+  return !isSmartDrop(ctx) || (!engage && ctx.stationSerial === undefined);
+}
+
+/**
+ * The T8530's auto-lock writes, as its auto-lock screen sends them over its settings read (1958 over 1959): paramType
+ * 6500 with `isAutoLock` and `autoLockTime` (the read's delay where none is given), then for a schedule paramType 6501
+ * with `isSchedule` and `scheduleStart`/`scheduleEnd`, each hour and minute as two lowercase hex digits.
+ */
+function videoLockAutoLock(
+  ctx: CommandContext,
+  enabled: boolean,
+  delaySeconds?: number,
+  schedule?: Pick<AutoLockSnapshot, "isSchedule" | "scheduleStartTime" | "scheduleEndTime">,
+): Command {
+  const write = (paramType: number, param: Record<string, unknown>) =>
+    thingWrite("smart_lock_set_setting_params", JSON.stringify({ paramType, param }), ctx)!;
+  const hex = (t: [number, number]) => t.map((n) => n.toString(16).padStart(2, "0")).join("");
+  const autoLock = write(6500, { isAutoLock: enabled ? 1 : 0, autoLockTime: delaySeconds });
+  if (!schedule) return autoLock;
+  const window = { isSchedule: schedule.isSchedule ? 1 : 0, scheduleStart: hex(schedule.scheduleStartTime) };
+  return { ...autoLock, next: write(6501, { ...window, scheduleEnd: hex(schedule.scheduleEndTime) }) };
+}
+
+/** A T8530's 1959 settings read as its auto-lock snapshot, each field the app's default where the read has none. */
+function videoLockSnapshot(read: Record<string, unknown>): AutoLockSnapshot {
+  const time = (v: unknown, d: string): [number, number] => {
+    const t = typeof v === "string" && v.length === 4 ? v : d;
+    return [parseInt(t.slice(0, 2), 16), parseInt(t.slice(2), 16)];
+  };
+  return {
+    enabled: Number(read.isAutoLock ?? 0) === 1,
+    delaySeconds: Number(read.autoLockTime ?? 30),
+    isSchedule: Number(read.isSchedule ?? 0) === 1,
+    scheduleStartTime: time(read.scheduleStart, "1700"),
+    scheduleEndTime: time(read.scheduleEnd, "0600"),
+  };
 }
 
 /** Live status read; unknown states remain unknown and device refusals reject. */
@@ -158,7 +183,7 @@ async function refreshStatus(
   return nativeState(payload.slState);
 }
 
-/** Only the two observed settled states carry a boolean. */
+/** Only the two settled states ("3", "4") carry a boolean. */
 function nativeState(raw: unknown): boolean | undefined {
   if (raw === "3") return false;
   if (raw === "4") return true;
@@ -190,31 +215,16 @@ const speaksFf09Settings = (ctx: CommandContext): boolean =>
   !isClassicWifiLock(ctx) && !isBluetoothLock(ctx) && !isSmartDrop(ctx);
 
 /**
- * Rain Mode's gate: the P2P video lock, and only a device that takes the `ff09` settings frame. Not the
- * LOCK_85V0: its description lists the switch, but the app's bundle builds no command for it.
- */
-const rainModeAvailable = (ctx: CommandContext): boolean =>
-  overP2p(ctx) && speaksFf09Settings(ctx) && ctx.deviceType !== DeviceType.LOCK_85V0;
-
-/**
- * Every `lock` feature, declared once.
+ * Every `lock` feature, declared once. The lock's settings are its described things (`smart_lock_*`), written as
+ * its bundle and its own settings screen send them.
  *
- * The six toggles after `setRainMode` share its confirmed frame SHAPE and are grounded in the app's own
- * JS, but none has been captured against a real device — so each is `unverified`: DECLARED, so the
- * capability documents what the lock has, and NOT installed, because a fire-and-forget write that is
- * wrong looks exactly like success. A caller sees them as optional and learns at compile time that they
- * are not settable yet; promoting one is a single edit once a capture lands.
- *
- * They carry no `param`: a setting id is not a param id, nothing reports these back, and declaring one
- * would put a wire number where the schema expects a reported value.
- *
- * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * Exported but NOT published: each entry states its wire id and its gate,
  * which the reference site does not carry.
  * @internal
  */
 export const LOCK_MEMBERS = {
   /**
-   * The lock's own state, verified on param 6000: "4" = locked, "3" = unlocked.
+   * The lock's own state, on param 6000: "4" = locked, "3" = unlocked.
    * `writtenElsewhere` points at the `lock`/`unlock` methods — a single `write` cannot express two
    * verbs that carry no value.
    */
@@ -222,10 +232,9 @@ export const LOCK_MEMBERS = {
     param: 6000,
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
     writtenElsewhere: true,
     coerce: (raw) => String(raw).trim() === "4",
-    description: "Lock state, true=locked (verified: param 6000, 4=locked, 3=unlocked).",
+    description: "Lock state, true=locked (param 6000, 4=locked, 3=unlocked).",
   },
   /**
    * Cell charge as a percentage, on param 1101 or smart-lock param 6001. Named `battery`
@@ -238,8 +247,7 @@ export const LOCK_MEMBERS = {
     type: "number",
     unit: "%",
     kind: "percent",
-    provenance: "verified",
-    description: "Lock battery level 0-100 (verified: param 1101, alias 6001).",
+    description: "Lock battery level 0-100 (param 1101, alias 6001).",
   },
 
   /**
@@ -270,19 +278,48 @@ export const LOCK_MEMBERS = {
    * Read-modify-write the auto-lock setting: the transport GETs the device's current settings, changes
    * only `enabled` (+ `delaySeconds` if given — otherwise the current delay is preserved), and writes the
    * rest back verbatim. Works on both the T8531 video lock and the T85D0 garage/lock, which share the
-   * identical settings frame; confirmed on-device in both directions on both families.
+   * identical settings frame. `schedule`, as `getAutoLockState` reads it, is written only on a lock that is its own
+   * station, in the same frame, as its auto-lock screen sends it, and on the T8530 ({@link videoLockAutoLock}).
    *
    * **Unlike `lock`/`unlock` this can reject on a device TIMEOUT**, not just missing identity — the GET
    * step is a genuine precondition, so this one is not fire-and-forget.
    */
   setAutoLock: method(
     ({ ctx, sink }) =>
-      (enabled: boolean, delaySeconds?: number): Promise<void> => {
+      (
+        enabled: boolean,
+        delaySeconds?: number,
+        schedule?: Pick<AutoLockSnapshot, "isSchedule" | "scheduleStartTime" | "scheduleEndTime">,
+      ): Promise<void> => {
+        const times = schedule ? [schedule.scheduleStartTime, schedule.scheduleEndTime] : [];
+        if (
+          times.some(([h, m]) => !(Number.isInteger(h) && Number.isInteger(m) && h >= 0 && h < 24 && m >= 0 && m < 60))
+        )
+          return Promise.reject(new Error(`lock.setAutoLock: schedule times must be [hour 0-23, minute 0-59]`));
+        if (isVideoSmartLock(ctx)) return sink.dispatch(videoLockAutoLock(ctx, enabled, delaySeconds, schedule));
         if (!ctx.adminUserId) {
           return Promise.reject(
             new Error(`lock.setAutoLock: missing member identity (admin_user_id) [${describeDevice(ctx)}]`),
           );
         }
+        // Its settings frame (paramType 0): enable, delay, the schedule flag, start and end ([hour, minute]) and the
+        // door-state check, each the lock's own read where not given.
+        if (nativeMqtt(ctx)) {
+          const delay = delaySeconds === undefined ? 0xa2 : u16le(delaySeconds);
+          const window = schedule
+            ? [Buffer.from([schedule.isSchedule ? 1 : 0]), ...times.map((t) => Buffer.from(t))]
+            : [0xa3, 0xa4, 0xa5];
+          return sink.dispatch(
+            serviceWrite(
+              52,
+              6015,
+              [tlv(0xa3, Buffer.from([0])), tlv(0xa4, Buffer.from([enabled ? 1 : 0]))],
+              [delay, ...window, 0xb4],
+            ),
+          );
+        }
+        if (schedule)
+          return Promise.reject(new Error(`lock.setAutoLock: no schedule write on this lock [${describeDevice(ctx)}]`));
         return sink.dispatch({
           kind: "ff09-autolock",
           adminUserId: ctx.adminUserId,
@@ -292,114 +329,8 @@ export const LOCK_MEMBERS = {
         });
       },
     "Read-modify-write the auto-lock setting, preserving the fields it does not change.",
-    (ctx) => !isVideoSmartLock(ctx) && speaksFf09Settings(ctx),
+    speaksFf09Settings,
   ),
-
-  /**
-   * Toggle Rain Mode — a pure blind write, unlike `setAutoLock`: the compact frame carries only this one
-   * field, so there is no GET pass and it is fire-and-forget. Confirmed on-device end-to-end in both
-   * directions, with the app UI reflecting the new state afterward. P2P video lock only.
-   */
-  setRainMode: method(
-    ({ ctx, sink }) =>
-      (enabled: boolean): Promise<void> =>
-        settingToggle(LOCK_SETTING_ID.RAIN_MODE, "setRainMode", enabled, ctx, sink),
-    "Toggle Rain Mode.",
-    rainModeAvailable,
-  ),
-
-  /**
-   * Lock the door by a single touch on the pad, with no code. First of the six compact toggles: all
-   * `unverified` (frame shape read out of the app's JS, never captured), so no setter is installed and
-   * `setOneTouchLock` lands optional on the surface — a caller learns at compile time. `writeOnly` too:
-   * nothing reports the setting back, so there is no getter either.
-   */
-  oneTouchLock: {
-    type: "bool",
-    kind: "boolean",
-    writeOnly: true,
-    unverified: true,
-    available: overP2p,
-    provenance: "apk",
-    description: "One-touch locking (setting-id 1). Wire shape confirmed in the app's own JS, NOT captured.",
-    write: (v, ctx) => settingToggleCommand(LOCK_SETTING_ID.ONE_TOUCH_LOCK, v, ctx),
-  },
-  /**
-   * Pad anti-shoulder-surfing: the lock asks for extra random digits around the real code so a watcher
-   * cannot read it off worn keys. Same `unverified` + `writeOnly` + P2P-only standing as its five
-   * siblings — declared so the capability documents the lock, not installed.
-   */
-  scramblePasscode: {
-    type: "bool",
-    kind: "boolean",
-    writeOnly: true,
-    unverified: true,
-    available: overP2p,
-    provenance: "apk",
-    description:
-      "Scramble the passcode entry pad (setting-id 3). Wire shape confirmed in the app's own JS, NOT captured.",
-    write: (v, ctx) => settingToggleCommand(LOCK_SETTING_ID.SCRAMBLE_PASSCODE, v, ctx),
-  },
-  /**
-   * Whether the lock reports its Wi-Fi status — a reporting toggle, not the radio itself, on the app's
-   * own naming. Same `unverified` + `writeOnly` + P2P-only standing as its five siblings; treat the
-   * meaning as the app's label until a capture pins the behaviour.
-   */
-  wifiStatus: {
-    type: "bool",
-    kind: "boolean",
-    writeOnly: true,
-    unverified: true,
-    available: overP2p,
-    provenance: "apk",
-    description: "Wi-Fi status reporting (setting-id 5). Wire shape confirmed in the app's own JS, NOT captured.",
-    write: (v, ctx) => settingToggleCommand(LOCK_SETTING_ID.WIFI_STATUS, v, ctx),
-  },
-  /**
-   * Whether the lock records its own event history on-device. Same `unverified` + `writeOnly` +
-   * P2P-only standing as its five siblings — the frame shape comes from the app's JS and has never been
-   * driven against hardware.
-   */
-  logEnabled: {
-    type: "bool",
-    kind: "boolean",
-    writeOnly: true,
-    unverified: true,
-    available: overP2p,
-    provenance: "apk",
-    description: "Event-log recording (setting-id 6). Wire shape confirmed in the app's own JS, NOT captured.",
-    write: (v, ctx) => settingToggleCommand(LOCK_SETTING_ID.ENABLE_LOG, v, ctx),
-  },
-  /**
-   * The lock's own privacy mode — unrelated to the camera capability's privacy burst, which is a
-   * different device, a different wire and a different meaning. Same `unverified` + `writeOnly` +
-   * P2P-only standing as its five siblings.
-   */
-  privacyMode: {
-    type: "bool",
-    kind: "boolean",
-    writeOnly: true,
-    unverified: true,
-    available: overP2p,
-    provenance: "apk",
-    description: "Lock privacy mode (setting-id 9). Wire shape confirmed in the app's own JS, NOT captured.",
-    write: (v, ctx) => settingToggleCommand(LOCK_SETTING_ID.PRIVACY_MODE, v, ctx),
-  },
-  /**
-   * The rear-deadbolt counterpart to `oneTouchLock`, on a lock that has a second bolt — so a model with
-   * one bolt has nothing for it to drive. Last of the six compact toggles and shares their standing
-   * exactly: `unverified`, `writeOnly`, P2P-only, no setter installed.
-   */
-  oneTouchRearLock: {
-    type: "bool",
-    kind: "boolean",
-    writeOnly: true,
-    unverified: true,
-    available: overP2p,
-    provenance: "apk",
-    description: "One-touch rear locking (setting-id 11). Wire shape confirmed in the app's own JS, NOT captured.",
-    write: (v, ctx) => settingToggleCommand(LOCK_SETTING_ID.ONE_TOUCH_REAR_LOCK, v, ctx),
-  },
 
   /** Read the current device-reported state; undefined means no settled locked/unlocked state. */
   refreshStatus: {
@@ -417,7 +348,8 @@ export const LOCK_MEMBERS = {
 
   /**
    * Read the device's current auto-lock settings via a live `GET_SETTINGS` round-trip — the SAME read
-   * `setAutoLock` does internally, exposed standalone with no write attached. Works over BOTH transports.
+   * `setAutoLock` does internally, exposed standalone with no write attached. Works over BOTH transports; on the
+   * T8530 it is its 1959 settings read ({@link videoLockSnapshot}).
    * A genuine request/reply query, not a passive property, so it always talks to the device.
    *
    * `answers` for that reason: the returned snapshot IS the point, so it is not a control to offer even
@@ -426,30 +358,19 @@ export const LOCK_MEMBERS = {
   getAutoLockState: {
     ...provided(
       "ff09Settings",
-      (f, { ctx }) =>
-        isVideoSmartLock(ctx) || isSmartDrop(ctx) || isBluetoothLock(ctx)
+      (f, { ctx, media }) => {
+        const query = media?.p2pQuery?.bind(media);
+        if (isVideoSmartLock(ctx)) return query && (() => query(1959).then(videoLockSnapshot));
+        return isSmartDrop(ctx) || isBluetoothLock(ctx)
           ? undefined
-          : (): Promise<AutoLockSnapshot> => f.getAutoLockState(),
+          : (): Promise<AutoLockSnapshot> => f.getAutoLockState();
+      },
       "Read the current auto-lock settings via a live round-trip.",
     ),
     answers: true,
   },
 } as const satisfies Members;
 
-/**
- * The compact toggle as a `Command` for the member `write` path, which supplies no sink. Identity is
- * re-checked by the transport; a member write cannot carry a bespoke refusal, and these are all
- * `unverified` so none is installed today.
- */
-function settingToggleCommand(settingId: number, enabled: boolean | number | string, ctx: CommandContext): Command {
-  return {
-    kind: "ff09-setting-toggle",
-    adminUserId: ctx.adminUserId ?? "",
-    deviceSn: ctx.serial ?? "",
-    settingId,
-    value: asBool(enabled),
-  };
-}
 /**
  * The `locked` boolean a `lockState` push carries, derived from which `LockPushEvent` fired: the seven
  * `*_LOCK` actions (262..268) → `true`, the six `*_UNLOCK` actions (257..261 + 269) → `false`. The rest
@@ -466,7 +387,7 @@ function decodeLockTransition(signal: InboundSignal): Record<string, unknown> {
 }
 
 /**
- * `lock` — smart lock. `locked` reports lock state via verified param 6000 (4=locked, 3=unlocked);
+ * `lock` — smart lock. `locked` reports lock state via param 6000 (4=locked, 3=unlocked);
  * a device that reports no stable state param carries its transitions on the `lockState` event instead,
  * whose payload names the decoded `locked`.
  */

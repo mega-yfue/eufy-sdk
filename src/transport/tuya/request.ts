@@ -51,7 +51,7 @@ export interface TuyaSession {
   /** Per-install device id (44-hex in the capture). See {@link TuyaClient} for generation. */
   deviceId: string;
   /**
-   * 8-hex `chKey`. ✅ SOLVED: `getChKey` in `libthing_security.so` is a pure
+   * 8-hex `chKey`. `getChKey` in `libthing_security.so` is a pure
    * function of the **appId only** (never touches time/session/Context), so it's a per-appId CONSTANT —
    * `"7cbfe6d8"` for this app's appId. Hardcode it.
    */
@@ -61,6 +61,8 @@ export interface TuyaSession {
    * login completes; it keys et=3 body encryption and reply decryption for every session call.
    */
   ecode?: string;
+  /** The logged-in user's `phoneCode` (`User.phoneCode`), read from the same reply. */
+  phoneCode?: string;
 }
 
 /**

@@ -17,7 +17,8 @@ const roster = [
       device_type: 55,
       parent_sn: HUB,
       device_channel: 7,
-      member: { admin_user_id: "device-admin", short_user_id: "0002" },
+      time_zone: "device-own-zone",
+      member: { admin_user_id: "device-admin", member_user_id: "synthetic-member", short_user_id: "0002" },
     },
   },
   {
@@ -35,6 +36,7 @@ afterEach(() => vi.restoreAllMocks());
 function harness() {
   const client = new EufyMega({ email: "test@example.com", password: "x", autoRealtime: false });
   const internal = client as any;
+  Object.defineProperty(internal.mega, "auth", { get: () => ({ userId: "synthetic-member" }) });
   internal.registry.devices = structuredClone(roster);
   vi.spyOn(internal.registry, "record").mockImplementation(async (sn: unknown) => ({
     ...record,
@@ -97,7 +99,9 @@ describe("video lock status integration", () => {
       adminUserId: "device-admin",
       shortUserId: "0002",
       stationSerial: HUB,
+      stationChannel: 0,
       timezone: "reported-vendor-zone",
+      deviceTimezone: "device-own-zone",
     });
     expect(ctx.accountName).toBe("test");
     const dev = await client.getDevice(SN);

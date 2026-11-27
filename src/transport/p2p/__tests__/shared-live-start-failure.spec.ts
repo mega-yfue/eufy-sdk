@@ -20,7 +20,6 @@ function mk(opts: Record<string, unknown> = {}) {
   const onActive = vi.fn();
   const source = new SharedLiveSource({
     makeStream,
-    warmRetryMs: 2000,
     warmTimeoutMs: 6000,
     lingerMs: 5000,
     onStartFailed,
@@ -49,7 +48,6 @@ describe("SharedLiveSource — reporting a failed start", () => {
       reason: "warm-timeout",
       stage: "awaiting-first-frame",
       timeoutMs: 6000,
-      attempts: 3,
     });
     expect(onStartFailed).toHaveBeenCalledTimes(1);
     expect(source.state).toBe("stopped");
@@ -67,7 +65,6 @@ describe("SharedLiveSource — reporting a failed start", () => {
       reason: "warm-timeout",
       stage: "awaiting-keyframe",
       timeoutMs: 6000,
-      attempts: 3,
     });
     expect(onStartFailed).toHaveBeenCalledTimes(1);
     expect(source.state).toBe("stopped");
@@ -129,17 +126,6 @@ describe("SharedLiveSource — reporting a failed start", () => {
     expect(errors[0]).toMatchObject({ stage: "awaiting-first-frame" });
   });
 
-  it("counts one attempt per media start actually issued", () => {
-    const { source, streams } = mk({ warmRetryMs: 2000, warmTimeoutMs: 5000 });
-    const errors: Error[] = [];
-    source.attach().on("error", (error) => errors.push(error));
-
-    vi.advanceTimersByTime(5000);
-
-    expect(streams[0].nudged).toBe(2);
-    expect(errors[0]).toMatchObject({ attempts: 3 });
-  });
-
   it("tells consumers before reporting it, so the report can dispose the source", () => {
     const order: string[] = [];
     const { source } = mk({ onStartFailed: () => order.push("reported") });
@@ -186,7 +172,6 @@ describe("SharedLiveSource — reporting a failed start", () => {
       phase: "start-failed",
       reason: "source-error",
       stage: "awaiting-first-frame",
-      attempts: 1,
       errorName: "TypeError",
       source: expect.any(String),
     });
