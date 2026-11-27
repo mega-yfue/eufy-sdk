@@ -11,6 +11,11 @@
  * Runtime dependencies stay external, so `mqtt` and `protobufjs` keep loading on first use rather
  * than being pulled into the bundle and evaluated at import.
  *
+ * The settings bundles' wire table (`bundle-wires.generated.json`) is not inlined either: it ships beside the
+ * bundle and is read with `JSON.parse` at import. Measured on Node 24 x86-64, importing the package costs +21 MB
+ * that way and +39 MB with the table inlined as an object literal, which V8 parses as code and whose source it
+ * keeps.
+ *
  * Declarations are untouched: `tsc` emits the `.d.ts` tree, `exports.types` still points at
  * `dist/index.d.ts`, and the relative specifiers inside it resolve against files this script leaves
  * in place. Only `.js` and `.js.map` are replaced.
@@ -24,6 +29,20 @@ const DIST = "dist";
 const ENTRY = join(DIST, "index.js");
 const KEEP = ["index.js", "index.js.map", "catalog.js", "catalog.js.map"];
 const CATALOG = join("model", "capabilities", "things-catalog.generated.json");
+const WIRES = join("model", "capabilities", "bundle-wires.generated.json");
+
+/** Loads {@link WIRES} as a read of the file shipped beside the bundle rather than inlining it. */
+const wiresFromFile = {
+  name: "wires-from-file",
+  setup(b) {
+    b.onLoad({ filter: /bundle-wires\.generated\.json$/ }, () => ({
+      loader: "js",
+      contents:
+        'import { readFileSync } from "node:fs";\n' +
+        'export default JSON.parse(readFileSync(new URL("./model/capabilities/bundle-wires.generated.json", import.meta.url), "utf8"));\n',
+    }));
+  },
+};
 
 const pkg = JSON.parse(readFileSync("package.json", "utf8"));
 
@@ -50,15 +69,17 @@ await build({
   external,
   sourcemap: true,
   logLevel: "warning",
+  plugins: [wiresFromFile],
 });
 
 // Everything tsc emitted except the bundle and its map, which the bundle now supersedes: the JSON data a
-// module imports is inlined into it too.
+// module imports is inlined into it too, but for the catalog and the wire table, copied back below.
 for (const file of readdirSync(DIST, { recursive: true, encoding: "utf8" })) {
   if (KEEP.includes(file)) continue;
   if (file.endsWith(".js") || file.endsWith(".js.map") || file.endsWith(".json")) rmSync(join(DIST, file));
 }
 copyFileSync(join("src", CATALOG), join(DIST, CATALOG));
+copyFileSync(join("src", WIRES), join(DIST, WIRES));
 
 const bytes = statSync(ENTRY).size;
 console.log(`bundled dist/index.js (${(bytes / 1024 / 1024).toFixed(2)} MB, external: ${external.join(", ")})`);
