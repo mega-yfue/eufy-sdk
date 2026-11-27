@@ -797,8 +797,9 @@ export class MegaHttpClient {
   /**
    * Signed + encrypted POST. Content-type auto-falls-back (text/plain ↔ json). A `null` body sends none: no
    * content-type, and the signature over the timestamp and nonce alone, as the app sends a body-less call. An
-   * encrypted reply whose `signature` does not match its `X-Request-Ts`, `X-Request-Once` and `data` is refused,
-   * as the app's `checkSignatureAndDecrypt` refuses it; a gzipped one is inflated after decryption.
+   * encrypted reply whose `signature` does not match its `data` under the `X-Request-Ts` and `X-Request-Once` this
+   * request sent is refused, as the app's `checkSignatureAndDecrypt` refuses it (the app's response decrypt takes
+   * the request's timestamp and nonce, not the reply's); a gzipped one is inflated after decryption.
    *
    * `retry` is this method's own bookkeeping across the two recoveries it performs on itself — a re-exchanged
    * session key, and a re-login — so each is attempted once per call. A caller leaves it out.
@@ -856,10 +857,10 @@ export class MegaHttpClient {
         if (authed) this.noteSessionWorking();
         if (contentType) this.contentTypeByHost.set(host, contentType); // remember what worked
         if (typeof env.data === "string" && env.data.length > 0) {
-          const signed = (h: string) => res.headers.get(h) ?? "";
           if (
             env.signature &&
-            env.signature !== signRequest(entry.shareKey, signed("x-request-ts"), signed("x-request-once"), env.data)
+            env.signature !==
+              signRequest(entry.shareKey, headers["x-request-ts"]!, headers["x-request-once"]!, env.data)
           )
             throw new MegaApiError(
               `${path} failed (${res.status}): reply signature does not match`,
