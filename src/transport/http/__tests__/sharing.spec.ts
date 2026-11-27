@@ -17,7 +17,7 @@ describe("MegaHttpClient sharing calls", () => {
   it("invites by email with the app's defaults, forcing admin on eufy_pet, and seals a share code on security", async () => {
     const { mega, post } = client();
     post.mockResolvedValueOnce({ email_sent: true });
-    const sent = await mega.inviteShare("guest@example.invalid", "Guest", [
+    const sent = await mega.inviteShare("Guest@Example.invalid", [
       { device_sn: SN, category: "eufy_security", member_type: 0, device_name: "Cam" },
       { device_sn: "PET0000000000000", category: "eufy_pet", member_type: 0 },
     ]);
@@ -29,12 +29,13 @@ describe("MegaHttpClient sharing calls", () => {
     expect(post).toHaveBeenCalledWith("devicerelation", "/app/devicerelation/device_invite", {
       transaction: "",
       email: "guest@example.invalid",
-      nick_name: "Guest",
+      nick_name: "guest@example.invalid",
       invites: [
         {
           permissions: 0,
           encrypted_data: sealed,
           sub_sns: "",
+          subData: [{ device_sn: SN, checked: true }],
           device_sn: SN,
           category: "eufy_security",
           member_type: 0,
@@ -44,6 +45,7 @@ describe("MegaHttpClient sharing calls", () => {
           permissions: 0,
           encrypted_data: sealed,
           sub_sns: "",
+          subData: [{ device_sn: "PET0000000000000", checked: true }],
           device_sn: "PET0000000000000",
           category: "eufy_pet",
           member_type: 1,
@@ -68,7 +70,7 @@ describe("MegaHttpClient sharing calls", () => {
   it("seals nothing when no invite is eufy_security", async () => {
     const { mega, post } = client();
     expect(
-      await mega.inviteShare("g@example.invalid", "G", [{ device_sn: "PET0", category: "eufy_pet", member_type: 1 }]),
+      await mega.inviteShare("g@example.invalid", [{ device_sn: "PET0", category: "eufy_pet", member_type: 1 }]),
     ).toEqual({
       emailSent: false,
     });
@@ -245,7 +247,7 @@ describe("MegaHttpClient sharing calls", () => {
         { res_code: 1, data: encryptBody(JSON.stringify({ user_info: { id: "u-0" } }), KEY) },
       ]);
       post.mockResolvedValue({ email_sent: true });
-      const sent = await mega.inviteShare("g@example.invalid", "G", [
+      const sent = await mega.inviteShare("g@example.invalid", [
         { device_sn: "T2080P0000000000", category: "eufy_home", member_type: 0 },
         { device_sn: "PET0", category: "eufy_pet", member_type: 1 },
       ]);
@@ -278,7 +280,7 @@ describe("MegaHttpClient sharing calls", () => {
     it("refuses an invitee the Home host does not know", async () => {
       const { mega, post } = home([{ res_code: 1, data: {} }]);
       await expect(
-        mega.inviteShare("g@example.invalid", "G", [{ device_sn: "T2080P0", category: "eufy_home", member_type: 0 }]),
+        mega.inviteShare("g@example.invalid", [{ device_sn: "T2080P0", category: "eufy_home", member_type: 0 }]),
       ).rejects.toThrow(/no eufy account/);
       expect(post).not.toHaveBeenCalled();
     });
@@ -287,7 +289,7 @@ describe("MegaHttpClient sharing calls", () => {
       const user = { res_code: 1, data: encryptBody(JSON.stringify({ user_info: { id: "u-0" } }), KEY) };
       const { mega, post, fetchMock, call } = home([user, user]);
       const tuyaInvite = [{ device_sn: "T2080P0", category: "eufy_home_tuya", member_type: 0 }];
-      await expect(mega.inviteShare("g@example.invalid", "G", tuyaInvite)).rejects.toThrow(/Tuya session/);
+      await expect(mega.inviteShare("g@example.invalid", tuyaInvite)).rejects.toThrow(/Tuya session/);
       const tuya = {
         inviteShare: vi.fn(async () => "42"),
         acceptShare: vi.fn(),
@@ -298,7 +300,7 @@ describe("MegaHttpClient sharing calls", () => {
       const before = (step: { mock: { invocationCallOrder: number[] } }, n: number) =>
         expect(step.mock.invocationCallOrder[0]).toBeLessThan(fetchMock.mock.invocationCallOrder[n]!);
 
-      await mega.inviteShare("g@example.invalid", "G", tuyaInvite);
+      await mega.inviteShare("g@example.invalid", tuyaInvite);
       expect(tuya.inviteShare).toHaveBeenCalledWith("T2080P0", "u-0");
       expect(lastBody(post)).toMatchObject({ invites: [{ category: "eufy_home_tuya", extension: "42" }] });
 

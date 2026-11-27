@@ -14,6 +14,7 @@ import {
   wrapRtcPacket,
   type RtcPacket,
 } from "../packet.js";
+import { callBody } from "../call.js";
 import { RtcSignalClient, type RtcServer, type RtcToken } from "../signal-client.js";
 
 const SN = "T8000P0000000000";
@@ -301,6 +302,84 @@ describe("RtcSignalClient servers", () => {
       "10 192.0.2.7 0",
     ]);
     expect(tokens.at(-1)).toMatchObject(expired);
+  });
+
+  /** A quick-logged-in client on DISCOVER UDP .3, .5 and the login's .7, DNS .9; its hung-up calls. */
+  async function failover(): Promise<string[]> {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], now: 1_700_000_000_000 });
+    const fresh = {
+      ...expired,
+      authTimestamp: 1_700_000_000 - 60,
+      servers: [server(1, "192.0.2.3"), server(1, "192.0.2.5")],
+    };
+    client = new RtcSignalClient({
+      sn: SN,
+      did: DID,
+      lic: LIC,
+      host: "192.0.2.9",
+      domain: "sig.example.com",
+      token: fresh,
+    });
+    await client.start();
+    const hangups: string[] = [];
+    client.on("hangup", (uuid) => hangups.push(uuid));
+    return hangups;
+  }
+  /** Place a PM call and let `ms` pass without an answer; what went out on the signalling socket meanwhile. */
+  function unanswered(ms: number) {
+    const uuid = client.call(6).uuid;
+    const call = sent.at(-1)!;
+    const n = sent.length;
+    vi.advanceTimersByTime(ms);
+    return { uuid, call, signalling: sent.slice(n).filter((s) => s.socket !== call.socket) };
+  }
+
+  it("a CALL without Trying hangs up after 5 s, then 10 s, each time logging in on the best other server", async () => {
+    const hangups = await failover();
+    const a = unanswered(4_999);
+    expect([a.call.host, hangups]).toEqual(["192.0.2.3", []]);
+    vi.advanceTimersByTime(1);
+    expect(hangups).toEqual([a.uuid]);
+    const b = unanswered(9_999);
+    expect(b.call.host).toBe("192.0.2.5");
+    expect(b.signalling).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(hangups).toEqual([a.uuid, b.uuid]);
+    const regs = sent.filter((s) => s.kind === 1);
+    expect(regs.map((s) => s.host)).toEqual(["192.0.2.5", "192.0.2.7"]);
+    expect(regs[1]!.socket).not.toBe(regs[0]!.socket);
+  });
+
+  it("30 s of CALLs without Trying since the last login rediscover from the DNS server", async () => {
+    await failover();
+    unanswered(5_000);
+    unanswered(10_000);
+    const c = unanswered(20_000);
+    expect(c.signalling.map((s) => `${s.kind} ${s.host}`)).toEqual(["9 192.0.2.9"]);
+  });
+
+  it("during a fail run, a DISCOVER reply that adds servers switches to the best other one", async () => {
+    await failover();
+    unanswered(8_000);
+    const h = rtcHeader({ kind: 9, sn: SN, seq: 1, route: 0, ts: TS });
+    [h[14], h[41]] = [1, 2];
+    h.writeUInt16LE(200, 16);
+    const reply = JSON.stringify({ server_addr: "self", timestamp: 0, saddrs: ["192.0.2.1"] });
+    sent.at(-1)!.socket.emit("message", wrapRtcPacket(rtcPacket(h, 2, Buffer.from(reply))));
+    expect(sent.filter((s) => s.kind === 1).map((s) => s.host)).toEqual(["192.0.2.5", "192.0.2.5", "192.0.2.1"]);
+  });
+
+  it("a Trying ends the rounds: the next CALL waits 5 s again", async () => {
+    const hangups = await failover();
+    unanswered(5_000);
+    const { uuid } = client.call(6);
+    const h = rtcHeader({ kind: 2, sn: SN, seq: 1, route: 0, ts: TS });
+    [h[13], h[14]] = [6, 1];
+    h.writeUInt16LE(100, 16);
+    sent.at(-1)!.socket.emit("message", wrapRtcPacket(rtcPacket(h, 7, callBody(uuid, "station"))));
+    client.hangup(uuid);
+    const c = unanswered(5_000);
+    expect(hangups.at(-1)).toBe(c.uuid);
   });
 
   it("keeps 8 of a type and protocol: a 9th drops the last of that type with the highest mean rtt", async () => {

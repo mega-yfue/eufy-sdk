@@ -49,7 +49,13 @@ describe("MegaHttpClient account registration", () => {
       is_subscribe: true,
       country_code: "DE",
     });
-    expect(headers).toEqual({ country: "DE", timezone: expect.any(String) });
+    expect(headers).toEqual({ country: "DE" });
+  });
+
+  it("sends the host's time zone on every call, as the app's global headers do", () => {
+    const { mega } = client();
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    expect((mega as unknown as { baseHeaders: () => Record<string, string> }).baseHeaders().timezone).toBe(zone);
   });
 
   it("activates an inactive account with the token the resend answers", async () => {
@@ -66,6 +72,34 @@ describe("MegaHttpClient account registration", () => {
       "/passport/activate_register",
       { activation_code: "tok-0", verify_code: "654321" },
       false,
+    ]);
+  });
+});
+
+describe("MegaHttpClient passport body", () => {
+  it("goes out as application/json, as every esiotkit body does", async () => {
+    const mega = new MegaHttpClient({ email: EMAIL, password: "x", region: "us-pr" });
+    const internals = mega as unknown as Record<string, unknown>;
+    internals.ensureSessionKey = async () => ({ shareKey: "00".repeat(32), keyIdent: "k" });
+    const types: string[] = [];
+    internals.httpPost = vi.fn(async (_url: string, _body: unknown, headers: Record<string, string>) => {
+      types.push(headers["content-type"]!);
+      return { status: 200, data: { code: 0, data: {} } };
+    });
+    await mega.accountRegistered(EMAIL);
+    expect(types).toEqual(["application/json"]);
+  });
+});
+
+describe("MegaHttpClient estimate_domain", () => {
+  it("asks mega-us-pr with the configured country code, whatever the region", async () => {
+    const mega = new MegaHttpClient({ email: EMAIL, password: "x", region: "eu-pr", countryCode: "FR" });
+    const post = vi.fn(async () => ({ status: 200, data: { code: 0, data: {} } }));
+    (mega as unknown as { httpPost: typeof post }).httpPost = post;
+    await mega.estimateDomain();
+    expect(post.mock.calls[0]!.slice(0, 2)).toEqual([
+      "https://mega-us-pr.eufy.com/passport/estimate_domain",
+      { ab: "FR", mode: 1 },
     ]);
   });
 });

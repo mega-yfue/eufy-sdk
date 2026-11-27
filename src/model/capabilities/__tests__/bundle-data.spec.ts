@@ -21,7 +21,25 @@ const IDENTIFIERS: Record<string, "bool" | "enum"> = {
   record_resolution: "enum",
   watermark_set: "enum",
 };
-const STATIONS = { standalone: undefined, hb2: "T8010P0000000000", hb3: "T8030P0000000000" } as const;
+/** A synthetic station serial per topology the data names, as `getConnectType` reads its prefix. */
+const STATIONS = {
+  standalone: undefined,
+  hb1: "T8001P0000000000",
+  hb2: "T8010P0000000000",
+  hb3: "T8030P0000000000",
+  hb3e: "T8030P0100000000",
+  hb4: "T8040P0000000000",
+  m8020: "T8020P0000000000",
+  m8021: "T8021P0000000000",
+  m8022: "T8022P0000000000",
+  m8023: "T8023P0000000000",
+  m8024: "T8024P0000000000",
+  m8025: "T8025P0000000000",
+  nvr: "T8N00P0000000000",
+  t7000: "T7000P0000000000",
+  t9000: "T9000P0000000000",
+  t90h1: "T90H1P0000000000",
+} as const;
 
 type Grouped<T> = Record<string, T>;
 const data = DATA as unknown as {
@@ -80,7 +98,7 @@ const contextOf = (r: { identifier: string; type: string; model: string; variant
 
 /**
  * `x` with the bundle's tokens as the app fills them on this device for `value`, no param reported (a
- * `$param:` token's `??` fallback); an `account_id: "$userId"` key left out.
+ * `$param:` token's `??` fallback), a `$userId` left to the transport.
  */
 const filled = (x: unknown, value: unknown, ctx: CommandContext): unknown => {
   const tokens: Record<string, unknown> = {
@@ -95,11 +113,7 @@ const filled = (x: unknown, value: unknown, ctx: CommandContext): unknown => {
   if (typeof x === "string" && x.startsWith("$param:")) return JSON.parse(x.split("??")[1]!);
   if (Array.isArray(x)) return x.map((v) => filled(v, value, ctx));
   if (x && typeof x === "object")
-    return Object.fromEntries(
-      Object.entries(x).flatMap(([k, v]) =>
-        v === "$userId" && k === "account_id" ? [] : [[k, filled(v, value, ctx)]],
-      ),
-    );
+    return Object.fromEntries(Object.entries(x).map(([k, v]) => [k, filled(v, value, ctx)]));
   return x;
 };
 
@@ -140,15 +154,16 @@ describe("every write of the shipped data, as the member identifiers send it", (
 
   it("covers the data", () => {
     expect(sent.length).toBeGreaterThan(5000);
-    expect(rows.length - sent.length).toBe(6);
-    expect(sent.length - bundled.length).toBe(18);
+    expect(rows.length - sent.length).toBe(32);
+    expect(sent.length - bundled.length).toBe(96);
   });
   it.each(bundled.map((r) => [`${r.model}${r.variant} ${r.identifier} ${r.topology} ${r.value}`, r] as const))(
     "%s",
     (_, r) => {
       const ctx = contextOf(r);
       const value = r.type === "bool" ? r.value === "1" : /^-?\d+$/.test(r.value) ? Number(r.value) : r.value;
-      // A cached field without a fallback, its param unreported: the app's frame needs the device record.
+      // A cached field without a fallback, or of a param whose parser throws without it, its param unreported: the
+      // app's frame needs the device record.
       const unfilled = /"\$param:[^"?]*"/.test(JSON.stringify(r.frame));
       expect(thingWrite(r.identifier, r.value, ctx)).toEqual(unfilled ? undefined : expected(r.frame, value, ctx));
     },

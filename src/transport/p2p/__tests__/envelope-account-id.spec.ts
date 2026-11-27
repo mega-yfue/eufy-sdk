@@ -52,6 +52,27 @@ describe("the P2P envelope account id, per app sender", () => {
     expect(session.sendSetPayload.mock.calls[0]![2]).toMatchObject({ accountId: DEVICE_ADMIN });
   });
 
+  it("follows a bare JSON body only on 1255, filling a $userId the body carries", async () => {
+    const { session, router } = harness();
+    for (const cmd of [1255, 1204])
+      await onFakeTime(() =>
+        router.dispatchCommand(DEVICE_SN, { kind: "set-json-raw", cmd, data: { transaction: "1" }, channel: 1 }),
+      ).catch(() => {});
+    await onFakeTime(() =>
+      router.dispatchCommand(DEVICE_SN, {
+        kind: "set-json-raw",
+        cmd: 1271,
+        data: { account_id: "$userId" },
+        channel: 1,
+      }),
+    ).catch(() => {});
+    expect(session.sendStringPayloadCommand.mock.calls.map(([, json]) => json)).toEqual([
+      JSON.stringify({ transaction: "1", account_id: DEVICE_ADMIN }),
+      JSON.stringify({ transaction: "1" }),
+      JSON.stringify({ account_id: DEVICE_ADMIN }),
+    ]);
+  });
+
   it("is the station's member rule on a ZmediaUtil query and restart", async () => {
     const { session, router } = harness();
     await onFakeTime(() => router.p2pQuery(DEVICE_SN, 6237)).catch(() => {});
@@ -71,7 +92,8 @@ describe("the P2P envelope account id, per app sender", () => {
     expect(scalar.sendBytes).toHaveBeenCalledWith(buildDirectBinaryBody(60, STATION_ADMIN, 1), 1, 1409);
     const body = await sent({ kind: "p2p-string", cmd: 1414, value: "", channel: 0, int: 0, stationAccount });
     expect(body.sendBytes).toHaveBeenCalledWith(buildStringBody(0, "", STATION_ADMIN, 0), 255, 1414);
-    const json = await sent({ kind: "set-json-raw", cmd: 1404, data: {}, channel: 255, stationAccount });
+    const data = { account_id: "$userId" };
+    const json = await sent({ kind: "set-json-raw", cmd: 1404, data, channel: 255, stationAccount });
     expect(json.sendStringPayloadCommand).toHaveBeenCalledWith(
       1404,
       JSON.stringify({ account_id: STATION_ADMIN }),

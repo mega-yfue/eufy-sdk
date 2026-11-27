@@ -291,7 +291,7 @@ describe("motion capability module", () => {
         stationAccount: true,
         cmd: MOTION_CMD.SNOOZE_TIME, // 1271
         channel: 2,
-        data: { snooze_time: 3600, chime_onoff: 0, homebase_onoff: 0, motion_notify_onoff: 1 },
+        data: { account_id: "$userId", snooze_time: 3600, chime_onoff: 0, homebase_onoff: 0, motion_notify_onoff: 1 },
       });
       // startTime is "now" (the app sends the current time, not a fixed capture timestamp).
       expect(cmd!.data.startTime).toBeCloseTo(Math.floor(Date.now() / 1000), -1);
@@ -303,7 +303,7 @@ describe("motion capability module", () => {
         stationAccount: true,
         cmd: MOTION_CMD.SNOOZE_TIME,
         channel: 2,
-        data: { snooze_time: 0 },
+        data: { account_id: "$userId", snooze_time: 0 },
       });
     });
 
@@ -317,7 +317,13 @@ describe("motion capability module", () => {
       const acts = bindMotion(ctx([], 2), sent);
       await acts.setSnoozeTime(0);
       expect(sent).toEqual([
-        { kind: "set-json-raw", stationAccount: true, cmd: 1271, channel: 2, data: { snooze_time: 0 } },
+        {
+          kind: "set-json-raw",
+          stationAccount: true,
+          cmd: 1271,
+          channel: 2,
+          data: { account_id: "$userId", snooze_time: 0 },
+        },
       ]);
     });
 

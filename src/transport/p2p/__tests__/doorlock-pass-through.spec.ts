@@ -56,7 +56,7 @@ describe("the door-lock pass-through blob", () => {
 });
 
 describe("a door-lock pass-through actuation", () => {
-  const makeRouter = (hasKey: boolean, lockMember: string = ME) => {
+  const makeRouter = (hasKey: boolean, lockMember: string = ME, firmware = "3.2.7.6") => {
     const session = connectedSession(hasKey) as FakeP2PSession & { sendSetPayload: ReturnType<typeof vi.fn> };
     session.sendSetPayload = vi.fn(() => true);
     const lock = {
@@ -75,6 +75,7 @@ describe("a door-lock pass-through actuation", () => {
       p2pDid: P2P_DID,
       // The station's own member is someone else: only the envelope's account id may come from it.
       raw: {
+        main_sw_version: firmware,
         member: { admin_user_id: STATION_ADMIN, member_user_id: ME, short_user_id: "0099", nick_name: "member-nick" },
       },
     };
@@ -105,14 +106,14 @@ describe("a door-lock pass-through actuation", () => {
     deviceSn: LOCK_SN,
   } as const;
 
-  it("sends one pass-through on the lock's channel, keyed and attributed to the lock's member, enveloped as the station's", async () => {
+  it("sends one pass-through on channel 0, keyed and attributed to the lock's member, enveloped as the station's", async () => {
     const { router, session } = makeRouter(true);
 
     await router.dispatchCommand(LOCK_SN, lockCmd);
 
     expect(session.sendSetPayload).toHaveBeenCalledTimes(1);
     const [cmd, payload, opts] = session.sendSetPayload.mock.calls[0]!;
-    expect([cmd, opts.channel, opts.accountId, opts.mValue3]).toEqual([1911, 42, STATION_ADMIN, 0]);
+    expect([cmd, opts.channel, opts.accountId, opts.mValue3]).toEqual([1911, 0, STATION_ADMIN, 0]);
     const decipher = createDecipheriv("aes-128-cbc", lockKey(ADMIN, STATION_SN), serialIv(STATION_SN));
     const plain = Buffer.concat([decipher.update(Buffer.from(payload.payload, "base64")), decipher.final()]);
     const inner = JSON.parse(plain.toString("utf-8").replace(/\0+$/, ""));
@@ -167,4 +168,47 @@ describe("a door-lock pass-through actuation", () => {
       expect(session.sendSetPayload).not.toHaveBeenCalled();
     },
   );
+
+  const sealed = (call: unknown[], mode: "aes-128-cbc" | "aes-128-ecb" = "aes-128-cbc") => {
+    const decipher = createDecipheriv(
+      mode,
+      lockKey(ADMIN, STATION_SN),
+      mode === "aes-128-ecb" ? null : serialIv(STATION_SN),
+    );
+    decipher.setAutoPadding(mode === "aes-128-cbc");
+    const blob = Buffer.from((call[1] as { payload: string }).payload, "base64");
+    const plain = Buffer.concat([decipher.update(blob), decipher.final()]);
+    return JSON.parse(plain.toString("utf-8").replace(/\0+$/, "")) as { lock_cmd: number; seq_num: number };
+  };
+
+  it("counts seq_num per station, and resends the last lock_cmd under a P2P_SEQ notify's", async () => {
+    const { router, session } = makeRouter(true);
+    session.sendSetPayload.mockImplementation(() =>
+      queueMicrotask(() => session.emit("commandResult", { commandId: 1350, code: 0, channel: 0 })),
+    );
+
+    await router.dispatchCommand(LOCK_SN, lockCmd);
+    await router.dispatchCommand(LOCK_SN, { ...lockCmd, engage: false });
+    const [first, second] = session.sendSetPayload.mock.calls.map((call) => sealed(call).seq_num);
+    expect(second).toBe(first! + 1);
+
+    (router as unknown as { onStationFrame(sn: string, f: object): void }).onStationFrame(STATION_SN, {
+      json: { cmd: 1916, payload: { lock_cmd: 8, seq_num: 500 } },
+    });
+    await vi.waitFor(() => expect(session.sendSetPayload).toHaveBeenCalledTimes(3));
+    expect(sealed(session.sendSetPayload.mock.calls[2]!)).toMatchObject({ lock_cmd: 8, seq_num: 501 });
+    const tlv = Buffer.from(
+      (sealed(session.sendSetPayload.mock.calls[2]!) as { lock_payload?: string }).lock_payload!,
+      "base64",
+    );
+    expect(tlv.subarray(4, 7).toString("hex")).toBe("a20100");
+  });
+
+  it("seals AES-128-ECB for a station on firmware 2.1.2.2l_1.3", async () => {
+    const { router, session } = makeRouter(true, ME, "2.1.2.2l_1.3");
+
+    await router.dispatchCommand(LOCK_SN, lockCmd);
+
+    expect(sealed(session.sendSetPayload.mock.calls[0]!, "aes-128-ecb")).toMatchObject({ lock_cmd: 8 });
+  });
 });

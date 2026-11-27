@@ -113,9 +113,12 @@ describe("CMD_GATEWAYINFO re-sent by the notify reader's check", () => {
     try {
       const target = session(async () => undefined);
       const asked: number[] = [];
+      const sequences = new Set<number>();
       const internals = target as unknown as Internals;
       internals.send = (_addr, _type, payload) => {
-        if (payload && payload.length >= 10 && payload.readUInt16LE(8) === 1100) asked.push(Date.now());
+        if (!payload || payload.length < 10 || payload.readUInt16LE(8) !== 1100) return;
+        if (!sequences.has(payload.readUInt16BE(2))) asked.push(Date.now());
+        sequences.add(payload.readUInt16BE(2));
       };
       const start = Date.now();
       internals.onConnected({ host: "<cam-lan-ip>", port: 32100 }, undefined);

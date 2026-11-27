@@ -1,10 +1,4 @@
-import {
-  isBluetoothLock,
-  isClassicWifiLock,
-  isSmartDrop,
-  isVideoSmartLock,
-  settingsOverMqttWhenStandalone,
-} from "../device-family.js";
+import { isBluetoothLock, isClassicWifiLock, isSmartDrop, isVideoSmartLock, lockMqttWire } from "../device-family.js";
 import { u16le } from "../../core/util.js";
 import { LockPushEvent } from "../push-events.js";
 import { describeDevice } from "./access.js";
@@ -90,7 +84,7 @@ function actuate(engage: boolean, ctx: CommandContext, sink: CommandSink): Promi
     shortUserId: ctx.shortUserId,
     deviceSn: ctx.serial ?? "",
   };
-  if (kind === "ff09-actuate" && ownStation(ctx))
+  if (kind === "ff09-actuate" && nativeMqtt(ctx))
     return sink.dispatch(
       serviceWrite(35, 6018, [
         tlv(0xa3, Buffer.from([engage ? 0 : 1])),
@@ -104,11 +98,11 @@ function actuate(engage: boolean, ctx: CommandContext, sink: CommandSink): Promi
 }
 
 /**
- * A lock that is its own station and whose settings go over secure MQTT: the app sends its lock/unlock and auto-lock
+ * A lock the app's native lock screens drive over secure MQTT ({@link lockMqttWire}): its lock/unlock and auto-lock go
  * through the lock's own MQTT settings service ({@link serviceWrite}), not as an `ff09-*` intent.
  */
-const ownStation = (ctx: CommandContext): boolean =>
-  !(ctx.homeBaseAttached ?? ctx.stationSerial !== undefined) && settingsOverMqttWhenStandalone(ctx.model);
+const nativeMqtt = (ctx: CommandContext): boolean =>
+  lockMqttWire(ctx.model, !(ctx.homeBaseAttached ?? ctx.stationSerial !== undefined)) === "native";
 
 const tlv = (tag: number, value: Buffer) => ({ tag, value });
 
@@ -310,7 +304,7 @@ export const LOCK_MEMBERS = {
         }
         // Its settings frame (paramType 0): enable, delay, the schedule flag, start and end ([hour, minute]) and the
         // door-state check, each the lock's own read where not given.
-        if (ownStation(ctx)) {
+        if (nativeMqtt(ctx)) {
           const delay = delaySeconds === undefined ? 0xa2 : u16le(delaySeconds);
           const window = schedule
             ? [Buffer.from([schedule.isSchedule ? 1 : 0]), ...times.map((t) => Buffer.from(t))]

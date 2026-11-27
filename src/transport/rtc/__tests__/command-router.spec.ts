@@ -79,7 +79,7 @@ const CALL: RtcCallSdp = {
 };
 
 /** Fake native layers: a signal client that logs in at once, a connected data channel, a connected PM ICE. */
-function layers(onFrame?: RtcCommandRouterDeps["onFrame"]) {
+function layers(onFrame?: RtcCommandRouterDeps["onFrame"], sessionPerCamera?: boolean) {
   const signal = Object.assign(new EventEmitter(), {
     start: vi.fn(async () => void queueMicrotask(() => signal.emit("login", "contact"))),
     call: vi.fn(() => ({ uuid: "pm-call", ...CALL })),
@@ -101,6 +101,7 @@ function layers(onFrame?: RtcCommandRouterDeps["onFrame"]) {
     userId: () => "synthetic-user",
     appId: "0123456789abcdef",
     onFrame,
+    sessionPerCamera,
     layers: { signal: () => signal as unknown as RtcSignalClient, priv1, pmIce },
   });
   return { router, signal, data, agent, priv1, pmIce };
@@ -202,6 +203,7 @@ describe("RtcCommandRouter on the native layers", () => {
       channel: 3,
       stationAccount: true,
     });
+    await router.dispatchCommand(ROUTE, { kind: "set-json", param: 6013, data: { account_id: "$userId" }, channel: 3 });
     expect(data.command.mock.calls).toEqual([
       [1035, Buffer.concat([u32(3, 1), account]), 3],
       [1235, Buffer.concat([u32(7), account]), 255],
@@ -209,10 +211,11 @@ describe("RtcCommandRouter on the native layers", () => {
       [1013, u32(3, 5), 3],
       [1202, u32(3, 9), 3],
       [1201, u32(6, 4), 255],
-      [1271, JSON.stringify({ account_id: "synthetic-admin", t: 1 }), 3],
-      [1255, JSON.stringify({ account_id: "synthetic-admin", t: 2 }), 255],
+      [1271, JSON.stringify({ t: 1 }), 3],
+      [1255, JSON.stringify({ t: 2, account_id: "synthetic-admin" }), 255],
       [1230, buildDirectBinaryBody(4, "synthetic-station", 3), 3],
       [1350, JSON.stringify({ account_id: "synthetic-station", cmd: 6266, mChannel: 3, mValue3: 0, payload: {} }), 3],
+      [1700, JSON.stringify({ commandType: 6013, data: { account_id: "synthetic-admin" } }), 3],
     ]);
     router.close();
   });
@@ -291,13 +294,30 @@ describe("RtcCommandRouter on the native layers", () => {
     expect(counter.word).toBe(0x01020304);
     const consumer = await router.mediaProviderFor(ROUTE).live();
     expect(signal.call).toHaveBeenCalledExactlyOnceWith(6);
-    expect(pmIce).toHaveBeenCalledOnce();
+    expect(pmIce.mock.calls).toEqual([[signal, expect.objectContaining({ uuid: "pm-call" }), true]]);
     expect(agent.write).toHaveBeenCalled();
     expect(counter.word).toBe(0x01020305);
     consumer.stop();
     router.close();
     expect(agent.close).toHaveBeenCalled();
     expect(signal.hangup).toHaveBeenCalledWith("pm-call");
+  });
+
+  it("lets the station's answer set the PM remote description but on a T8223 to 3319 and a T8224 below 3420", async () => {
+    const own = [];
+    for (const [stationSn, version] of [
+      ["T8223P0000000000", 3319],
+      ["T8223P0000000000", 3320],
+      ["T8224P0000000000", 3419],
+      ["T8224P0000000000", 3420],
+    ] as const) {
+      const { router, pmIce } = layers();
+      const consumer = await router.mediaProviderFor({ ...ROUTE, stationSn, version }).live();
+      own.push((pmIce.mock.calls[0] as unknown[])[2]);
+      consumer.stop();
+      router.close();
+    }
+    expect(own).toEqual([false, true, false, true]);
   });
 
   /** The `XZYH` command of the ANKE frame in the `i`th APP packet the PM agent wrote, opened under the PM key. */
@@ -551,6 +571,22 @@ describe("RtcCommandRouter on the native layers", () => {
     expect((await failed).message).toContain("did not take start_intercom");
     await talk.stop();
     router.close();
+  });
+
+  it("refuses a second camera on a watched station, and with sessionPerCamera gives it a PM call of its own", async () => {
+    const other: RtcLiveRoute = { ...ROUTE, cameraSn: "T8425P0000000002", channel: 4 };
+    const single = layers();
+    await single.router.mediaProviderFor(ROUTE).live();
+    await expect(single.router.mediaProviderFor(other).live()).rejects.toThrow("is serving T8425P0000000001");
+    const wall = layers(undefined, true);
+    const a = await wall.router.mediaProviderFor(ROUTE).live();
+    const b = await wall.router.mediaProviderFor(other).live();
+    expect(wall.signal.call).toHaveBeenCalledTimes(2);
+    expect(wall.signal.start).toHaveBeenCalledOnce();
+    a.stop();
+    b.stop();
+    single.router.close();
+    wall.router.close();
   });
 
   it("refuses a live view without the start JSON", async () => {

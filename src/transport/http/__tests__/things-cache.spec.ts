@@ -48,6 +48,47 @@ describe("the last thing description of each product", () => {
   });
 });
 
+describe("the get_things_list request", () => {
+  it("is the app's GetThingListRequest with its defaults, asking for a gzipped reply", async () => {
+    const store = new MemorySessionStore();
+    const mega = client(store, async () => ({ things_list: [] }));
+    await mega.getThingsList(["T8410"], { T8410: 7 });
+    expect((mega as unknown as { post: ReturnType<typeof vi.fn> }).post).toHaveBeenCalledWith(
+      "things",
+      "/app/things/get_things_list",
+      {
+        product_codes: ["T8410"],
+        code_time_map: { T8410: 7 },
+        rn_bundle_version: "9.9.9.9",
+        use_network_version: true,
+      },
+      { "x-accept-encoding": "gzip" },
+    );
+  });
+});
+
+describe("a several-product get_things_list that times out", () => {
+  it("is asked again one product at a time, and stays that way", async () => {
+    const asked: string[][] = [];
+    const mega = client(new MemorySessionStore(), async () => ({}));
+    (mega as unknown as { post: unknown }).post = vi.fn(
+      async (_s: string, _p: string, body: { product_codes: string[] }) => {
+        asked.push(body.product_codes);
+        if (body.product_codes.length > 1)
+          throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+        if (body.product_codes[0] === "T8114") throw new Error("unreachable");
+        return { things_list: [description(body.product_codes[0]!)] };
+      },
+    );
+    expect(await mega.getThingsList(["T8410", "T8114", "T8162"])).toEqual({
+      things_list: [description("T8410"), description("T8162")],
+    });
+    expect(asked).toEqual([["T8410", "T8114", "T8162"], ["T8410"], ["T8114"], ["T8162"]]);
+    await mega.getThingsList(["T8410", "T8162"]);
+    expect(asked.slice(4)).toEqual([["T8410"], ["T8162"]]);
+  });
+});
+
 describe("the RTC signalling login of each station", () => {
   it("persists with the session and comes back on the next run", () => {
     const store = new MemorySessionStore();

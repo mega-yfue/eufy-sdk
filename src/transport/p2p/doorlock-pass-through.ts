@@ -4,8 +4,8 @@
  *
  * The blob is base64 of AES-128-CBC (PKCS#7 over a zero-padded plaintext) under a key derived from the
  * lock member's 40-character admin id and the 16-character station serial, with the station serial as the
- * IV. The plaintext is JSON `{channel, lock_cmd, lock_payload, seq_num}` with `channel` always 0: the lock's
- * channel on its station rides only the P2P envelope (`mChannel` and the frame header). For lock/unlock
+ * IV, or AES-128-ECB under the same key without padding for a station on firmware `2.1.2.2l_1.3`. The plaintext is
+ * JSON `{channel, lock_cmd, lock_payload, seq_num}` with `channel` always 0, as is the P2P envelope's. For lock/unlock
  * `lock_cmd` is 8 and `lock_payload` is base64 of the on/off TLV {@link encodeLockOnOff}.
  */
 import { createCipheriv } from "node:crypto";
@@ -13,7 +13,7 @@ import { paddingP2PData } from "./codec.js";
 import { serialIv } from "./keyed-payload.js";
 
 /** `lock_cmd` for lock/unlock. */
-const LOCK_CMD_ON_OFF = 8;
+export const LOCK_CMD_ON_OFF = 8;
 
 /** The on/off TLV's tags, in frame order: short user id, direction, timestamp, nickname. */
 const TAG = { USER: 0xa1, DIRECTION: 0xa2, TIME: 0xa3, NAME: 0xa4 } as const;
@@ -80,6 +80,8 @@ export interface DoorlockPassThroughInput {
   seqNum: number;
   /** The TLV's timestamp in seconds; the current time when omitted. */
   nowSec?: number;
+  /** Seal AES-128-ECB over the zero-aligned plaintext, unpadded (`AESUtil.encrypt`), instead of CBC. */
+  ecb?: boolean;
 }
 
 /** The base64 blob for `payload.payload` of a lock/unlock pass-through. */
@@ -90,12 +92,14 @@ export function buildDoorlockPassThrough(input: DoorlockPassThroughInput): strin
     lockCmd: LOCK_CMD_ON_OFF,
     lockPayload: encodeLockOnOff(input.shortUserId, input.nickname, input.engage, input.nowSec),
     seqNum: input.seqNum,
+    ecb: input.ecb,
   });
 }
 
 /**
  * The app's `createPayloadForZhixingStationBle` (a v4 lock body): `{channel: 0, lock_cmd, lock_payload: b64(TLV),
- * seq_num}`, zero-aligned to 16 and AES-128-CBC sealed under the station-derived key, IV from the station serial, base64.
+ * seq_num}`, zero-aligned to 16 and AES-128-CBC sealed under the station-derived key, IV from the station serial, base64;
+ * `ecb` seals the zero-aligned plaintext AES-128-ECB without padding instead.
  */
 export function sealStationPayload(input: {
   adminUserId: string;
@@ -103,6 +107,7 @@ export function sealStationPayload(input: {
   lockCmd: number;
   lockPayload: Buffer;
   seqNum: number;
+  ecb?: boolean;
 }): string {
   const inner = Buffer.from(
     JSON.stringify({
@@ -113,6 +118,9 @@ export function sealStationPayload(input: {
     }),
     "utf-8",
   );
-  const cipher = createCipheriv("aes-128-cbc", lockKey(input.adminUserId, input.stationSn), serialIv(input.stationSn));
+  const key = lockKey(input.adminUserId, input.stationSn);
+  const cipher = input.ecb
+    ? createCipheriv("aes-128-ecb", key, null).setAutoPadding(false)
+    : createCipheriv("aes-128-cbc", key, serialIv(input.stationSn));
   return Buffer.concat([cipher.update(paddingP2PData(inner)), cipher.final()]).toString("base64");
 }

@@ -34,8 +34,8 @@ import TIMEZONES from "./timezones.json" with { type: "json" };
  * Payloads, values and bodies carry `$value`, `$channel`, `$now`, `$nowS`, `$sn` and `$station` tokens, and
  * `$param:<id>[.<path>][|<m> | &~<m>]…[??<fallback>]` for a field the bundle reads off the device's cached param
  * `id`: its raw value, the `.`-joined `path` inside its (base64) JSON where given, as an int with bits `m` set or
- * cleared in turn, else the JSON `fallback` the bundle sends when the param is unreported; none and the write is not
- * sent. `next` are the frames sent after it, `after` the cloud write sent once it succeeds.
+ * cleared in turn, else the JSON `fallback` the bundle sends when the param is unreported; none and the write is
+ * not sent. `next` are the frames sent after it, `after` the cloud write sent once it succeeds.
  */
 export interface BundleFrame extends SessionFrame {
   transport?: string;
@@ -78,6 +78,8 @@ export interface BundleFrame extends SessionFrame {
   preserve?: readonly number[];
   /** P2P 1350: the station record's member account id in place of the admin's. */
   stationAccount?: true;
+  /** P2P 1350: the notify that confirms a `0` answer (`resultFrom` Notify). */
+  notify?: { cmd: number; subCmd: number };
   /** P2P 1350: the payload over these fields of the device's answer to query `query`, each its default where it lacks one. */
   base?: { query: number; fields: Readonly<Record<string, number | string>> };
   next?: BundleFrame[];
@@ -184,17 +186,19 @@ function variantOf(identifier: string, ctx: AvailabilityContext): string {
 }
 
 /**
- * The {@link BUNDLE_WIRES} write frames and read this device selects for `identifier`: its product and
- * resolved variant, standalone unless attached (a record naming a station serial is), a T8030 station as
- * `hb3`, any other as `hb2`.
+ * The {@link BUNDLE_WIRES} write frames and read this device selects for `identifier`: its product and resolved
+ * variant, on the topology the bundles' `getConnectType` gives it: standalone unless attached (a record naming a
+ * station serial is) or in outdoor mode (6271 on), else its station's ({@link topologyOf}). The data holds the rows
+ * of the topologies its probes ran on; a device on another has none, and nothing is sent or read for it.
  */
 export function bundleEntry(identifier: string, ctx: AvailabilityContext): BundleEntry | undefined {
   const groups = BUNDLE_WIRES.wires[identifier];
   const model = ctx.model ?? "";
   const entry = memberOf(groups, model + variantOf(identifier, ctx)) ?? memberOf(groups, model);
   const attached = ctx.homeBaseAttached ?? ctx.stationSerial !== undefined;
-  const topology = !attached ? "standalone" : ctx.stationSerial?.startsWith("T8030") ? "hb3" : "hb2";
-  const java = javaEntry(identifier, model, topology === "standalone");
+  const outdoor = ["1", "true"].includes(ctx.paramValue?.(6271) ?? "");
+  const topology = attached && !outdoor ? topologyOf(ctx.stationSerial ?? "") : "standalone";
+  const java = javaEntry(identifier, model, !attached);
   if (java) return java;
   const frame = (f: BundleFrame | number) => (typeof f === "number" ? BUNDLE_WIRES.frames?.[f] : f);
   const frames = (w: Grouped<BundleFrame | number> = {}) =>
@@ -205,7 +209,7 @@ export function bundleEntry(identifier: string, ctx: AvailabilityContext): Bundl
   const write = memberOf(entry?.write, topology);
   const esl =
     ESL_SETTINGS.test(model) || (model.startsWith("T8530") && identifier === "device_loitering_detection_response");
-  const lockService = topology === "standalone" && esl;
+  const lockService = !attached && esl;
   const rain = !!ctx.things?.properties.device_rain_mode;
   const own = write
     ? esl
@@ -599,7 +603,15 @@ function floodlightWrite(param: number, value: string, ctx: CommandContext): Com
       ? undefined
       : { kind: "set-param", param, value: seconds, channel: ctx.channel, stationAccount };
   if (param === 1404)
-    return schedules && { kind: "set-json-raw", cmd: param, data: { schedules }, channel: 255, stationAccount };
+    return (
+      schedules && {
+        kind: "set-json-raw",
+        cmd: param,
+        data: { account_id: "$userId", schedules },
+        channel: 255,
+        stationAccount,
+      }
+    );
   const at = parse(ctx.paramValue?.(1415));
   const [lat, lng] = [at?.lat, at?.lng].map((x) => parseFloat(String(x)));
   const java = (n: number) => (Number.isInteger(n) ? n.toFixed(1) : String(n));
@@ -965,7 +977,10 @@ function sessionCommand(
   const counter = frame.counter === "bump" || frame.counter === "current" ? frame.counter : undefined;
   if (frame.counter !== undefined && !counter) return undefined;
   if (frame.body === "json1350" && (object || Array.isArray(filled))) {
-    const command = setPayload(sub, (object ?? filled) as readonly unknown[], c, frame.mValue3, header);
+    const command = {
+      ...setPayload(sub, (object ?? filled) as readonly unknown[], c, frame.mValue3, header),
+      ...(frame.notify && { notify: frame.notify }),
+    };
     if (frame.lock) {
       const l = frame.lock;
       if (l.version === 4) {
@@ -1225,17 +1240,23 @@ function cloudCommand(frame: BundleFrame, fill: (x: unknown) => unknown): Comman
  * The {@link Command} a bundle frame is for `value` on this device, its tokens filled: `$value`, `$channel`
  * (the device channel, 255 for a station), `$now` (epoch ms, a string), `$nowS` (epoch seconds), `$seq` (the bundles' `getRandom`, 1000–9999), `$input.<key>` (a key of
  * the written value, a JSON object), `$sn` (the device serial) and `$station` (its
- * station's), `$param:…` (the device's cached param, {@link BundleFrame}), `$userId` left to the transport, which fills the user id (an `account_id` key left out: the envelope's), then `{"$b64": <template>}` the filled template as base64 JSON, then the frames after it as `next`. `undefined` for a frame no builder can carry: a `ble`
+ * station's), `$param:…` (the device's cached param, {@link BundleFrame}), `$userId` left to the transport, which fills the account id, then `{"$b64": <template>}` the filled template as base64 JSON, then the frames after it as `next`, on the same clock: one write is one transaction (`TraceIdUtil.newTraceId`). `undefined` for a frame no builder can carry: a `ble`
  * or unknown transport, an `mqtt` one its builder refuses, an unknown body, a seal other than `ecb` or on a non-JSON body, a scalar with no integer value, a bare JSON
  * body that is not an object, a data point whose template cannot be set, a cloud call with another method, or a
  * frame after it that is any of these.
  */
-export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandContext, td?: Td): Command | undefined {
+export function frameCommand(
+  frame: BundleFrame,
+  value: unknown,
+  ctx: CommandContext,
+  td?: Td,
+  now = Date.now(),
+): Command | undefined {
   const tokens: Record<string, unknown> = {
     $value: value,
     $channel: isStationSerial(ctx.serial ?? "") ? 255 : ctx.channel,
-    $now: String(Date.now()),
-    $nowS: Math.floor(Date.now() / 1000),
+    $now: String(now),
+    $nowS: Math.floor(now / 1000),
     $seq: Math.floor(1e3 + 9e3 * Math.random()),
     $sn: ctx.serial,
     $station: ctx.stationSerial ?? ctx.serial,
@@ -1285,11 +1306,7 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
           : x;
   // `"$input": "...[<key>][|<transform>]"`: the host's object (or its key), as the parser transforms it, spread in there.
   const spread = (o: Record<string, unknown>) => {
-    const rest = Object.fromEntries(
-      Object.entries(o).flatMap(([k, v]) =>
-        (v === "$userId" && k === "account_id") || k === "$input" ? [] : [[k, fill(v)]],
-      ),
-    );
+    const rest = Object.fromEntries(Object.entries(o).flatMap(([k, v]) => (k === "$input" ? [] : [[k, fill(v)]])));
     const mark = o["$input"];
     if (typeof mark !== "string" || !mark.startsWith("...")) return rest;
     return { ...(inputOf(mark.slice(3)) as Record<string, unknown>), ...rest };
@@ -1307,7 +1324,7 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
             : undefined;
   const after = [...(frame.next ?? []), ...(frame.after ? [frame.after] : [])];
   const next = after.length
-    ? frameCommand({ ...after[0]!, next: after.slice(1), after: undefined }, value, ctx, td)
+    ? frameCommand({ ...after[0]!, next: after.slice(1), after: undefined }, value, ctx, td, now)
     : null;
   if (!head || next === undefined || unfilled) return undefined;
   return next ? { ...head, next } : head;

@@ -41,7 +41,7 @@ export function setJson(param: number, data: Record<string, unknown> | number, c
 
 /**
  * Set a param carried as BARE JSON, no envelope at all — the wire's outer P2P command IS `cmd`
- * itself, plaintext exactly `{account_id,...data}` (the sink injects `account_id`).
+ * itself, plaintext `data` (the sink fills a `"$userId"` in it and adds `account_id` after a 1255 one).
  * Distinct from {@link setJson}, which always wraps in the `1700` CONTROL_PAYLOAD `{commandType,data}`
  * shape. The shape of the app's own SET_SNOOZE_TIME (1271) frame.
  *

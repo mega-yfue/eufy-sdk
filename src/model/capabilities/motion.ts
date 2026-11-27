@@ -366,14 +366,15 @@ function decodeAiDetectTypeParam(raw: unknown): number | undefined {
 }
 
 /**
- * Build the `SET_SNOOZE_TIME` (1271) JSON body (see `MOTION_CMD.SNOOZE_TIME`). `seconds<=0` sends the
- * bare "clear" shape (`{snooze_time:0}`, no extra fields). A positive duration sends fixed
+ * Build the `SET_SNOOZE_TIME` (1271) JSON body (see `MOTION_CMD.SNOOZE_TIME`), the account id first. `seconds<=0`
+ * sends the bare "clear" shape (`{snooze_time:0}`, no extra fields). A positive duration sends fixed
  * `chime_onoff`/`homebase_onoff`/`motion_notify_onoff` values (not exposed — their meaning is unknown)
  * plus `startTime` = now, as the app does.
  */
 function snoozePayload(seconds: number): Record<string, unknown> {
-  if (seconds <= 0) return { snooze_time: 0 };
+  if (seconds <= 0) return { account_id: "$userId", snooze_time: 0 };
   return {
+    account_id: "$userId",
     snooze_time: Math.round(seconds),
     startTime: Math.floor(Date.now() / 1000),
     chime_onoff: 0,

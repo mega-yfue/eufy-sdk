@@ -46,6 +46,7 @@ type Router = InstanceType<typeof P2PCommandRouter>;
 const STATION_SN = "T8010P0000000000";
 const CAM_A = "T8114P0000000000";
 const CAM_B = "T8210P0000000002";
+const SOLO = "T8170P0000000000";
 const ACCOUNT_ID = "0000000000000000000000000000000000000000";
 const DID = "XXXXXXX-000000-XXXXX";
 
@@ -64,7 +65,8 @@ function router(sessionPerCamera = false) {
   return new P2PCommandRouter({
     liveFramesFor: () => LIVE_FRAMES,
     mega: { getDskKeys: async () => ({}), auth: { userId: ACCOUNT_ID } } as never,
-    listDevices: () => [record(STATION_SN, 0), record(CAM_A, 0, STATION_SN), record(CAM_B, 2, STATION_SN)] as never,
+    listDevices: () =>
+      [record(STATION_SN, 0), record(CAM_A, 0, STATION_SN), record(CAM_B, 2, STATION_SN), record(SOLO, 0)] as never,
     ensureDevices: async () => {},
     onConnect: (sn: string) => events.push(`connect:${sn}`),
     onClose: (sn: string) => events.push(`close:${sn}`),
@@ -227,5 +229,26 @@ describe("cameras behind one station with sessionPerCamera", () => {
     ]);
     expect(second).toBe(first);
     expect(built).toHaveLength(2);
+  });
+});
+
+/** The app reconnects every session whose 1044 reports it ended, except a station on its connect blacklist. */
+describe("a station session that ends on its own", () => {
+  it("is opened again at once, unless it never connected or its serial is on the app's list", async () => {
+    const r = router();
+    const manager = (r as unknown as { manager: { get(key: string): FakeSession | undefined } }).manager;
+    for (const sn of [STATION_SN, SOLO]) {
+      await r.prewarm(sn, 0);
+      manager.get(sn)!.emit("connect");
+      manager.get(sn)!.emit("close");
+    }
+    await vi.waitFor(() => expect(built).toHaveLength(3));
+    const reopened = manager.get(STATION_SN)!;
+    expect(built.indexOf(reopened)).toBeGreaterThan(0);
+    expect(manager.get(SOLO)).toBeUndefined();
+
+    reopened.emit("close");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(built).toHaveLength(3);
   });
 });

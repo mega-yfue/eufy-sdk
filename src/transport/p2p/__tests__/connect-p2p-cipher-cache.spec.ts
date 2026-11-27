@@ -87,12 +87,16 @@ describe("P2PCommandRouter.ensureStation — the account a station is connected 
 });
 
 describe("P2PCommandRouter.ensureStation — resolveCipherKey cache", () => {
-  /** `ConnectKeyFactory` asks again once when its first pass leaves no key, and caches only a key. */
-  it("asks a lookup that yields no key once more, and does NOT cache the miss", async () => {
+  /**
+   * `ConnectKeyFactory.a` asks again once when its first pass leaves no key, ends the lookup on a call that fails,
+   * and caches only a key.
+   */
+  it("asks a lookup that yields no key once more, ends one that fails, and does NOT cache the miss", async () => {
     const getCiphers = vi
       .fn()
-      .mockRejectedValueOnce(new Error("fetch failed"))
       .mockResolvedValueOnce([{ cipher_id: 97 }])
+      .mockRejectedValueOnce(new Error("fetch failed"))
+      .mockRejectedValueOnce(new Error("fetch failed"))
       .mockResolvedValueOnce([{ cipher_id: 97, ecc_private_key: "deadbeef" }]);
     const onError = vi.fn();
     const router = new P2PCommandRouter(makeDeps(getCiphers, undefined, onError));
@@ -100,9 +104,11 @@ describe("P2PCommandRouter.ensureStation — resolveCipherKey cache", () => {
     await router.ensureStation(DEVICE.sn);
     expect(await resolveCipherKey(97)).toBeUndefined();
     expect(getCiphers).toHaveBeenCalledTimes(2);
-    expect(onError).toHaveBeenCalledOnce();
-    expect(await resolveCipherKey(97)).toBe("deadbeef");
+    expect(await resolveCipherKey(97)).toBeUndefined();
     expect(getCiphers).toHaveBeenCalledTimes(3);
+    expect(onError).toHaveBeenCalledTimes(2);
+    expect(await resolveCipherKey(97)).toBe("deadbeef");
+    expect(getCiphers).toHaveBeenCalledTimes(4);
   });
 
   it("DOES cache a successful get_ciphers() call — a later resolve does not re-fetch", async () => {

@@ -43,7 +43,6 @@ function fakeSink(opts: { startOk?: boolean; startCode?: number } = {}): Talkbac
   emitGap(seq: number): void;
   isClosed: boolean;
   isConnected: boolean;
-  sendAcknowledged(send: () => boolean): boolean;
 } {
   const gaps = new EventEmitter();
   return {
@@ -53,7 +52,6 @@ function fakeSink(opts: { startOk?: boolean; startCode?: number } = {}): Talkbac
     // As a session the router's request queue drives: each frame answered 0 under its command.
     isClosed: false,
     isConnected: true,
-    sendAcknowledged: (send) => send(),
     sendFrame(frame, channel) {
       if (frame === TALK.start && opts.startOk === false) throw new Error("not connected");
       (frame === TALK.stop ? this.stopped : this.started).push(channel);

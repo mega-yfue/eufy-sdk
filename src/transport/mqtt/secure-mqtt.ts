@@ -109,6 +109,10 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
   private readonly refused = new Set<string>();
   private resubscribe?: ReturnType<typeof setInterval>;
   private readonly logger: Logger;
+  /** Reconnect attempts since the last connect, against {@link SecureMqttOptions.backoff}. */
+  private attempt = 0;
+  /** The backoff ran out of attempts and ended the client; {@link restart} reconnects it. */
+  private gaveUp = false;
 
   constructor(opts: SecureMqttOptions) {
     super();
@@ -156,14 +160,16 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
         rejectUnauthorized: true,
       });
       if (backoff) {
-        let attempt = 0;
         client.on("connect", () => {
-          attempt = 0;
+          this.attempt = 0;
           client.options.reconnectPeriod = backoff.minS * 1000;
         });
         client.on("reconnect", () => {
-          if (++attempt > backoff.attempts) client.end(true);
-          client.options.reconnectPeriod = Math.min(backoff.minS * 2 ** attempt, backoff.maxS) * 1000;
+          if (++this.attempt > backoff.attempts) {
+            this.gaveUp = true;
+            client.end(true);
+          }
+          client.options.reconnectPeriod = Math.min(backoff.minS * 2 ** this.attempt, backoff.maxS) * 1000;
         });
       }
       this.client = client;
@@ -308,6 +314,19 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
   private stopResubscribe(): void {
     clearInterval(this.resubscribe);
     this.resubscribe = undefined;
+  }
+
+  /**
+   * Reconnect a client its backoff gave up on, the same client id and subscriptions with a fresh attempt count,
+   * as the app's clean line `reconnectMqtt` / `startConnect` revive a lost pipe; a no-op while it is connected or
+   * still retrying.
+   */
+  restart(): void {
+    if (!this.gaveUp || !this.client) return;
+    this.gaveUp = false;
+    this.attempt = 0;
+    this.client.options.reconnectPeriod = (this.o.backoff?.minS ?? 0) * 1000;
+    this.client.reconnect();
   }
 
   async disconnect(): Promise<void> {

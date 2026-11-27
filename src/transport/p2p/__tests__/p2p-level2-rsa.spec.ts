@@ -1,13 +1,17 @@
 import { constants, createECDH, generateKeyPairSync, publicEncrypt } from "node:crypto";
 import { P2PSession } from "../p2p-session.js";
 import {
+  buildAckPayload,
   decryptP2PData,
   deriveLevel2KeyFromRsaGatewayInfo,
   eciesWrap,
   encryptP2PData,
+  frameMessage,
+  P2PDataTypeHeader,
   p2pCommandEncryptionKey,
   paddingP2PData,
   parseDataFrameHeader,
+  ResponseMessageType,
 } from "../codec.js";
 import {
   DEVICE_SN,
@@ -121,6 +125,7 @@ type SessionInternals = {
   handleFrame(header: unknown, payload: Buffer, dataType: number): void;
   connectAddress: unknown;
   send: (addr: unknown, type: Buffer, payload: Buffer) => void;
+  onAck(msg: Buffer): void;
 };
 
 /** A session whose cipher answers an empty ECC key and the spec's RSA key, with its emitted events and traces. */
@@ -366,6 +371,9 @@ describe("routing on an RSA session", () => {
     const send = internals.send;
     internals.send = (addr, type, payload) => {
       send(addr, type, payload);
+      internals.onAck(
+        frameMessage(ResponseMessageType.ACK, buildAckPayload(P2PDataTypeHeader.DATA, payload.readUInt16BE(2))),
+      );
       const commandId = payload.readUInt16LE(8);
       queueMicrotask(() =>
         session.emit("commandResult", { code: 0, channel: commandId === 1350 ? 0 : 255, commandId }),

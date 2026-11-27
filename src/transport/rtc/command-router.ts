@@ -17,7 +17,9 @@
  * (CMD_DATABASE_IMAGE) a stored image, each as the station's notify under that command id, matched by its content
  * (`transaction`, `file`) since the notify stream carries other reports between them.
  *
- * The station serves one live view at a time: a second camera is refused while the first one's view has consumers.
+ * One live view per station, as the app plays one: a second camera is refused while the first one's view has consumers.
+ * With {@link RtcCommandRouterDeps.sessionPerCamera} each camera's view places a PM call of its own on the station's
+ * client instead, so several cameras on one station stream at once.
  */
 import { createECDH, randomInt } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -69,7 +71,7 @@ export interface RtcRoute {
   adminUserId?: string;
   /** The station record's member account id, which a command stating `stationAccount` carries instead. */
   stationAccountId?: string;
-  /** The station record's `p2p_did`, `p2p_license` and first IPv4 `signaling_servers` host. */
+  /** The station record's `p2p_did`, `p2p_license` and first IPv4 `signaling_servers` host, `""` where it states none. */
   did: string;
   lic: string;
   host: string;
@@ -113,6 +115,8 @@ export interface RtcCommandRouterDeps {
   onFrame?: (stationSn: string, frame: P2PFrame) => void;
   /** The native layers, replaceable in a spec. */
   layers?: { signal?: (o: RtcSignalOptions) => RtcSignalClient; priv1?: typeof priv1; pmIce?: typeof pmIce };
+  /** Camera wall: one live view per camera rather than per station, each on its own PM call. */
+  sessionPerCamera?: boolean;
 }
 
 interface Station {
@@ -129,7 +133,7 @@ interface Station {
 
 class StationStreamBusyError extends Error {
   constructor(stationSn: string, servingSn: string) {
-    super(`rtc live: ${stationSn} is serving ${servingSn}; the station streams one camera at a time`);
+    super(`rtc live: ${stationSn} is serving ${servingSn}; one camera at a time without sessionPerCamera`);
     this.name = "StationStreamBusyError";
   }
 }
@@ -160,6 +164,9 @@ const NATIVE_GROUPS: Record<string, readonly number[]> = {
 };
 const nativeGroup = (id: number) => Object.keys(NATIVE_GROUPS).find((g) => NATIVE_GROUPS[g]!.includes(id));
 const JSON_ON_DEVICE_CHANNEL = [1204, 1271, 1350];
+
+/** `x` as JSON, a `"$userId"` a bundle's parser put in it the account id, as the P2P sender fills it. */
+const withUser = (x: unknown, accountId: string) => JSON.stringify(x, (_, v) => (v === "$userId" ? accountId : v));
 
 /** A reply's code as the app's `ack_processor_process_response` reads it: its first int32, 0 for an empty body. */
 const replyCode = (reply: Buffer) => (reply.length >= 4 ? reply.readInt32LE(0) : 0);
@@ -206,7 +213,7 @@ export class RtcCommandRouter {
       case "set-json":
         return {
           id: 1700,
-          body: JSON.stringify({ commandType: cmd.param, data: cmd.data }),
+          body: withUser({ commandType: cmd.param, data: cmd.data }, this.accountId(route)),
           channel: own(cmd.channel),
         };
       case "set-payload": {
@@ -222,7 +229,8 @@ export class RtcCommandRouter {
       }
       case "set-json-raw": {
         if (nativeGroup(cmd.cmd) !== "E") break;
-        const body = JSON.stringify({ account_id: this.accountId(route, cmd.stationAccount), ...cmd.data });
+        const accountId = this.accountId(route, cmd.stationAccount);
+        const body = withUser(cmd.cmd === 1255 ? { ...cmd.data, account_id: accountId } : cmd.data, accountId);
         return { id: cmd.cmd, body, channel: JSON_ON_DEVICE_CHANNEL.includes(cmd.cmd) ? cmd.channel : STATION_CHANNEL };
       }
       case "p2p-string": {
@@ -357,7 +365,7 @@ export class RtcCommandRouter {
     const sn = route.stationSn;
     if (this.talking.has(sn)) throw new Error(`talkback: ${sn} is already talking; stop it before starting another`);
     const { talkStart, talkStop } = route.live!;
-    const pm = () => this.lives.get(sn)?.stream;
+    const pm = () => this.lives.get(this.liveKey(route))?.stream;
     let consumer: Consumer | undefined;
     let speaking = false;
     const talk: Talkback = new Talkback(
@@ -425,7 +433,7 @@ export class RtcCommandRouter {
     return id;
   }
 
-  /** The station's client, created and started on first use. */
+  /** The station's client, created and started on first use; a route missing its did, license or host throws. */
   private station(route: RtcRoute): Station {
     const sn = route.stationSn;
     const known = this.stations.get(sn);
@@ -433,6 +441,8 @@ export class RtcCommandRouter {
     const userId = this.deps.userId();
     if (!userId) throw new Error(`rtc: not logged in, cannot reach ${sn}`);
     const { did, lic, host } = route;
+    if (!did || !lic || !host)
+      throw new Error(`rtc: ${sn}'s record states no p2p_did, p2p_license or IPv4 signalling host`);
     const signal = (this.deps.layers?.signal ?? ((o) => new RtcSignalClient(o)))({
       sn,
       did,
@@ -600,6 +610,7 @@ export class RtcCommandRouter {
     if (opts.view !== undefined && !route.sensors?.includes(opts.view))
       throw new Error(`rtc live: ${route.cameraSn} lists no lens ${opts.view}`);
     const sn = route.stationSn;
+    const key = this.liveKey(route);
     this.refuseIfWatched(route);
     const st = this.station(route);
     await this.loggedIn(
@@ -609,12 +620,12 @@ export class RtcCommandRouter {
       opts.signal,
     );
     this.refuseIfWatched(route);
-    const current = this.lives.get(sn);
+    const current = this.lives.get(key);
     if (current && current.cameraSn !== route.cameraSn) {
-      this.lives.delete(sn);
+      this.lives.delete(key);
       current.source.dispose();
     }
-    let entry = this.lives.get(sn);
+    let entry = this.lives.get(key);
     if (!entry) {
       const source: SharedLiveSource = new SharedLiveSource({
         makeStream: () => (entry!.stream = this.pmStream(route, st, live, opts.entryType ?? 0, opts.view)),
@@ -623,24 +634,31 @@ export class RtcCommandRouter {
         powered: opts.powered,
         preBufferSeconds: opts.preBufferSeconds,
         onStopped: () => {
-          if (this.lives.get(sn)?.source === source) this.lives.delete(sn);
+          if (this.lives.get(key)?.source === source) this.lives.delete(key);
         },
       });
       entry = { cameraSn: route.cameraSn, source };
-      this.lives.set(sn, entry);
+      this.lives.set(key, entry);
     }
     return await use(entry.source);
   }
 
+  /** A live view's slot: its station, or its camera with {@link RtcCommandRouterDeps.sessionPerCamera}. */
+  private liveKey(route: RtcLiveRoute): string {
+    return this.deps.sessionPerCamera ? route.cameraSn : route.stationSn;
+  }
+
   private refuseIfWatched(route: RtcLiveRoute): void {
-    const current = this.lives.get(route.stationSn);
+    const current = this.lives.get(this.liveKey(route));
     if (current && current.cameraSn !== route.cameraSn && current.source.consumerCount > 0)
       throw new StationStreamBusyError(route.stationSn, current.cameraSn);
   }
 
   /**
    * One live view on a fresh PM call; its ICE closes and the call hangs up when the view stops or fails. A camera with
-   * lenses opens its lens page (`startTB`), or with a `view` the single-camera page on that lens.
+   * lenses opens its lens page (`startTB`), or with a `view` the single-camera page on that lens. The station's answer
+   * sets the remote description ({@link pmIce} `ownSdp`) except on a T8223 at 3319 or below and a T8224 below 3420,
+   * whose INFO `sdp` does, as `WebrtcApp_Event_RtcTrying` gates it.
    */
   private pmStream(
     route: RtcLiveRoute,
@@ -650,7 +668,9 @@ export class RtcCommandRouter {
     view?: number,
   ): RtcPmLiveStream {
     const call = st.signal.call(RtcCallType.PM);
-    const agent = (this.deps.layers?.pmIce ?? pmIce)(st.signal, call);
+    const sn = route.stationSn;
+    const ownSdp = !/^T822[34]/.test(sn) || route.version > (sn.startsWith("T8223") ? 3319 : 3419);
+    const agent = (this.deps.layers?.pmIce ?? pmIce)(st.signal, call, ownSdp);
     const stream = new RtcPmLiveStream(agent, {
       call,
       gcm: mediaGcm(route.stationSn, route.version),

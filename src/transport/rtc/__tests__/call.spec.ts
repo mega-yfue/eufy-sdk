@@ -60,14 +60,15 @@ describe("RtcSignalClient call", () => {
     vi.restoreAllMocks();
   });
 
-  /** A station packet of `kind` on the call body of `uuid`, its attach JSON under the session key. */
-  function station(socket: Socket, kind: number, status: number, uuid: string, json?: object, b13 = 6) {
+  /** A station packet of `kind` on the call body of `uuid`, its attach JSON (or that text) under the session key. */
+  function station(socket: Socket, kind: number, status: number, uuid: string, json?: object | string, b13 = 6) {
     const h = rtcHeader({ kind, sn: SN, seq: 42, route: 9, ts: TS });
     h[13] = b13;
     h[14] = status ? 1 : 0;
     h.writeUInt16LE(status, 16);
     h[18] = 1;
-    const attach = json ? rtcEncrypt(Buffer.from(JSON.stringify(json)), KEY, TS) : undefined;
+    const text = typeof json === "string" ? json : JSON.stringify(json);
+    const attach = json ? rtcEncrypt(Buffer.from(text), KEY, TS) : undefined;
     const body = callBody(uuid, "station", attach);
     socket.emit("message", wrapRtcPacket(rtcPacket(h, 7, body)));
     return body;
@@ -157,7 +158,51 @@ describe("RtcSignalClient call", () => {
     expect(ok.p.body).toEqual(body);
   });
 
-  it("486 is busy and ends the repeat, socket open; 480 hangs up; byte 13 outside 4..8 deletes only the session", () => {
+  it("reads an attach and sdp as cJSON does, and takes a later sdp after one that does not parse", () => {
+    const { uuid } = client.call(6);
+    const socket = sent[0]!.socket;
+    const sdp = vi.fn();
+    client.on("sdp", sdp);
+    station(socket, 4, 0, uuid, { sdp: "{broken" });
+    const inner = '{"ICE-U":"a=ice-ufrag:abcd\r\n","ice-p":"a=ice-pwd:0123456789012345678901"}\u0005\u0005';
+    station(socket, 4, 0, uuid, `{"Sdp":${JSON.stringify(inner)}}\u0003\u0003\u0003`);
+    expect(sdp.mock.calls).toEqual([
+      [
+        uuid,
+        {
+          "ice-u": "a=ice-ufrag:abcd\r\n",
+          "ice-p": "a=ice-pwd:0123456789012345678901",
+          asc: "",
+          vsc: "",
+          sg: "",
+          sgc: "",
+        },
+      ],
+    ]);
+  });
+
+  it("traces a dropped datagram and an attach's shape without identity or payload content", () => {
+    const lines: string[] = [];
+    const logger = { debug: (m: string) => lines.push(m), info() {}, warn() {}, error() {} };
+    const traced = new RtcSignalClient({ sn: SN, did: DID, lic: LIC, host: "127.0.0.1", logger });
+    traced.sessionKey = KEY;
+    traced.contactId = CONTACT;
+    const { uuid, ufrag, pwd } = traced.call(6);
+    const socket = sent[0]!.socket;
+    socket.emit("message", Buffer.from([1, 1, 0, 0]));
+    const inner = `{"ice-u":"a=ice-ufrag:${ufrag}","ice-p":"a=ice-pwd:${pwd}"}\u0005`;
+    station(socket, 4, 0, uuid, { sdp: inner, candidate: "candidate:1 1 udp 1 192.0.2.10 50000 typ host" });
+    traced.close();
+    expect(lines.some((l) => l.includes("dropped a 4-byte datagram, type 257, inner type none"))).toBe(true);
+    const info = lines.find((l) => l.includes("INFO attach:"))!;
+    expect(info).toContain("keys sdp,candidate");
+    expect(info).toContain("sdp string of");
+    expect(info).toContain("JSON.parse SyntaxError, text after the last }: yes, control chars: yes");
+    for (const secret of [SN, DID, LIC, KEY, CONTACT, uuid, ufrag, pwd, "192.0.2.10"])
+      expect(lines.filter((l) => l.includes(secret))).toEqual([]);
+  });
+
+  it("486 is busy and ends the repeat, socket open until the 5 s without Trying; 480 hangs up; byte 13 outside 4..8 deletes only the session", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     vi.setSystemTime(TS * 1000);
     const busy = vi.fn();
@@ -170,21 +215,22 @@ describe("RtcSignalClient call", () => {
     const pm = sent.at(-1)!.socket;
     const close = vi.spyOn(pm, "close");
     station(pm, 2, 486, a);
-    vi.advanceTimersByTime(5000);
+    vi.advanceTimersByTime(4999);
     expect([busy.mock.calls, count(pm), close.mock.calls.length]).toEqual([[[a]], 1, 0]);
 
     const b = client.call(5).uuid;
     const priv1 = sent.at(-1)!.socket;
     station(priv1, 2, 480, b);
     vi.advanceTimersByTime(5000);
-    expect([hangup.mock.calls, count(priv1)]).toEqual([[[b]], 1]);
+    expect([hangup.mock.calls, count(priv1), close.mock.calls.length]).toEqual([[[b], [a]], 1, 1]);
 
     const c = client.call(6).uuid;
-    const before = count(pm);
-    station(pm, 2, 486, c, undefined, 0);
-    station(pm, 2, 100, c, {});
+    const pm2 = sent.at(-1)!.socket;
+    const before = count(pm2) - 1;
+    station(pm2, 2, 486, c, undefined, 0);
+    station(pm2, 2, 100, c, {});
     vi.advanceTimersByTime(5000);
-    expect([busy.mock.calls.length, trying.mock.calls.length, count(pm) - before > 5]).toEqual([1, 0, true]);
+    expect([busy.mock.calls.length, trying.mock.calls.length, count(pm2) - before > 5]).toEqual([1, 0, true]);
   });
 
   it("repeats the CALL unchanged every 500 ms in its first second, then every second, until 14 s, Trying or not", () => {

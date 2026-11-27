@@ -327,7 +327,7 @@ export type Command =
     | { kind: "set-json"; param: number; data: Record<string, unknown> | number; channel: number }
     // `set-json-raw` differs from `set-json` in ONE way: the wire's outer P2P command IS `cmd` itself
     // (no `1700` CONTROL_PAYLOAD wrapper, no `{commandType,data}` nesting) — the plaintext is exactly
-    // `data` (plus an injected `account_id`), matching the app's own SET_SNOOZE_TIME (1271) frame.
+    // `data` (a `"$userId"` in it the account id, and for 1255 an `account_id` after it).
     | {
         kind: "set-json-raw";
         cmd: number;
@@ -349,6 +349,11 @@ export type Command =
         /** How long the device's answer is awaited, never resent, where the app bounds the request itself. */
         answerMs?: number;
         stationAccount?: true;
+        /**
+         * The notify that confirms a `0` answer, the bundle descriptor's `notifyCmd`/`notifySubCmd` under
+         * `resultFrom` Notify: such an answer is provisional, and the write succeeds on that notify alone.
+         */
+        notify?: { cmd: number; subCmd: number };
         /** The payload over these fields of the device's answer to 1350 query `query`, each its default where it lacks one. */
         base?: { query: number; fields: Readonly<Record<string, number | string>> };
         /**
@@ -440,7 +445,7 @@ export type Command =
         preserve?: readonly (number | Buffer)[];
         /** The descriptor's `timeout`, seconds: how long the app waits for the reply (5 s when it states none). */
         timeoutS?: number;
-        /** The descriptor's `retryCount`: sends again while no reply comes (1 when it states none). */
+        /** The descriptor's `retryCount`: sends again while no reply comes (none when it states none). */
         retryCount?: number;
       }
     // `mqtt-json` — a `type: "json"` secure-MQTT write: the descriptor's `cmd` and JSON `payload` in the security envelope.

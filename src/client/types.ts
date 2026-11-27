@@ -82,11 +82,12 @@ export interface EufyMegaOptions extends MegaClientConfig {
    */
   noBroadcast?: boolean;
   /**
-   * Camera wall: each live pull of a camera behind a station gets a P2P connection of its own, so several cameras on
-   * one station stream at once. Off by default, as the app holds one connection per station and the station serves
-   * one camera at a time on it. A media connection carries that camera's media alone and closes with its pull.
+   * Camera wall: each live pull of a camera behind a station gets a connection of its own (a P2P connection, or a PM
+   * call on the station's RTC client), so several cameras on one station stream at once. Off by default, as the app
+   * holds one connection per station and streams one camera at a time on it. A media connection carries that
+   * camera's media alone and closes with its pull.
    */
-  p2pSessionPerCamera?: boolean;
+  sessionPerCamera?: boolean;
   /**
    * Auto-manage connectivity (default `true`). When on, a successful {@link EufyMega.login} brings up
    * the always-on event channels itself — FCM push + secure MQTT (if the account has appliances) — and

@@ -303,7 +303,10 @@ export interface MqttRouterDeps {
 export class MqttCommandRouter {
   private readonly deps: MqttRouterDeps;
   private readonly logger: Logger;
-  /** The last `seq_num` sent per serial, counted per device as the app's `SecuritySeqNumManager` does. */
+  /**
+   * The last `seq_num` sent per serial, as the app's `SecuritySeqNumManager` and `ESLSeqNumManager` keep it: a serial
+   * with none sent counts from the current unix seconds.
+   */
   private readonly seqNums = new Map<string, number>();
   constructor(deps: MqttRouterDeps) {
     this.deps = deps;
@@ -312,7 +315,7 @@ export class MqttCommandRouter {
 
   /** `trans` carrying this device's next `seq_num`. */
   private sequenced(sn: string, trans: Ff09Trans): Ff09Trans {
-    const seq = (this.seqNums.get(sn) ?? 0) + 1;
+    const seq = (this.seqNums.get(sn) ?? Math.floor(Date.now() / 1000)) + 1;
     this.seqNums.set(sn, seq);
     return { ...trans, payload: { ...trans.payload, seq_num: seq } };
   }
@@ -397,8 +400,8 @@ export class MqttCommandRouter {
   }
 
   /**
-   * `get_pn_by_sn` answers per serial, kept like the app's `DevicePnCache`: a failed call keeps `""`. The
-   * promise is kept, so commands racing on a serial share one call.
+   * `get_pn_by_sn` answers per serial, kept like the app's `DevicePnCache`: a failed or empty answer is not kept, so
+   * the next command asks again. The promise is kept, so commands racing on a serial share one call.
    */
   private readonly cloudPn = new Map<string, Promise<string>>();
 
@@ -416,7 +419,9 @@ export class MqttCommandRouter {
       pn = this.deps.mega.getPnBySn(sn).catch(() => "");
       this.cloudPn.set(sn, pn);
     }
-    return (await pn) || sn.slice(0, 5);
+    const answer = await pn;
+    if (!answer) this.cloudPn.delete(sn);
+    return answer || sn.slice(0, 5);
   }
 
   /** The facade's stack for `scope` ({@link MqttRouterDeps.secureTransport}). Throws if it isn't wired. */
@@ -426,16 +431,15 @@ export class MqttCommandRouter {
   }
 
   /**
-   * How long {@link dispatchFf09Actuate} waits for the device's `/res` **delivery ack** before giving up.
-   * This is NOT a physical-actuation budget, so the SAME number covers a deadbolt and a garage door
-   * despite their very different travel times — see that method's doc for why.
+   * How long {@link dispatchFf09Actuate} waits for the device's `/res` **delivery ack** before giving up: the
+   * `timeout` every lock bundle's MQTT descriptor states, 15 s.
    */
-  private static readonly FF09_ACK_TIMEOUT_MS = 5000;
+  private static readonly FF09_ACK_TIMEOUT_MS = 15_000;
 
   /**
    * Publish `envelope()` to `topic` and wait `timeoutMs` for the answer `match` picks, sending again up to `retries`
-   * times while none comes, as the app's `MqttDelegate.sendForRawResponse` does (`MqttConfig.maxRetryCount` 1 unless
-   * the descriptor states `retryCount`). The wait is armed before each publish.
+   * times while none comes, as the app's `MqttDelegate.sendForRawResponse` does with the descriptor's `retryCount`
+   * (none stated: sent once). The wait is armed before each publish.
    */
   private async request<T>(
     mqtt: SecureMqtt,
@@ -443,7 +447,7 @@ export class MqttCommandRouter {
     envelope: () => string,
     match: (m: { topic?: string; raw?: unknown }) => T | undefined,
     timeoutMs: number,
-    retries = 1,
+    retries = 0,
   ): Promise<T | undefined> {
     for (let attempt = 0; attempt <= retries; attempt++) {
       const answer = this.waitForMqttMessage(mqtt, match, timeoutMs);
@@ -565,7 +569,7 @@ export class MqttCommandRouter {
   }
 
   /**
-   * The `ff09-autolock` intent handler over MQTT — read-modify-write the T85D0's auto-lock setting.
+   * The `ff09-autolock` intent handler over MQTT — read-modify-write a lock's auto-lock setting.
    * Unlike {@link dispatchFf09Actuate} (one
    * fire-and-forget frame), this is a GET then a SET:
    *
@@ -673,7 +677,7 @@ export class MqttCommandRouter {
   }
 
   /**
-   * **Read the T85D0's current auto-lock settings over MQTT** — the `Ff09SettingsReader` implementation.
+   * **Read a lock's current auto-lock settings over MQTT** — the `Ff09SettingsReader` implementation.
    * A pure GET, no SET: reuses {@link fetchFf09SettingsGetReply}, then decrypts
    * + decodes fields `a1`-`a5` per `transport/ff09.ts`'s response tag map.
    */
@@ -741,7 +745,6 @@ export class MqttCommandRouter {
         return !(reply.cmd & 0x8000) || (part < 0x80 && part >> 4 === (part & 15)) ? true : undefined;
       },
       MqttCommandRouter.LIGHT_REPLY_TIMEOUT_MS,
-      0,
     );
   }
 
@@ -882,7 +885,6 @@ export class MqttCommandRouter {
         }
       },
       timeoutMs,
-      0,
     );
   }
 
@@ -907,7 +909,6 @@ export class MqttCommandRouter {
           return t?.cmd === cmd.cmd && typeof t.payload?.result === "number" ? t.payload.result : undefined;
         },
         (cmd.timeoutS ?? 5) * 1000,
-        0,
       );
       this.deps.onCommandAck({ sn, kind: "mqtt-json", cmd: cmd.cmd, acked: result !== undefined });
       return result === 0;

@@ -31,6 +31,13 @@ export function recordString(raw: Record<string, unknown>, key: string): string 
   return typeof v === "string" && v ? v : undefined;
 }
 
+/**
+ * The product code the app keys a device's thing description by (`MegaDevice.devicePn`): the record's
+ * `device_new_pn`, else its `device_model`.
+ */
+const thingCode = (dev: EufyDevice): string =>
+  recordString((dev.raw ?? {}) as Record<string, unknown>, "device_new_pn") ?? dev.model ?? "";
+
 /** The house a listed device is in: its record's `house_id`, else the house the list was asked for. */
 function houseOf(raw: { house_id?: unknown }, body: { house_id?: string }): { houseId?: string } {
   const houseId = typeof raw.house_id === "string" && raw.house_id ? raw.house_id : body.house_id;
@@ -291,7 +298,8 @@ export class DeviceRegistry {
   /**
    * List + classify devices across all houses (mega API). Each device is tagged
    * with its API backend + realtime transport (see classifyDevice). Camera/
-   * HomeBase records still appear here for inventory; driving them is P2P.
+   * HomeBase records still appear here for inventory; driving them is P2P. Each `get_devs_list` asks for a gzipped
+   * reply (`X-Accept-Encoding: gzip`), as the app's `HouseNetApi.getDeviceList` does.
    *
    * A failing house/body query is tolerated so a partial outage still yields devices — but the result
    * is then a SUBSET, and devices it didn't return are KEPT from the previous list rather than dropped.
@@ -328,7 +336,9 @@ export class DeviceRegistry {
     for (const body of bodies) {
       let res: { devices?: any[] };
       try {
-        res = await this.mega.post<{ devices?: any[] }>("house", "/app/house/get_devs_list", body);
+        res = await this.mega.post<{ devices?: any[] }>("house", "/app/house/get_devs_list", body, {
+          "x-accept-encoding": "gzip",
+        });
       } catch (e) {
         if (e instanceof SessionExpiredError) throw e;
         partial = true;
@@ -355,7 +365,9 @@ export class DeviceRegistry {
           stationSn: params[6271] === "1" ? raw.device_sn : resolvedStationSn(raw, raw.device_sn),
           ...(typeof raw.device_channel === "number" ? { channel: raw.device_channel } : {}),
           p2pDid: raw.p2p_did,
-          ...(typeof raw.member?.member_type === "number" ? { memberType: raw.member.member_type } : {}),
+          ...(raw.member
+            ? { memberType: typeof raw.member.member_type === "number" ? raw.member.member_type : 0 }
+            : {}),
           ...houseOf(raw, body),
           params,
           paramUpdatedAt,
@@ -500,8 +512,8 @@ export class DeviceRegistry {
 
   /** The default value of a property of `sn`'s product description, as the description states it. */
   thingDefault(sn: string, identifier: string): string | undefined {
-    const model = this.devices.find((d) => d.sn === sn)?.model;
-    return this.things.get(model ?? "")?.properties[identifier]?.defaultValue;
+    const dev = this.devices.find((d) => d.sn === sn);
+    return this.things.get(dev ? thingCode(dev) : "")?.properties[identifier]?.defaultValue;
   }
 
   /** `sn`'s product description resolved for its listed record ({@link thingsFor}). */
@@ -516,7 +528,7 @@ export class DeviceRegistry {
    * account's country and its reported params.
    */
   private thingsFor(dev: EufyDevice, station: string, params: Record<number, string>): ThingDescription | undefined {
-    const td = this.things.get(dev.model ?? "");
+    const td = this.things.get(thingCode(dev));
     if (!td) return undefined;
     const firmware = (d?: EufyDevice) => recordString((d?.raw ?? {}) as Record<string, unknown>, "main_sw_version");
     return resolveThing(td, {
@@ -535,7 +547,7 @@ export class DeviceRegistry {
    * `get_things_list` call. A failed call is logged and asked again on the next refresh.
    */
   private async loadThings(seen: Map<string, EufyDevice>): Promise<void> {
-    const codes = [...new Set([...seen.values()].map((d) => d.model ?? ""))].filter((c) => c && !this.things.has(c));
+    const codes = [...new Set([...seen.values()].map(thingCode))].filter((c) => c && !this.things.has(c));
     if (!codes.length) return;
     let parsed: Readonly<Record<string, ThingDescription>>;
     try {

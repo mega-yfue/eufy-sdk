@@ -26,11 +26,22 @@
  * UDP record, a quick login to the best DISCOVER UDP one. A DISCOVER reply's `server_addr` equal to the login
  * address is added silently; another one, with no call up, is added and the client switches to the best DISCOVER UDP
  * record (new socket); `saddrs` (16 at most) are added after. A CALL with none up goes to the best DISCOVER UDP record
- * (the login address when there is none); the client's server becomes that one. Best = {@link score}, highest, ties to
- * the lowest ip in byte order (`generic_map` keys compared with `strncmp`, walked in order).
+ * (the login address when there is none); the client's server becomes that one. Best = one not failed in the last 60 s,
+ * then the one that failed first, then the highest {@link score}, ties to the lowest ip in byte order (`generic_map`
+ * keys compared with `strncmp`, walked in order).
  * The client's server copy keeps stats: every answer to a DISCOVER, reg, CALL (first send) or INFO of ours stamps
- * last use and folds its round trip into the average over every answer since the last switch. Each added record and,
- * for DISCOVER, reg and CALL answers, the stamped copy goes into the token's list (`onWebrtcServerInfo`).
+ * last use and folds its round trip into the average over every answer since the last switch, and the record takes that
+ * average (`rtc_server_manager_update_success`). Each added record and, for DISCOVER, reg and CALL answers, the stamped
+ * copy goes into the token's list (`onWebrtcServerInfo`).
+ *
+ * Call failover (`WebrtcApp_ReportCallNoTrying` → `ClientSwitchServerOnCallTimeout`): a call that draws neither 100 nor
+ * 200 within {@link NOREPLY_WAIT_S} of its start second is hung up. Unless the server answered a reg 200 or a CALL 100
+ * in the last 8 s, no CALL went out in the last 20 s, or the client switched in the last 3 s, that counts a round, marks
+ * the server's DISCOVER UDP record failed and switches to the best other DISCOVER UDP record: a new socket, which becomes
+ * the login address, and a reg whose 200 logs in again. A 100 or 200 ends the rounds. Once failures have run 30 s without
+ * a reg 200 or CALL 100, at most once per 30 s, it rediscovers instead: a new socket to the best other DNS record and a
+ * DISCOVER (with no such record, the switch and then a DISCOVER). A DISCOVER reply that keeps the server but adds DISCOVER
+ * UDP records during such a run switches to the best other one, 3 s after the last switch at the earliest.
  *
  * Token refresh: when a PRIV1 or PM call connects while both are connected, a login 12 h old or more (and no check in
  * the last 21 s) sends a bare reg, so the 401 / reg2 / 200 exchange draws a new session key and token
@@ -115,7 +126,10 @@ export interface RtcSignalOptions {
   appId?: string;
   /** The station's cached login, for a quick login. */
   token?: RtcToken;
-  /** Takes one debug line per datagram sent or answered: direction, kind, status, socket, ms since `start`. */
+  /**
+   * Takes one debug line per datagram sent, answered or dropped (direction, kind, status, socket, ms since `start`) and
+   * one per call attach read, by shape only.
+   */
   logger?: Logger;
 }
 
@@ -149,12 +163,21 @@ const TOKEN_CHECK_S = 21;
 /** The app's login check period while logged out, and `rtc_retry_login`'s gate shared with the token refresh. */
 const RETRY_LOGIN_MS = 9_000;
 const RETRY_GATE_S = 8;
+/** `ClientGetCallNoReplyWaitS`: the wait for a call's 100 after 0, 1, and 2 or more rounds without one. */
+const NOREPLY_WAIT_S = [5, 10, 20];
+/** How long a record stays failed for {@link RtcSignalClient.choose}. */
+const FAIL_WINDOW_MS = 60_000;
+/** The fail run after which, and the gap at which, a call timeout rediscovers. */
+const REDISCOVER_MS = 30_000;
+/** The least gap between two switches. */
+const SWITCH_GAP_MS = 3_000;
 
 interface RtcCall {
   type: number;
   packet: Buffer;
   start: number;
   timer?: NodeJS.Timeout;
+  noReply?: NodeJS.Timeout;
   /** The signalling session; an error answer deletes it while the channel keeps its repeat. */
   session: boolean;
   trying?: boolean;
@@ -219,6 +242,13 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
   private tokenCheck = 0;
   private retried = 0;
   private retryTimer?: NodeJS.Timeout;
+  /** When each record last failed a call (`last_fail_timestamp`). */
+  private readonly failedAt = new Map<RtcServer, number>();
+  /**
+   * Call failover ms stamps: last CALL sent, last reg 200 or CALL 100, last switch, start of the fail run, last
+   * rediscover; the rounds without a 100; whether the next reg 200 logs in again after a switch.
+   */
+  private readonly fo = { sent: 0, alive: 0, switched: 0, run: 0, rediscovered: 0, rounds: 0, relogin: false };
   private readonly calls = new Map<string, RtcCall>();
   private readonly callSockets = new Map<number, Socket>();
 
@@ -296,6 +326,16 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
     this.calls.set(uuid, c);
     this.track(header);
     this.repeatCall(c, Date.now());
+    const wait = NOREPLY_WAIT_S[Math.min(this.fo.rounds, 2)]!;
+    c.noReply = setTimeout(
+      () => {
+        if (c.trying) return;
+        this.callTimeout();
+        this.hangup(uuid);
+        this.emit("hangup", uuid);
+      },
+      (c.start + wait) * 1000 - Date.now(),
+    );
     return { uuid, ...sdp };
   }
 
@@ -363,12 +403,14 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
     const c = this.calls.get(uuid);
     if (!c) return;
     clearTimeout(c.timer);
+    clearTimeout(c.noReply);
     this.calls.delete(uuid);
     this.callSockets.get(c.type)?.close();
     this.callSockets.delete(c.type);
   }
 
   private repeatCall(c: RtcCall, now: number): void {
+    this.fo.sent = Date.now();
     this.send(c.packet, this.callSocket(c.type));
     const at = nextCallRepeat(c.start, now);
     if (at !== undefined) c.timer = setTimeout(() => this.repeatCall(c, at), at - Date.now());
@@ -418,15 +460,65 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
     if (emit) this.store(s);
   }
 
-  /** `rtc_server_manager_choose` over the UDP records of `type`: the first highest {@link score} in key order. */
-  private choose(type: number): RtcServer | undefined {
+  /**
+   * `rtc_server_manager_choose` over the UDP records of `type` but the one of ip `exclude`, in key order: one not failed
+   * within {@link FAIL_WINDOW_MS} over one that did, of two that did the earlier failure, else a higher {@link score}.
+   */
+  private choose(type: number, exclude?: string): RtcServer | undefined {
+    const now = Date.now();
     let best: RtcServer | undefined;
-    let top = -1;
     for (const [k, s] of [...this.map].sort(([a], [b]) => (a < b ? -1 : 1))) {
-      const v = score(s, Date.now());
-      if (k.startsWith(this.key(type, 0, "")) && v > top) [best, top] = [s, v];
+      if (!k.startsWith(this.key(type, 0, "")) || s.ip === exclude) continue;
+      const [fs, fb] = [this.failedAt.get(s) ?? 0, best ? (this.failedAt.get(best) ?? 0) : 0];
+      const [rs, rb] = [within(fs, FAIL_WINDOW_MS, now), within(fb, FAIL_WINDOW_MS, now)];
+      if (!best || (rs !== rb ? !rs : rs && fs !== fb ? fs < fb : score(s, now, fs) > score(best, now, fb))) best = s;
     }
     return best;
+  }
+
+  /**
+   * `ClientSwitchServerOnCallTimeout`: count the round, mark the server failed, and switch to the best other DISCOVER
+   * UDP record or, once the fail run is {@link REDISCOVER_MS} old, rediscover (see the module doc).
+   */
+  private callTimeout(): void {
+    const now = Date.now();
+    const f = this.fo;
+    if (within(f.alive, 8_000, now) || !within(f.sent, 20_001, now) || within(f.switched, SWITCH_GAP_MS, now)) return;
+    f.switched = now;
+    f.rounds++;
+    const ip = this.endpoint.ip;
+    const failed = this.map.get(this.key(1, 0, ip));
+    if (failed) this.failedAt.set(failed, now);
+    const next = this.choose(1, ip);
+    if (!f.run || f.run > now) f.run = now;
+    let rediscover = false;
+    if (now - f.run >= REDISCOVER_MS && !within(f.rediscovered, REDISCOVER_MS, now)) {
+      f.rediscovered = now;
+      const dns = this.choose(0, ip);
+      if (dns) {
+        this.reset(dns);
+        this.mAddr = dns.ip.slice(0, 31);
+        return this.rediscover();
+      }
+      rediscover = true;
+    }
+    if (!next) return;
+    this.switchTo(next);
+    if (rediscover) this.rediscover();
+  }
+
+  /** `_client_switch_to_server`: a new socket to `s`, which becomes the login address, and a reg that logs in again. */
+  private switchTo(s: RtcServer): void {
+    this.reset(s);
+    this.mAddr = s.ip.slice(0, 31);
+    this.fo.relogin = true;
+    this.login();
+  }
+
+  /** Unsettle the discovery and send DISCOVER. */
+  private rediscover(): void {
+    this.discovered = false;
+    this.discover();
   }
 
   /** The client's server becomes `s`, with a fresh timeout manager (`EndpointInitNetwork`). */
@@ -464,6 +556,8 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
     const s = this.tm.s;
     s.avgRtt = Math.floor(((this.tm.n * s.avgRtt + ((now - at) >>> 0)) >>> 0) / ++this.tm.n);
     s.lastUsed = now;
+    const record = this.map.get(this.key(s.type, s.protocol, s.ip));
+    if (record) record.avgRtt = s.avgRtt;
     if (kind === RtcKind.REG || kind === RtcKind.CALL || kind === RtcKind.DISCOVER) this.store({ ...s });
   }
 
@@ -514,7 +608,7 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
 
   private onDatagram(msg: Buffer): void {
     const p = parseRtcDatagram(msg);
-    if (!p) return;
+    if (!p) return this.trace(dropped(msg));
     const kind = p.header.readUInt16LE(4);
     if (p.header[14]) this.answered(kind, p.header[42]!);
     if (kind !== RtcKind.DISCOVER && p.header[19]! & 0x01) {
@@ -535,17 +629,30 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
     else if (kind === RtcKind.INFO && p.header.readUInt16LE(16) === 200) this.onInfoAck(p.header, p.body);
   }
 
-  /** The decrypted attach JSON of a call body (base64 text first when `base64`), `{}` when absent or unreadable. */
+  /**
+   * The decrypted attach JSON of a call body (base64 text first when `base64`), `{}` when absent or unreadable. Traces
+   * its shape: length, byte 18, key names, the type and length of `sdp`, and for the attach and a string `sdp` how a
+   * strict JSON parse fares, whether text follows the last `}` and whether a control character occurs.
+   */
   private attach(header: Buffer, body: Buffer, base64 = false): Record<string, unknown> {
     const n = body.readUInt16LE(4);
+    const head = `${describe(header)} attach: ${n} bytes, byte 18 ${header[18]}`;
     let a = body.subarray(RTC_CALL_BODY_LENGTH, RTC_CALL_BODY_LENGTH + n);
     try {
       if (header[18] === 1 && n) a = rtcDecrypt(a, this.sessionKey, header.readUInt32LE(8));
     } catch {
+      this.trace(`${head}, unreadable`);
       return {};
     }
-    const text = readNullTerminatedString(a);
-    return jsonObject(base64 ? Buffer.from(text, "base64").toString() : text) ?? {};
+    const raw = readNullTerminatedString(a);
+    const text = base64 ? Buffer.from(raw, "base64").toString() : raw;
+    const o = jsonObject(text);
+    const sdp = o?.sdp;
+    this.trace(
+      `${head}, ${o ? `keys ${Object.keys(o).join(",")}` : "unreadable"}; ${shape(text)}; sdp ${typeof sdp}` +
+        (typeof sdp === "string" ? ` of ${sdp.length} chars, ${shape(sdp)}` : ""),
+    );
+    return o ?? {};
   }
 
   private onCallAnswer(header: Buffer, body: Buffer): void {
@@ -570,6 +677,8 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
       c.trying = true;
       this.emit("trying", uuid, a.turn);
     }
+    this.fo.rounds = 0;
+    if (status === 100) Object.assign(this.fo, { alive: Date.now(), run: 0, rediscovered: 0 });
     if (status !== 200 || c.acked) return;
     c.acked = true;
     const caps = typeof a.pbsdp === "string" ? pbTransportCaps(a.pbsdp) : a.transport_caps;
@@ -595,15 +704,14 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
       if (c.trying && typeof line === "string" && typeof num === "number") this.emit("fileCandidate", uuid, line, num);
       return;
     }
-    if (typeof a.sdp === "string" && a.sdp && !c.sdp) {
+    const o = !c.sdp && typeof a.sdp === "string" ? jsonObject(a.sdp) : undefined;
+    if (o) {
       c.sdp = true;
-      const o = jsonObject(a.sdp);
-      if (o)
-        this.emit(
-          "sdp",
-          uuid,
-          Object.fromEntries(SDP_KEYS.map((k) => [k, typeof o[k] === "string" ? o[k] : ""])) as RtcRemoteSdp,
-        );
+      this.emit(
+        "sdp",
+        uuid,
+        Object.fromEntries(SDP_KEYS.map((k) => [k, typeof o[k] === "string" ? o[k] : ""])) as RtcRemoteSdp,
+      );
     }
     const cand = typeof a.candidate === "string" ? a.candidate : "";
     const kind = ["host", "srflx", "relay"].find((t) => cand.includes(t));
@@ -626,6 +734,9 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
       return;
     }
     if (header[41] !== RtcBody.JSON) return;
+    const discovers = () => [...this.map.keys()].filter((k) => k.startsWith(this.key(1, 0, ""))).length;
+    const before = discovers();
+    let moved = false;
     const o = jsonObject(readNullTerminatedString(body));
     const addr = o?.server_addr;
     if (typeof addr === "string" && addr.length >= 2) {
@@ -637,12 +748,17 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
         const s = this.choose(1)!;
         this.reset(s);
         this.mAddr = s.ip.slice(0, 31);
-        this.discovered = true;
+        this.discovered = moved = true;
       }
       this.login();
     }
     const saddrs = Array.isArray(o?.saddrs) ? (o.saddrs as unknown[]).slice(0, 16) : [];
     for (const a of saddrs) if (typeof a === "string" && a) [1, 0].forEach((p) => this.add(1, p, a));
+    const now = Date.now();
+    if (moved || discovers() <= before || !this.fo.run || within(this.fo.switched, SWITCH_GAP_MS, now)) return;
+    this.fo.switched = now;
+    const next = this.choose(1, this.endpoint.ip);
+    if (next) this.switchTo(next);
   }
 
   private onLogin(header: Buffer, body: Buffer): void {
@@ -664,7 +780,9 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
       this.unauthorized = 0;
       this.b44 = header[44]!;
       if (body.length && header[41] === RtcBody.KEEP_ALIVE) this.contactId = readNullTerminatedString(body, "latin1");
-      if (this.registered) return;
+      const relogin = this.fo.relogin;
+      Object.assign(this.fo, { alive: Date.now(), run: 0, rediscovered: 0, relogin: false });
+      if (this.registered && !relogin) return;
       this.registered = true;
       clearTimeout(this.retryTimer);
       this.emit("login", this.contactId);
@@ -680,13 +798,14 @@ export class RtcSignalClient extends EventEmitter<RtcSignalEvents> {
 const RTT_STEPS = [11, 21, 31, 41, 51, 101].map((below, i) => [below, 20 - i] as const);
 
 /**
- * `_rtc_server_compare` in f32: 100 for the never-written last failure, half the seconds/10 since last use (both capped at
- * 100, a stamp ahead of now counts as 100), a quarter of the rtt term plus 20 for the never-written retransmissions.
+ * `_rtc_server_compare` in f32: the seconds/10 since the last failure `failedAt`, half the seconds/10 since last use (both
+ * capped at 100, a stamp unset or ahead of now counts as 100), a quarter of the rtt term plus 20 for the never-written
+ * retransmissions.
  */
-function score(s: RtcServer, now: number): number {
+function score(s: RtcServer, now: number, failedAt: number): number {
   const f = Math.fround;
-  const idle = now - s.lastUsed;
-  const b = idle < 0 ? 100 : Math.min(f(f(idle) / 10_000), 100);
+  const since = (t: number) => (t > now ? 100 : Math.min(f(f(now - t) / 10_000), 100));
+  const b = since(s.lastUsed);
   const x = s.avgRtt;
   const rtt =
     RTT_STEPS.find(([below]) => x < below)?.[1] ??
@@ -697,7 +816,12 @@ function score(s: RtcServer, now: number): number {
         : x > 500
           ? 0
           : f(((x - 200) * -5) / 300 + 10));
-  return f(100 + 0.5 * b + 0.25 * f(rtt + 20));
+  return f((failedAt ? since(failedAt) : 100) + 0.5 * b + 0.25 * f(rtt + 20));
+}
+
+/** Whether the ms stamp `t` is set, not ahead of `now`, and less than `ms` old. */
+function within(t: number, ms: number, now: number): boolean {
+  return t > 0 && t <= now && now - t < ms;
 }
 
 function u16(n: number): Buffer {
@@ -706,13 +830,53 @@ function u16(n: number): Buffer {
   return b;
 }
 
+/**
+ * A JSON object as the app's `cJSON_Parse` reads it: a control character is whitespace outside a string and kept inside
+ * one, anything after the top-level value is ignored, and keys match case-insensitively (lowercased here, the first of
+ * equals kept). `undefined` when no object parses.
+ */
 function jsonObject(text: string): Record<string, unknown> | undefined {
+  let out = "";
+  let depth = 0;
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!;
+    const code = c.charCodeAt(0);
+    if (quoted && c === "\\") out += c + (text[++i] ?? "");
+    else if (code < 0x20) out += quoted ? `\\u${code.toString(16).padStart(4, "0")}` : " ";
+    else out += c;
+    if (c === '"') quoted = !quoted;
+    else if (!quoted && (c === "{" || c === "[")) depth++;
+    else if (!quoted && (c === "}" || c === "]") && --depth === 0) break;
+  }
   try {
-    const o: unknown = JSON.parse(text);
-    return o && typeof o === "object" ? (o as Record<string, unknown>) : undefined;
+    const o: unknown = JSON.parse(out);
+    if (!o || typeof o !== "object" || Array.isArray(o)) return undefined;
+    const lower: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(o)) if (!(k.toLowerCase() in lower)) lower[k.toLowerCase()] = v;
+    return lower;
   } catch {
     return undefined;
   }
+}
+
+/** A datagram {@link parseRtcDatagram} refused: its length, its first u16 and, under a type-8 wrapper, the inner one. */
+function dropped(msg: Buffer): string {
+  const type = msg.length >= 2 ? msg.readUInt16LE(0) : "none";
+  const inner = type === 8 && msg.length >= 24 ? (msg[22]! ^ msg[4]!) | ((msg[23]! ^ msg[5]!) << 8) : "none";
+  return `dropped a ${msg.length}-byte datagram, type ${type}, inner type ${inner}`;
+}
+
+/** How JSON text fares: a strict `JSON.parse` (ok or the error's name), text after the last `}`, a control character. */
+function shape(text: string): string {
+  let parse = "ok";
+  try {
+    JSON.parse(text);
+  } catch (e) {
+    parse = e instanceof Error ? e.name : "error";
+  }
+  const tail = text.slice(text.lastIndexOf("}") + 1).length > 0;
+  return `JSON.parse ${parse}, text after the last }: ${tail ? "yes" : "no"}, control chars: ${/[\x00-\x1f]/.test(text) ? "yes" : "no"}`;
 }
 
 /** A received request's header answered 200, seq kept, over `body`. */

@@ -5,14 +5,15 @@ import { SessionExpiredError, type MegaHttpClient } from "../../transport/http/m
  * A minimal fake `MegaHttpClient` — only the methods DeviceRegistry calls. `post` is routed by path so
  * one fake serves house-list + devs-list.
  */
-type PostFn = (service: string, path: string, body?: unknown) => Promise<any>;
+type PostFn = (service: string, path: string, body?: unknown, headers?: Record<string, string>) => Promise<any>;
 function fakeMega(opts: {
   post: PostFn;
   getDeviceRelationList?: () => Promise<any>;
   getThingsList?: (codes: readonly string[]) => Promise<any>;
 }): MegaHttpClient {
   return {
-    post: (service: string, path: string, body?: unknown) => opts.post(service, path, body),
+    post: (service: string, path: string, body?: unknown, headers?: Record<string, string>) =>
+      opts.post(service, path, body, headers),
     getDeviceRelationList: () => (opts.getDeviceRelationList ?? (async () => Promise.reject(new Error("not faked"))))(),
     getThingsList: (codes: readonly string[]) =>
       (opts.getThingsList ?? (async () => Promise.reject(new Error("not faked"))))(codes),
@@ -39,10 +40,12 @@ describe("DeviceRegistry", () => {
     it("queries {} + every house_id, unions and dedupes by serial (last write wins)", async () => {
       const errors: unknown[] = [];
       const bodiesSeen: unknown[] = [];
+      const headersSeen: unknown[] = [];
       const mega = fakeMega({
-        post: async (_s, path, body) => {
+        post: async (_s, path, body, headers) => {
           if (path.endsWith("get_house_list")) return { house_infos: [{ house_id: "H1" }, { house_id: "H2" }] };
           bodiesSeen.push(body);
+          headersSeen.push(headers);
           // {} → A,B ; H1 → B (dupe, newer params) ; H2 → C
           if (JSON.stringify(body) === "{}") return { devices: [rawDevice("A"), rawDevice("B")] };
           if ((body as any).house_id === "H1")
@@ -55,6 +58,7 @@ describe("DeviceRegistry", () => {
       const devs = await reg.getDevices();
 
       expect(bodiesSeen).toEqual([{}, { house_id: "H1" }, { house_id: "H2" }]);
+      expect(headersSeen).toEqual(Array(3).fill({ "x-accept-encoding": "gzip" }));
       expect(devs.map((d) => d.sn).sort()).toEqual(["A", "B", "C"]);
       const b = devs.find((d) => d.sn === "B");
       expect(b?.params?.[1101]).toBe("42"); // H1's later record won
@@ -76,7 +80,7 @@ describe("DeviceRegistry", () => {
     });
   });
 
-  it("carries the record's member_type as memberType, absent when the record names no member", async () => {
+  it("carries the record's member_type as memberType, 0 on a member stating none, absent without a member", async () => {
     const mega = fakeMega({
       post: async (_s, path, body) =>
         path.endsWith("get_house_list") || JSON.stringify(body) !== "{}"
@@ -85,12 +89,18 @@ describe("DeviceRegistry", () => {
               devices: [
                 rawDevice("OWN", { member: { member_type: 2, admin_user_id: "u-0", member_user_id: "u-0" } }),
                 rawDevice("GUEST", { member: { member_type: 0, admin_user_id: "u-1", member_user_id: "u-0" } }),
+                rawDevice("UNSTATED", { member: { admin_user_id: "u-1", member_user_id: "u-0" } }),
                 rawDevice("BARE"),
               ],
             },
     });
     const devs = await new DeviceRegistry({ mega, onError: () => {} }).getDevices();
-    expect(Object.fromEntries(devs.map((d) => [d.sn, d.memberType]))).toEqual({ OWN: 2, GUEST: 0, BARE: undefined });
+    expect(Object.fromEntries(devs.map((d) => [d.sn, d.memberType]))).toEqual({
+      OWN: 2,
+      GUEST: 0,
+      UNSTATED: 0,
+      BARE: undefined,
+    });
     expect(devs.find((d) => d.sn === "BARE")).not.toHaveProperty("memberType");
   });
 
@@ -196,6 +206,32 @@ describe("DeviceRegistry", () => {
       expect((await reg.record("A")).things?.properties.nightvision_type?.type).toBe("bool");
       const dumped = JSON.parse(JSON.stringify(await reg.inspectDevice("A")));
       expect(dumped.things?.properties.nightvision_type?.type, "inspectDevice carries it, serialisable").toBe("bool");
+    });
+
+    it("keys the description by the record's device_new_pn, else its device_model, as the app does", async () => {
+      const asked: (readonly string[])[] = [];
+      const reg = new DeviceRegistry({
+        mega: fakeMega({
+          post: listOf(rawDevice("A", { device_model: "T85D0C", device_new_pn: "T85D0" }), rawDevice("B")),
+          getThingsList: async (codes) => (
+            asked.push(codes),
+            {
+              things_list: ["T85D0", "T8410"].map((code) => ({
+                profile: { product_code: code },
+                properties: [
+                  { identifier: "is_support_mqtt", data_type: { type: "bool", specs: { defaultValue: "true" } } },
+                ],
+              })),
+            }
+          ),
+        }),
+        onError: () => {},
+      });
+      await reg.getDevices();
+      expect(asked).toEqual([["T85D0", "T8410"]]);
+      expect((await reg.record("A")).things?.productCode).toBe("T85D0");
+      expect(reg.thingDefault("A", "is_support_mqtt")).toBe("true");
+      expect((await reg.record("B")).things?.productCode).toBe("T8410");
     });
 
     it("resolves the description for the device: its firmware picks the variant", async () => {

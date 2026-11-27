@@ -4,8 +4,9 @@ import { P2PSession } from "../p2p-session.js";
 import { ResponseMessageType, frameMessage } from "../codec.js";
 
 /**
- * The app's CS2 alive (`cs2p2p_PPPP_thread_recv_DRW`): an ALIVE after each second nothing arrived from the peer,
- * the session closed as timed out once more than six go unanswered, anything received resetting the count.
+ * The app's CS2 alive (`cs2p2p_PPPP_thread_recv_DRW`): an ALIVE after each second without DRW data from the peer,
+ * the session closed as timed out once more than six go unanswered, DRW data, an ALIVE or an ALIVE ACK resetting the
+ * count.
  */
 const STATION_SN = "T8000P0000000000";
 const P2P_DID = "XXXXXXX-000000-XXXXX";
@@ -64,6 +65,40 @@ describe("a session's liveness, as the app's CS2 alive", () => {
       expect(alives() - before).toBe(9);
       await vi.advanceTimersByTimeAsync(1_000);
       expect(close).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("sends an ALIVE each second through ALIVE ACKs, and closes through DRW ACKs", async () => {
+    vi.useFakeTimers();
+    try {
+      const { built, internals } = session();
+      (built as unknown as { onAck: () => void }).onAck = vi.fn();
+      const close = vi.spyOn(built, "close").mockResolvedValue(undefined);
+      internals.connected = false;
+      (built as unknown as { onConnected(a: object, s: dgram.Socket): void }).onConnected(
+        internals.connectAddress!,
+        internals.socket,
+      );
+      const alives = () =>
+        vi
+          .mocked(internals.socket.send)
+          .mock.calls.filter(
+            ([b]) => Buffer.isBuffer(b) && (b as Buffer).subarray(0, 2).equals(Buffer.from([0xf1, 0xe0])),
+          ).length;
+      for (let i = 0; i < 4; i++) {
+        await vi.advanceTimersByTimeAsync(500);
+        receive(built, ResponseMessageType.PONG, "203.0.113.1");
+        await vi.advanceTimersByTimeAsync(500);
+      }
+      expect(alives()).toBe(4);
+      expect(close).not.toHaveBeenCalled();
+      for (let i = 0; i < 14; i++) {
+        await vi.advanceTimersByTimeAsync(500);
+        receive(built, ResponseMessageType.ACK, "203.0.113.1");
+      }
+      expect(close).toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }

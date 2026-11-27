@@ -2,6 +2,7 @@ import { frameCommand, qualityOf, thingRead, thingReadback, thingWrite, type Bun
 import { parseThingsList, type ThingDescription } from "../thing-description.js";
 import { power } from "./bundle-fixture.js";
 import type { CommandContext } from "../types.js";
+import type { Command } from "../../../core/contracts.js";
 
 const NOW = 1_700_000_000_000;
 beforeEach(() => vi.spyOn(Date, "now").mockReturnValue(NOW));
@@ -50,7 +51,7 @@ describe("frameCommand", () => {
     });
     expect(sent({ ai_detect_type: "5,4" })).toBeUndefined();
   });
-  it("fills $param tokens from the device's cached params: a JSON field, bits, the fallback, else refuses", () => {
+  it("fills $param tokens from the device's cached params: a JSON field, bits, the fallback, nothing without one", () => {
     const frame: BundleFrame = {
       cmd: 1350,
       body: "json1350",
@@ -58,8 +59,8 @@ describe("frameCommand", () => {
       subCmd: 1710,
       mValue3: 0,
       payload: {
-        notification_motion_onoff: "$param:1710.notification_motion_onoff??0",
-        notification_ring_onoff: "$param:1710.notification_ring_onoff??0",
+        notification_motion_onoff: "$param:1710.notification_motion_onoff",
+        notification_ring_onoff: "$param:1710.notification_ring_onoff",
         notification_style: 2,
       },
     };
@@ -72,7 +73,9 @@ describe("frameCommand", () => {
       notification_style: 2,
     });
     expect(sent(frame, { 1710: Buffer.from(cached).toString("base64") })).toMatchObject({ notification_ring_onoff: 1 });
-    expect(sent(frame, {})).toMatchObject({ notification_motion_onoff: 0, notification_ring_onoff: 0 });
+    expect(sent(frame, {})).toBeUndefined();
+    const guarded: BundleFrame = { ...frame, subCmd: 1298, payload: { ai_use_global: "$param:1298.ai_use_global??1" } };
+    expect(sent(guarded, {})).toEqual({ ai_use_global: 1 });
     const lock: BundleFrame = { ...frame, subCmd: 1919, payload: { mode: "$param:1919|4" } };
     expect(sent(lock, { 1919: "3" })).toEqual({ mode: 7 });
     expect(sent({ ...lock, payload: { mode: "$param:1919&~2" } }, { 1919: "3" })).toEqual({ mode: 1 });
@@ -94,6 +97,18 @@ describe("frameCommand", () => {
       channel: 3,
       mValue3: 0,
     });
+  });
+  it("carries a json1350 frame's notify, the one that confirms its 0 answer", () => {
+    const frame: BundleFrame = {
+      cmd: 1350,
+      body: "json1350",
+      channel: "$channel",
+      payload: { transaction: "$now" },
+      subCmd: 9502,
+      mValue3: 0,
+      notify: { cmd: 1351, subCmd: 9502 },
+    };
+    expect(frameCommand(frame, "1", ctx("T8162"))).toMatchObject({ cmd: 9502, notify: { cmd: 1351, subCmd: 9502 } });
   });
   it("sends a json1700 frame in the 1700 wrapper, and the frame after it as next", () => {
     const frame: BundleFrame = {
@@ -514,6 +529,19 @@ describe("bundled", () => {
     expect(
       onOff.readAliases.find((a) => a.paramType === 6250)!.available(ctx("T0001", { things: described, ...attached })),
     ).toBe(true);
+  });
+  it("takes the topology the bundles' getConnectType gives, and nothing on one the data lacks", async () => {
+    const { bundle } = await over(POWER);
+    const onOff = bundle.bundled(["camera_on_off"], 1035);
+    const behind = (stationSerial: string, outdoor?: string) =>
+      onOff.write(
+        true,
+        ctx("T0001", { things: described, stationSerial, paramValue: (p) => (p === 6271 ? outdoor : undefined) }),
+      );
+    expect(behind("T8010P0000000000")).toMatchObject({ cmd: 6250 });
+    expect(behind("T8010P0000000000", "1"), "outdoor mode").toMatchObject({ param: 1035 });
+    expect(behind("T8040P0000000000"), "HomeBase 4").toBeUndefined();
+    expect(behind("T8030P0100000000"), "HomeBase 3E").toBeUndefined();
   });
   it("writes the frame of the topology the device is on", async () => {
     const { bundle } = await over(POWER);
@@ -1182,15 +1210,38 @@ describe("the regenerated data's forms", () => {
     expect(read("ecl_mow_debug_panel_ack_result", 180, "00"), "the app's cut prefix").toBe('{"seq":0,"type":0}');
   });
 
-  it("leaves a $userId key to the transport", () => {
+  it("gives every frame of one write the write's transaction", () => {
+    vi.spyOn(Date, "now")
+      .mockReturnValueOnce(NOW)
+      .mockReturnValue(NOW + 7);
+    const frame = (subCmd: number): BundleFrame => ({
+      cmd: 1350,
+      body: "json1350",
+      channel: "$channel",
+      subCmd,
+      mValue3: 0,
+      payload: { value: "$value", transaction: "$now" },
+    });
+    const cmd = frameCommand({ ...frame(1277), next: [frame(6252)] }, 1, ctx("T8214")) as Command & { next: Command };
+    expect([cmd, cmd.next].map((c) => (c as { payload: { transaction: string } }).payload.transaction)).toEqual([
+      String(NOW),
+      String(NOW),
+    ]);
+  });
+  it("keeps a $userId account_id where the bundle puts it, for the transport to fill", () => {
     const frame: BundleFrame = {
-      cmd: 1271,
-      body: "json",
-      channel: 255,
-      payload: { account_id: "$userId", snooze_time: 900 },
+      cmd: 1700,
+      body: "json1700",
+      channel: "$channel",
+      subCmd: 6013,
+      payload: { account_id: "$userId", schedules: { loop: "$input.loop" }, transaction: "$now" },
     };
-    expect(frameCommand(frame, 1, ctx("T8214"))).toMatchObject({ kind: "set-json-raw", data: { snooze_time: 900 } });
-    expect((frameCommand(frame, 1, ctx("T8214")) as { data: object }).data).not.toHaveProperty("account_id");
+    expect(frameCommand(frame, JSON.stringify({ loop: [] }), ctx("T8214"))).toEqual({
+      kind: "set-json",
+      param: 6013,
+      data: { account_id: "$userId", schedules: { loop: [] }, transaction: String(NOW) },
+      channel: 3,
+    });
   });
 });
 
@@ -1322,7 +1373,7 @@ describe("legacy floodlight writes the app sends in Java", () => {
     expect(cmd).toEqual({
       kind: "set-json-raw",
       cmd: 1404,
-      data: { schedules },
+      data: { account_id: "$userId", schedules },
       channel: 255,
       stationAccount: true,
     });

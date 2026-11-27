@@ -223,12 +223,12 @@ describe("a station scalar that states its answer deadline", () => {
   });
 });
 
-describe("an acknowledged send", () => {
+describe("a command datagram", () => {
   it("goes once, and every 2 s only the oldest unacknowledged datagram goes again under its own sequence", () => {
     vi.useFakeTimers();
     const { real, sent, acknowledge } = session();
-    real.sendAcknowledged(() => real.sendBytes(Buffer.alloc(8), CHANNEL, PARAM));
-    real.sendAcknowledged(() => real.sendBytes(Buffer.alloc(8), CHANNEL, PARAM + 1));
+    real.sendBytes(Buffer.alloc(8), CHANNEL, PARAM);
+    real.sendStringPayloadCommand(PARAM + 1, "{}", CHANNEL);
     const [first, second] = sent();
     vi.advanceTimersByTime(1_999);
     expect(sent()).toHaveLength(2);
@@ -255,7 +255,7 @@ describe("an acknowledged send", () => {
       ["T8010P0000000000", 1],
     ] as const) {
       const { real, sent } = session(true, stationSn);
-      real.sendAcknowledged(() => real.sendBytes(Buffer.alloc(8), CHANNEL, PARAM));
+      real.sendBytes(Buffer.alloc(8), CHANNEL, PARAM);
       vi.advanceTimersByTime(1_449);
       expect(sent()).toHaveLength(0);
       vi.advanceTimersByTime(1);
@@ -327,5 +327,51 @@ describe("one command in flight per station", () => {
     const sent = session.sendBytes.mock.calls.map((c) => c[2]);
     expect(sent.filter((c) => c === 1224)).toHaveLength(1); // the handed-down one still goes, after the calls ahead
     expect(sent).toHaveLength(14);
+  });
+});
+
+describe("a write whose bundle descriptor reads its result from the notify (`ResultFrom.Notify`)", () => {
+  const notified = { kind: "set-payload", cmd: 2100, payload: { transaction: "42" }, channel: CHANNEL } as const;
+  const notify = { ...notified, notify: { cmd: 1351, subCmd: 2100 } } as const;
+
+  /** A station answering each 1350 with `code` on the device channel, then pushing `then` frames. */
+  function notifying(code: number, ...then: object[]) {
+    const session = Object.assign(connectedSession(), {
+      sendSetPayload: vi.fn(() => {
+        queueMicrotask(() => {
+          session.emit("commandResult", { code, channel: CHANNEL, commandId: 1350 });
+          for (const f of then) session.emit("data", { channel: CHANNEL, ...f });
+        });
+        return true;
+      }),
+    });
+    return routerWithSession(session);
+  }
+
+  it("succeeds on the 1351 notify after a 0 answer, matched by its transaction or its sub-command", async () => {
+    await expect(
+      notifying(0, { commandId: 1351, json: { cmd: 9, payload: { transaction: "42" } } }).dispatchCommand(
+        DEVICE_SN,
+        notify,
+      ),
+    ).resolves.toBe(true);
+    await expect(
+      notifying(0, { commandId: 1351, json: { cmd: 2100, payload: {} } }).dispatchCommand(DEVICE_SN, notify),
+    ).resolves.toBe(true);
+  });
+
+  it("takes a 0 answer with no notify as -40302 by the deadline, a 0 answer alone without a notify key", async () => {
+    vi.useFakeTimers();
+    const pending = notifying(0, { commandId: 1351, json: { cmd: 2101, payload: {} } })
+      .dispatchCommand(DEVICE_SN, notify)
+      .catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(await pending).toMatchObject({ commandId: 1350, code: -40302 });
+    vi.useRealTimers();
+    await expect(notifying(0).dispatchCommand(DEVICE_SN, notified)).resolves.toBe(true);
+  });
+
+  it("rejects a non-zero answer at once", async () => {
+    await expect(notifying(-108).dispatchCommand(DEVICE_SN, notify)).rejects.toMatchObject({ code: -108 });
   });
 });

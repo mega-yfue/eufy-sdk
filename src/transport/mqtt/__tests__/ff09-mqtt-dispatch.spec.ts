@@ -83,7 +83,7 @@ describe("MqttCommandRouter.dispatchCommand (ff09-actuate)", () => {
     ] as const) {
       const { router, fakeMqtt, cmd, getPnBySn } = makeRouter(sn, {});
       const p = router.dispatchCommand(sn, cmd);
-      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(15_000);
       await p;
       expect(vi.mocked(fakeMqtt.publish).mock.calls[0]![0]).toBe(`cmd/eufy_security/${pn}/${sn}/req`);
       expect(getPnBySn).toHaveBeenCalledTimes(calls);
@@ -94,19 +94,43 @@ describe("MqttCommandRouter.dispatchCommand (ff09-actuate)", () => {
     const getPnBySn = vi.fn().mockResolvedValue("T85D2");
     const { router, fakeMqtt, cmd } = makeRouter("T85D0K0000000000", {}, getPnBySn);
     const both = Promise.all([0, 1].map(() => router.dispatchCommand("T85D0K0000000000", cmd)));
-    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(15_000);
     await both;
     expect(vi.mocked(fakeMqtt.publish).mock.calls[1]![0]).toBe("cmd/eufy_security/T85D2/T85D0K0000000000/req");
     expect(getPnBySn).toHaveBeenCalledOnce();
     expect(getPnBySn).toHaveBeenCalledWith("T85D0K0000000000");
   });
 
-  it("resolves (does not throw) on timeout with no reply, reporting acked:false", async () => {
-    const { router, cmd, acks } = makeRouter();
+  it("asks get_pn_by_sn again on the next command after a failed or empty answer", async () => {
+    const getPnBySn = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce("")
+      .mockResolvedValue("T85D2");
+    const { router, fakeMqtt, cmd } = makeRouter("T85D0K0000000000", {}, getPnBySn);
+    for (let i = 0; i < 4; i++) {
+      const p = router.dispatchCommand("T85D0K0000000000", cmd);
+      await vi.advanceTimersByTimeAsync(15_000);
+      await p;
+    }
+    expect(vi.mocked(fakeMqtt.publish).mock.calls.map((c) => c[0].split("/")[2])).toEqual([
+      "T85D0",
+      "T85D0",
+      "T85D2",
+      "T85D2",
+    ]);
+    expect(getPnBySn).toHaveBeenCalledTimes(3);
+  });
+
+  it("sends once and resolves (does not throw) after 15 s with no reply, reporting acked:false", async () => {
+    const { router, fakeMqtt, cmd, acks } = makeRouter();
 
     const p = router.dispatchCommand("T85D0K0000000000", cmd);
-    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(14_999);
+    expect(acks).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
     await expect(p).resolves.toBe(false); // no ack is not an error, and not done
+    expect(fakeMqtt.publish).toHaveBeenCalledOnce();
 
     expect(acks).toEqual([{ sn: "T85D0K0000000000", kind: "ff09-actuate", acked: false }]);
   });
@@ -117,7 +141,7 @@ describe("MqttCommandRouter.dispatchCommand (ff09-actuate)", () => {
     const p = router.dispatchCommand("T85D0K0000000000", cmd);
     await vi.advanceTimersByTimeAsync(0);
     fakeMqtt.emit("message", { topic: "cmd/eufy_security/T85D0/T85D0K0000000000/req" }); // not /res
-    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(15_000);
     await p;
 
     expect(acks).toEqual([{ sn: "T85D0K0000000000", kind: "ff09-actuate", acked: false }]);
@@ -129,7 +153,7 @@ describe("MqttCommandRouter.dispatchCommand (ff09-actuate)", () => {
     const p = router.dispatchCommand("T85D0K0000000000", cmd);
     await vi.advanceTimersByTimeAsync(0);
     fakeMqtt.emit("message", { topic: "cmd/eufy_security/T85D0/T85D0K0000000000/res", raw: { head: { cmd: 9 } } });
-    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(15_000);
     await p;
 
     expect(acks).toEqual([{ sn: "T85D0K0000000000", kind: "ff09-actuate", acked: false }]);

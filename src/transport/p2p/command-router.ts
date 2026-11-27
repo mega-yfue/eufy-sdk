@@ -40,7 +40,7 @@ import { adminUserIdOf, memberAccountId } from "../../core/member.js";
 import { setTimeout as sleep } from "node:timers/promises";
 import { CONNECT_TIMEOUT_MS, P2PSession, STATION_CHANNEL, type P2PFrame } from "./p2p-session.js";
 import { buildDirectBinaryBody, buildStringBody } from "./write-commands.js";
-import { buildDoorlockPassThrough, sealStationPayload } from "./doorlock-pass-through.js";
+import { buildDoorlockPassThrough, LOCK_CMD_ON_OFF, sealStationPayload } from "./doorlock-pass-through.js";
 import { CommandType } from "./commands.js";
 import {
   buildFf09Frame,
@@ -138,6 +138,51 @@ const RTSP_URL_READ_TIMEOUT_MS = 30_000;
  */
 const WRITE_ANSWER = { timeoutMs: 30_000, retries: 1, retryWindowMs: 10_000, retryCodes: [1, 20] } as const;
 
+/** `ESCodeCmd.TIMEOUT_NOTIFY`: the device answered `0` and no matching notify came within the request's window. */
+const NOTIFY_TIMEOUT = -40302;
+
+/** A JSON object of a notify, `{}` for anything else. */
+const objectOf = (x: unknown): Record<string, unknown> =>
+  x && typeof x === "object" && !Array.isArray(x) ? (x as Record<string, unknown>) : {};
+
+/**
+ * Whether `f` is the notify a `ResultFrom.Notify` request waits for, as `KmmP2PClient.isNotifyMatches` reads the map
+ * `AndroidP2PReceiver` builds: `cmd` the frame's command, `subCmd` and `payload` a 1351's JSON `cmd` and `payload`
+ * (0 and `{}` otherwise), `payload.payload` the payload's own, or another frame's JSON. The request's `transaction`
+ * in `payload` or `payload.payload` matches at once. Otherwise: a 1306 naming another transaction does not; the
+ * channel must be the request's (255 for a request on 0) unless `ignoreChannel` or the frame is 1039; the command
+ * `notify.cmd` or the one after it; `notify.subCmd`, where set, `subCmd` or `payload.cmd` (for a 1351 request
+ * always, else where either is set); the request's `payloadCmd`, where set, `payload.payload.cmd` or `payload.cmd`
+ * where either is set.
+ */
+function notifyMatches(
+  f: P2PFrame,
+  key: {
+    cmd: number;
+    subCmd: number;
+    channel: number;
+    transaction?: unknown;
+    payloadCmd?: unknown;
+    ignoreChannel: boolean;
+  },
+): boolean {
+  const pushed = f.commandId === CommandType.CMD_NOTIFY_PAYLOAD;
+  const payload = pushed ? objectOf(f.json?.payload) : {};
+  const inner = pushed ? objectOf(payload.payload) : objectOf(f.json);
+  const sub = pushed ? Number(f.json?.cmd) || 0 : 0;
+  const [cmd, innerCmd] = [Number(payload.cmd) || 0, Number(inner.cmd) || 0];
+  const tx = key.transaction === undefined ? undefined : String(key.transaction);
+  if (tx !== undefined && (String(payload.transaction) === tx || String(inner.transaction) === tx)) return true;
+  if (f.commandId === 1306 && inner.transaction && String(inner.transaction) !== tx) return false;
+  const channel = key.ignoreChannel || f.commandId === 1039 || f.channel === key.channel;
+  if (!channel && !(key.channel === 0 && f.channel === STATION_CHANNEL)) return false;
+  if (f.commandId !== key.cmd && f.commandId !== key.cmd + 1) return false;
+  const named = key.cmd === CommandType.CMD_NOTIFY_PAYLOAD || sub || cmd;
+  if (key.subCmd && named && key.subCmd !== sub && key.subCmd !== cmd) return false;
+  const p = Number(key.payloadCmd) || 0;
+  return !(p && (innerCmd || cmd) && p !== innerCmd && p !== cmd);
+}
+
 /**
  * How the app's native call reads a command's answer (`zx_p2p_get_exec_result`): each channel-0 frame is awaited up
  * to 20 s (35 s for commands 1001, 1003, 1054 and 1060); a silent wait ends with `PPCS_TIME_OUT` (-3), and the 20th
@@ -156,6 +201,15 @@ const NATIVE_ANSWER = {
 
 /** How long the app's request queue holds a station after a hand-down without the call's result (`KmmP2PClient`). */
 const REQUEST_SLOT_MS = 500;
+
+/**
+ * Serial prefixes of the stations the app does not reconnect when their session ends (`getConnectBlackList`, which
+ * `P2PWatchDog` skips on a 1044). Every other station whose session ends after it connected is connected again at once.
+ */
+const NO_RECONNECT_PREFIXES = (
+  "T8130 T8131 T8122 T8123 T8124 T8134 T8B00 T8170 T8171 T8173 T8790 T8214 T7401 T7400 T8510 T8520 T8500 T8501 " +
+  "T8503 T8502 T8506 T8531 T85V0 T87B0 T87B1 T87B2 T87B3 T87B4 T87B5 T8150 T8151 T8152 T8153 T86P2 T8110 T8115 T814X"
+).split(" ");
 
 /**
  * How long a talkback waits for an audio frame, counted from the first frame of either kind its media session
@@ -548,7 +602,9 @@ export class P2PCommandRouter {
    * int, so 136 zero bytes, sent through the session's sender like any command.
    *
    * The `close` handler drops the session from the {@link SessionManager} and disposes any shared live
-   * source riding this station (consumers get `stop`; a later attach rebuilds via the factory).
+   * source riding this station (consumers get `stop`; a later attach rebuilds via the factory). A station session
+   * that ends on its own after it connected, the app's 1044, is opened again at once unless its serial is on
+   * {@link NO_RECONNECT_PREFIXES}.
    */
   private makeSession(
     stationSn: string,
@@ -584,12 +640,16 @@ export class P2PCommandRouter {
       });
       return session;
     }
+    let connected = false;
     session.on("connect", () => {
+      connected = true;
       if (this.manager.get(stationSn) === session) this.deps.onConnect(stationSn);
     });
     session.on("close", () => {
       if (this.manager.get(stationSn) !== session) return;
       this.tearDownStation(stationSn);
+      if (connected && !NO_RECONNECT_PREFIXES.some((prefix) => stationSn.startsWith(prefix)))
+        void this.prewarm(stationSn, 0);
     });
     session.on("level2Ready", ({ cipherId }: { cipherId: number }) => this.deps.onLevel2Ready(stationSn, cipherId));
     session.on("peerAnswer", (atMs: number) => {
@@ -598,18 +658,28 @@ export class P2PCommandRouter {
     return session;
   }
 
-  /** A frame from a station's session: a `P2P_SEQ` notify moves {@link keyedSeq} on, then the client decodes it. */
+  /**
+   * A frame from a station's session: a `P2P_SEQ` notify moves {@link keyedSeq} on, sets the station's
+   * {@link passThroughSeq} to its `seq_num` and resends the station's last pass-through of its `lock_cmd`, as the app's
+   * `ESLStationP2PService.onReceiveSquNum` does; then the client decodes it.
+   */
   private onStationFrame(stationSn: string, f: P2PFrame): void {
     const mark = keyedPayloadSeqMark(f.json);
-    if (mark !== undefined) this.keyedSeq = mark + 1;
+    if (mark !== undefined) {
+      this.keyedSeq = mark + 1;
+      this.passThroughSeq.set(stationSn, mark);
+      const lockCmd = (f.json!.payload as { lock_cmd?: unknown }).lock_cmd;
+      const resend = typeof lockCmd === "number" ? this.passThroughSent.get(stationSn)?.get(lockCmd) : undefined;
+      if (resend) void resend().catch((e) => this.reportError(e));
+    }
     this.deps.onFrame(stationSn, f);
   }
 
   /**
    * The private key of `cipherId` for a gateway info of `version`, as the app's `ConnectKeyFactory` gets it:
    * from the cache under `${userId}_${cipherId}`, else from `data[0]` of a `get_ciphers` call, asked at most twice
-   * while no key comes back. Version 8 asks with `station_sn` and keeps `ecc_private_key`; any other version asks
-   * with `sn` and keeps `private_key`. Only a non-empty key is cached.
+   * while no key comes back; a call that fails ends the lookup. Version 8 asks with `station_sn` and keeps
+   * `ecc_private_key`; any other version asks with `sn` and keeps `private_key`. Only a non-empty key is cached.
    */
   private async cipherKeyFor(
     cipherId: number,
@@ -620,17 +690,17 @@ export class P2PCommandRouter {
     const cacheKey = `${userId}_${cipherId}`;
     if (this.cipherKeyCache.has(cacheKey)) return this.cipherKeyCache.get(cacheKey);
     const ecc = version === 8;
-    for (let pass = 0; pass < 2; pass++) {
-      try {
+    try {
+      for (let pass = 0; pass < 2; pass++) {
         const [cipher] = await this.deps.mega.getCiphers([cipherId], userId, stationSn, ecc ? "station_sn" : "sn");
         const key = ecc ? cipher?.ecc_private_key : cipher?.private_key;
         if (key) {
           this.cipherKeyCache.set(cacheKey, key);
           return key;
         }
-      } catch (e) {
-        this.deps.onError(e instanceof Error ? e : new Error(String(e)));
       }
+    } catch (e) {
+      this.deps.onError(e instanceof Error ? e : new Error(String(e)));
     }
     return undefined;
   }
@@ -803,6 +873,7 @@ export class P2PCommandRouter {
             cmd.counter,
             cmd.answerMs,
             cmd.stationAccount,
+            cmd.notify,
           )) === true
         );
       case "p2p-station-scalar":
@@ -1443,11 +1514,7 @@ export class P2PCommandRouter {
       // sendSetPayload can throw synchronously (e.g. "not connected"); clean up the listener + timer
       // so they don't dangle until the timeout, then propagate the failure.
       try {
-        const sent = session.sendAcknowledged(() => {
-          session.sendSetPayload(subCmd, opts.payload ?? {}, { accountId, channel });
-          return true;
-        });
-        if (!sent) throw new Error("p2p query send failed");
+        session.sendSetPayload(subCmd, opts.payload ?? {}, { accountId, channel });
       } catch (e) {
         cleanup();
         reject(e instanceof Error ? e : new Error(String(e)));
@@ -1488,14 +1555,11 @@ export class P2PCommandRouter {
       };
       session.on("data", onData);
       try {
-        session.sendAcknowledged(() => {
-          session.sendStringPayloadCommand(
-            P2P_ENVELOPE.CONTROL_PAYLOAD,
-            JSON.stringify({ commandType: param, data }),
-            channel,
-          );
-          return true;
-        });
+        session.sendStringPayloadCommand(
+          P2P_ENVELOPE.CONTROL_PAYLOAD,
+          JSON.stringify({ commandType: param, data }),
+          channel,
+        );
       } catch (e) {
         cleanup();
         reject(e instanceof Error ? e : new Error(String(e)));
@@ -1745,11 +1809,9 @@ export class P2PCommandRouter {
   }
 
   /**
-   * **`set-json-raw` intent** — bare JSON, no envelope: outer P2P cmd = `outerCmd` itself, plaintext
-   * exactly `{account_id,...data}`, sealed by the session. Reversed from a live
-   * capture of the app's own SET_SNOOZE_TIME (1271) frame — see `param-dictionary.ts`'s `1271` entry
-   * (`snoozeTime`); the alarm-delay config (1255, `arming.ts`'s `ARMING_CMD.SET_ALL_ACTION`) reuses
-   * the same bare-JSON shape. `station` sends the station's member account id.
+   * **`set-json-raw` intent** — bare JSON, no envelope: outer P2P cmd = `outerCmd` itself, plaintext `data`, a
+   * `"$userId"` in it the account id, and for 1255 `account_id` after it, as the app's sender adds it to that one
+   * command alone; sealed by the session. `station` sends the station's member account id.
    */
   private async sendJsonRaw(
     sn: string,
@@ -1765,7 +1827,7 @@ export class P2PCommandRouter {
         const accountId = station ? zmediaAccountId : admin;
         return session.sendStringPayloadCommand(
           outerCmd,
-          withUser({ account_id: accountId, ...data }, accountId),
+          withUser(outerCmd === 1255 ? { ...data, account_id: accountId } : data, accountId),
           channel,
         );
       },
@@ -1793,7 +1855,11 @@ export class P2PCommandRouter {
     counter?: "bump" | "current",
     answerMs?: number,
     station = false,
+    notify?: { cmd: number; subCmd: number },
   ): Promise<boolean | void> {
+    const fields = Array.isArray(payload) ? {} : (payload as Record<string, unknown>);
+    const single = (r: ResolvedSession) =>
+      r.parentSn === sn && !this.deps.listDevices().some((d) => d.sn !== sn && d.stationSn === sn);
     return this.sendAnswered(
       sn,
       P2P_ENVELOPE.SET_PAYLOAD,
@@ -1808,6 +1874,16 @@ export class P2PCommandRouter {
       resolved,
       !answered,
       answerMs,
+      undefined,
+      notify &&
+        ((f, r) =>
+          notifyMatches(f, {
+            ...notify,
+            channel,
+            transaction: fields.transaction,
+            payloadCmd: fields.cmd,
+            ignoreChannel: single(r),
+          })),
     );
   }
 
@@ -1832,10 +1908,7 @@ export class P2PCommandRouter {
         seqNum: this.keyedSeq++,
       });
       const code = await this.awaitKeyedReply(sn, session, channel, cmd.engage, () =>
-        session.sendAcknowledged(() => {
-          session.sendSetPayload(CommandType.P2P_ON_OFF_LOCK, payload, { accountId, channel, key });
-          return true;
-        }),
+        session.sendSetPayload(CommandType.P2P_ON_OFF_LOCK, payload, { accountId, channel, key }),
       );
       if (code !== 0) throw new Error(`keyed-payload command rejected by ${sn} with code ${code}`);
     });
@@ -1891,7 +1964,7 @@ export class P2PCommandRouter {
   /**
    * Send one command and settle it on the device's answer, through the app's two per-station queues: the request
    * queue ({@link enqueueRequest}) hands it down, the call queue ({@link serializeAnswered}) sends it once
-   * ({@link P2PSession.sendAcknowledged}) and reads its answer as the app's native call does ({@link readAnswer}),
+   * and reads its answer as the app's native call does ({@link readAnswer}),
    * holding the station until then. The request settles within {@link WRITE_ANSWER}'s deadline counted from
    * here, as `KmmP2PClient.request` bounds its wait, while the call goes on reading in the station's queue.
    *
@@ -1907,6 +1980,11 @@ export class P2PCommandRouter {
    * Absent `resolved`, the session is resolved here. A session that closed before a call is resolved afresh,
    * waiting for its connect, and the call goes on the new one.
    *
+   * With `notify` (`ResultFrom.Notify`, `KmmP2PClient.dealP2PCallback`), a `0` answer is provisional: the request
+   * succeeds on the first frame `notify` accepts from the send on, whatever the answer, and rejects with
+   * {@link NOTIFY_TIMEOUT} when an answer came and no such frame by the deadline; the station's queue is released on
+   * the answer, as the app's is.
+   *
    * @param send sends the command once on the session it is given; `false` is a command that was never sent.
    */
   private sendAnswered(
@@ -1917,6 +1995,7 @@ export class P2PCommandRouter {
     unread = false,
     answerMs?: number,
     windowMs?: number,
+    notify?: (f: P2PFrame, r: ResolvedSession) => boolean,
   ): Promise<boolean | void> {
     const answer = answerMs === undefined ? WRITE_ANSWER : { ...WRITE_ANSWER, timeoutMs: answerMs, retries: 0 };
     const { timeoutMs, retries, retryWindowMs, retryCodes } =
@@ -1925,9 +2004,16 @@ export class P2PCommandRouter {
     let dispatched!: () => void;
     const sent = new Promise<void>((resolve) => (dispatched = resolve));
     const answered = new Promise<boolean>((resolve, reject) => {
-      const deadline = setTimeout(() => reject(new CommandResultError(sn, commandId, undefined, timeoutMs)), timeoutMs);
+      let replied = false;
+      let unhear = (): void => {};
+      const deadline = setTimeout(
+        () =>
+          settle(() => reject(new CommandResultError(sn, commandId, replied ? NOTIFY_TIMEOUT : undefined, timeoutMs))),
+        timeoutMs,
+      );
       const settle = (outcome: () => void): void => {
         clearTimeout(deadline);
+        unhear();
         outcome();
       };
       this.enqueueRequest(station, Date.now(), timeoutMs, (release) => {
@@ -1939,8 +2025,16 @@ export class P2PCommandRouter {
             // `P2PConnectInterceptor`: a request whose station is not connected connects first, inside the request.
             if (!r.session.isConnected) await this.awaitConnected(r.session, r.parentSn);
             const target = r;
+            if (notify) {
+              unhear();
+              const on = (f: P2PFrame): void => {
+                if (notify(f, target)) settle(() => resolve(true));
+              };
+              target.session.on("data", on);
+              unhear = () => target.session.off("data", on);
+            }
             return this.readAnswer(target.session, commandId, () => {
-              if (!target.session.sendAcknowledged(() => send(target) !== false)) {
+              if (send(target) === false) {
                 throw new Error(`command ${commandId} for ${sn} was never sent (session not connected)`);
               }
               dispatched();
@@ -1950,6 +2044,7 @@ export class P2PCommandRouter {
               const retryable = code >= retryCodes[0] && code <= retryCodes[1] && tries < retries;
               if (retryable && Date.now() - started < retryWindowMs) return call(tries + 1);
               release();
+              if (code === 0 && notify) return void (replied = true);
               settle(() =>
                 code === 0 ? resolve(true) : reject(new CommandResultError(sn, commandId, code, timeoutMs)),
               );
@@ -2173,13 +2268,20 @@ export class P2PCommandRouter {
     return { lock_payload: frame.lockPayload, seq_num: seqNum, apiCommand: lock.apiCommand, time: frame.time };
   }
 
+  /** Per station, the last pass-through `seq_num` (`ESLSeqNumManager`); unseen, the clock in seconds. */
+  private readonly passThroughSeq = new Map<string, number>();
+  /** Per station, the last pass-through sent per `lock_cmd`, kept to be sent again on a `P2P_SEQ` notify. */
+  private readonly passThroughSent = new Map<string, Map<number, () => Promise<void>>>();
+
   /**
    * **`doorlock-pass-through-actuate` intent** — `CMD_DOORLOCK_DATA_PASS_THROUGH` inside the
-   * `CMD_SET_PAYLOAD` envelope, `mValue3=0`, on the lock's channel of the station it is paired to, its
+   * `CMD_SET_PAYLOAD` envelope, `mValue3=0`, on channel 0 of the station the lock is paired to, its
    * `payload` the sealed blob from {@link buildDoorlockPassThrough} keyed to that station and the
-   * lock's member, as the app's `ESLStationP2PService.r` does. Sent once: the blob carries its own sequence number,
-   * the clock in seconds + 1 as the app sends it. The key's admin id and the TLV's short user id are the lock's
-   * member (`ESLStationAesManager.a(AnkerAccountManager.e(lockSn), stationSn)`, read here off the lock's record, and
+   * lock's member, as the app's `ESLStationP2PService.r` does. The blob carries the station's next
+   * {@link passThroughSeq}, and a `P2P_SEQ` notify naming its `lock_cmd` sends it again under the station's new one
+   * ({@link onStationFrame}). A station on firmware `2.1.2.2l_1.3` takes it AES-128-ECB. The key's admin id and the
+   * TLV's short user id are the lock's member
+   * (`ESLStationAesManager.a(AnkerAccountManager.e(lockSn), stationSn)`, read here off the lock's record, and
    * `OnOffRequestPayload.shortUserId`, which the intent carries); only the envelope's account id is the station's (`AccountDelegate.m(stationSn)`). The
    * `short_user_id` is hex, as on the `ff09` path, and anything but four hex digits throws rather than writing the
    * wrong user. The name is the intent's account name, the app's `AccountDelegate.i()`. Sealed by the session like
@@ -2190,39 +2292,43 @@ export class P2PCommandRouter {
     cmd: Extract<Command, { kind: "doorlock-pass-through-actuate" }>,
   ): Promise<void> {
     const resolved = await this.resolveSession(sn);
-    const { parentSn, channel } = resolved;
+    const { parentSn } = resolved;
     if (!/^[0-9a-fA-F]{4}$/.test(cmd.shortUserId)) {
       throw new Error(
         `door-lock pass-through: ${sn} has no 4-digit hex short_user_id, got ${JSON.stringify(cmd.shortUserId)}`,
       );
     }
-    const blob = buildDoorlockPassThrough({
-      engage: cmd.engage,
-      adminUserId: memberAccountId(this.recordFor(sn)?.raw, this.deps.mega.auth?.userId),
-      shortUserId: Number.parseInt(cmd.shortUserId, 16),
-      nickname: cmd.username,
-      stationSn: parentSn,
-      seqNum: Math.trunc(Date.now() / 1000) + 1,
-    });
-    (this.deps.logger ?? noopLogger).debug(
-      `[p2p] ${parentSn} door-lock pass-through ${cmd.engage ? "lock" : "unlock"} ${sn} ch=${channel}`,
-    );
-    await this.sendAnswered(
-      sn,
-      P2P_ENVELOPE.SET_PAYLOAD,
-      ({ session, zmediaAccountId }) =>
-        session.sendSetPayload(
-          CommandType.CMD_DOORLOCK_DATA_PASS_THROUGH,
-          { payload: blob },
-          {
-            accountId: zmediaAccountId,
-            channel,
-            mValue3: 0,
-          },
-        ),
-      resolved,
-      true,
-    );
+    const send = async () => {
+      const seqNum = (this.passThroughSeq.get(parentSn) ?? Math.trunc(Date.now() / 1000)) + 1;
+      this.passThroughSeq.set(parentSn, seqNum);
+      const blob = buildDoorlockPassThrough({
+        engage: cmd.engage,
+        adminUserId: memberAccountId(this.recordFor(sn)?.raw, this.deps.mega.auth?.userId),
+        shortUserId: Number.parseInt(cmd.shortUserId, 16),
+        nickname: cmd.username,
+        stationSn: parentSn,
+        seqNum,
+        ecb: (this.recordFor(parentSn)?.raw as Record<string, unknown> | undefined)?.main_sw_version === "2.1.2.2l_1.3",
+      });
+      (this.deps.logger ?? noopLogger).debug(
+        `[p2p] ${parentSn} door-lock pass-through ${cmd.engage ? "lock" : "unlock"} ${sn} seq=${seqNum}`,
+      );
+      await this.sendAnswered(
+        sn,
+        P2P_ENVELOPE.SET_PAYLOAD,
+        ({ session, zmediaAccountId }) =>
+          session.sendSetPayload(
+            CommandType.CMD_DOORLOCK_DATA_PASS_THROUGH,
+            { payload: blob },
+            { accountId: zmediaAccountId, channel: 0, mValue3: 0 },
+          ),
+        resolved,
+        true,
+      );
+    };
+    const sent = this.passThroughSent.get(parentSn) ?? new Map<number, () => Promise<void>>();
+    this.passThroughSent.set(parentSn, sent.set(LOCK_CMD_ON_OFF, send));
+    await send();
   }
 
   /**
