@@ -3,7 +3,7 @@
 **Owns:** the shared floor every layer may import.
 
 - `contracts.ts` — the transport boundary vocabulary (`Command`, `CommandSink`, `MediaProvider`,
-  `ScalarForm`, structural `LiveStreamHandle`/`LiveVideoFrame`). Produced by capabilities, consumed by
+  structural `LiveStreamHandle`/`LiveVideoFrame`). Produced by capabilities, consumed by
   transport — belongs to neither, so it lives here. It also holds the **injected-provider** interfaces
   that run the other way (`MediaProvider`, `RawDpCodec`, `DpInboundFrame`): transport implements them,
   the facade injects them at `bindActions`, a capability consumes them. That inversion is how the two

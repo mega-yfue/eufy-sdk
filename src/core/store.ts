@@ -20,6 +20,8 @@ import {
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { RegionShard } from "../transport/http/mega-client.js";
+import type { SecureMqttCredentials } from "../transport/mqtt/secure-mqtt.js";
+import type { RtcToken } from "../transport/rtc/signal-client.js";
 
 /**
  * The persisted session record. Internal shape — a host supplies a `SessionStore`, never builds this.
@@ -37,11 +39,19 @@ export interface PersistedSession {
   accountUserId?: string;
   authToken: string;
   geoKey?: string;
+  /** The login reply's `nick_name`, as the app caches its passport data. */
+  nickName?: string;
   region: RegionShard;
   /** The `countryCode` the session was logged in with; a different configured one logs in again. */
   countryCode?: string;
-  /** The host `estimate_domain` answered; it names shards the region classification cannot (`ie`). */
-  estimatedDomain?: string;
+  /** `estimate_domain`'s `product_domains.eufy_security`, the app's Security category host. */
+  securityDomain?: string;
+  /** `estimate_domain`'s `product_domains.eufy_home`, the app's Home category host. */
+  homeDomain?: string;
+  /** `estimate_domain`'s `domain`, the app's Basic host, cached with the session as the app caches it. */
+  megaDomain?: string;
+  /** The security certificate `register/iot` last issued, cached per account as the app caches it. */
+  securityMqtt?: SecureMqttCredentials;
   openudid: string;
   /** This install's reported device model + media user-agent, generated once and reused. */
   phoneModel?: string;
@@ -52,6 +62,10 @@ export interface PersistedSession {
   /** Unix seconds when the auth token expires (0 = unknown). */
   tokenExpiresAt: number;
   savedAt: number;
+  /** The last thing description of each product, as `get_things_list` returned it. */
+  things?: unknown[];
+  /** The RTC signalling login and server list of each station, as the vendor app caches them (`sp_webrtc[<sn>]`, `sp_webrtc_servers[<sn>]`). */
+  rtc?: Record<string, RtcToken>;
 }
 
 /**

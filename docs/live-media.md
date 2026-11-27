@@ -37,17 +37,11 @@ A camera behind a HomeBase reads the station's inbound feed, and the station **t
 the camera it belongs to**; the SDK matches on that, so each handle receives only its own camera's video and
 audio.
 
-One session serves one camera at a time — a station answers the most recent media start on it — so a live
-pull that finds the station's own session already carrying one gets **a connection of its own**, and several
-cameras on one HomeBase stream at full rate together. Measured on two attached cameras, one at 3840×2160:
-both held ~15 fps for the length of the run, where the same pair down one session could only take turns.
-
-A HomeBase 3 (T8030) can keep serving the camera it last served on a session, so there every live pull of an
-attached camera gets a connection of its own, even when the station's session is free.
-
-A **still** never opens a connection of its own: it wants one frame, and a socket plus a key negotiation per
-thumbnail is not worth it. So a still asked for while a sibling is being watched still yields, and the
-retained image answers it.
+Every camera behind a station streams over the station's one session, as the app holds one connection per
+station serial. A host showing a camera wall sets `sessionPerCamera: true`: each camera's live pull then opens a
+connection of its own to the station (a P2P connection, or a PM call on the station's RTC client), carrying that
+camera's media alone, closed with its pull; off by default. A pull lingering for a camera nobody watches is released when another camera starts, and a
+still asked for while a sibling is being watched yields: the retained image answers it.
 
 Worth knowing:
 
@@ -63,27 +57,9 @@ Worth knowing:
 ## Cameras behind a T8N00
 
 T8E00, T8P00, T8P10, T8162, T8410 and T8214 cameras attached to a T8N00 support `live()`,
-`openReadable()` and `snapshotLive()`. `live()` delivers H.265 video and AAC-LC or G.711 A-law audio;
+`openReadable()` and `snapshotLive()`. `live()` delivers H.265 video and Opus audio;
 `openReadable()` provides video, and `snapshotLive()` captures a fresh still.
-Recording and talkback are not implemented for this route.
-
-`cam.views?.()` reports the optical view identifiers supported by this route: `[0, 1]`
-for the dual-lens T8E00 S4 and `[0]` for every other camera. On the S4, view `0` is fixed
-and view `1` is movable. Omitting `view` selects `0`.
-
-```ts
-const views = cam?.views?.();
-const fixed = await cam?.live?.({ view: 0 });
-const movable = await cam?.live?.({ view: 1 });
-fixed?.stop();
-movable?.stop();
-```
-
-`live`, `openReadable` and `snapshotLive` accept the same `view` option. Different
-views own independent calls; repeated consumers of one view share its source.
-Stopping one view leaves the other running. An unsupported view rejects with
-`RangeError` before connecting. A secondary-view live snapshot failure propagates
-without substituting a stored thumbnail, whose optical view is unknown.
+Recording is not implemented for this route; talkback takes Opus.
 
 ## 1. Event stream (low-level)
 
@@ -104,8 +80,9 @@ stream.on("video", (frame) => {
   // frame.sourceTimestamp  optional source-reported u32 timestamp; unit/clock origin unspecified
 });
 stream.on("audio", (frame) => {
-  // frame.codec   "aac-lc" | "aac-eld" | "g711a"
-  // frame.data    one ADTS frame (aac-lc), one raw access unit (aac-eld), raw A-law samples (g711a)
+  // frame.codec   "aac-lc" | "aac-eld" | "g711a" | "opus"
+  // frame.data    one ADTS frame (aac-lc), one raw access unit (aac-eld), raw A-law samples (g711a),
+  //               one Opus packet (opus, RTC routes: the offer's 48 kHz stereo payload type 111)
   // frame.config  the AudioSpecificConfig that decodes frame.data — present for aac-eld only
   consumeAudio(frame.codec, frame.data);
 });
@@ -203,7 +180,9 @@ this touches the shared pull or any peer consumer.
 The two codecs reach you differently. **Video** `codec` is sniffed off the parameter sets on a keyframe
 and carried on the delta frames that follow, so every frame carries one even though only keyframes have
 config to sniff. **Audio** `codec` is declared by the station in each frame's header, so it is read
-rather than inferred — and read on every frame, because the device is free to change it mid-stream.
+rather than inferred — and read on every frame, because the device is free to change it mid-stream. A
+station on the app's RTC client sends `opus` only, the one audio codec of the app's offer; so does every camera of a
+HomeBase 3 or T8025 whose sub-device list names one of its cameras, which the app plays on that client too.
 
 Audio carries **no sample rate and no channel count** of its own: neither is on the wire. The eufy app
 assumes 16 kHz mono for all three codecs, and a host that needs those numbers for `aac-lc` or `g711a` is
@@ -287,6 +266,11 @@ const stream = await cam?.live?.({ preBufferSeconds: 10 });
 An egress that omits it is not opting out — it leaves the choice to whoever got there first, so a still
 polled on an idle camera opens a pull retaining nothing and a recording seconds later has nothing to drain,
 however much it asks for. Pass the same window on every egress a device uses, or none of them.
+
+`entryType` is the live start's `LiveTypeAndroid` value, fixed when the pull opens like the window above: 0
+(default) is the app's plain player, 1-11 its setup screens: 1 Hotspot, 2 StandingPosition, 3 CruisePreview,
+4 Privacy, 5 PanTiltSpeedSetting, 6 NoPackageAreaSetting, 7 NoPackageThingSetting, 8 LandscapeMode, 9 SignalTest,
+10 OutSightDetection, 11 PrivacyPerspective. Only products whose bundle forwards it send it.
 
 ## Snapshots
 
@@ -406,7 +390,7 @@ transfer runs faster than real time: a 12.8 s recording took about 6 s on a Home
 
 A row of the station's recording archive (`history_record_info`, as `session.queryRecordPage` answers it on a
 HomeBase 2 and `eufy.readStationTable` on a HomeBase 3) names the recording by its `storage_path` and
-`cipher_id`. A HomeBase 3 row's `storage_path` looks like
+`cipher_id`, and the account its cipher is looked up under by `account`. A HomeBase 3 row's `storage_path` looks like
 `/zx/emmcdata/Camera02/202601/20260101120000/20260101120000.zxvideo`, and its `cipher_id` is 0. A HomeBase 2
 archive row can name a cipher id above 24 bits, which resolves through its low byte. The same derivation gives
 the recording name and cipher id on both stations:
@@ -421,6 +405,7 @@ for (const row of rows) {
   const clip = await cam?.downloadRecording?.({
     recording: path.posix.parse(row.storage_path).name,
     cipherId: row.cipher_id > 0xffffff ? row.cipher_id & 0xff : row.cipher_id,
+    cipherUserId: row.account,
   });
 }
 ```
@@ -448,15 +433,17 @@ partial recording.
 present only on a camera that reported a speaker, so guard it like the other optional media methods
 (the snippets below assert it once with `!` rather than repeating the guard on each line).
 
-The handle says which codec the speaker plays: `talk.codec`. It is `aac-eld` on a T8410C that
-sends `aac-eld`, and `aac-lc` on every other camera, including another model that sends
-`aac-eld`, whose speaker codec is not evidenced.
+The handle says which codec the speaker plays: `talk.codec`. It is `opus` on a station the app reaches
+over its RTC client (and on those HomeBase 3 / T8025 cameras), else `aac-eld` on a T8410C that sends `aac-eld`, and `aac-lc` on every other camera,
+including another model that sends `aac-eld`, whose speaker codec is not evidenced.
 
 - `aac-lc`: **AAC-LC, 16 kHz, mono, in ADTS frames**, through `write()` / `writable()`. Chunk
   boundaries don't matter; frames are recovered from the stream.
 - `aac-eld`: one raw AAC-ELD access unit with LD-SBR (16 kHz, mono, 512 samples) per `write()`, or
   per write to `writable()`, which is object-mode for this codec. A T8410C that sends `aac-eld`
   does not play `aac-lc`.
+- `opus`: one 20 ms Opus packet (48 kHz) per `write()` or object-mode `writable()` write. It rides the
+  camera's live view, which it opens and holds, and starts once that view shows video.
 
 An `aac-lc` stream at another rate or channel count is rejected with an `error` rather than
 resampled (it would play at the wrong pitch and speed, or not at all). An `aac-eld` unit longer
@@ -564,7 +551,7 @@ stream.on("budget", (notice) => {
 Defaults: 45 s budget, 10 s grace. A host tunes only the **timings** (not the power decision):
 
 ```ts
-await cam?.live?.({ batteryBudgetMs: 8000, budgetGraceMs: 5000, keepAliveMs: 3000 });
+await cam?.live?.({ batteryBudgetMs: 8000, budgetGraceMs: 5000 });
 ```
 
 A wired camera ignores all of this and streams until you `stop()`.
@@ -578,19 +565,17 @@ session idle-detaches so a battery device sleeps — see [Connectivity & battery
 - **UDP retransmissions.** Each data type is sequenced independently. Duplicate and stale datagrams are
   acknowledged and ignored without discarding a different frame being assembled, and the numbering may wrap
   without a false gap. A missing datagram still drops that incomplete frame so corrupt media is never
-  delivered. An unacknowledged own-session `START_LIVE` is repeated with identical bytes until the camera
-  acknowledges it, and abandoned after 3s — at which point that channel is no longer treated as started, so
-  the next keepalive tick issues a real start instead of nudging a stream that never began. A new connection
+  delivered. The media start is the frame the app sends for the camera's product and its parent, sent once and
+  resent byte-identically by the channel's own retransmission until the camera acknowledges it. A new connection
   starts the numbering over, so its first datagrams are never read as stale — and so does a camera that
   begins a fresh stream on a connection already up, which sequencing follows onto the restarted numbering
   rather than waiting for it to climb back.
-- **No silent hang.** `live()` re-issues the media-start (`nudge`) until the first keyframe arrives; if
-  none arrives within the warm-up window the stream emits a `LiveStreamStartError` rather than hanging
+- **No silent hang.** `live()` sends the media start once, as the app does; if no keyframe arrives within the
+  warm-up window (25 s, the app's player timeout) the stream emits a `LiveStreamStartError` rather than hanging
   forever. It carries everything needed to tell the failures apart without transport logs: `reason`
   (deadline elapsed / source error / source ended), `stage` (`awaiting-first-frame` when the source
   delivered nothing at all, `audio-only` when it was streaming audio and never sent a video frame,
-  `awaiting-keyframe` when video units arrived but none was decodable), `timeoutMs`, and `attempts` —
-  the media starts actually issued. Handle `error`.
+  `awaiting-keyframe` when video units arrived but none was decodable) and `timeoutMs`. Handle `error`.
 - **A camera that is switched off looks like a broken transport.** It keeps its session, accepts the media
   start, and then sends audio and never a video frame — measured: 234 audio frames, no video, no
   stream-status report and no lost datagrams across a 20s window, then 217 video access units with nothing
@@ -601,10 +586,9 @@ session idle-detaches so a battery device sleeps — see [Connectivity & battery
   has been off recorded no events and so banked no thumbnail.
 - **`cam.enabled` is trustworthy, and the SDK acts on it.** A write used to leave the reported value frozen —
   `setEnabled(true)` succeeded, the camera streamed, and the reading stayed `false` indefinitely. An
-  enablement write is now confirmed by bounded readback on whichever param the device actually reports: the
-  value converges on its own (measured 2–6s on both wire families) and `cameraEnabledChanged` fires once when
-  it lands. A change made anywhere else — the vendor app, another client, a physical switch — arrives as
-  `propertyChanged` on whichever inbound path saw it, including the read-through re-read, so a long-lived
+  enablement write the camera answers with success now lands on whichever param the device actually reports,
+  and `cameraEnabledChanged` fires once. A change made anywhere else — the vendor app, another client, a physical switch — arrives as
+  `propertyChanged` on whichever inbound path saw it, so a long-lived
   client is no longer left polling for one.
 - **A pull on a camera reading `enabled === false` is refused.** `live()`, `snapshotLive()`, `record()`,
   `openReadable()` and `recordFragments()` answer `CameraDisabledError` rather than a stream that can only
@@ -643,23 +627,3 @@ So the APIs here do not claim negotiation or timing guarantees the device source
 fragment duration is a keyframe-bounded **minimum**, prebuffer is available only from an already-warm
 retained source, and fragmented recordings are caller-owned evented async iterables — which is how a
 caller extends a shared battery budget without control notices mixing into media output.
-
-### NVR output resolution
-
-`cam.outputResolutions?.()` reports the output sizes supported by the bound media route.
-The native NVR route reports `["1080p"]` for T8E00 and T8P00 cameras. An omitted selection preserves the default
-output; it does not promise a particular maximum resolution.
-
-```ts
-if (cam.live && cam.outputResolutions?.().includes("1080p")) {
-  const stream = await cam.live({ view: 0, outputResolution: "1080p" });
-  stream.stop();
-}
-```
-
-The NVR start request carries `stitch_resolution: {width: 1920, height: 1080}`.
-This selects the NVR's output geometry, not a separately identified camera substream,
-and does not change persistent live-view or recording-quality settings.
-`openReadable()` and `snapshotLive()` accept the same selection. A route that does not
-advertise it refuses the request before opening media. Consumers with different output
-selections use separate sources, including while an earlier source is warm.

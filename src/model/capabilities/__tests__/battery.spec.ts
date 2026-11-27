@@ -193,12 +193,14 @@ describe("battery capability module", () => {
     // OFF ⇒ value 1, ON ⇒ value 0 (inverted); 132-byte station-scalar body (no channel word) on ch1.
     expect(buildCommand("recordAutoStop", false, ctx)).toEqual({
       kind: "p2p-station-scalar",
+      stationAccount: true,
       cmd: BATTERY_PARAM.RECORD_AUTO_STOP,
       value: 1,
       channel: 1,
     });
     expect(buildCommand("recordAutoStop", true, ctx)).toEqual({
       kind: "p2p-station-scalar",
+      stationAccount: true,
       cmd: BATTERY_PARAM.RECORD_AUTO_STOP,
       value: 0,
       channel: 1,
@@ -209,12 +211,14 @@ describe("battery capability module", () => {
     const ctx = evidenced({ channel: 1 });
     expect(buildCommand("recordDuration", 70, ctx)).toEqual({
       kind: "p2p-station-scalar",
+      stationAccount: true,
       cmd: BATTERY_PARAM.RECORD_DURATION,
       value: 70,
       channel: 1,
     });
     expect(buildCommand("recordInterval", 10, ctx)).toEqual({
       kind: "p2p-station-scalar",
+      stationAccount: true,
       cmd: BATTERY_PARAM.RECORD_INTERVAL,
       value: 10,
       channel: 1,
@@ -273,9 +277,9 @@ describe("battery capability module", () => {
     const ctx = evidenced({ channel: 6 });
     expect(buildCommand("workingMode", 1, ctx)).toEqual({
       kind: "set-param",
+      stationAccount: true,
       param: 1246,
       value: 1,
-      form: "direct-binary",
       channel: 6,
     });
   });
@@ -289,7 +293,6 @@ describe("battery capability module", () => {
       payload: { charge_mode: 1 },
       channel: 6,
       mValue3: 0,
-      form: "auto",
     });
     // Battery = charge_mode 0.
     expect(buildCommand("powerSource", 0, ctx)).toEqual({
@@ -298,7 +301,6 @@ describe("battery capability module", () => {
       payload: { charge_mode: 0 },
       channel: 6,
       mValue3: 0,
-      form: "auto",
     });
   });
 
@@ -313,7 +315,6 @@ describe("battery capability module", () => {
       payload,
       channel: 0,
       mValue3: 0,
-      form: "auto",
     });
     expect(() => buildCommand("powerSource", 1, at("T8171", false)), "v2 sets nothing").toThrow(/unverified/);
     expect(Object.keys(bind<BatteryActions>("battery", at("T8171", false)).acts as object)).not.toContain(
@@ -344,6 +345,7 @@ describe("battery capability module", () => {
       } as never).getProperty("powerSource")?.value;
     expect(of("T8171", "-505")).toBe(0);
     expect(of("T8171", "0")).toBe(1);
+    expect(of("T8170", "-505"), 'its bundle builds PowerChargeModeParser("v2")').toBe(0);
     expect(of("T8140", "-505"), "everyone else keeps 1293").toBe(1);
   });
 
@@ -388,9 +390,9 @@ describe("battery capability module", () => {
     const ctx = evidenced({ channel: 6, model: "T8214" });
     expect(buildCommand("workingMode", "Optimal Battery Life", ctx)).toEqual({
       kind: "set-param",
+      stationAccount: true,
       param: 1246,
       value: 3,
-      form: "direct-binary",
       channel: 6,
     });
   });
@@ -429,9 +431,8 @@ describe("battery capability module", () => {
       payload: { charge_mode: 1 },
       channel: 6,
       mValue3: 0,
-      form: "auto",
     });
-    expect(sent[1]).toEqual({ kind: "set-param", param: 1246, value: 0, form: "direct-binary", channel: 6 });
+    expect(sent[1]).toEqual({ kind: "set-param", stationAccount: true, param: 1246, value: 0, channel: 6 });
   });
 
   it("derives `charging` from BATTERY_STATUS (2111) as value ∉ {0,2} — matching the app decode", () => {

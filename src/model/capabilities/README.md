@@ -114,7 +114,7 @@ not as bare magic numbers at the call site and not in a shared file:
 ```ts
 /** The P2P feature-command ids this capability drives. */
 export const MYCAP_CMD = {
-  /** What it does + provenance (✅ verified live on <model> / capture). */
+  /** What it does + its evidence (✅ verified live on <model> / capture). */
   SOME_SWITCH: 1234,
 } as const;
 // state params (the read side) → export const MYCAP_PARAM = { … } as const;  (see battery.ts BATTERY_PARAM)
@@ -146,13 +146,11 @@ Rules:
 A module resolves a semantic action into a **transport-neutral `Command`**; the `CommandSink`
 (implemented by the client) routes it to the wire. The consumer never learns the param id or wire
 form. A module emits **transport-neutral intents** (`setScalar` / `setJson` from `./access`) and
-never names an encryption level or frame kind — the transport resolver in `index.ts` picks L1 vs L2
-by session/topology. `Command` kinds:
+never names an encryption level — the session seals every frame with what it holds. `Command` kinds:
 
-- `set-param` — a scalar param (id + value + `ScalarForm`). `"auto"` lets the transport pick the
-  level; `"int-string"` / `"direct-binary"` pin it when the firmware requires a specific level.
+- `set-param` — a scalar param (id + value): the group-A body, or the bare pair with `"int-pair"`.
 - `set-json` — a JSON control-payload param (`{commandType, data}` under wrapper 1700).
-- `p2p-privacy-burst` — the multi-frame privacy sequence (a bespoke burst, not a set-param).
+- `set-payload` — a `SET_PAYLOAD` (1350) envelope `{account_id, cmd, mChannel, mValue3, payload}`.
 - `aiot-dp` — Anker AIoT MQTT data-point (vacuum/mower clean line).
 
 `buildCommand` uses `ctx` (`{channel, codec, deviceType?, model?, serial?, paramIds}`) to pick the
@@ -264,7 +262,6 @@ when the key would collide there (`battery`'s `level` → property `battery`, si
   activity: {
     param: VACUUM_DP.WORK_STATUS,
     type: "string",
-    provenance: "mega",
     decode: (raw, codec) => decodeVacuumActivity(raw as ParamValue | undefined, codec),
     decodedKind: "enum",
     decodedValues: VACUUM_ACTIVITIES,
@@ -316,8 +313,8 @@ the `actions()` bag.
 
 A capability that is **all members** (`contact`, `leak`, `smoke`, `battery`, …) omits `actions()`
 entirely. It still gets a fluent accessor, so it still needs a `DeviceActionMap` entry.
-`buildActions` / `ACTION_ACCESSOR_NAMES` include any module with `actions` **or** `members`; getters ride
-the read-through cache automatically.
+`buildActions` / `ACTION_ACCESSOR_NAMES` include any module with `actions` **or** `members`; getters read
+the `Device`'s in-memory state.
 
 ## Template for a new capability
 
@@ -357,7 +354,6 @@ export const MY_CAP_MEMBERS = {
     property: "myProp", // only when the key would collide in the flat property namespace
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
     requires: [MY_CAP_CMD.MY_SWITCH],
     writeAs: "set",
     description: "Whether the feature is on (1234 MY_SWITCH). Write verified live on <model>.",

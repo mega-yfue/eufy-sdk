@@ -1,0 +1,114 @@
+import { vi } from "vitest";
+import type { P2PRouterDeps } from "../command-router.js";
+import { buildDirectBinaryBody, buildStringBody } from "../write-commands.js";
+import { connectedSession, onFakeTime, routerWithSession, DEVICE_SN, STATION_SN } from "./session-fixtures.js";
+
+/**
+ * The app has two P2P senders, each with its own envelope account id. esiotkit's `p2pRequest` (bundle frames, live
+ * view, talkback) quotes the TARGET record's stated `admin_user_id`, else the user's own id; the legacy `ZmediaUtil`
+ * senders (station restart, the quick-response and lock-status queries, the ESL lock, recording download) quote
+ * `AccountDelegate.m(station)`, the station's member rule. Synthetic ids: a camera owned by DEVICE_ADMIN on a station
+ * shared with ME by STATION_ADMIN.
+ */
+const DEVICE_ADMIN = "1".repeat(40);
+const STATION_ADMIN = "2".repeat(40);
+const ME = "3".repeat(40);
+
+function harness(member: object = { admin_user_id: DEVICE_ADMIN }) {
+  const session = Object.assign(connectedSession(), {
+    sendSetPayload: vi.fn(),
+    sendBytes: vi.fn(() => true),
+    sendStringPayloadCommand: vi.fn(),
+  });
+  const deps: Partial<P2PRouterDeps> = {
+    mega: { auth: { userId: ME } } as unknown as P2PRouterDeps["mega"],
+    listDevices: () =>
+      [
+        {
+          sn: DEVICE_SN,
+          stationSn: STATION_SN,
+          model: "T8114",
+          channel: 1,
+          raw: { parent_sn: STATION_SN, device_channel: 1, member },
+        },
+        {
+          sn: STATION_SN,
+          stationSn: STATION_SN,
+          p2pDid: "",
+          model: "T8010",
+          raw: { member: { admin_user_id: STATION_ADMIN, member_user_id: ME, member_type: 1 } },
+        },
+      ] as never,
+  };
+  return { session, router: routerWithSession(session, { deps }) };
+}
+
+describe("the P2P envelope account id, per app sender", () => {
+  it("is the target record's stated admin on a bundle frame (esiotkit p2pRequest)", async () => {
+    const { session, router } = harness();
+    await onFakeTime(() =>
+      router.dispatchCommand(DEVICE_SN, { kind: "set-payload", cmd: 6201, payload: {}, channel: 1, mValue3: 0 }),
+    ).catch(() => {});
+    expect(session.sendSetPayload.mock.calls[0]![2]).toMatchObject({ accountId: DEVICE_ADMIN });
+  });
+
+  it("follows a bare JSON body only on 1255, filling a $userId the body carries", async () => {
+    const { session, router } = harness();
+    for (const cmd of [1255, 1204])
+      await onFakeTime(() =>
+        router.dispatchCommand(DEVICE_SN, { kind: "set-json-raw", cmd, data: { transaction: "1" }, channel: 1 }),
+      ).catch(() => {});
+    await onFakeTime(() =>
+      router.dispatchCommand(DEVICE_SN, {
+        kind: "set-json-raw",
+        cmd: 1271,
+        data: { account_id: "$userId" },
+        channel: 1,
+      }),
+    ).catch(() => {});
+    expect(session.sendStringPayloadCommand.mock.calls.map(([, json]) => json)).toEqual([
+      JSON.stringify({ transaction: "1", account_id: DEVICE_ADMIN }),
+      JSON.stringify({ transaction: "1" }),
+      JSON.stringify({ account_id: DEVICE_ADMIN }),
+    ]);
+  });
+
+  it("is the station's member rule on a ZmediaUtil query and restart", async () => {
+    const { session, router } = harness();
+    await onFakeTime(() => router.p2pQuery(DEVICE_SN, 6237)).catch(() => {});
+    await onFakeTime(() => router.rebootStation(STATION_SN));
+    expect(session.sendSetPayload.mock.calls[0]![2]).toMatchObject({ accountId: STATION_ADMIN });
+    expect(session.sendBytes).toHaveBeenCalledWith(buildDirectBinaryBody(0, STATION_ADMIN), 255, 1034);
+  });
+
+  it("is the station's member rule on a scalar, string body, bare JSON or 1350 envelope stating stationAccount", async () => {
+    const stationAccount = true;
+    const sent = async (cmd: Parameters<ReturnType<typeof harness>["router"]["dispatchCommand"]>[1]) => {
+      const { session, router } = harness();
+      await onFakeTime(() => router.dispatchCommand(DEVICE_SN, cmd)).catch(() => {});
+      return session;
+    };
+    const scalar = await sent({ kind: "set-param", param: 1409, value: 60, channel: 1, stationAccount });
+    expect(scalar.sendBytes).toHaveBeenCalledWith(buildDirectBinaryBody(60, STATION_ADMIN, 1), 1, 1409);
+    const body = await sent({ kind: "p2p-string", cmd: 1414, value: "", channel: 0, int: 0, stationAccount });
+    expect(body.sendBytes).toHaveBeenCalledWith(buildStringBody(0, "", STATION_ADMIN, 0), 255, 1414);
+    const data = { account_id: "$userId" };
+    const json = await sent({ kind: "set-json-raw", cmd: 1404, data, channel: 255, stationAccount });
+    expect(json.sendStringPayloadCommand).toHaveBeenCalledWith(
+      1404,
+      JSON.stringify({ account_id: STATION_ADMIN }),
+      255,
+    );
+    const envelope = await sent({ kind: "set-payload", cmd: 6266, payload: {}, channel: 1, stationAccount });
+    expect(envelope.sendSetPayload.mock.calls[0]![2]).toMatchObject({ accountId: STATION_ADMIN, channel: 1 });
+  });
+
+  /** esiotkit's `?:` falls back on a missing member only: a stated `""` goes out as is. */
+  it('sends a stated "" admin as is on a bundle frame', async () => {
+    const { session, router } = harness({ admin_user_id: "" });
+    await onFakeTime(() =>
+      router.dispatchCommand(DEVICE_SN, { kind: "set-payload", cmd: 6201, payload: {}, channel: 1, mValue3: 0 }),
+    ).catch(() => {});
+    expect(session.sendSetPayload.mock.calls[0]![2]).toMatchObject({ accountId: "" });
+  });
+});

@@ -55,7 +55,9 @@ function homeBase2(deps: Partial<P2PRouterDeps> = {}, opts: { finish?: boolean; 
   const getCiphers = vi.fn(async (ids: number[]) =>
     ids[0] === CIPHER_ID ? [{ cipher_id: CIPHER_ID, ecc_private_key: cam.eccHex }] : [],
   );
-  const router = routerWithSession(session, { deps: { mega: { getCiphers } as never, ...deps } });
+  const router = routerWithSession(session, {
+    deps: { mega: { auth: { userId: ACCOUNT_ID }, getCiphers } as never, ...deps },
+  });
   return { media: router.mediaProviderFor(DEVICE_SN), session, sent, getCiphers, transfers };
 }
 
@@ -92,7 +94,9 @@ function homeBase3(opts: { missing?: string } = {}) {
     }),
   });
   const getCiphers = vi.fn(async () => []);
-  const router = routerWithSession(session, { deps: { mega: { getCiphers } as never, ...attachedTo("T8030") } });
+  const router = routerWithSession(session, {
+    deps: { mega: { auth: { userId: ACCOUNT_ID }, getCiphers } as never, ...attachedTo("T8030") },
+  });
   return { media: router.mediaProviderFor(DEVICE_SN), sent, getCiphers };
 }
 
@@ -119,9 +123,42 @@ describe("recording download through the router", () => {
     const out = await media.downloadRecording!({ recording: RECORDING, cipherId: CIPHER_ID });
 
     expect(sent).toEqual([[1024, `/media/mmcblk0p1/Camera01/${RECORDING}.dat`, ACCOUNT_ID, 1]]);
-    expect(getCiphers).toHaveBeenCalledWith([CIPHER_ID], ACCOUNT_ID, STATION_SN);
+    expect(getCiphers).toHaveBeenCalledWith([CIPHER_ID], ACCOUNT_ID, STATION_SN, "station_sn");
     expect(out.video).toEqual(Buffer.concat([IDR, slice(1)]));
     expect(out.frames).toBe(2);
+  });
+
+  /**
+   * The request quotes `AccountDelegate.m(station)`, the cipher lookup `DefaultDownloadStrategy.getAdminUserId`'s
+   * `AccountDelegate.b(camera)`: each its own record's member rule. Synthetic ids, the camera and station shared.
+   */
+  it("quotes the station's member rule on the request and looks the cipher up under the camera's", async () => {
+    const [cameraAdmin, stationAdmin] = ["1".repeat(40), "2".repeat(40)];
+    const member = (admin: string) => ({
+      member: { admin_user_id: admin, member_user_id: ACCOUNT_ID, member_type: 1 },
+    });
+    const { media, sent, getCiphers } = homeBase2({
+      listDevices: () =>
+        [
+          { sn: DEVICE_SN, stationSn: STATION_SN, channel: 1, raw: { device_channel: 1, ...member(cameraAdmin) } },
+          { sn: STATION_SN, stationSn: STATION_SN, model: "T8010", raw: member(stationAdmin) },
+        ] as never,
+    });
+
+    await media.downloadRecording!({ recording: RECORDING, cipherId: CIPHER_ID });
+
+    expect(sent[0]![2]).toBe(stationAdmin);
+    expect(getCiphers).toHaveBeenCalledWith([CIPHER_ID], cameraAdmin, STATION_SN, "station_sn");
+  });
+
+  it("looks the cipher up under the recording's stated cipher user, the request still the station's", async () => {
+    const cipherUser = "3".repeat(40);
+    const { media, sent, getCiphers } = homeBase2();
+
+    await media.downloadRecording!({ recording: RECORDING, cipherId: CIPHER_ID, cipherUserId: cipherUser });
+
+    expect(sent[0]![2]).toBe(ACCOUNT_ID);
+    expect(getCiphers).toHaveBeenCalledWith([CIPHER_ID], cipherUser, STATION_SN, "station_sn");
   });
 
   it("runs one download at a time per station", async () => {

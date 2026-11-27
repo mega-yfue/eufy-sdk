@@ -7,7 +7,7 @@ import type { CapabilityModule } from "./types.js";
  * A capability with a reason to declare one of these properties itself takes precedence, since the
  * first declaration of a property wins and `link` is registered after every device capability.
  *
- * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * Exported but NOT published: each entry states its wire id and its gate,
  * which the reference site does not carry.
  * @internal
  */
@@ -21,8 +21,7 @@ export const LINK_MEMBERS = {
     param: 1551,
     type: "number",
     kind: "timestamp",
-    provenance: "verified",
-    description: "Last-seen unix timestamp, seconds (verified: param 1551).",
+    description: "Last-seen unix timestamp, seconds (param 1551).",
   },
   /** Link quality in dBm as the device measures it, never normalised to a bar count. */
   rssi: {
@@ -30,8 +29,7 @@ export const LINK_MEMBERS = {
     type: "number",
     unit: "dBm",
     kind: "dbm",
-    provenance: "verified",
-    description: "Sub-1G/Wi-Fi signal strength (verified: param 1141 = RSSI).",
+    description: "Sub-1G/Wi-Fi signal strength (param 1141 = RSSI).",
   },
 } as const satisfies Members;
 

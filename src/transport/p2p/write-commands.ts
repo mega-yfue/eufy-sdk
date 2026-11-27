@@ -5,8 +5,10 @@
  * (`src/model/capabilities/*`): each module owns its own `buildCommand`, and the barrel's
  * `buildCommand()` resolves across them. This file keeps ONLY the **direct-binary** body builder
  * — a packed struct, not a JSON recipe — used by `EufyMega.sendDirectBinary` for camera on/off +
- * spotlight brightness/color-temp/enable. No dependency on the capability barrel (avoids a cycle).
+ * spotlight brightness/color-temp/enable, and the bundle frame renderer. No dependency on the capability barrel
+ * (avoids a cycle).
  */
+import type { SessionFrame } from "../../core/contracts.js";
 
 /**
  * Build the packed binary body for a "direct" control command — TWO shapes, one layout. The tail is
@@ -18,17 +20,14 @@
  *    station-scoped scalar (alarm/speaker volume `1235`); the hub is addressed by the outer frame
  *    channel 255, so there is no leading channel word.
  *
- * Both forms are wire-verified live (T8214 camera / T8030 hub audible test tone). `account_id` is
- * **sliced to 128** (`Buffer.write` would otherwise silently truncate) and must be **non-empty** —
- * an all-zero account field is rejected by the HomeBase and the caller's fallback chain can resolve
- * to `""`, so we fail loud instead.
+ * `account_id` is **sliced to 128** (`Buffer.write` would otherwise silently truncate); a stated `""` goes out
+ * as the all-zero field the app sends.
  */
 /**
  * Write the account_id into the trailing 128-byte ASCII field every level-2 control body ends with.
- * Shared by all body builders so the encoding (non-empty guard, 128-byte truncation, ASCII) can't drift.
+ * Shared by all body builders so the encoding (128-byte truncation, ASCII) can't drift.
  */
 function writeAccountIdField(body: Buffer, offset: number, accountId: string): void {
-  if (!accountId) throw new Error("control command requires a non-empty account_id");
   body.write(accountId.slice(0, 128), offset, "ascii");
 }
 
@@ -62,16 +61,98 @@ function encodeNameField(name: string, maxBytes: number): Buffer {
 }
 
 /**
- * Body for the device/hub rename command (`SET_DEVICE_NAME` 1217 / `SET_HUB_NAME` 1216). A 261-byte
- * struct confirmed against the app: `[u32 = 0][u8 device_channel][name → 128B, null-padded]
- * [account_id → 128B, null-padded]`. Sent signCode 8 on the station channel (255). The name is UTF-8
- * (matching the app), truncated to fit 127 bytes so the field stays null-terminated.
+ * The app's native string body (its sender's layout 0x2d9cb4, used by `SET_TIME_ZONE` 1215, `SET_HUB_NAME`
+ * 1216, `SET_DEVICE_NAME` 1217 and the sunrise switch 1414): a 261-byte `[u16 int][u16 0][u8 device_channel]
+ * [string → 128B, null-padded][account_id → 128B, null-padded]`, sent on the station channel (255), `int` the
+ * sender's int argument (0 where it passes none). The string is UTF-8 (matching the app), truncated to fit 127
+ * bytes so the field stays null-terminated.
  */
-export function buildDeviceNameBody(channel: number, name: string, accountId: string): Buffer {
+export function buildStringBody(channel: number, name: string, accountId: string, int = 0): Buffer {
   const body = Buffer.alloc(5 + 128 + 128);
-  body.writeUInt32LE(0, 0); // reserved / value = 0
+  body.writeUInt16LE(int & 0xffff, 0); // int argument, then 2 zero bytes
   body.writeUInt8(channel & 0xff, 4); // device channel
   encodeNameField(name, 127).copy(body, 5); // name field (128B, keep null-terminated)
   writeAccountIdField(body, 5 + 128, accountId); // account_id field (128B)
   return body;
+}
+
+/**
+ * The `SET_PAYLOAD` (1350) JSON the app sends: `{key?, account_id, cmd, mChannel, mValue3, payload}`, mValue3 0 unless
+ * given, `payload` omitted with `omitPayload` or spread at the top level with `unzip`. A `"$userId"` in the params
+ * (`encrypt_key`) is written as the account id.
+ */
+export function setPayloadJson(
+  cmd: number,
+  payload: unknown,
+  opts: {
+    accountId?: string;
+    channel?: number;
+    mValue3?: number;
+    key?: string;
+    omitPayload?: boolean;
+    unzip?: boolean;
+  },
+): string {
+  const inner = {
+    ...(opts.key !== undefined ? { key: opts.key } : {}),
+    account_id: opts.accountId ?? "",
+    cmd,
+    mChannel: opts.channel ?? 0,
+    mValue3: opts.mValue3 ?? 0,
+    ...(opts.omitPayload ? {} : opts.unzip ? (payload as object) : { payload }),
+  };
+  return JSON.stringify(inner, (_, v) => (v === "$userId" ? (opts.accountId ?? "") : v));
+}
+
+/**
+ * A product bundle's frame as the app's sender builds it, its `$…` tokens filled, each once, from `tokens` (with
+ * `$channel`, `$userId` and `$now` given): `json1700` as `{commandType: subCmd, data: payload}`, `json1350` as the
+ * `{account_id, cmd: subCmd, mChannel, mValue3, payload}` envelope, `json` as the payload itself on header channel
+ * `payload.mChannel`, and a `native` body as `[u32 channel]`, followed for layout `0x2db020` by the key and a NUL
+ * when the key is 256 characters. Throws for a frame no sender carries.
+ */
+export function renderFrame(
+  frame: SessionFrame,
+  channel: number,
+  userId: string,
+  tokens: Record<string, () => unknown> = {},
+): { cmd: number; body: Buffer; header: number } {
+  const now = String(Date.now());
+  const all: Record<string, () => unknown> = {
+    $channel: () => channel,
+    $userId: () => userId,
+    $now: () => now,
+    ...tokens,
+  };
+  const filled: Record<string, unknown> = {};
+  const fill = (x: unknown): unknown =>
+    typeof x === "string" && x in all
+      ? x in filled
+        ? filled[x]
+        : (filled[x] = all[x]!())
+      : Array.isArray(x)
+        ? x.map(fill)
+        : x && typeof x === "object"
+          ? Object.fromEntries(Object.entries(x).map(([k, v]) => [k, fill(v)]))
+          : x;
+  const payload = (fill(frame.payload) ?? {}) as Record<string, unknown>;
+  const json = (value: unknown) => Buffer.from(JSON.stringify(value), "utf-8");
+  const u32 = Buffer.alloc(4);
+  u32.writeUInt32LE(channel >>> 0);
+  const key = payload.cryptoKey;
+  const body =
+    frame.body === "json1700"
+      ? json({ commandType: frame.subCmd, data: payload })
+      : frame.body === "json1350"
+        ? json({ account_id: userId, cmd: frame.subCmd, mChannel: channel, mValue3: frame.mValue3 ?? 0, payload })
+        : frame.body === "json"
+          ? json(payload)
+          : frame.layout === "0x2db020" && typeof key === "string" && key.length === 256
+            ? Buffer.concat([u32, Buffer.from(key, "latin1"), Buffer.alloc(1)])
+            : frame.layout === "u32-ch" || frame.layout === "0x2db020"
+              ? u32
+              : undefined;
+  if (!body || frame.cmd === undefined) throw new Error(`frame ${frame.cmd}/${frame.body} has no sender form`);
+  const header = frame.body === "json" && typeof payload.mChannel === "number" ? payload.mChannel : channel;
+  return { cmd: frame.cmd, body, header };
 }

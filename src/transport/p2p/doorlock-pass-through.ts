@@ -3,9 +3,9 @@
  * `CMD_DOORLOCK_DATA_PASS_THROUGH` set-payload.
  *
  * The blob is base64 of AES-128-CBC (PKCS#7 over a zero-padded plaintext) under a key derived from the
- * station owner's 40-character admin id and the 16-character station serial, with the station serial as the
- * IV. The plaintext is JSON `{channel, lock_cmd, lock_payload, seq_num}` with `channel` always 0: the lock's
- * channel on its station rides only the P2P envelope (`mChannel` and the frame header). For lock/unlock
+ * lock member's 40-character admin id and the 16-character station serial, with the station serial as the
+ * IV, or AES-128-ECB under the same key without padding for a station on firmware `2.1.2.2l_1.3`. The plaintext is
+ * JSON `{channel, lock_cmd, lock_payload, seq_num}` with `channel` always 0, as is the P2P envelope's. For lock/unlock
  * `lock_cmd` is 8 and `lock_payload` is base64 of the on/off TLV {@link encodeLockOnOff}.
  */
 import { createCipheriv } from "node:crypto";
@@ -13,7 +13,7 @@ import { paddingP2PData } from "./codec.js";
 import { serialIv } from "./keyed-payload.js";
 
 /** `lock_cmd` for lock/unlock. */
-const LOCK_CMD_ON_OFF = 8;
+export const LOCK_CMD_ON_OFF = 8;
 
 /** The on/off TLV's tags, in frame order: short user id, direction, timestamp, nickname. */
 const TAG = { USER: 0xa1, DIRECTION: 0xa2, TIME: 0xa3, NAME: 0xa4 } as const;
@@ -48,7 +48,7 @@ export function encodeLockOnOff(
 }
 
 /**
- * The AES-128 lock key from the station owner's admin id (40 characters) and the station serial (16). Any other
+ * The AES-128 lock key from the lock member's admin id (40 characters) and the station serial (16). Any other
  * length throws: a shorter input indexes past its end and still yields a key, just one the lock silently ignores.
  */
 export function lockKey(adminUserId: string, stationSn: string): Buffer {
@@ -68,11 +68,11 @@ export function lockKey(adminUserId: string, stationSn: string): Buffer {
 
 export interface DoorlockPassThroughInput {
   engage: boolean;
-  /** The station owner's admin user id. */
+  /** The lock member's admin user id. */
   adminUserId: string;
-  /** The station owner's short user id. */
+  /** The lock member's short user id. */
   shortUserId: number;
-  /** The station owner's nickname. */
+  /** The acting account's name. */
   nickname: string;
   /** The serial of the station the lock is paired to. */
   stationSn: string;
@@ -80,19 +80,47 @@ export interface DoorlockPassThroughInput {
   seqNum: number;
   /** The TLV's timestamp in seconds; the current time when omitted. */
   nowSec?: number;
+  /** Seal AES-128-ECB over the zero-aligned plaintext, unpadded (`AESUtil.encrypt`), instead of CBC. */
+  ecb?: boolean;
 }
 
 /** The base64 blob for `payload.payload` of a lock/unlock pass-through. */
 export function buildDoorlockPassThrough(input: DoorlockPassThroughInput): string {
+  return sealStationPayload({
+    adminUserId: input.adminUserId,
+    stationSn: input.stationSn,
+    lockCmd: LOCK_CMD_ON_OFF,
+    lockPayload: encodeLockOnOff(input.shortUserId, input.nickname, input.engage, input.nowSec),
+    seqNum: input.seqNum,
+    ecb: input.ecb,
+  });
+}
+
+/**
+ * The app's `createPayloadForZhixingStationBle` (a v4 lock body): `{channel: 0, lock_cmd, lock_payload: b64(TLV),
+ * seq_num}`, zero-aligned to 16 and AES-128-CBC sealed under the station-derived key, IV from the station serial, base64;
+ * `ecb` seals the zero-aligned plaintext AES-128-ECB without padding instead.
+ */
+export function sealStationPayload(input: {
+  adminUserId: string;
+  stationSn: string;
+  lockCmd: number;
+  lockPayload: Buffer;
+  seqNum: number;
+  ecb?: boolean;
+}): string {
   const inner = Buffer.from(
     JSON.stringify({
       channel: 0,
-      lock_cmd: LOCK_CMD_ON_OFF,
-      lock_payload: encodeLockOnOff(input.shortUserId, input.nickname, input.engage, input.nowSec).toString("base64"),
+      lock_cmd: input.lockCmd,
+      lock_payload: input.lockPayload.toString("base64"),
       seq_num: input.seqNum,
     }),
     "utf-8",
   );
-  const cipher = createCipheriv("aes-128-cbc", lockKey(input.adminUserId, input.stationSn), serialIv(input.stationSn));
+  const key = lockKey(input.adminUserId, input.stationSn);
+  const cipher = input.ecb
+    ? createCipheriv("aes-128-ecb", key, null).setAutoPadding(false)
+    : createCipheriv("aes-128-cbc", key, serialIv(input.stationSn));
   return Buffer.concat([cipher.update(paddingP2PData(inner)), cipher.final()]).toString("base64");
 }

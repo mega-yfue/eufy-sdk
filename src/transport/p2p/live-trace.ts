@@ -19,17 +19,8 @@ export const LIVE_TRACE_MESSAGE = "[live] start trace";
 
 /** One bounded startup observation. */
 export type LiveTrace =
-  /** A media start or keepalive was sent, with the topology and encryption level it was sent under. */
-  | {
-      phase: "media-command";
-      topology: "attached" | "own";
-      action: "start" | "keepalive";
-      level2: boolean;
-      /** The media-key type an attached start offered. */
-      key?: "ecc" | "rsa";
-    }
-  /** The device acknowledged a retained start, or that start was repeated / abandoned unacknowledged. */
-  | { phase: "media-command-ack" | "media-command-retry" | "media-command-unacknowledged"; action: "start" }
+  /** A media start was sent, with its outer command and the media-key type it offered. */
+  | { phase: "media-command"; cmd: number; key: "ecc" | "rsa" }
   /** The first inbound video command, and whether this stream's channel filter accepted it. */
   | { phase: "first-video-command"; signCode: number; accepted: boolean }
   /** The first reassembled video access unit, and whether it was decodable on its own. */
@@ -75,70 +66,29 @@ export type LiveTrace =
    * leave a caller with no media and no phase naming a station.
    */
   | { phase: "session-unreachable"; waitedMs: number }
-  /**
-   * A live start is holding for the station's level-2 key, with the milliseconds it will wait.
-   *
-   * A start that looks slow is either waiting here, waiting for its session to connect, waiting for the station
-   * to serve the channel it was asked for, or being re-issued — and only these phases separate them.
-   */
-  | { phase: "level2-wait"; waitMs: number }
-  /** The station's AES-256-GCM level-2 key was negotiated, under the cipher it selected. */
+  /** A gateway info's key was set (ECC, or RSA), under the cipher it named. */
   | { phase: "level2-ready"; cipherId: number }
   /**
-   * The station's cipher negotiated only the AES-128-ECB level-2 key of an RSA cipher, under the cipher it
-   * selected. That key seals a level-2 set-payload and nothing else, so this is not `level2-ready`.
-   */
-  | { phase: "level2-set-payload-only"; cipherId: number }
-  /**
-   * The station's key is not coming, why, and the cipher where a station named one.
-   *
-   * Every ending of a level-2 wait carries one of these reasons, so a start refused for want of a key is
-   * accounted for however it ended. `grace-elapsed` is a wait that ran out and states how long was waited;
-   * the rest are answered without waiting, because a concluded negotiation stays concluded until a
-   * re-prompt for `CMD_GATEWAYINFO` re-opens it. `no-cipher-key` and `derivation-failed` are about this
-   * account's cipher material, `not-negotiating` and `session-closed` about the station or its connection —
-   * and only a reason reached under a negotiation has a cipher to name.
-   *
-   * A `grace-elapsed` start proceeds at level 1 where it has such a form, and not at all where it does not.
+   * A gateway info's key step ended without a key, why, and the cipher where the station named one:
+   * `no-cipher-key` and `derivation-failed` are about this account's cipher material, `gateway-refused` a
+   * station that answered with a refusal.
    */
   | {
       phase: "level2-unavailable";
-      reason:
-        | "no-cipher-key"
-        | "derivation-failed"
-        | "not-negotiating"
-        | "session-closed"
-        | "grace-elapsed"
-        | "gateway-refused";
+      reason: "no-cipher-key" | "derivation-failed" | "gateway-refused";
       cipherId?: number;
-      waitedMs?: number;
     }
-  /**
-   * A station's cipher was answered with material for a DIFFERENT cipher, which was used in its place.
-   *
-   * The one lookup outcome no other phase accounts for: material for the cipher the station named is followed
-   * by `level2-ready`, `level2-set-payload-only` or `level2-unavailable` with `derivation-failed`, an answer
-   * holding none by
-   * `no-cipher-key`, and a lookup that threw is reported as an error. Substituted material derives to
-   * nothing and otherwise reads as a station fault. `cipherId` is the cipher the station asked for,
-   * `answeredCipherId` the one whose material was used.
-   */
-  | { phase: "cipher-fallback"; cipherId: number; answeredCipherId: number }
   /**
    * The station answered its gateway-info prompt, so a key derivation has begun under the cipher it named.
    *
-   * What separates a station that never answered the prompt from one that answered and produced no usable key:
-   * without it, `level2-unavailable` with `not-negotiating` covers both, and they are a station or network
-   * problem and an account cipher-material problem respectively. `version` is the gateway info's header
-   * version, which picks the key branch: 8 derives on ECC, any other on RSA.
+   * What separates a station that never answered the prompt from one that answered and produced no usable key.
+   * `version` is the gateway info's header version, which picks the key branch: 8 derives on ECC, any other on RSA.
    */
   | { phase: "level2-negotiating"; cipherId: number; version: number }
   /**
    * A station was resolved for a call, stating what the caller's device is on it and whose station it is.
    *
-   * Emitted before the session is waited on, so a station that is never reached still has this record: an
-   * attached camera's media start has no unencrypted form, so whether a device was taken as attached decides
-   * what its failure means. `stationAdmin` states whether the signed-in account is the station's
+   * Emitted before the session is waited on, so a station that is never reached still has this record. `stationAdmin` states whether the signed-in account is the station's
    * administrator, which is what a key the account cannot resolve turns on; `unstated` is a device record
    * that names no administrator, which is not the same as naming another. `stationModel` is the model of the
    * station the call resolved — the base's for an attached camera, the device's own where it is its own
@@ -158,35 +108,14 @@ export type LiveTrace =
    * `DeviceChannelUnresolvedError` and nothing is sent.
    */
   | { phase: "station-channel-unresolved"; issue: "missing" | "shared" }
-  /** A shared source began warming, with the interval it re-issues on and the deadline it fails at. */
-  | { phase: "warming"; retryMs: number; deadlineMs: number }
-  /**
-   * A media command was never put on the wire, and what it was missing.
-   *
-   * The attached media start has no level-1 form, so without the station's level-2 key there is nothing to
-   * send. A command that was never sent is otherwise indistinguishable from one the station ignored, which is
-   * the difference between a key that never arrived and a station that is not answering.
-   */
-  | { phase: "media-command-unsent"; reason: "level2-key" | "address" }
+  /** A shared source began warming, with the deadline it fails at. */
+  | { phase: "warming"; deadlineMs: number }
   /**
    * This connection's path has stopped answering the heartbeat, with how long it has been silent.
    *
    * The station answers every PING with a PONG, so silence past several heartbeats is the path being gone.
    * Stated only where a pong arrived: a station that has never answered says nothing by not answering now.
    */
-  | { phase: "path-stale"; silentMs: number }
-  /**
-   * A stream received nothing on its own channel for the stall window, and what was done about it.
-   *
-   * A station that switches to a sibling leaves the stream it was serving with no frames, no error and no
-   * stop, so this silence is the only statement that it happened. `reasserted` re-issued the media start,
-   * which is the repair; `declined` left the channel alone because nothing is attached to this pull and
-   * taking the station back would take it from a camera someone is watching.
-   *
-   * Media still arriving means this never fires, so a picture that stopped advancing while this is silent
-   * stopped for a reason upstream of the station's attention.
-   */
-  | { phase: "channel-silent"; silentMs: number; outcome: "reasserted" | "declined" }
   /**
    * A live start failed, with the facts of the `LiveStreamStartError` it was refused with.
    *
@@ -197,7 +126,6 @@ export type LiveTrace =
       phase: "start-failed";
       reason: LiveStreamStartFailureReason;
       stage: LiveStreamStartStage;
-      attempts: number;
       errorName?: string;
     };
 

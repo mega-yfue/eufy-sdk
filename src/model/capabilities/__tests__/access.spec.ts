@@ -1,4 +1,5 @@
-import { setScalar, setJson } from "../access.js";
+import { setScalar, setJson, setJsonRaw, setStationScalar } from "../access.js";
+import { frameCommand } from "../bundle.js";
 import { CAMERA_CMD } from "../camera.js";
 import { LIGHT_CMD } from "../light.js";
 import type { CommandContext } from "../types.js";
@@ -6,28 +7,24 @@ import type { CommandContext } from "../types.js";
 const ctx = (channel = 0): CommandContext => ({ channel, codec: "camera", paramIds: new Set<number>() });
 
 describe("command intent builders", () => {
+  it("state stationAccount on the ids the app's legacy direct sender writes, never on a bundle frame", () => {
+    expect(setScalar(1230, 40, ctx(3))).toMatchObject({ stationAccount: true });
+    expect(setStationScalar(1235, 44, 255)).toMatchObject({ stationAccount: true });
+    expect(setJsonRaw(1271, {}, ctx(3))).toMatchObject({ stationAccount: true });
+    expect(setStationScalar(1224, 1, 255), "esiotkit's house mode").not.toHaveProperty("stationAccount");
+    const frame = { cmd: 1230, body: "groupA", channel: "$channel", payload: { value: "$value" }, valueKey: "value" };
+    expect(frameCommand(frame, 40, ctx(3))).toEqual({ kind: "set-param", param: 1230, value: 40, channel: 3 });
+  });
+
   describe("setScalar", () => {
-    it("defaults form to 'auto' (transport decides the encryption level)", () => {
+    it("builds the group-A scalar, or the bare pair with int-pair", () => {
       expect(setScalar(CAMERA_CMD.CAMERA_ENABLE, 1, ctx(2))).toEqual({
         kind: "set-param",
         param: CAMERA_CMD.CAMERA_ENABLE,
         value: 1,
-        form: "auto",
         channel: 2,
       });
-    });
-
-    it("carries an explicit pinned form when the firmware requires a level", () => {
-      expect(setScalar(CAMERA_CMD.DEV_LED_SWITCH, 0, ctx(), "int-string")).toMatchObject({
-        kind: "set-param",
-        form: "int-string",
-        value: 0,
-      });
-      expect(setScalar(LIGHT_CMD.SPOTLIGHT_BRIGHTNESS, 50, ctx(), "direct-binary")).toMatchObject({
-        kind: "set-param",
-        form: "direct-binary",
-        value: 50,
-      });
+      expect(setScalar(LIGHT_CMD.SPOTLIGHT_BRIGHTNESS, 50, ctx(), "int-pair")).toMatchObject({ form: "int-pair" });
     });
   });
 

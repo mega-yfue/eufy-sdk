@@ -4,9 +4,8 @@ import { propertiesOf, type Members, type Surface } from "./members.js";
 /**
  * `display` — a eufy Smart Display's charge.
  *
- * One typed read, and the smallness is the finding rather than a gap. The captured unit (a T87A0,
- * 2026-09-04) connects over secure MQTT with no `p2p_did`, so it speaks no P2P at all, and it reported
- * six params in an id range no other line uses. Only one of them tells a caller something it could not
+ * One typed read, and the smallness is the finding rather than a gap. A Smart Display connects over
+ * secure MQTT with no `p2p_did`, so it speaks no P2P at all, and it reports six params in an id range no other line uses. Only one of them tells a caller something it could not
  * get another way:
  *
  *  - 8005 and 8006 restate the model's retail name and code, which `info` already answers from the
@@ -14,7 +13,7 @@ import { propertiesOf, type Members, type Surface } from "./members.js";
  *    would offer a caller a second spelling of what it just read. They are named in the display param
  *    dictionary, which is what makes them readable off `getProperties()`.
  *  - 8003 is version-shaped and nothing confirms what it means, so it is `unexposed`: in the schema with
- *    its type and its `guessed` label, reachable through `getProperty`, no typed getter.
+ *    its type, reachable through `getProperty`, no typed getter.
  *
  * Nothing is writable. No capture pins a write for any display param, and an AIoT write is
  * fire-and-forget, so a wrong frame to a device that acknowledges nothing looks exactly like success. A
@@ -44,28 +43,22 @@ export const DISPLAY_MEMBERS = {
    * that the two ecosystems share a param space, so a consumer reads a display's charge through
    * `dev.display()` and a camera's through `dev.battery()`.
    *
-   * `verified` rather than `mega`: the id is in the device's cloud record, but the NAME came from the
-   * maintainer's own knowledge of the hardware rather than from the cloud data-point list, and `"100"`
-   * fits brightness, volume or charge equally.
+   * The id is in the device's cloud record; the NAME comes from the hardware's owner rather than the
+   * cloud data-point list, and `"100"` fits brightness, volume or charge equally.
    *
-   * The scale is `percent` on the reading itself, not on convention alone: a full charge reads `255` on a
-   * 0-255 scale and `1000` on a 0-1000 one, so `"100"` on a charged unit is positive evidence for 0-100
-   * rather than merely consistent with it. What nobody has done is watch it MOVE, which is why a value
-   * frozen at 100 would not yet be distinguishable from a healthy one.
+   * The scale is `percent`: a full charge reads `"100"`, not the `255` or `1000` of a wider scale.
    */
   battery: {
     param: DISPLAY_PARAM.BATTERY,
     type: "number",
     unit: "%",
     kind: "percent",
-    provenance: "verified",
     description: "Battery level, 0-100 (param 8001).",
   },
   /**
-   * Version-shaped, and that shape is the whole of the evidence — hence `guessed`, and hence no typed
-   * getter: a caller reading this off a bound object cannot see the label.
+   * Version-shaped, and that shape is the whole of the evidence, hence no typed getter.
    *
-   * `unexposed` rather than absent, so the schema still carries its type and that label and
+   * `unexposed` rather than absent, so the schema still carries its type and
    * `getProperty("softwareVersion")` still answers. `dev.info()?.firmwareVersion` is the field to trust
    * where the cloud record carries one; on this display it does not, which is the only reason 8003 is
    * named at all.
@@ -74,7 +67,6 @@ export const DISPLAY_MEMBERS = {
     param: DISPLAY_PARAM.SOFTWARE_VERSION,
     type: "string",
     kind: "text",
-    provenance: "guessed",
     unexposed: true,
     description: "Version-shaped string (param 8003), meaning unconfirmed — prefer `info.firmwareVersion`.",
   },

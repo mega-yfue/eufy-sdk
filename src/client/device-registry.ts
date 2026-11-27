@@ -2,12 +2,12 @@
  * DeviceRegistry — the device list/record/capability-resolution collaborator behind {@link EufyMega}.
  *
  * The facade owns orchestration + event fan-out; this owns the resolution logic: fetching + merging
- * the (house-scoped, quirky) device list, overlaying a fresh param list per device, and resolving which
- * capability set a P2P frame's (station, channel) belongs to (a hot-path cache). Isolated here so the
+ * the (house-scoped, quirky) device list and resolving which capability set a P2P frame's (station,
+ * channel) belongs to (a hot-path cache). Isolated here so the
  * tricky bits are unit-testable with a fake `mega` — the facade stays pure wiring. It never names a
  * capability or a wire; it maps records to the model's `resolveDevice`/`inspectParams`.
  */
-import { MegaApiError, MegaHttpClient, OWNER_ONLY_CODE, SessionExpiredError } from "../transport/http/mega-client.js";
+import { MegaHttpClient, SessionExpiredError } from "../transport/http/mega-client.js";
 import { noopLogger, type Logger } from "../core/logger.js";
 import {
   resolvedStationSn,
@@ -31,6 +31,19 @@ export function recordString(raw: Record<string, unknown>, key: string): string 
   return typeof v === "string" && v ? v : undefined;
 }
 
+/**
+ * The product code the app keys a device's thing description by (`MegaDevice.devicePn`): the record's
+ * `device_new_pn`, else its `device_model`.
+ */
+const thingCode = (dev: EufyDevice): string =>
+  recordString((dev.raw ?? {}) as Record<string, unknown>, "device_new_pn") ?? dev.model ?? "";
+
+/** The house a listed device is in: its record's `house_id`, else the house the list was asked for. */
+function houseOf(raw: { house_id?: unknown }, body: { house_id?: string }): { houseId?: string } {
+  const houseId = typeof raw.house_id === "string" && raw.house_id ? raw.house_id : body.house_id;
+  return houseId ? { houseId } : {};
+}
+
 /** The device-record shape {@link EufyMega.getDevice}/`commandContext` resolve a serial to. */
 export interface DeviceRecord {
   deviceType?: number;
@@ -49,7 +62,7 @@ export interface DeviceRecord {
   /**
    * State the device reported over its realtime wire, as ids in its own param namespace.
    *
-   * Kept apart from {@link params} rather than merged into it because the two differ in provenance and
+   * Kept apart from {@link params} rather than merged into it because the two differ in source and
    * staleness: cloud params are a slow server-side heartbeat snapshot, these are the device's own live
    * report. Capability detection reads only `params`, so a realtime id can never steer which
    * capabilities a device is judged to have.
@@ -198,24 +211,23 @@ export interface DeviceRegistryDeps {
   mega: MegaHttpClient;
   /** Surface a non-fatal fetch error (a house/body query that failed) without aborting the merge. */
   onError: (e: unknown) => void;
-  /** Diagnostics sink for facts that are NOT errors — see the owner-gated overlay note on {@link DeviceRegistry.record}. */
+  /** Diagnostics sink for facts that are NOT errors (an optional source that is unavailable). */
   logger?: Logger;
+  /** Sees the devices each successful {@link DeviceRegistry.getDevices} fetched, before any kept from an earlier list. */
+  onListFetched?: (devices: EufyDevice[]) => void;
 }
 
 /**
- * How long a fetched device list is reused for a per-device read that needs a fresher one.
+ * How long a fetched device list is reused by {@link DeviceRegistry.refreshedList}.
  *
- * The list is account-wide (`get_house_list` plus one `get_devs_list` per house), so a caller resolving a
- * fleet must not trigger one fetch per device — measured on a 14-device account that turned 6 list requests
- * into 90 and a 2 s resolve into 25 s. Short enough that a read-through refresh still observes a change
- * (the default staleness window is longer than this), long enough that resolving a whole fleet costs one list.
+ * The list is account-wide (`get_house_list` plus one `get_devs_list` per house), so a fleet resolved on a cold
+ * cache must not trigger one fetch per device.
  */
 const LIST_REUSE_MS = 5_000;
 
 /**
- * The robot models whose `getDeviceRelationList` `dps` are checked to be keyed by the DP numbers their
- * realtime reports use: a T2351's answer carried points 150–180, DP 180 in the same `SceneResponse` its
- * MQTT reports send.
+ * The robot models whose `getDeviceRelationList` `dps` are keyed by the DP numbers their realtime reports
+ * use: the T2351 answers points 150–180, DP 180 in the same `SceneResponse` its MQTT reports send.
  */
 const CLOUD_DPS_MODELS: ReadonlySet<string> = new Set(["T2351"]);
 
@@ -223,24 +235,17 @@ export class DeviceRegistry {
   private readonly mega: MegaHttpClient;
   private readonly onError: (e: unknown) => void;
   private readonly logger: Logger;
+  private readonly onListFetched?: (devices: EufyDevice[]) => void;
   private devices: EufyDevice[] = [];
   /** Per-(station, channel) capability cache for {@link capabilitiesForFrame}; `null` = negative hit. */
   private readonly frameCapsCache = new Map<string, ReadonlySet<Capability> | null>();
   /** {@link stationChannels} of {@link channelMapFor}, the roster it was computed over. */
   private channelMap = new Map<string, StationChannel>();
   private channelMapFor?: EufyDevice[];
-  /**
-   * Serials whose per-device param overlay has been refused. The call is owner-gated, so on a shared or
-   * member account it fails for the whole life of the client — retrying it every refresh spends a request
-   * to learn the same thing, and the answer is reported once rather than on every read.
-   */
-  private readonly overlayRefused = new Set<string>();
   /** One in-flight device-list fetch shared by every caller that wants a fresher list. See {@link refreshedList}. */
   private listInFlight?: Promise<EufyDevice[]>;
-  /** When the device list was last fetched, so a burst of per-device reads shares one. See {@link refreshedList}. */
+  /** When {@link getDevices} last resolved, so a burst of {@link refreshedList} callers shares one list. */
   private listFetchedAtMs = 0;
-  /** Whether the owner-gated refusal has been reported. It is one fact about the account, so it is said once. */
-  private overlayRefusalReported = false;
   /** Per-serial capability cache for {@link capabilitiesForDevice}; `null` = negative hit. */
   private readonly deviceCapsCache = new Map<string, ReadonlySet<Capability> | null>();
   /** Per-serial cloud data points of an AIoT robot, joined beneath the params in {@link record} — see {@link loadCloudDps}. */
@@ -282,6 +287,7 @@ export class DeviceRegistry {
     this.mega = deps.mega;
     this.onError = deps.onError;
     this.logger = deps.logger ?? noopLogger;
+    this.onListFetched = deps.onListFetched;
   }
 
   /** The current device cache (last {@link getDevices} result). */
@@ -292,7 +298,8 @@ export class DeviceRegistry {
   /**
    * List + classify devices across all houses (mega API). Each device is tagged
    * with its API backend + realtime transport (see classifyDevice). Camera/
-   * HomeBase records still appear here for inventory; driving them is P2P.
+   * HomeBase records still appear here for inventory; driving them is P2P. Each `get_devs_list` asks for a gzipped
+   * reply (`X-Accept-Encoding: gzip`), as the app's `HouseNetApi.getDeviceList` does.
    *
    * A failing house/body query is tolerated so a partial outage still yields devices — but the result
    * is then a SUBSET, and devices it didn't return are KEPT from the previous list rather than dropped.
@@ -310,7 +317,7 @@ export class DeviceRegistry {
     // get_devs_list is quirkily house-scoped: the bare {} call returns a set
     // that the per-house calls may NOT, and vice-versa. Query {} AND every
     // house_id, then merge + dedupe by serial.
-    const bodies: Array<object> = [{}];
+    const bodies: Array<{ house_id?: string }> = [{}];
     let partial = false;
     try {
       const houses = await this.mega.post<{ house_infos?: Array<{ house_id: string }> }>(
@@ -329,7 +336,9 @@ export class DeviceRegistry {
     for (const body of bodies) {
       let res: { devices?: any[] };
       try {
-        res = await this.mega.post<{ devices?: any[] }>("house", "/app/house/get_devs_list", body);
+        res = await this.mega.post<{ devices?: any[] }>("house", "/app/house/get_devs_list", body, {
+          "x-accept-encoding": "gzip",
+        });
       } catch (e) {
         if (e instanceof SessionExpiredError) throw e;
         partial = true;
@@ -353,9 +362,13 @@ export class DeviceRegistry {
           sn: raw.device_sn,
           name: recordName(raw, deviceClass),
           model: raw.device_model,
-          stationSn: resolvedStationSn(raw, raw.device_sn),
+          stationSn: params[6271] === "1" ? raw.device_sn : resolvedStationSn(raw, raw.device_sn),
           ...(typeof raw.device_channel === "number" ? { channel: raw.device_channel } : {}),
           p2pDid: raw.p2p_did,
+          ...(raw.member
+            ? { memberType: typeof raw.member.member_type === "number" ? raw.member.member_type : 0 }
+            : {}),
+          ...houseOf(raw, body),
           params,
           paramUpdatedAt,
           lastSeenMs: newest(lastSeenMsOf(paramUpdatedAt), prior.get(raw.device_sn)),
@@ -368,6 +381,8 @@ export class DeviceRegistry {
     await this.loadCloudDps(seen);
     await this.loadThings(seen);
     this.lastRefreshPartial = partial;
+    this.listFetchedAtMs = Date.now();
+    this.onListFetched?.([...seen.values()]);
     if (partial) for (const prev of this.devices) if (!seen.has(prev.sn)) seen.set(prev.sn, prev);
     this.devices = [...seen.values()];
     // Device list changed → drop stale (station,channel)→caps and serial→caps entries. Params feed
@@ -495,13 +510,25 @@ export class DeviceRegistry {
     }
   }
 
+  /** The default value of a property of `sn`'s product description, as the description states it. */
+  thingDefault(sn: string, identifier: string): string | undefined {
+    const dev = this.devices.find((d) => d.sn === sn);
+    return this.things.get(dev ? thingCode(dev) : "")?.properties[identifier]?.defaultValue;
+  }
+
+  /** `sn`'s product description resolved for its listed record ({@link thingsFor}). */
+  thingsOf(sn: string): ThingDescription | undefined {
+    const dev = this.devices.find((d) => d.sn === sn);
+    return dev && this.thingsFor(dev, stationOf(dev), dev.params ?? {});
+  }
+
   /**
    * The device's product description resolved for this device ({@link resolveThing}): against its serial
    * and firmware (`main_sw_version`), the station it is reached through and that station's firmware, the
    * account's country and its reported params.
    */
   private thingsFor(dev: EufyDevice, station: string, params: Record<number, string>): ThingDescription | undefined {
-    const td = this.things.get(dev.model ?? "");
+    const td = this.things.get(thingCode(dev));
     if (!td) return undefined;
     const firmware = (d?: EufyDevice) => recordString((d?.raw ?? {}) as Record<string, unknown>, "main_sw_version");
     return resolveThing(td, {
@@ -511,6 +538,7 @@ export class DeviceRegistry {
       stationFirmwareVersion: firmware(this.devices.find((d) => d.sn === station)),
       country: this.mega.countryCode,
       params,
+      record: dev.raw as Record<string, unknown> | undefined,
     });
   }
 
@@ -519,7 +547,7 @@ export class DeviceRegistry {
    * `get_things_list` call. A failed call is logged and asked again on the next refresh.
    */
   private async loadThings(seen: Map<string, EufyDevice>): Promise<void> {
-    const codes = [...new Set([...seen.values()].map((d) => d.model ?? ""))].filter((c) => c && !this.things.has(c));
+    const codes = [...new Set([...seen.values()].map(thingCode))].filter((c) => c && !this.things.has(c));
     if (!codes.length) return;
     let parsed: Readonly<Record<string, ThingDescription>>;
     try {
@@ -533,58 +561,22 @@ export class DeviceRegistry {
   }
 
   /**
-   * Resolve a serial to a {@link DeviceRecord} with current params: starts from the device-list params, then
-   * overlays a fresh `get_device_param_list` when that call is available to this account. An AIoT robot's
-   * cloud data points ({@link loadCloudDps}) sit beneath both, filling only ids neither carries.
+   * Resolve a serial to a {@link DeviceRecord} with current params: the device-list params, with an AIoT
+   * robot's cloud data points ({@link loadCloudDps}) beneath them, filling only ids the list does not carry.
    *
-   * The overlay is **owner-gated** — a shared or member account is refused it for every device, permanently,
-   * which {@link OWNER_ONLY_CODE} identifies — so when it is unavailable the device list is the source
-   * instead. Any OTHER failure is treated as transient: it falls back for that call but is retried next
-   * time, because latching on a timeout would cost an entitled account its freshest source of params.
-   *
-   * A dead session is the exception: it is not a statement about the overlay's availability, and the fallback
-   * runs over the same session, so it propagates rather than degrading to the params this call already held.
-   * Serving those as current would report an expired token as a device that simply has not changed.
-   *
-   * The refusal is **logged, never surfaced as an error**. It is a normal property of a shared or member
-   * account, not a fault: nothing failed that the SDK did not immediately handle, and the account holder
-   * cannot grant themselves ownership.
-   *
-   * The list is account-wide, so a re-fetch is NOT per device: resolving a fleet calls this once per device,
-   * and each one re-fetching would multiply one burst into N. {@link refreshedList} reuses a list younger
-   * than {@link LIST_REUSE_MS} and coalesces concurrent fetches, which keeps resolving N devices at the cost
-   * of one list while still letting a later refresh see a new value. That list is not owner-gated and carries the same
-   * `{param_type, param_value, update_time}`, which makes it the fallback the overlay's own contract names.
+   * Reads the cached list, as the app does: it re-fetches the list on home resume, cold start and after its
+   * own account changes, never on a device read. Only a serial the cache doesn't hold (a cold start) fetches,
+   * through {@link refreshedList}; a dead session propagates. The host's {@link getDevices}, the poll and the
+   * realtime paths are what move the params after that.
    *
    * Shared by {@link EufyMega.getDevice} / {@link EufyMega.inspectDevice} / `commandContext`.
    */
   async record(sn: string): Promise<DeviceRecord> {
-    if (!this.devices.length || this.overlayRefused.has(sn)) await this.refreshedList(sn);
-    let dev = this.devices.find((d) => d.sn === sn);
+    const dev = this.devices.find((d) => d.sn === sn) ?? (await this.refreshedList(sn));
     if (!dev) throw new Error(`device ${sn} not found (have: ${this.devices.map((d) => d.sn).join(", ")})`);
 
     const params: Record<number, string> = { ...this.cloudDps.get(sn), ...(dev.params ?? {}) };
     const paramUpdatedAt: Record<number, number> = { ...(dev.paramUpdatedAt ?? {}) };
-    if (!this.overlayRefused.has(sn)) {
-      try {
-        const live = await this.mega.getDeviceParamList<{ params?: RawParam[] }>(sn);
-        mergeParams(live.params, params, paramUpdatedAt);
-      } catch (error) {
-        if (error instanceof SessionExpiredError) throw error;
-        if (error instanceof MegaApiError && error.code === OWNER_ONLY_CODE) {
-          this.overlayRefused.add(sn);
-          if (!this.overlayRefusalReported) {
-            this.overlayRefusalReported = true;
-            this.logger.debug(
-              "[registry] per-device params are owner-gated for this account — reading params from the device list instead",
-            );
-          }
-        }
-        dev = (await this.refreshedList(sn)) ?? dev;
-        Object.assign(params, dev.params ?? {});
-        Object.assign(paramUpdatedAt, dev.paramUpdatedAt ?? {});
-      }
-    }
 
     const raw = dev.raw as Record<string, unknown> | undefined;
     const deviceType = typeof raw?.["device_type"] === "number" ? (raw["device_type"] as number) : undefined;
@@ -610,10 +602,6 @@ export class DeviceRegistry {
    * cycle over N devices would multiply into N of those bursts — and every fetch clears the capability caches,
    * so they would stop working. One fetch serves every device that wants the same answer.
    *
-   * This is the ONLY way a caller in a loop should ask for a fresher list. A convergence wait that polls
-   * {@link getDevices} directly bypasses both the window and the coalescing, so one write whose param never
-   * lands spends a whole account-wide burst per iteration, and concurrent transitions multiply that again.
-   *
    * Only a fetch that RESOLVED opens the reuse window. {@link getDevices} tolerates a failing house/body
    * query as a partial and answers anyway, so an outage still holds the window on purpose — retrying per
    * device is how one outage becomes N bursts. What must not hold it is the one failure that rejects: a dead
@@ -622,14 +610,9 @@ export class DeviceRegistry {
    */
   async refreshedList(sn: string): Promise<EufyDevice | undefined> {
     if (Date.now() - this.listFetchedAtMs < LIST_REUSE_MS) return this.devices.find((d) => d.sn === sn);
-    this.listInFlight ??= this.getDevices()
-      .then((devices) => {
-        this.listFetchedAtMs = Date.now();
-        return devices;
-      })
-      .finally(() => {
-        this.listInFlight = undefined;
-      });
+    this.listInFlight ??= this.getDevices().finally(() => {
+      this.listInFlight = undefined;
+    });
     try {
       return (await this.listInFlight).find((d) => d.sn === sn);
     } catch (e) {
@@ -695,6 +678,11 @@ export class DeviceRegistry {
     const reported = this.dpParams.get(sn);
     if (!reported) return;
     for (const paramType of paramTypes) delete reported[paramType];
+  }
+
+  /** One param's current value: the device's realtime report, else the cloud list's. */
+  paramOf(sn: string, paramType: number): string | undefined {
+    return this.dpParams.get(sn)?.[paramType] ?? this.devices.find((d) => d.sn === sn)?.params?.[paramType];
   }
 
   /** Whether this device has reported any realtime state yet. */

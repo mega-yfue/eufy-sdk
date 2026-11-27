@@ -97,10 +97,9 @@ describe("the station a call resolves", () => {
       const session = connectedSession();
       const sent = vi.fn();
       Object.assign(session, {
-        sendRawLevel2: sent,
+        sendStringPayloadCommand: sent,
         sendSetPayload: sent,
-        sendControlLevel2: sent,
-        sendRawLevel2Bytes: sent,
+        sendBytes: sent,
       });
       const router = routerWithSession(session, {
         deps: {

@@ -48,7 +48,7 @@ interface Sample {
   keyframe: boolean;
 }
 
-type AacCodec = Exclude<AudioCodec, "g711a">;
+type AacCodec = Exclude<AudioCodec, "g711a" | "opus">;
 const AAC_ELD_SAMPLES_PER_FRAME = 480;
 const ADTS_FREQUENCY_INDEX_16K = 8;
 const ADTS_CHANNELS_MONO = 1;
@@ -148,11 +148,11 @@ export class Fmp4Muxer {
 
   /**
    * Add one station-declared AAC access unit to the audio track: an ADTS frame for AAC-LC, a raw access unit
-   * described by its frame's config for AAC-ELD. G.711 remains available via `live()`.
+   * described by its frame's config for AAC-ELD. G.711 and Opus remain available via `live()`.
    */
   pushAudio(frame: LiveAudioFrame, timestampMs = now()): MediaFragment | undefined {
     if (!this.audioRequested || this.audioDisabled) return undefined;
-    if (frame.codec === "g711a") {
+    if (frame.codec === "g711a" || frame.codec === "opus") {
       if (this.initSent) return undefined;
       this.audioDisabled = true;
       if (!this.params) return undefined;

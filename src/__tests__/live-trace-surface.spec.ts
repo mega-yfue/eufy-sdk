@@ -28,9 +28,6 @@ describe("live-trace vocabulary at the package entry point", () => {
   it("publishes a phase union a caller can exhaust", () => {
     const handled = {
       "media-command": true,
-      "media-command-ack": true,
-      "media-command-retry": true,
-      "media-command-unacknowledged": true,
       "first-video-command": true,
       "first-video-unit": true,
       "first-keyframe": true,
@@ -42,18 +39,12 @@ describe("live-trace vocabulary at the package entry point", () => {
       "session-connect-wait": true,
       "session-connected": true,
       "session-unreachable": true,
-      "level2-wait": true,
       "level2-ready": true,
-      "level2-set-payload-only": true,
       "level2-unavailable": true,
       "level2-negotiating": true,
       "station-resolved": true,
       "station-channel-unresolved": true,
-      "cipher-fallback": true,
       warming: true,
-      "media-command-unsent": true,
-      "path-stale": true,
-      "channel-silent": true,
       "start-failed": true,
     } satisfies Record<LiveTrace["phase"], true>;
     expect(Object.keys(handled)).toContain("sequence-restart");

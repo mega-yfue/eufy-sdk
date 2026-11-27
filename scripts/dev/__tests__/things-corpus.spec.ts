@@ -1,4 +1,4 @@
-import { extractBundle } from "../things-corpus.ts";
+import { bundleCodes, catalogueCodes, extractBundle } from "../things-corpus.ts";
 
 /** Synthetic minified snippets, one per shape the bundles use. Constants and numbers are made up. */
 const SECURITY =
@@ -56,4 +56,20 @@ test("light: MQTT command code write, event code read, TLV tag read", () => {
 
 test("an identifier the description does not list is not extracted", () => {
   expect(Object.keys(extractBundle(VACUUM, new Set(["ecl_find_me"])))).toEqual(["ecl_find_me"]);
+});
+
+test("the catalogue lists the codes of every category and sub-category", () => {
+  const reply = {
+    categories: [
+      { products: [{ code: "T8000" }], sub_categories: [{ products: [{ code: "T8001" }], sub_categories: [] }] },
+      { sub_categories: [{ sub_categories: [{ products: [{ code: "T8002" }] }] }] },
+    ],
+  };
+  expect(catalogueCodes(reply)).toEqual(["T8000", "T8001", "T8002"]);
+  expect(catalogueCodes(undefined)).toEqual([]);
+});
+
+test("a bundle names the product codes of its name table", () => {
+  const src = 'x={T8000:"Cam A",T8001:"Recorder",specialRules:[{prefix:"T8002",pos:6}]},y={T8000:"Cam A"}';
+  expect(bundleCodes(src)).toEqual(["T8000", "T8001"]);
 });

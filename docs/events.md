@@ -62,9 +62,8 @@ eufy.on("propertyChanged", ({ deviceSn, property, value }) => {
 - **Echoes are announced too.** The SDK cannot tell a change it caused from one made in the app, and
   guessing would lose a real external change in exchange for one redundant re-read.
 - **Latency is the transport's.** Seconds for a property a device reports over its realtime wire. For one
-  that only ever arrives as a cloud param — which is most of them — it is whichever comes first of the
-  poll (`pollMs` at construction, or `setPollInterval(ms)` at runtime; default 10 minutes) and the
-  read-through cache's own background re-read, which fires when you read a value older than `cacheTtlMs`.
+  that only ever arrives as a cloud param — which is most of them — it is the
+  poll (`pollMs` at construction, or `setPollInterval(ms)` at runtime; default 10 minutes).
 
 **Nothing is filtered out for being uninteresting.** Which of a device's truths you act on is yours to
 decide, so every schema property that moves is announced — including the chatty ones. A sensor's own
@@ -134,23 +133,6 @@ carries each event, and how P2P opens on demand, is covered in [Realtime transpo
 
 Low-level escape hatches remain (`message`, `p2p`, `pushRaw`, connect/disconnect lifecycle, `error`)
 for when you want the raw frame.
-
-A write the device accepted on the wire and then never applied surfaces as its own
-**`commandUnconfirmed`** event, not on `error`. Every setter resolves once the transport has carried the
-command — that is delivery, not convergence — and the observation a member declares decides separately
-whether the device did what it was told. Where that observation times out, this event names the device, the
-property, what was asked for and what the param actually read, so a host can tell its user the camera
-ignored the request instead of believing it landed:
-
-```ts
-eufy.on("commandUnconfirmed", ({ sn, property, expected, observed }) => {
-  console.warn(`${sn} still reports ${property}=${observed}, not ${expected}`);
-});
-```
-
-It is an outcome rather than a fault, which is why it does not reach `error`: nothing went wrong in this
-library, and the same write may still land later on a battery device that was asleep. A camera whose power
-write is acknowledged and simply ignored is the case this exists for.
 
 A kicked or expired cloud session — another client logged into the account, or the token lapsed —
 surfaces as its own **`sessionExpired`** event, not on `error`. The SDK has already cleared the

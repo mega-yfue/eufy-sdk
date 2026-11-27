@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { connectedSession, routerWithSession, DEVICE_SN, ACCOUNT_ID } from "./session-fixtures.js";
 
 function harness() {
-  const session = Object.assign(connectedSession(), { sendControlLevel2: vi.fn(() => true) });
+  const session = Object.assign(connectedSession(), { sendSetPayload: vi.fn(() => true) });
   const router = routerWithSession(session);
   return { session, router };
 }
@@ -14,7 +14,7 @@ const frame = (channel = 1, cmd = 1955, payload: unknown = { code: 0, slState: "
 describe("native status query", () => {
   it("matches status by outer command, inner command and channel, never generic success", async () => {
     const { session, router } = harness();
-    session.sendControlLevel2.mockImplementation(() => {
+    session.sendSetPayload.mockImplementation(() => {
       session.emit("commandResult", { code: 0, channel: 1 });
       session.emit("data", frame(2));
       session.emit("data", frame(1, 1940));
@@ -26,13 +26,17 @@ describe("native status query", () => {
       code: 0,
       slState: "4",
     });
-    expect(session.sendControlLevel2).toHaveBeenCalledExactlyOnceWith(1955, 1, ACCOUNT_ID, { timezone: "UTC0" }, 0);
+    expect(session.sendSetPayload).toHaveBeenCalledExactlyOnceWith(
+      1955,
+      { timezone: "UTC0" },
+      { accountId: ACCOUNT_ID, channel: 1 },
+    );
     expect(session.listenerCount("data")).toBe(0);
     expect(session.listenerCount("close")).toBe(0);
   });
   it("preserves the correctly attributed negative status result", async () => {
     const { session, router } = harness();
-    session.sendControlLevel2.mockImplementation(() => {
+    session.sendSetPayload.mockImplementation(() => {
       queueMicrotask(() => session.emit("data", frame(1, 1955, { code: -106 })));
       return true;
     });

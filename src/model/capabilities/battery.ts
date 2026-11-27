@@ -44,8 +44,8 @@ export const BATTERY_PARAM = {
   /** Battery power-history stats JSON (app `APP_CMD_GET_BATTERY_POWER_DATAS`). Often P2P-dump-only. */
   BATTERY_POWER_DATAS: 3100,
   /**
-   * `GET_CAMERA_INFO` — reported by battery cameras, meaning NOT evidenced. Read live as the constant
-   * `5` on a T8170 at 92% and a T8171 at 27%, so nothing about it tracks the battery. See
+   * `GET_CAMERA_INFO` — reported by battery cameras, meaning NOT evidenced; it does not track the
+   * battery. See
    * `BATTERY_MEMBERS`'s `cameraInfo`.
    */
   CAMERA_INFO: 1103,
@@ -57,7 +57,7 @@ export const BATTERY_PARAM = {
  * its Customize-Recording mode (how long a recording runs, how soon the next may start, whether it stops
  * early when motion ends).
  *
- * Every param is a confirmed app-enum id read live off the fleet. `charging` is derived from the
+ * Every param is an app-enum id. `charging` is derived from the
  * `BATTERY_STATUS` (2111) bitfield the way the app itself decodes it (`value ∉ {0,2}`).
  * `batteryPowerStats` (3100) is only in the P2P param dump on some devices — read it via the live P2P
  * param query (the owner-gated cloud call can't return it).
@@ -115,7 +115,7 @@ function decodePowerSource(raw: string | number | boolean): number | string {
 
 /**
  * A custom-working-mode record setting: a 132-byte station-scalar `[u32 value][account_id pad128]` on
- * the DEVICE channel (not station 255), signCode 8, outer-cmd = the param id. Verified live on T8170.
+ * the DEVICE channel (not station 255), signCode 8, outer-cmd = the param id.
  */
 function recordSetting(param: number, value: number, ctx: CommandContext): Command {
   return setStationScalar(param, value, ctx.channel);
@@ -144,25 +144,16 @@ function recordSetting(param: number, value: number, ctx: CommandContext): Comma
  *
  * An explicit list, NOT a `device-family.ts` predicate (`isFloodLight`/`isIndoorCamera`): composing
  * those would over-reach — not every floodlight or indoor cam is mains-only, and this must assert mains
- * only for hardware actually checked. `WORKING_MODE_DEFAULT_MODELS` in this file is the same shape.
- * Evidence bars differ: T8425 (Floodlight Cam) is confirmed on owned hardware; T8419 (Indoor Cam) is
- * taken from the app's own mains-cam handling (see the note on `publishedWorkingModeDomain`); T8410
- * (Indoor Cam Pan & Tilt) is confirmed mains-only by the maintainer, reported after a live unit showed
- * a battery level, a cell temperature and both solar reads it cannot have. T84A1 (Wall Light Cam
- * S100) is a hardwired fixture that replaces a wall light; the app files it under its `wallLight`
- * family (T81A0/T84A1/T86P2, from its OTA-type switch) and a standalone unit was reported (issue #191)
- * with its live stream cut every ~57 s by the battery budget it cannot need. T8423 (Floodlight Cam 2
- * Pro) has no battery and requires constant 110–240 V power according to the vendor's product FAQ;
- * the exact sentinel values it reports are unverified. T8E00 (PoE S4) and T8P00 (PoE E40) are
- * PoE-powered cameras behind a T8N00 with no cell; a hardware run in #437 showed the S4 stream cut
- * 55 s after its first video frame by the inherited battery budget (45 s plus 10 s grace). T8P10 (PoE
- * E41) is the same, confirmed on owned hardware behind a T8N00: it reported a 100% battery, a cell
- * temperature and a solar read it cannot have. T8416 (Indoor Cam S350) has no battery and runs from a
- * 5 V USB-C supply according to the vendor's product pages; a HomeBase 3-attached unit reported the
- * sentinels 1101=100 and 1138=30, which surfaced as a battery level and a cell temperature that never move.
+ * only for models known to be mains-only. `WORKING_MODE_DEFAULT_MODELS` in this file is the same shape.
+ * T8425 (Floodlight Cam), T8419 (Indoor Cam, per the app's own mains-cam handling) and T8410 (Indoor
+ * Cam Pan & Tilt) are mains-powered. T84A1 (Wall Light Cam S100) is a hardwired fixture that replaces a
+ * wall light; the app files it under its `wallLight` family (T81A0/T84A1/T86P2, from its OTA-type
+ * switch). T8423 (Floodlight Cam 2 Pro) has no battery and requires constant 110–240 V power per the
+ * vendor's product FAQ. T8E00 (PoE S4), T8P00 (PoE E40) and T8P10 (PoE E41) are PoE-powered cameras
+ * behind a T8N00 with no cell. T8416 (Indoor Cam S350) has no battery and runs from a 5 V USB-C supply.
  *
  * The same list decides the live-media and P2P-session power tier through {@link cameraPowerTier}: a
- * budget on a mains camera is not cheap once it kills a continuous stream every minute.
+ * budget on a mains camera kills a continuous stream once it runs out (45 s plus 10 s grace).
  */
 const MAINS_CAMERA_MODELS = ["T8425", "T8419", "T8410", "T84A1", "T8423", "T8E00", "T8P00", "T8P10", "T8416"] as const;
 
@@ -186,9 +177,7 @@ const notMainsCamera = (ctx: AvailabilityContext): boolean => {
  *
  * The ONE place that fact is declared. {@link cellGated} applies {@link notMainsCamera} from this list
  * when the table is built, so a member never states the gate itself: adding a cell read is adding its
- * param here, and there is no second place for it to be missing from. A per-member `available` was the
- * alternative and is what the first two passes of this guard got wrong, in both directions — first by
- * covering two of the seven, then by reading `unexposed` as covering a third.
+ * param here, and there is no second place for it to be missing from.
  *
  * What is NOT here matters as much.
  *
@@ -216,7 +205,7 @@ const TEST_WIRING = 6254;
 
 /**
  * The products whose settings bundle builds `power_charge_mode` as something other than the 1350
- * SET_PAYLOAD `{charge_mode}` on 1293 every other bundle sends (corpus 2026-11-13). `PowerChargeModeParser("v2")`
+ * SET_PAYLOAD `{charge_mode}` on 1293 every other bundle sends (corpus 2026-11-24). `PowerChargeModeParser("v2")`
  * sends 1350 {@link TEST_WIRING} with no payload whatever the value, so it sets nothing; `PowerChargeModeParser1700` sends the
  * 1700 wrapper `{enable}` on 1293; the SoloCam bundle's inline case sends that `{enable}` unless the camera
  * hangs off a HomeBase (`connectHB`). The description has no variant that tells them apart. The `{enable}`
@@ -225,9 +214,9 @@ const TEST_WIRING = 6254;
  */
 const POWER_CHARGE_BUILDER: Readonly<Partial<Record<string, "test-wiring" | "enable" | "standalone-enable">>> =
   Object.fromEntries([
-    ...["T8110", "T8110E", "T814X", "T8171", "T86P2"].map((c) => [c, "test-wiring"] as const),
+    ...["T8110", "T8110E", "T814X", "T8170", "T8171", "T86P2"].map((c) => [c, "test-wiring"] as const),
     ...["T8150", "T8151"].map((c) => [c, "enable"] as const),
-    ...["T8122", "T8123", "T8124R", "T8130", "T8131", "T8134", "T8170", "T8172", "T8B00"].map(
+    ...["T8122", "T8123", "T8124R", "T8130", "T8131", "T8134", "T8172", "T8B00"].map(
       (c) => [c, "standalone-enable"] as const,
     ),
   ]);
@@ -323,29 +312,27 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
     type: "number",
     unit: "%",
     kind: "percent",
-    provenance: "verified",
     available: (ctx: AvailabilityContext) => !hasCapability(ctx, "lock"),
-    description: "Battery level 0-100 (verified: param 1101).",
+    description: "Battery level 0-100 (param 1101).",
   },
   /**
    * Derived from `BATTERY_STATUS` (2111), NOT `powerCharge` (1293): the app decodes it as
    * `charging = value ∉ {0,2}` (Hermes `device_charging_mode` parser). That catches solar
-   * trickle-charge which 1293 misses — a T8124 with a built-in solar panel reads 4 = charging.
+   * trickle-charge which 1293 misses — a built-in solar panel reads 4 = charging.
    */
   charging: {
     param: BATTERY_PARAM.BATTERY_STATUS,
     type: "bool",
     kind: "boolean",
-    provenance: "apk",
     coerce: isChargingState,
     description:
       "Charging in progress — derived from BATTERY_STATUS (2111) as `value ∉ {0,2}`, matching the app's own " +
       "decode. 0/2 = not charging; a solar/USB charge (incl. a built-in solar panel, which reads 4) is non-zero.",
   },
   /**
-   * 1293 is the READABLE indicator (6445 is write-only/cloud-hidden). Verified live on a T8124R via an
-   * app-toggle before/after diff: 0 = Battery, 1 = External Solar Panel. Values beyond 0/1 (some models
-   * report 5) read as `undefined` — `enumValues` holds only the two that are confirmed.
+   * 1293 is the READABLE indicator (6445 is write-only/cloud-hidden): 0 = Battery,
+   * 1 = External Solar Panel. Values beyond 0/1 (some models report 5) read as `undefined` — `enumValues`
+   * holds only those two.
    *
    * The write is the product's settings-bundle builder for `power_charge_mode`, {@link POWER_CHARGE_BUILDER};
    * the setter accepts a NAME as well as the index the getter answers. Only the 1350 `{charge_mode}` is
@@ -359,7 +346,6 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
     type: "enum",
     kind: "enum",
     enumValues: { 0: "Battery", 1: "External Solar Panel" },
-    provenance: "apk",
     coerce: decodePowerSource,
     requires: [BATTERY_PARAM.POWER_CHARGE],
     readAvailable: (ctx) => !readsTestWiring(ctx),
@@ -371,7 +357,7 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
     args: [{ name: "source", kind: "enum", description: "The raw value, or the name `battery`/`external`." }],
     ...accepts<PowerSourceName>(),
     description:
-      "Configured power source (1293): 0 = Battery, 1 = External Solar Panel. Read verified live on T8124R. " +
+      "Configured power source (1293): 0 = Battery, 1 = External Solar Panel. " +
       "Where the app probes the wiring instead, read-only from 6254 (-505 = Battery). " +
       "The richer raw APP_CMD_SET_POWER_SOURCE blob is surfaced separately as `powerSourceInfo` (6445). " +
       "Format varies by model (plain int or JSON {power_source:N}); a value beyond 0/1 reads undefined.",
@@ -381,8 +367,6 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
         { charge_mode: v === "external" ? 1 : v === "battery" ? 0 : asBool(v) ? 1 : 0 },
         ctx,
         0,
-        undefined,
-        "auto",
       ),
   },
   /**
@@ -406,7 +390,6 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
     type: "number",
     kind: "scalar",
     enumValuesFor: publishedWorkingModeDomain,
-    provenance: "verified",
     requires: [BATTERY_PARAM.WORKING_MODE],
     min: 0,
     args: [
@@ -420,12 +403,10 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
     ...accepts<WorkingModeName>(),
     description:
       "Power working mode (1246 SET_INDOOR_POWER_MODE) — a device-specific mode index the app maps per " +
-      "model (not a universal enum). WRITE verified live on T8124R (direct-binary cmd 1246; set the raw value).",
+      "model (not a universal enum). Write: direct-binary cmd 1246, the raw value.",
     write: (v, ctx) => {
       const mode = typeof v === "string" && !/^\d+$/.test(v.trim()) ? resolveWorkingModeValue(ctx.model, v) : Number(v);
-      return mode == null || Number.isNaN(mode)
-        ? undefined
-        : setScalar(BATTERY_PARAM.WORKING_MODE, mode, ctx, "direct-binary");
+      return mode == null || Number.isNaN(mode) ? undefined : setScalar(BATTERY_PARAM.WORKING_MODE, mode, ctx);
     },
   },
   /**
@@ -439,12 +420,11 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
     type: "number",
     unit: "s",
     kind: "seconds",
-    provenance: "verified",
     requires: [BATTERY_PARAM.RECORD_DURATION],
     min: 0,
     description:
       "How long each motion-triggered recording runs, in seconds (1249 SET_RECORD_DURATION). Applies in the " +
-      "device's Customize-Recording working mode. Write verified live on T8170, which reports it back (read live: 60).",
+      "device's Customize-Recording working mode.",
     write: (v, ctx) => recordSetting(BATTERY_PARAM.RECORD_DURATION, Number(v), ctx),
   },
   /**
@@ -457,13 +437,11 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
     type: "number",
     unit: "s",
     kind: "seconds",
-    provenance: "verified",
     requires: [BATTERY_PARAM.RECORD_INTERVAL],
     min: 0,
     description:
       "Minimum seconds the device waits after one recording before it will start another (1250 " +
-      "SET_RECORD_INTERVAL) — the motion re-arm gap. Applies in the Customize-Recording working mode. " +
-      "Write verified live on T8170, which reports it back (read live: 5).",
+      "SET_RECORD_INTERVAL) — the motion re-arm gap. Applies in the Customize-Recording working mode.",
     write: (v, ctx) => recordSetting(BATTERY_PARAM.RECORD_INTERVAL, Number(v), ctx),
   },
   /**
@@ -474,20 +452,18 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
     param: BATTERY_PARAM.RECORD_AUTO_STOP,
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
     requires: [BATTERY_PARAM.RECORD_AUTO_STOP],
     invert: true,
     description:
       "Stop a recording as soon as motion ends, rather than running the full recordDuration (1251 " +
       "SET_RECORD_AUTO_STOP). Applies in the Customize-Recording working mode. Inverted on the wire — raw 0 " +
-      "= ON, per the app's own decode. Write wire-verified live on T8170.",
+      "= ON, per the app's own decode.",
     write: (v, ctx) => recordSetting(BATTERY_PARAM.RECORD_AUTO_STOP, asBool(v) ? 0 : 1, ctx),
   },
   /**
    * The cell temperature the device measures, in its own degrees Celsius — never converted, since
    * rescaling a number sourced only from the app's param table would be inventing precision. Read-only:
-   * `apk` provenance means the id comes from the disassembled app, not from a captured toggle, so
-   * nothing here establishes a write. Pairs with the `batteryAlert` HOT push.
+   * the id comes from the app, not from a captured toggle, so nothing here establishes a write. Pairs with the `batteryAlert` HOT push.
    */
   temperature: {
     param: BATTERY_PARAM.BATTERY_TEMP,
@@ -495,13 +471,11 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
     type: "number",
     unit: "°C",
     kind: "celsius",
-    provenance: "apk",
     description: "Battery temperature (1138 GET_BATTERY_TEMP).",
   },
   /**
    * Remaining cell capacity as a percentage of new — a slow-moving ageing figure, NOT the current
-   * charge (`level` is that), which is why it takes its own flat name `batteryHealth`. `apk`
-   * provenance: the id is read out of the disassembled app rather than from a captured change.
+   * charge (`level` is that), which is why it takes its own flat name `batteryHealth`.
    */
   health: {
     param: BATTERY_PARAM.BATTERY_HEALTH,
@@ -509,31 +483,28 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
     type: "number",
     unit: "%",
     kind: "percent",
-    provenance: "apk",
     description: "Battery health 0-100 (1198 APP_CMD_DEV_BATTERY_HEALTHY_V2).",
   },
   /**
    * How much light the solar panel is currently harvesting. A bare `scalar` on purpose: only the zero
    * point is established (0 = no solar input), so the SDK declares no unit and no ceiling rather than
-   * publishing a percentage the wire has not been shown to be. `apk` provenance.
+   * publishing a percentage the wire has not been shown to be.
    */
   solarIntensity: {
     param: BATTERY_PARAM.SOLAR_INTENSITY,
     type: "number",
     kind: "scalar",
-    provenance: "apk",
     description: "Solar-panel light/charge intensity (1309 APP_CMD_SOLAR_INTENSITY); 0 = no solar input.",
   },
   /**
    * A rolling 24-hour verdict on whether the panel contributed anything — so it stays true through a
    * night, and is the right read for "is the panel actually working", where `solarIntensity` only says
-   * what it is doing this instant. `apk` provenance; the id is the app's own, not a captured toggle.
+   * what it is doing this instant.
    */
   solarConnected24h: {
     param: BATTERY_PARAM.SOLAR_CONNECT_24H,
     type: "bool",
     kind: "boolean",
-    provenance: "apk",
     description: "Whether a solar panel supplied power in the last 24h (6482 APP_CMD_GET_SOLAR_PANEL_CONNECT_24H).",
   },
   /**
@@ -550,7 +521,6 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
     param: BATTERY_PARAM.BATTERY_POWER_DATAS,
     type: "string",
     kind: "text",
-    provenance: "apk",
     unexposed: true,
     description:
       "Battery power-history stats JSON (3100 APP_CMD_GET_BATTERY_POWER_DATAS). Often only in the live " +
@@ -560,19 +530,16 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
    * `GET_CAMERA_INFO` (1103), reported by battery cameras with its meaning unevidenced — so it is in the
    * schema and reachable through `getProperty`, with no typed getter.
    *
-   * It is NOT a low-battery flag, on two independent grounds: the app's own param table names 1103
-   * `GET_CAMERA_INFO`, and a T8170 at 92% and a T8171 at 27% both report the constant `5`. Typed as a
+   * It is NOT a low-battery flag: the app's own param table names 1103 `GET_CAMERA_INFO`, and it does
+   * not track the charge. Typed as a
    * bool it would read `false` on every device forever — a shape indistinguishable from a real answer.
    */
   cameraInfo: {
     param: BATTERY_PARAM.CAMERA_INFO,
     type: "number",
     kind: "scalar",
-    provenance: "apk",
     unexposed: true,
-    description:
-      "Raw GET_CAMERA_INFO value (1103), meaning unevidenced — read live as the constant 5 on a T8170 at " +
-      "92% and a T8171 at 27%, so it is NOT a low-battery flag.",
+    description: "Raw GET_CAMERA_INFO value (1103), meaning unevidenced; NOT a low-battery flag.",
   },
   /**
    * A sensor's battery is low. The app reads the entry sensor's 1552 and the motion sensor's 1601 into the
@@ -584,7 +551,6 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
     readAliases: [{ paramType: 1601 }],
     type: "bool",
     kind: "boolean",
-    provenance: "verified",
     available: (ctx: AvailabilityContext) => !notSensor(ctx),
     description: "Sensor battery low (1552 entry sensor, 1601 motion sensor; sensor_is_low_power).",
   },
@@ -595,7 +561,7 @@ const CAMERA_BATTERY_MEMBERS = cellGated({
  * `sensor` codec — a sensor's 1101 is a non-cell sentinel and it has none of the camera power reads, so
  * it exposes its low-battery flag alone (see {@link notOnSensor}). Every getter, setter and description derives from this.
  *
- * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
+ * Exported but NOT published: each entry states its wire id and its gate,
  * which the reference site does not carry.
  * @internal
  */
@@ -606,7 +572,7 @@ export const BATTERY: CapabilityModule = {
   description: "Battery level, charging, health, temperature and solar input; a sensor's low-battery flag.",
   members: BATTERY_MEMBERS,
   properties: propertiesOf(BATTERY_MEMBERS),
-  /** A reported battery-level param (1101) is the verified proof the device is battery-powered. */
+  /** A reported battery-level param (1101) is the proof the device is battery-powered. */
   detection: { evidenceParams: [BATTERY_PARAM.BATTERY] },
   /**
    * `batteryAlert` is an FCM threshold push (`CusPushEvent` 6 LOW / 7 HOT / 11 FULL) — a STATE with no
@@ -656,7 +622,7 @@ export function workingModeMap(model: string | undefined): Readonly<Record<numbe
 }
 
 /**
- * Battery-camera models confirmed on owned hardware to use the 3-mode `DEFAULT` working-mode domain,
+ * Battery-camera models that use the 3-mode `DEFAULT` working-mode domain,
  * matched by T-code prefix: the eufyCam (T8114) and SoloCam (T8124/T8170/T8171) families.
  */
 const WORKING_MODE_DEFAULT_MODELS = ["T8114", "T8124", "T8170", "T8171"] as const;

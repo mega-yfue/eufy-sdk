@@ -11,7 +11,9 @@
  *
  * Bodies are AES-128-CBC(shareKey) base64; x-signature = HMAC over ts+once+encBody.
  */
-import { createHash } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, pbkdf2, randomBytes, randomInt } from "node:crypto";
+import { promisify } from "node:util";
+import { gunzipSync } from "node:zlib";
 import {
   type SessionEntry,
   EUFYLIFE_LOCAL_KEY_HEX,
@@ -20,8 +22,10 @@ import {
   finishKeyExchange,
   gtoken,
   prepareKeyExchange,
+  signRequest,
 } from "../../core/crypto.js";
 import { MemorySessionStore, isSessionValid, type SessionStore } from "../../core/store.js";
+import type { RtcToken } from "../rtc/signal-client.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import type { EufyDevice } from "../../core/types.js";
 import type { SecureMqttCredentials } from "../mqtt/secure-mqtt.js";
@@ -30,6 +34,7 @@ import { downloadMediaResource, mediaFailureError, MediaDownloadAuthenticationEr
 import { randomPhoneModel, randomUserAgent } from "./phone-model.js";
 import { normalizePushImage } from "./decodeImageV1.js";
 import { loginCredentials, readLoginReply, signedHeaders } from "./passport.js";
+import type { TuyaCommandRouter } from "../tuya/command-router.js";
 
 export type RegionShard = "eu-pr" | "us-pr";
 
@@ -63,11 +68,9 @@ export interface MegaClientConfig {
    */
   mediaUserAgent?: string;
   /**
-   * Acting name written into the commands that carry an actor field — guard mode and HomeBase alarm
-   * output (`user_name`), a lock's acting username. Trimmed, and blank counts as unset: the default
-   * is the login email's local-part (the whole string when it has no `@`). Attribution only — the
-   * device stores it for its own activity record, and no captured frame shows it being validated
-   * against the account.
+   * Acting name written into the commands that carry an actor field — guard mode (`user_name`), a
+   * lock's acting username. Trimmed, and blank counts as unset: the default is the account's
+   * `MegaHttpClient.accountName`. Attribution only — the device stores it for its own activity record.
    */
   accountName?: string;
   /** Persist + reuse the session (token + session key) across runs. Default: in-memory. */
@@ -80,6 +83,16 @@ interface ApiEnvelope<T> {
   code: number;
   msg?: string;
   data: T;
+  /** HMAC of the reply's `X-Request-Ts`, `X-Request-Once` and encrypted `data`, as a request is signed. */
+  signature?: string;
+}
+
+/**
+ * A decrypted reply body, gunzipped when it carries the gzip magic (`1f 8b`, at least 18 bytes), as the app's
+ * `NetworkDecryptResponseUtil` reads an `algorithm_ecdh_gzip` reply.
+ */
+function inflated(plain: Buffer): Buffer {
+  return plain.length >= 18 && plain[0] === 0x1f && plain[1] === 0x8b ? gunzipSync(plain) : plain;
 }
 
 /** Parse a response body as JSON, falling back to the raw text (mirrors axios' default transform). */
@@ -113,13 +126,6 @@ export class MegaApiError extends Error {
     this.name = "MegaApiError";
   }
 }
-
-/**
- * `get_device_param_list` refuses a shared or member account: only the device's owner may read it. The
- * refusal is permanent for the life of that account's session, so a retry cannot change it — the
- * device-list params carry the same `{param_type, param_value, update_time}` and are not owner-gated.
- */
-export const OWNER_ONLY_CODE = 20004;
 
 /**
  * Thrown when a persisted/expired session is rejected (401). Re-login to recover.
@@ -194,6 +200,8 @@ export const EufyCloudErrorCode = {
   CAPTCHA_REQUIRED: 100032,
   /** Captcha answer was wrong — fetch a fresh challenge and re-solve. */
   CAPTCHA_WRONG: 100033,
+  /** The account lives on another region than the one asked: run `estimate_domain` again and retry once. */
+  DOMAIN_MISMATCH: 26502,
 } as const;
 /**
  * Any one of the gateway error codes above.
@@ -267,12 +275,108 @@ const CONTENDED_SESSION_HINT =
   "login ends the other's (where that is another SDK install, give each its own openudid)";
 
 /**
+ * A device-share invitation as `confirm_invite`/`ignore_invite` carry it, filled from a received invite: its `id`,
+ * `device_sn`, `sub_sns`, `category` and owner `user_id`. `encrypted_data` is the invite's own, never sent back.
+ */
+type ShareInviteRef = {
+  invite_id: number;
+  device_sn: string;
+  sub_sns: string;
+  category: string;
+  owner_user_id: string;
+  encrypted_data?: string;
+  /** The invite's `extension`: on an `eufy_home_tuya` invitation, the owner's Tuya share id. */
+  extension?: string;
+};
+
+/** A {@link ShareInviteRef} as the app's `ConfirmMemberData` / `IgnoreMember` serialise it, without `encrypted_data` and `extension`. */
+const inviteItem = ({ encrypted_data: _, extension: __, ...item }: ShareInviteRef & { recevicer_user_id?: string }) =>
+  item;
+
+/** The body the app's `HouseInviteOkRequest` serialises: `transaction`, `house_id`, the call's fields, `categories`, `add_pns`. */
+function houseInvite(transaction: string, houseId: string, fields: Record<string, unknown> = {}) {
+  return { transaction, house_id: houseId, ...fields, categories: [], add_pns: [] };
+}
+
+/** The app's `isClean`: the Home categories whose shares run on the Home host's `v1/share/active/*`. */
+const isHomeCategory = (category: string) => category === "eufy_home" || category === "eufy_home_tuya";
+
+/** The header the app's `ThingNetApi.getTDBySnList` and `HouseNetApi.getDeviceList` carry: a gzipped reply is welcome. */
+const GZIP = { "x-accept-encoding": "gzip" } as const;
+
+/** The app's `Digest.c(password, "SHA256")`: the lower-case SHA-256 hex of the trimmed password. */
+const sha256Hex = (password: string) => createHash("sha256").update(password.trim(), "utf8").digest("hex");
+
+/**
+ * Whether a failed call timed out, as the app's `TDRepositoryImpl.isTimeoutFailure` reads it: HTTP 408 or 504, or
+ * a message or error name saying `timeout` / `timed out`.
+ */
+function isTimeoutFailure(e: unknown): boolean {
+  const status = e instanceof MegaApiError ? e.status : undefined;
+  return (
+    status === 408 || status === 504 || /timeout|timed out/i.test(e instanceof Error ? `${e.name} ${e.message}` : "")
+  );
+}
+
+/** The serial a request body names, as `CategoryHeaderRouting.getDeviceSn` reads it. */
+function deviceSnOf(body: unknown): string | undefined {
+  for (const key of ["device_sn", "station_sn", "deviceSn"]) {
+    const v = (body as Record<string, unknown> | null)?.[key];
+    const sn = Array.isArray(v) ? v[0] : v;
+    if (typeof sn === "string" && sn) return sn;
+  }
+  return undefined;
+}
+
+/** The challenge a `/passport/login` attempt answers: none, a solved captcha, or a 2FA code. */
+type LoginChallenge = { verifyCode?: string; captchaId?: string; answer?: string };
+
+/** The `transaction` the app's `Transactions.c()` stamps on a request: the monotonic clock in nanoseconds. */
+const transactionStamp = () => String(process.hrtime.bigint());
+
+const pbkdf2Async = promisify(pbkdf2);
+
+/**
+ * A share auth code and the `encrypted_data` it seals, as the app's `AuthCodeCrypto.encrypt` makes them: a 6-digit
+ * code drawn from 100000..999999, PBKDF2-HMAC-SHA256 (100000 rounds, 16-byte salt) to an AES-256-GCM key, and
+ * base64 of salt | 12-byte nonce | ciphertext | 16-byte tag over `plain`.
+ */
+async function sealShareCode(plain: string): Promise<{ code: string; encrypted: string }> {
+  const code = String(randomInt(100000, 1000000));
+  const salt = randomBytes(16);
+  const nonce = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", await pbkdf2Async(code, salt, 100000, 32, "sha256"), nonce);
+  const sealed = Buffer.concat([salt, nonce, cipher.update(plain, "utf8"), cipher.final(), cipher.getAuthTag()]);
+  return { code, encrypted: sealed.toString("base64") };
+}
+
+/**
+ * Refuse unless `code` opens `encrypted` (`AuthCodeCrypto.decrypt` yields text), the only check the app makes
+ * before it accepts an invitation that carries `encrypted_data`. Nothing reaches the cloud on a refusal.
+ */
+async function openShareCode(encrypted: string, code: string | undefined): Promise<void> {
+  const raw = Buffer.from(encrypted, "base64");
+  try {
+    const decipher = createDecipheriv(
+      "aes-256-gcm",
+      await pbkdf2Async(code ?? "", raw.subarray(0, 16), 100000, 32, "sha256"),
+      raw.subarray(16, 28),
+    );
+    decipher.setAuthTag(raw.subarray(-16));
+    if (Buffer.concat([decipher.update(raw.subarray(28, -16)), decipher.final()]).length) return;
+  } catch {
+    /* wrong code or malformed data */
+  }
+  throw new Error("the share code does not open this invitation");
+}
+
+/**
  * Whether a rejection's CODE or WORDING says the token is finished, rather than that this request was refused
  * for some other reason (rate limit, captcha cooldown) — the difference between dropping a good session and
  * keeping it. The caller pairs this with the 401 status; neither alone is the signal.
  *
- * The vendor words the same rejection several ways, and only one carries a distinctive code. All of these were
- * observed on one account: {@link EufyCloudErrorCode.SESSION_KICKED} with `"token does not exist because it was
+ * The vendor words the same rejection several ways, and only one carries a distinctive code. All of these mean
+ * the same thing: {@link EufyCloudErrorCode.SESSION_KICKED} with `"token does not exist because it was
  * kicked out"` when another login displaced it, and the generic `401` with `"token error"` or `"token not
  * exist, token = …"` for the same thing. Matching the code alone leaves a displaced stored token looking like
  * an ordinary API error, which nothing recovers from.
@@ -303,15 +407,6 @@ function tokenRejected(code: number | undefined, msg: string | undefined): boole
 }
 
 /**
- * The shard a mega domain names: its regional prefix (`…-ie-…` / `…-ie.` → `ie-pr`), or `undefined` when it
- * names none.
- */
-function shardOfDomain(domain: string): string | undefined {
-  const m = /-([a-z]{2})(?:[.-]|$)/i.exec(domain);
-  return m ? `${m[1].toLowerCase()}-pr` : undefined;
-}
-
-/**
  * {@link MegaHttpClient.postSigned}'s bookkeeping for the two recoveries it performs on itself, so each is
  * attempted once per call rather than once per rejection.
  * @internal
@@ -323,6 +418,22 @@ export interface SignedRetry {
   reauth?: boolean;
 }
 
+/** The app's cloud modules (`MegaModule`), lowercased: the `domain` names a bundle's cloud call may use. */
+const CLOUD_MODULES: ReadonlySet<string> = new Set(
+  (
+    "basic event things passport clean cloudstorage devicemanage devicerelation factory help house logging news " +
+    "openapi push smart valuesadd smartscreen shopping shortlink geofence ota light agreement commercial smartdrop " +
+    "powermanage health proalarm butler esagent promonitor"
+  ).split(" "),
+);
+
+/** The modules whose host prefix is not `app-<module>`. */
+const CLOUD_MODULE_HOSTS: Readonly<Record<string, string>> = {
+  basic: "mega",
+  cloudstorage: "app-cloudstor",
+  promonitor: "pro-monitoring",
+};
+
 /**
  * The cloud HTTP client. Internal transport, reachable as an escape hatch via `EufyMega.api`.
  * @internal
@@ -330,13 +441,25 @@ export interface SignedRetry {
 export class MegaHttpClient {
   private readonly cfg: Required<Pick<MegaClientConfig, "appName" | "appVersion" | "countryCode">> & MegaClientConfig;
   private region: RegionShard;
-  /** The host `estimate_domain` answered, persisted with the session. */
-  private estimatedDomain = "";
-  /** The in-flight (then settled, so cached) RTC-sign shard request from {@link portalShard}. */
-  private portalShardInFlight?: Promise<string>;
-  private bootstrapDomain?: string;
+  /** `product_domains.eufy_security` of the last `estimate_domain` reply, `undefined` before one was seen. */
+  private securityDomain?: string;
+  /** @internal The facade's Tuya session, for the Tuya-side step of `eufy_home_tuya` sharing. */
+  tuya?: TuyaCommandRouter;
+  /**
+   * The cloud category of a device by serial, the app's `getCategoryByDevice`: a signed call with no `Category`
+   * header takes the category of the `device_sn`, `station_sn` or `deviceSn` its body names (a string, or the
+   * first of an array), as the app's `CategoryHeaderRouting` derives it; `undefined` adds none.
+   * @internal
+   */
+  categoryOf: (sn: string) => string | undefined = () => undefined;
+  /** `product_domains.eufy_home` of the last `estimate_domain` reply, the app's Home category host. */
+  private homeDomain?: string;
+  /** `domain` of the last `estimate_domain` reply, the app's Basic host (`mega-…`, or one host for everything). */
+  private megaDomain?: string;
+  /** The security certificate `register/iot` last issued, cached with the session (see {@link getUserMqttInfo}). */
+  private securityMqtt?: SecureMqttCredentials;
   private sessionKey?: SessionEntry;
-  /** Per-host ECDH session keys for non-mega gateways (e.g. eufylife) keyed by host. */
+  /** The Security category's ECDH session keys, keyed by the host each was exchanged on. */
   private readonly sessionKeys = new Map<string, SessionEntry>();
   /** The in-flight key exchanges, by host and the token they carry — see {@link ensureSessionKey}. */
   private readonly keyExchanges = new Map<string, Promise<SessionEntry>>();
@@ -347,7 +470,7 @@ export class MegaHttpClient {
    * The `gtoken` header is hashed from `accountUserId`: that is the id the gateway recomputes the header
    * from, rejecting a disagreement with `"gtoken not equal userid error"`.
    */
-  private auth_?: { userId: string; authToken: string; geoKey?: string; accountUserId?: string };
+  private auth_?: { userId: string; authToken: string; geoKey?: string; accountUserId?: string; nickName?: string };
   /** captcha_id of an in-flight challenge, held between login() and solveCaptcha(). */
   private pendingCaptchaId?: string;
   /** True while a 2FA code is outstanding: `auth_` holds only the limited pre-verify token, so the
@@ -367,7 +490,7 @@ export class MegaHttpClient {
    */
   readonly openudid: string;
   /** The device model reported to the cloud (explicit `phoneModel`, else a stable random one). */
-  private readonly phoneModel: string;
+  readonly phoneModel: string;
   /** The `user-agent` for the media-download path (explicit `mediaUserAgent`, else derived from the model). */
   private readonly mediaUserAgent: string;
   private readonly store: SessionStore;
@@ -383,6 +506,12 @@ export class MegaHttpClient {
   private lastRecoveryAt = 0;
   /** A token of ours has been rejected and not yet replaced — see {@link noteTokenReplacement}. */
   private rejectedTokenPending = false;
+  /** A several-product `get_things_list` timed out once: each product is asked alone — see {@link getThingsList}. */
+  private singlePnThings = false;
+  /** The last thing description of each product fetched, persisted with the session — see {@link getThingsList}. */
+  private things: unknown[];
+  /** The RTC signalling cache of each station, persisted with the session — see {@link rtcToken}. */
+  private readonly rtcTokens: Record<string, RtcToken>;
 
   constructor(cfg: MegaClientConfig) {
     this.cfg = {
@@ -402,6 +531,8 @@ export class MegaHttpClient {
     // fresh (deterministic, openudid-seeded) generate that persist() saves. Identity is reused even when
     // the stored token itself has expired.
     const saved = this.store.load();
+    this.things = saved?.things ?? [];
+    this.rtcTokens = { ...saved?.rtc };
     this.openudid =
       cfg.openudid ?? saved?.openudid ?? createHash("md5").update(`eufy-mega:${cfg.email}`).digest("hex").slice(0, 16);
     this.phoneModel = cfg.phoneModel ?? saved?.phoneModel ?? randomPhoneModel(this.openudid);
@@ -434,12 +565,16 @@ export class MegaHttpClient {
       return undefined;
     }
     this.region = saved.region;
-    this.estimatedDomain = saved.estimatedDomain ?? "";
+    this.securityDomain = saved.securityDomain;
+    this.homeDomain = saved.homeDomain;
+    this.megaDomain = saved.megaDomain;
+    this.securityMqtt = saved.securityMqtt;
     this.auth_ = {
       userId: saved.userId,
       accountUserId: saved.accountUserId,
       authToken: saved.authToken,
       geoKey: saved.geoKey,
+      nickName: saved.nickName,
     };
     this.tokenExpiresAt = saved.tokenExpiresAt;
     this.pending2fa = false;
@@ -470,62 +605,17 @@ export class MegaHttpClient {
   }
 
   /**
-   * The shard the estimated domain names (`…-ie-…`/`…-ie.` → `ie-pr`), else {@link regionShard}. The
-   * eu/us classification cannot name shards like `ie-pr`.
-   */
-  get rtcShard(): string {
-    return shardOfDomain(this.estimatedDomain) ?? this.region;
-  }
-
-  /**
-   * The shard the RTC signalling signs on, from `estimate_domain` asked with the portal's WEB identity
-   * (`Model-Type: WEB`, `App-Name: eufy_mega`) — the identity the sign itself is sent with, which can name
-   * a different shard than the PHONE identity does for one account. The in-flight request is shared by
-   * concurrent first callers, and once it settles to a shard the resolved promise is the cache; a call
-   * that fails or names no shard answers {@link rtcShard}, clears the field and is asked again next time.
-   */
-  async portalShard(): Promise<string> {
-    return (this.portalShardInFlight ??= this.fetchPortalShard());
-  }
-
-  private async fetchPortalShard(): Promise<string> {
-    try {
-      const res = await this.estimateDomainRequest({ "Model-Type": "WEB", "App-Name": "eufy_mega" });
-      const domain = (res.data as ApiEnvelope<Record<string, unknown>>)?.data?.domain;
-      const shard = typeof domain === "string" ? shardOfDomain(domain) : undefined;
-      if (shard) {
-        this.logger.debug("[mega] portal shard:", shard);
-        return shard;
-      }
-    } catch (e) {
-      this.logger.debug("[mega] portal estimate_domain failed:", e instanceof Error ? e.message : String(e));
-    }
-    this.portalShardInFlight = undefined;
-    return this.rtcShard;
-  }
-
-  /**
-   * The credentials the RTC signalling needs; `undefined` while logged out. The sign is refused
-   * ("gtoken not equal userid") unless its gtoken is the one every authed HTTP call carries.
-   */
-  rtcIdentity(): { authToken: string; userId: string; gtoken: string } | undefined {
-    if (!this.auth_) return undefined;
-    return { authToken: this.auth_.authToken, userId: this.auth_.userId, gtoken: gtoken(this.gtokenUserId()) };
-  }
-
-  /**
    * The name commands attribute themselves to — {@link MegaClientConfig.accountName} when the config
-   * pins one (trimmed; blank counts as unset), otherwise the logged-in account's display name, which
-   * is the login email's local-part (e.g. `someone+tag` for `someone+tag@example.com`) and falls back
-   * to the whole email if it has no `@`.
-   *
-   * The local-part is the string the app writes into the ff09 command's acting "username" field
-   * (verified against a captured T8531 unlock frame), so it is the faithful default. An override is a
-   * different LABEL for the same account, not a different identity: the session authenticates on the
-   * token and the device record's member ids, neither of which this touches.
+   * pins one, otherwise the app's own: the login reply's `nick_name`, else the login email's local-part
+   * (the whole email when it has no `@`).
    */
+  /** The login reply's raw `nick_name` (`''` kept), `undefined` when the reply had none. */
+  get nickName(): string | undefined {
+    return this.auth_?.nickName;
+  }
+
   get accountName(): string {
-    const pinned = this.cfg.accountName?.trim();
+    const pinned = this.cfg.accountName?.trim() || this.auth_?.nickName;
     if (pinned) return pinned;
     const email = this.cfg.email ?? "";
     const at = email.indexOf("@");
@@ -537,7 +627,8 @@ export class MegaHttpClient {
    * dash/underscore duplicates (os-type + os_type, app-version + app_version,
    * …) — the app sends both forms and the gateway reads a mix. `openudid` is
    * REQUIRED: the auth token is bound to it, so login + data calls must use the
-   * same value or the gateway 401s with "secret or user_id is empty".
+   * same value or the gateway 401s with "secret or user_id is empty". `timezone` is the host's zone id, which the
+   * app's `GlobalHeaderRouting` sets on every request.
    */
   private baseHeaders(): Record<string, string> {
     const v = this.cfg.appVersion;
@@ -559,6 +650,7 @@ export class MegaHttpClient {
       openudid: this.openudid,
       language: "en",
       "test-flag": "false",
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       "user-agent": "ktor-client",
       accept: "application/json",
       "accept-charset": "UTF-8",
@@ -594,39 +686,39 @@ export class MegaHttpClient {
    */
   private async httpPost(
     url: string,
-    body: string | object,
+    body: string | object | undefined,
     headers: Record<string, string>,
-  ): Promise<{ status: number; data: unknown }> {
+  ): Promise<{ status: number; data: unknown; headers: Headers }> {
     const res = await fetch(url, {
       method: "POST",
       headers,
-      body: typeof body === "string" ? body : JSON.stringify(body),
+      body: body === undefined || typeof body === "string" ? body : JSON.stringify(body),
       signal: AbortSignal.timeout(20_000),
     });
-    return { status: res.status, data: parseMaybeJson(await res.text()) };
+    return { status: res.status, data: parseMaybeJson(await res.text()), headers: res.headers };
   }
 
-  /** POST `estimate_domain` with the given identity headers. */
-  private estimateDomainRequest(headers: Record<string, string>) {
-    return this.httpPost(
-      `https://mega-${this.region}.eufy.com/passport/estimate_domain`,
-      { ab: this.cfg.countryCode.toLowerCase(), mode: 1 },
-      { ...headers, "content-type": "application/json" },
-    );
-  }
-
-  /** Step 1: discover the account's region shard (and the bootstrap host). */
+  /**
+   * Step 1: discover the account's region shard (and the bootstrap host). Posted plain to `mega-us-pr` whatever
+   * the region, with the country code as configured, as the app's `IotDomainManager.estimateDomain` does.
+   */
   async estimateDomain(): Promise<void> {
-    const res = await this.estimateDomainRequest(this.baseHeaders());
+    const res = await this.httpPost(
+      "https://mega-us-pr.eufy.com/passport/estimate_domain",
+      { ab: this.cfg.countryCode, mode: 1 },
+      { ...this.baseHeaders(), "content-type": "application/json" },
+    );
     this.logger.debug("[mega] estimate_domain raw:", JSON.stringify(res.data).slice(0, 400));
     const env = res.data as ApiEnvelope<Record<string, unknown>>;
     const d = env?.data ?? {};
     const domain = (d.domain ?? d.host ?? d.server_secret_info ?? "") as string;
-    this.estimatedDomain = domain;
+    const products = d.product_domains as Record<string, unknown> | undefined;
+    this.securityDomain = typeof products?.eufy_security === "string" ? products.eufy_security : "";
+    this.homeDomain = typeof products?.eufy_home === "string" ? products.eufy_home : "";
     const blob = JSON.stringify(d);
     if (blob.includes("-eu-") || domain.includes("-eu-")) this.region = "eu-pr";
     else if (blob.includes("-us-") || domain.includes("-us-")) this.region = "us-pr";
-    if (domain && !domain.startsWith("mega-")) this.bootstrapDomain = domain;
+    if (domain) this.megaDomain = domain;
     this.logger.debug("[mega] region:", this.region, "domain:", domain);
   }
 
@@ -637,29 +729,38 @@ export class MegaHttpClient {
    * so it MUST be reused (don't re-exchange after login).
    */
   async ensureSessionKey(targetHost?: string): Promise<SessionEntry> {
-    // The eufylife data host (security-app-*.eufylife.com) runs its OWN key exchange with a
-    // different bootstrap localKey + `/v3/` path, and rejects the mega key. Keep a per-host
-    // cache for it; the mega key (this.sessionKey) is shared across the whole *.eufy.com stack
-    // and is the one bound to user_id at login — don't conflate them.
-    const isEufylife = !!targetHost && targetHost.includes(".eufylife.com");
-    if (!isEufylife) {
+    const security = this.securityExchangeHost(targetHost);
+    if (!security) {
       if (this.sessionKey && Date.now() - this.sessionKey.createdAt < 12 * 3600_000) return this.sessionKey;
     } else {
-      const cached = this.sessionKeys.get(targetHost!);
+      const cached = this.sessionKeys.get(security);
       if (cached && Date.now() - cached.createdAt < 12 * 3600_000) return cached;
     }
-    const host = isEufylife ? targetHost! : (this.bootstrapDomain ?? `app-openapi-${this.region}.eufy.com`);
+    // A `mega-` domain fans out per module (`app-openapi-…` here); any other domain is the one host for all.
+    const single = this.megaDomain && !this.megaDomain.startsWith("mega-") ? this.megaDomain : undefined;
+    const host = security ?? single ?? `app-openapi-${this.region}.eufy.com`;
     // Joined, not duplicated: every call that finds the key gone at once waits on the one exchange. The token is
     // part of the key because an exchange started before a login is bound to no user, and login re-exchanges
     // precisely to get one that is.
     const flight = `${host}\n${this.auth_?.authToken ?? ""}`;
     const joining = this.keyExchanges.get(flight);
     if (joining) return joining;
-    const exchange = this.exchangeSessionKey(host, isEufylife).finally(() => {
+    const exchange = this.exchangeSessionKey(host, !!security).finally(() => {
       if (this.keyExchanges.get(flight) === exchange) this.keyExchanges.delete(flight);
     });
     this.keyExchanges.set(flight, exchange);
     return exchange;
+  }
+
+  /**
+   * The host whose exchange keys a call to `host`, as the app's `getExchangeKeyUrl` picks it: the Security category
+   * host for itself and for `ProMonitor`, exchanged under the eufylife preset key on `/v3/`; `undefined` for every
+   * other host, Home included, which takes the mega key exchanged on `app-openapi`. That mega key is the one bound
+   * to the user at login.
+   */
+  private securityExchangeHost(host: string | undefined): string | undefined {
+    const security = this.securityAppHost();
+    return host === security || host?.startsWith("pro-monitoring-") ? security : undefined;
   }
 
   /** One key exchange against `host`, installed as that host's key. */
@@ -694,7 +795,10 @@ export class MegaHttpClient {
   }
 
   /**
-   * Signed + encrypted POST. Content-type auto-falls-back (text/plain ↔ json).
+   * Signed + encrypted POST. Content-type auto-falls-back (text/plain ↔ json). A `null` body sends none: no
+   * content-type, and the signature over the timestamp and nonce alone, as the app sends a body-less call. An
+   * encrypted reply whose `signature` does not match its `X-Request-Ts`, `X-Request-Once` and `data` is refused,
+   * as the app's `checkSignatureAndDecrypt` refuses it; a gzipped one is inflated after decryption.
    *
    * `retry` is this method's own bookkeeping across the two recoveries it performs on itself — a re-exchanged
    * session key, and a re-login — so each is attempted once per call. A caller leaves it out.
@@ -711,36 +815,58 @@ export class MegaHttpClient {
     // Remembered because a rejection can arrive after another call has already replaced the session, and the
     // two cases need opposite handling: replace a token that is still held, use one that is already fresh.
     const sentToken = authed ? this.auth_?.authToken : undefined;
-    const encBody = encryptBody(JSON.stringify(body ?? {}), entry.shareKey);
+    const encBody = body === null ? undefined : encryptBody(JSON.stringify(body ?? {}), entry.shareKey);
     // The gateway wants a specific Content-Type per host and 4416s ("signature
     // invalid") on the wrong one — so we probe, then REMEMBER the winner per host
     // to avoid re-probing (and the resulting noise/double-requests) next time.
     // eufylife data calls want text/plain (application/json → 403 at the proxy); mega hosts take
-    // json (except /passport/). Prefer the right one first so the HTML 403 doesn't end the probe.
+    // json, as the app's esiotkit client sends every body. Prefer the right one first so the HTML 403 doesn't end the probe.
     const cached = this.contentTypeByHost.get(host);
-    const wantsText = path.includes("/passport/") || host.includes(".eufylife.com");
+    const wantsText = host.includes(".eufylife.com");
     const preferred = cached ?? (wantsText ? "text/plain" : "application/json");
-    const order = preferred === "text/plain" ? ["text/plain", "application/json"] : ["application/json", "text/plain"];
+    const order =
+      encBody === undefined
+        ? [undefined]
+        : preferred === "text/plain"
+          ? ["text/plain", "application/json"]
+          : ["application/json", "text/plain"];
 
     let last: { code?: number; msg?: string; status?: number } | undefined;
     for (const contentType of order) {
       const headers: Record<string, string> = {
         ...this.baseHeaders(),
-        "content-type": contentType,
-        ...signedHeaders(entry, encBody),
+        ...(contentType && { "content-type": contentType }),
+        ...signedHeaders(entry, encBody ?? ""),
         "x-replay-info": "replay",
         // Per-call header overrides (e.g. app-name=eufy_security to request a security-scoped
         // MQTT cert on an existing eufy_mega session — see EufyMega.getUserMqttInfo).
         ...headerOverrides,
       };
+      if (!headers.category && !path.includes("app/cloudstor/get_app_up_token_general")) {
+        const category = this.categoryOf(deviceSnOf(body) ?? "");
+        if (category) headers.category = category;
+      }
+      // The app's request pipeline mirrors `app-tab` and `Category` into each other when only one is set.
+      const tab = headers["app-tab"] || headers.category;
+      if (tab) Object.assign(headers, { "app-tab": headers["app-tab"] || tab, category: headers.category || tab });
       if (authed) Object.assign(headers, this.authTokenHeaders());
       const res = await this.httpPost(`https://${host}${path}`, encBody, headers);
       const env = res.data as ApiEnvelope<unknown>;
       if (res.status === 200 && env?.code === 0) {
         if (authed) this.noteSessionWorking();
-        this.contentTypeByHost.set(host, contentType); // remember what worked
+        if (contentType) this.contentTypeByHost.set(host, contentType); // remember what worked
         if (typeof env.data === "string" && env.data.length > 0) {
-          const pt = decryptBody(env.data, entry.shareKey).toString("utf-8");
+          const signed = (h: string) => res.headers.get(h) ?? "";
+          if (
+            env.signature &&
+            env.signature !== signRequest(entry.shareKey, signed("x-request-ts"), signed("x-request-once"), env.data)
+          )
+            throw new MegaApiError(
+              `${path} failed (${res.status}): reply signature does not match`,
+              undefined,
+              res.status,
+            );
+          const pt = inflated(decryptBody(env.data, entry.shareKey)).toString("utf-8");
           try {
             return JSON.parse(pt) as T;
           } catch {
@@ -779,11 +905,15 @@ export class MegaHttpClient {
       authed &&
       (last?.code === EufyCloudErrorCode.IDENTITY_KEY_STALE ||
         /get identity error|identity error/i.test(last?.msg ?? ""));
-    if (identityError && !retry.identity && this.auth_) {
-      this.logger.debug("[mega] identity error → re-exchanging session key and retrying");
+    // The app's `HttpSendInterceptKt.needExchanged`: HTTP 463, or 403 on a host of its domain map (every host signed
+    // here), re-exchanges the key and sends once more (`retryIfNeedExchangeKey`).
+    const exchange = identityError || last?.status === 463 || last?.status === 403;
+    if (exchange && !retry.identity && this.auth_) {
+      this.logger.debug(`[mega] ${last?.status}/${last?.code} → re-exchanging session key and retrying`);
       // Only the key this call was signed with: one another call already replaced is the fresh one to use.
-      if (host.includes(".eufylife.com")) {
-        if (this.sessionKeys.get(host) === entry) this.sessionKeys.delete(host);
+      const security = this.securityExchangeHost(host);
+      if (security) {
+        if (this.sessionKeys.get(security) === entry) this.sessionKeys.delete(security);
       } else if (this.sessionKey === entry) this.sessionKey = undefined;
       try {
         await this.ensureSessionKey(host);
@@ -827,7 +957,8 @@ export class MegaHttpClient {
 
   /**
    * Fetch the per-station DSK key using each station's reported cloud category. Mirrors
-   * the legacy `get_dsk_keys` body shape on the mega devicerelation service.
+   * the legacy `get_dsk_keys` body shape on the mega devicerelation service, sent with `Category: eufy_security`,
+   * the default of the app's `DeviceRelationNetApi.getDeviceDskKeys`.
    * The P2P *local* lookup path does not need this; only the cloud path does.
    */
   async getDskKeys(
@@ -850,11 +981,12 @@ export class MegaHttpClient {
     // { device_sn, dsk_key, expiration, enabled, about_to_be_replaced }).
     const res = await this.post<{
       device_dsks?: Array<{ device_sn: string; dsk_key: string; expiration: number }>;
-    }>("devicerelation", "/app/devicerelation/get_dsk_keys", {
-      device_dsks: deviceDsks,
-      invalid_dsks: invalid,
-      station_sns: stations.map(({ sn }) => sn),
-    });
+    }>(
+      "devicerelation",
+      "/app/devicerelation/get_dsk_keys",
+      { device_dsks: deviceDsks, invalid_dsks: invalid, station_sns: stations.map(({ sn }) => sn) },
+      { category: "eufy_security" },
+    );
     const out: Record<string, { dskKey: string; expiration: number }> = {};
     for (const k of res.device_dsks ?? []) out[k.device_sn] = { dskKey: k.dsk_key, expiration: k.expiration };
     return out;
@@ -882,35 +1014,83 @@ export class MegaHttpClient {
    * Fetch the **thing descriptions** of the given product codes from the mega `things` service: per
    * product, every named property with its type and offered values, its actions and events. The v6 app
    * fetches the same list for the products an account holds and reads each setting's options from it.
-   * Product-level data, not account data. `codeTimeMap` names, per product code, the `update_time` of the
+   * Product-level data, not account data. The body is the app's `GetThingListRequest` with its defaults
+   * (`rn_bundle_version` `9.9.9.9`, `use_network_version`), asking for a gzipped reply. `codeTimeMap` names, per product code, the `update_time` of the
    * description already held: a product whose description has not changed since comes back with that
    * `update_time` and no properties, one that has (or is not named) comes back in full. Returns the raw
    * `data`.
+   *
+   * Each product's last full description is kept with the session, as the app keeps its own locally, and
+   * answers in place of a failed call for the products it covers. A dead session still throws.
+   *
+   * A request for several products that times out switches the client to one product per request, three in
+   * flight, for the rest of its life, as the app's `TDRepositoryImpl` does (`fetchSinglePnMode`,
+   * `fetchSinglePnConcurrently`); each product then keeps its own stored description on failure.
    */
-  getThingsList<T = unknown>(
+  async getThingsList<T = unknown>(
     productCodes: readonly string[],
     codeTimeMap: Readonly<Record<string, number>> = {},
   ): Promise<T> {
-    return this.post<T>("things", "/app/things/get_things_list", {
-      product_codes: productCodes,
-      code_time_map: codeTimeMap,
-    });
+    if (this.singlePnThings && productCodes.length > 1) return this.thingsOnePerProduct(productCodes, codeTimeMap);
+    const code = (t: unknown) => (t as { profile?: { product_code?: unknown } })?.profile?.product_code;
+    try {
+      const data = await this.post<{ things_list?: unknown }>(
+        "things",
+        "/app/things/get_things_list",
+        {
+          product_codes: productCodes,
+          code_time_map: codeTimeMap,
+          rn_bundle_version: "9.9.9.9",
+          use_network_version: true,
+        },
+        GZIP,
+      );
+      const fresh = (Array.isArray(data?.things_list) ? data.things_list : []).filter(
+        (t) => (t as { properties?: unknown[] })?.properties?.length,
+      );
+      this.things = [...this.things.filter((t) => !fresh.some((f) => code(f) === code(t))), ...fresh];
+      this.persist();
+      return data as T;
+    } catch (e) {
+      if (productCodes.length > 1 && !(e instanceof SessionExpiredError) && isTimeoutFailure(e)) {
+        this.singlePnThings = true;
+        return this.thingsOnePerProduct(productCodes, codeTimeMap);
+      }
+      const cached = this.things.filter((t) => productCodes.includes(code(t) as string));
+      if (e instanceof SessionExpiredError || !cached.length) throw e;
+      this.logger.debug(`[mega] thing descriptions unavailable, using the stored ones: ${(e as Error)?.message ?? e}`);
+      return { things_list: cached } as T;
+    }
+  }
+
+  /** {@link getThingsList} for each product alone, at most three at a time, answering their joined `things_list`. */
+  private async thingsOnePerProduct<T>(codes: readonly string[], codeTimeMap: Readonly<Record<string, number>>) {
+    const lists: unknown[][] = [];
+    let next = 0;
+    const worker = async () => {
+      for (let i = next++; i < codes.length; i = next++) {
+        const c = codes[i]!;
+        const data = await this.getThingsList<{ things_list?: unknown[] }>(
+          [c],
+          c in codeTimeMap ? { [c]: codeTimeMap[c]! } : {},
+        ).catch((e: unknown) => {
+          if (e instanceof SessionExpiredError) throw e;
+          return { things_list: [] };
+        });
+        lists[i] = data.things_list ?? [];
+      }
+    };
+    await Promise.all([worker(), worker(), worker()]);
+    return { things_list: lists.flat() } as T;
   }
 
   /**
-   * Fetch the **live param list** from the mega `devicemanage` service. Body keys off a
-   * `device_sns` ARRAY (a bare `device_sn` 400s with "type mismatch"). Each returned entry is
-   * `{ param_type, param_value, update_time }` — VALUES ONLY, no name/meaning (the param→meaning
-   * mapping is hardcoded in the app, never returned by the API).
-   *
-   * NOTE: this endpoint is **owner-gated** — a shared/member account gets {@link OWNER_ONLY_CODE}
-   * (`"Only the owner can change settings"`), permanently. For those accounts use the `get_devs_list`
-   * params instead, which also carry `{param_type, param_value, update_time}` and are not owner-gated.
+   * The product number the mega `things` service holds for a serial (`{ pn, device_sn }`), the lookup the
+   * v6 app's `snToPn` makes for a record without `device_new_pn`. `""` when the reply carries none.
    */
-  getDeviceParamList<T = unknown>(deviceSn: string): Promise<T> {
-    return this.post<T>("devicemanage", "/app/devicemanage/get_device_param_list", {
-      device_sns: [deviceSn],
-    });
+  async getPnBySn(deviceSn: string): Promise<string> {
+    const res = await this.post<{ pn?: unknown }>("things", "/app/things/get_pn_by_sn", { device_sn: deviceSn });
+    return typeof res?.pn === "string" ? res.pn : "";
   }
 
   /**
@@ -928,6 +1108,321 @@ export class MegaHttpClient {
       { attribute: 7, house_id: "" },
       { category: "eufy_home" },
     );
+  }
+
+  /**
+   * Share devices with another eufy account by email, as the app's family module sends it
+   * (`app/devicerelation/device_invite`, `transaction: ""`, `email` and `nick_name` both the invitee's email in
+   * lower case). Each invite names a station or a standalone device and the role it grants: `member_type` 0 guest,
+   * 1 admin (the app forces 1 on `eufy_pet`). `permissions` goes out 0, as every app invite does. `subData` lists
+   * a station's devices, each `checked` when shared; a standalone device's names itself, checked, where none is
+   * given. The app offers to share only a device this account owns: no `member`, or `memberType` 2.
+   *
+   * When any invite is `eufy_security`, the app seals a fresh 6-digit share code into every invite's
+   * `encrypted_data` (`email=…&type=DEVICE&deviceSn=<first serial>&ts=…`); the invitee must enter that code
+   * before accepting. Answers whether the cloud mailed the invitee, and that code when one was sealed.
+   *
+   * A Home-category device (`eufy_home`) goes first and alone, as the app's clean path sends it: the Home host's
+   * `GET v1/user/info/{email}` must know the invitee, then one `device_invite` per device with `nick_name` the email,
+   * `member_type` 1, `extension: ""` and a `subData` entry, no `transaction` and no share code.
+   */
+  async inviteShare(
+    email: string,
+    invites: ReadonlyArray<{
+      device_sn: string;
+      category: string;
+      member_type: number;
+      device_name?: string;
+      sub_sns?: string;
+      subData?: ReadonlyArray<{ device_sn: string; device_name?: string; checked: boolean }>;
+    }>,
+  ): Promise<{ emailSent: boolean; authCode?: string }> {
+    let emailSent = false;
+    for (const i of invites.filter((i) => isHomeCategory(i.category))) {
+      const user = await this.homeRequest<{ user_info?: { id?: string } }>(
+        "GET",
+        `v1/user/info/${encodeURIComponent(email)}`,
+      );
+      const userId = user?.user_info?.id;
+      if (!userId) throw new Error("no eufy account holds this email");
+      const extension =
+        i.category === "eufy_home_tuya" ? await this.tuyaSharing().inviteShare(i.device_sn, userId) : "";
+      const r = await this.post<{ email_sent?: boolean }>("devicerelation", "/app/devicerelation/device_invite", {
+        email,
+        nick_name: email,
+        invites: [
+          {
+            category: i.category,
+            sub_sns: "",
+            member_type: 1,
+            device_sn: i.device_sn,
+            device_name: "",
+            permissions: 0,
+            extension,
+            subData: [{ device_sn: i.device_sn, checked: true, device_name: "" }],
+          },
+        ],
+      });
+      emailSent ||= !!r?.email_sent;
+    }
+    invites = invites.filter((i) => !isHomeCategory(i.category));
+    if (!invites.length) return { emailSent };
+    const sealed = invites.some((i) => i.category === "eufy_security")
+      ? await sealShareCode(`email=${email}&type=DEVICE&deviceSn=${invites[0]?.device_sn ?? ""}&ts=${Date.now()}`)
+      : undefined;
+    const body = invites.map((i) => ({
+      permissions: 0,
+      encrypted_data: sealed?.encrypted ?? "",
+      sub_sns: "",
+      subData: [{ device_sn: i.device_sn, checked: true }],
+      ...i,
+      member_type: i.category === "eufy_pet" ? 1 : i.member_type,
+    }));
+    const invitee = email.toLowerCase();
+    const r = await this.post<{ email_sent?: boolean }>("devicerelation", "/app/devicerelation/device_invite", {
+      transaction: "",
+      email: invitee,
+      nick_name: invitee,
+      invites: body,
+    });
+    return { emailSent: emailSent || !!r?.email_sent, ...(sealed && { authCode: sealed.code }) };
+  }
+
+  /**
+   * Whether the invitee's newest eufy app predates share codes, as the app asks before sealing one
+   * (`passport/get_latest_app_version_by_email`): its `app_version`, else `os_app_version_map.android`, else
+   * `.ios`, read as `major minor patch` digits joined (`v6.1.32_x` → 6132) and outdated below 6030. No answer
+   * within 2 s, a failed call or an unreadable version count as current.
+   */
+  async inviteeAppOutdated(email: string): Promise<boolean> {
+    type V = { app_version?: string; os_app_version_map?: { android?: string; ios?: string } };
+    const parse = (v = "") => {
+      const digits = v
+        .split("_")[0]!
+        .replace(/^[vV]+/, "")
+        .split(".")
+        .slice(0, 3)
+        .join("");
+      return /^\d+$/.test(digits) ? Number(digits) : undefined;
+    };
+    const ask = this.post<V>("passport", "/passport/get_latest_app_version_by_email", { email }).catch(() => undefined);
+    const d = await Promise.race([ask, new Promise<undefined>((r) => setTimeout(() => r(undefined), 2000).unref())]);
+    const code = parse(d?.app_version) ?? parse(d?.os_app_version_map?.android) ?? parse(d?.os_app_version_map?.ios);
+    return code !== undefined && code < 6030;
+  }
+
+  /** The members this account shares devices with (`get_related`, `relateds`), one page of 300 as the app asks. */
+  async getShareMembers<T = unknown>(): Promise<T[]> {
+    const r = await this.post<{ relateds?: T[] }>("devicerelation", "/app/devicerelation/get_related", {
+      transaction: "",
+      num: 300,
+      page: 0,
+      orderby: "",
+      categories: [],
+      add_pns: [],
+    });
+    return r?.relateds ?? [];
+  }
+
+  /**
+   * Pending device-share invitations (`get_invites`, `invites`): the ones this account sent when `asOwner`, else the
+   * ones addressed to it. The app's `is_inviter` is the inverse of its `own` flag: 0 on the owner's screen (family
+   * module, `transaction: ""`), 1 on the invitee's (home screen, a {@link transactionStamp}).
+   */
+  async getShareInvites<T = unknown>(asOwner: boolean): Promise<T[]> {
+    const r = await this.post<{ invites?: T[] }>("devicerelation", "/app/devicerelation/get_invites", {
+      transaction: asOwner ? "" : transactionStamp(),
+      is_inviter: asOwner ? 0 : 1,
+      categories: [],
+      add_pns: [],
+    });
+    return r?.invites ?? [];
+  }
+
+  /**
+   * Accept invitations addressed to this account (`confirm_invite`). An invitation carrying `encrypted_data` is
+   * accepted, as the app does, only once `authCode` opens it, and then goes out with a {@link transactionStamp};
+   * without one the request has no `transaction`. A Home-category invitation is accepted on the Home host instead
+   * (`v1/share/active/accept_invitation {device_id, owner, category}`), one call each, and left out of the batch.
+   */
+  async confirmShareInvites(invites: ReadonlyArray<ShareInviteRef>, authCode?: string): Promise<void> {
+    const sealed = invites.find((i) => i.encrypted_data)?.encrypted_data;
+    if (sealed) await openShareCode(sealed, authCode);
+    for (const i of invites.filter((i) => isHomeCategory(i.category))) {
+      if (i.category === "eufy_home_tuya") await this.tuyaSharing().acceptShare(i.extension);
+      await this.homeRequest("POST", "v1/share/active/accept_invitation", {
+        device_id: i.device_sn,
+        owner: i.owner_user_id,
+        category: i.category,
+      });
+    }
+    invites = invites.filter((i) => !isHomeCategory(i.category));
+    if (!invites.length) return;
+    await this.post("devicerelation", "/app/devicerelation/confirm_invite", {
+      ...(sealed && { transaction: transactionStamp() }),
+      invites: invites.map(inviteItem),
+    });
+  }
+
+  /**
+   * Decline a received invitation, or with `asOwner` withdraw one this account sent (`ignore_invite`). The owner's
+   * withdrawal sends `transaction: ""`; a decline sends a {@link transactionStamp} when an invitation carries
+   * `encrypted_data`, and no `transaction` otherwise. A Home-category invitation is declined here too, with no
+   * Home-host or Tuya call: unlike accepting, the app declines every invitation through `ignore_invite`.
+   */
+  async ignoreShareInvites(
+    invites: ReadonlyArray<ShareInviteRef & { recevicer_user_id?: string }>,
+    asOwner: boolean,
+  ): Promise<void> {
+    const stamp = asOwner ? "" : invites.some((i) => i.encrypted_data) ? transactionStamp() : undefined;
+    await this.post("devicerelation", "/app/devicerelation/ignore_invite", {
+      ...(stamp !== undefined && { transaction: stamp }),
+      invites: invites.map(inviteItem),
+      is_inviter: asOwner ? 0 : 1,
+    });
+  }
+
+  /**
+   * Change what a member holds (`update_share`): per device its role, or `is_delete` to take it away. The app
+   * removes a member by sending every shared device with `is_delete: true`.
+   */
+  async updateShare(
+    member: { user_id: string; nick_name: string; receive_email: string },
+    devices: ReadonlyArray<{
+      device_sn: string;
+      category: string;
+      member_type: number;
+      is_delete?: boolean;
+      sub_devices?: ReadonlyArray<{ device_sn: string; is_delete: boolean }>;
+    }>,
+  ): Promise<void> {
+    await this.post("devicerelation", "/app/devicerelation/update_share", {
+      transaction: "",
+      ...member,
+      devices: devices.map((d) => ({ permissions: 0, is_delete: false, sub_devices: [], ...d })),
+    });
+  }
+
+  /** Promote a guest on the given devices (`promote_guest`). */
+  async promoteGuest(userId: string, devices: ReadonlyArray<{ device_sn: string; category: string }>): Promise<void> {
+    await this.post("devicerelation", "/app/devicerelation/promote_guest", {
+      transaction: "",
+      device_sn: "",
+      user_id: userId,
+      promote_devices: devices,
+    });
+  }
+
+  /**
+   * Leave a device shared with this account (`clear_share`), what the app sends where an owner would unbind:
+   * `device_sn` the device's station (its own serial when it has none), `sub_sns` the device, `owner_user_id` the
+   * record's `user_id`, with a {@link transactionStamp}.
+   */
+  async clearShare(share: {
+    device_sn: string;
+    sub_sns: string;
+    category: string;
+    owner_user_id: string;
+  }): Promise<void> {
+    await this.post("devicerelation", "/app/devicerelation/clear_share", { transaction: transactionStamp(), ...share });
+  }
+
+  /**
+   * Who a Home-category device (`eufy_home`) is shared with (`GET v1/share/active/single_device_share/{sn}` on the
+   * Home host): `{device_info, share_list[{device_id, owner, receiver, receiver_name, status, …}], is_ever_shared}`.
+   */
+  getHomeDeviceShares<T = unknown>(deviceSn: string): Promise<T> {
+    return this.homeRequest<T>("GET", `v1/share/active/single_device_share/${encodeURIComponent(deviceSn)}`);
+  }
+
+  /**
+   * Take a Home-category device away from the account `receiver` (`DELETE v1/share/active/owner_remove_share`),
+   * an `eufy_home_tuya` one after its Tuya-side share.
+   */
+  async removeHomeDeviceShare(deviceSn: string, receiver: string, category = "eufy_home"): Promise<void> {
+    if (category === "eufy_home_tuya") await this.tuyaSharing().removeShare(deviceSn, receiver);
+    await this.homeRequest("DELETE", "v1/share/active/owner_remove_share", { device_id: deviceSn, receiver });
+  }
+
+  /**
+   * Leave a Home-category device `owner` shared with this account (`DELETE v1/share/active/receiver_remove_share`),
+   * an `eufy_home_tuya` one after its Tuya-side share.
+   */
+  async leaveHomeDeviceShare(deviceSn: string, owner: string, category = "eufy_home"): Promise<void> {
+    if (category === "eufy_home_tuya") await this.tuyaSharing().leaveShare(deviceSn);
+    await this.homeRequest("DELETE", "v1/share/active/receiver_remove_share", { device_id: deviceSn, owner });
+  }
+
+  /**
+   * Invite an account by email into a whole home (`app/house/invite_house_member`). The app seals a fresh share
+   * code into `encrypted_data` (`email=…&type=HOUSE&houseId=…&ts=…`) on every home invitation; answers that code,
+   * which the invitee must enter before accepting.
+   */
+  async inviteHouseMember(houseId: string, email: string): Promise<string> {
+    const { code, encrypted } = await sealShareCode(`email=${email}&type=HOUSE&houseId=${houseId}&ts=${Date.now()}`);
+    await this.post("house", "/app/house/invite_house_member", {
+      transaction: transactionStamp(),
+      house_id: houseId,
+      email,
+      encrypted_data: encrypted,
+      categories: [],
+      add_pns: [],
+    });
+    return code;
+  }
+
+  /** Home invitations addressed to this account (`get_house_invite_records`, `house_invite_records`). */
+  async getHouseInvites<T = unknown>(): Promise<T[]> {
+    const r = await this.post<{ house_invite_records?: T[] }>("house", "/app/house/get_house_invite_records", {
+      transaction: `transaction_${Date.now()}`,
+      is_inviter: 1,
+    });
+    return r?.house_invite_records ?? [];
+  }
+
+  /**
+   * Accept a home invitation (`confirm_house_invited`) read off {@link getHouseInvites}. One carrying
+   * `encrypted_data` is accepted only once `authCode` opens it, as the app does.
+   */
+  async confirmHouseInvite(
+    invite: { house_id: string; id: number; encrypted_data?: string },
+    authCode?: string,
+  ): Promise<void> {
+    if (invite.encrypted_data) await openShareCode(invite.encrypted_data, authCode);
+    await this.post(
+      "house",
+      "/app/house/confirm_house_invited",
+      houseInvite(transactionStamp(), invite.house_id, { is_inviter: 1, invite_id: invite.id }),
+    );
+  }
+
+  /**
+   * Decline a home invitation (a {@link transactionStamp}), or with `asOwner` withdraw one this account sent
+   * (`transaction: "transaction_id"`, as the app's house repository sends it) (`ignore_house_invited`).
+   */
+  async ignoreHouseInvite(houseId: string, inviteId: number, asOwner: boolean): Promise<void> {
+    await this.post(
+      "house",
+      "/app/house/ignore_house_invited",
+      houseInvite(asOwner ? "transaction_id" : transactionStamp(), houseId, {
+        is_inviter: asOwner ? 0 : 1,
+        invite_id: inviteId,
+      }),
+    );
+  }
+
+  /** Remove a member from a home this account owns (`remove_house_user`). */
+  async removeHouseUser(houseId: string, userId: string): Promise<void> {
+    await this.post(
+      "house",
+      "/app/house/remove_house_user",
+      houseInvite("transaction_id", houseId, { user_id: userId }),
+    );
+  }
+
+  /** Leave a home shared with this account (`clear_share_member`). */
+  async leaveHouse(houseId: string): Promise<void> {
+    await this.post("house", "/app/house/clear_share_member", houseInvite(`transaction_${Date.now()}`, houseId));
   }
 
   /**
@@ -992,37 +1487,44 @@ export class MegaHttpClient {
   }
 
   /**
-   * Fetch the per-user secure-MQTT credentials. Pass `appName` to request a specific capability scope
-   * on the current session without re-logging in — security devices (locks/garage) need the
-   * `eufy_security` scope, which the default scope can't reach.
+   * The per-user secure-MQTT certificate, as the app asks for it per stack: `eufy_security` is
+   * `POST app/mqtt/register/iot` and `eufy_life` is `POST app/devicemanage/get_user_mqtt_info`, both on the
+   * Basic host (`estimate_domain`'s `domain`, persisted) with `app-tab: <scope>`; without a scope, the clean line's headerless
+   * `get_user_mqtt_info`. Both are sent without a body, as the app sends them.
+   *
+   * The security certificate is kept with the session as the app caches it: the cached one is answered first,
+   * a fresh one replaces it, and a failed `register/iot` falls back to it. `fresh` skips the cached one, as the
+   * app's force refresh does.
    */
-  // The credential's publish scope is set by the `app-name` header; `eufy_security` returns a distinct
-  // security-scoped credential (verified: distinct from the default `eufy_mega` one, same session).
-  getUserMqttInfo(appName?: string): Promise<SecureMqttCredentials> {
-    return this.post<SecureMqttCredentials>(
-      "devicemanage",
-      "/app/devicemanage/get_user_mqtt_info",
-      {},
-      appName ? { "app-name": appName } : {},
-    );
+  async getUserMqttInfo(scope?: "eufy_security" | "eufy_life", fresh = false): Promise<SecureMqttCredentials> {
+    if (!scope) return this.post<SecureMqttCredentials>("devicemanage", "/app/devicemanage/get_user_mqtt_info", {});
+    const basic = this.megaDomain ?? `mega-${this.region}.eufy.com`;
+    const ask = (path: string) =>
+      this.postSigned<SecureMqttCredentials>(basic, path, null, true, {}, { "app-tab": scope });
+    if (scope === "eufy_life") return ask("/app/devicemanage/get_user_mqtt_info");
+    if (this.securityMqtt && !fresh) return this.securityMqtt;
+    try {
+      this.securityMqtt = await ask("/app/mqtt/register/iot");
+      this.persist();
+      return this.securityMqtt;
+    } catch (e) {
+      if (this.securityMqtt) return this.securityMqtt;
+      throw e;
+    }
   }
 
+  /** Drop the cached security certificate, as the app's `clearSecurityCertificateCache`: the next one is fetched. */
+  forgetSecurityMqtt(): void {
+    this.securityMqtt = undefined;
+    this.persist();
+  }
+
+  /** The app's `PushManager.uploadToken` body: the push token, also as `voip_token`. */
   async registerPushToken(token: string): Promise<void> {
     await this.post("push", "/app/push/register_push_token", {
-      is_notification_enable: true,
       token,
-      voip_token: "",
-    });
-
-    await this.securityAppPost("/v1/apppush/register_push_token", {
       is_notification_enable: true,
-      token,
-      transaction: String(Date.now()),
-    });
-
-    await this.securityAppPost("/v1/app/review/app_push_check", {
-      app_type: "eufySecurity",
-      transaction: String(Date.now()),
+      voip_token: token,
     });
   }
 
@@ -1063,6 +1565,10 @@ export class MegaHttpClient {
 
   /** The security-app data host for this region (face recognition, media, etc.). */
   private securityAppHost(): string {
+    // The app's Security category host: `estimate_domain`'s `product_domains.eufy_security`, else its default
+    // (`IotSdkManager.setUserConfig`, `MegaDomain.SECURITY_DOMAIN`). A session stored before one was recorded keeps
+    // the region's host until its next `estimate_domain`.
+    if (this.securityDomain !== undefined) return this.securityDomain || "security-app.eufylife.com";
     const shard = this.region.split("-")[0]; // "eu-pr" → "eu", "us-pr" → "us"
     // US is the DEFAULT host with NO region suffix; `security-app-us.eufylife.com` does not exist
     // (ENOTFOUND). Other regions get a suffix (eu → security-app-eu). Verified via DNS.
@@ -1071,21 +1577,33 @@ export class MegaHttpClient {
 
   /**
    * The device's long-lived P-256 public key, as the cloud publishes it for key-wrapped commands
-   * (`type=2`): 64 bytes hex with no `04` prefix. A plain authed GET on the security-app host — the
-   * one read here that is neither signed nor body-encrypted, matching how the app fetches it.
+   * (`type=2`): 64 bytes hex with no `04` prefix. The app's `SecurityNetApi.getPublicKey`: `GET v3/app/public_key/query`
+   * on the security host with `app-tab: eufy_security`, signed like every call there (no body to encrypt).
    * Cached per serial for the client's lifetime; the key does not rotate in normal operation.
    */
   async getDevicePublicKey(deviceSn: string): Promise<string> {
     const cached = this.devicePublicKeys.get(deviceSn);
     if (cached) return cached;
-    const url = `https://${this.securityAppHost()}/v1/app/public_key/query?device_sn=${encodeURIComponent(deviceSn)}&type=2`;
+    const host = this.securityAppHost();
+    const entry = await this.ensureSessionKey(host);
+    const url = `https://${host}/v3/app/public_key/query?device_sn=${encodeURIComponent(deviceSn)}&type=2`;
     const res = await fetch(url, {
       method: "GET",
-      headers: { ...this.baseHeaders(), ...this.authTokenHeaders() },
+      headers: {
+        ...this.baseHeaders(),
+        ...signedHeaders(entry, ""),
+        "x-replay-info": "replay",
+        "app-tab": "eufy_security",
+        ...this.authTokenHeaders(),
+      },
       signal: AbortSignal.timeout(20_000),
     });
-    const env = parseMaybeJson(await res.text()) as ApiEnvelope<{ public_key?: string }> | undefined;
-    const key = env?.data?.public_key;
+    const env = parseMaybeJson(await res.text()) as ApiEnvelope<{ public_key?: string } | string> | undefined;
+    const data =
+      typeof env?.data === "string"
+        ? parseMaybeJson(decryptBody(env.data, entry.shareKey).toString("utf-8"))
+        : env?.data;
+    const key = (data as { public_key?: string } | undefined)?.public_key;
     if (res.status !== 200 || env?.code !== 0 || typeof key !== "string" || !key.length) {
       throw new MegaApiError(
         `public_key/query failed (${res.status}/${env?.code}): ${env?.msg ?? "no public key"}`,
@@ -1110,13 +1628,77 @@ export class MegaHttpClient {
    *
    * The `*.eufylife.com` gateway uses a SEPARATE ecdh key from the mega `*.eufy.com` gateway
    * (own bootstrap localKey `118c12c8…`, own `/v3/openapi/oauth/key/exchange` path, and data
-   * calls want `Content-Type: text/plain`). {@link ensureSessionKey} keeps a PER-HOST key
-   * for eufylife hosts and exchanges against the eufylife host, so `getFaces()`/`getCiphers()` work.
+   * calls want `Content-Type: text/plain`). {@link ensureSessionKey} keeps that key apart from the mega
+   * one and exchanges it against this host, so `getFaces()`/`getCiphers()` work.
    * Note `getFaces` returns an empty roster for accounts whose faces live on the HomeBase — the P2P
    * database path carries the real roster.
    */
   async securityAppPost<T = any>(path: string, body: Record<string, unknown> = {}): Promise<T> {
     return this.postSigned<T>(this.securityAppHost(), path, body, true);
+  }
+
+  /** The Tuya session an `eufy_home_tuya` share runs its Tuya-side step on, which `EufyMega` binds. */
+  private tuyaSharing(): TuyaCommandRouter {
+    if (!this.tuya) throw new Error("eufy_home_tuya sharing needs the Tuya session EufyMega binds after login");
+    return this.tuya;
+  }
+
+  /**
+   * A call on the app's Home category host (`product_domains.eufy_home`, default `api.eufylife.com`), as its esiotkit
+   * client makes it: `category: Home`, signed and encrypted under the mega session key, answered in the
+   * `{res_code, message, data}` envelope with `res_code` 1 for success. Answers `data`.
+   */
+  private async homeRequest<T>(method: "GET" | "POST" | "DELETE", path: string, body?: object): Promise<T> {
+    const host = this.homeDomain || "api.eufylife.com";
+    const entry = await this.ensureSessionKey(host);
+    const enc = body ? encryptBody(JSON.stringify(body), entry.shareKey) : "";
+    const res = await fetch(`https://${host}/${path}`, {
+      method,
+      headers: {
+        ...this.baseHeaders(),
+        "content-type": "text/plain",
+        ...signedHeaders(entry, enc),
+        "x-replay-info": "replay",
+        category: "Home",
+        ...this.authTokenHeaders(),
+      },
+      ...(body && { body: enc }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    const env = parseMaybeJson(await res.text()) as { res_code?: number; message?: string; data?: unknown } | undefined;
+    if (res.status !== 200 || env?.res_code !== 1)
+      throw new MegaApiError(
+        `${path} failed (${res.status}/${env?.res_code}): ${env?.message}`,
+        env?.res_code,
+        res.status,
+      );
+    const data = env.data;
+    return (
+      typeof data === "string" && data ? parseMaybeJson(decryptBody(data, entry.shareKey).toString("utf-8")) : data
+    ) as T;
+  }
+
+  /**
+   * A cloud call a settings bundle names by `domain`, as the app resolves it: `eufy_security` is the
+   * security-app host; a cloud module name (case-insensitive) is the mega host with `mega` replaced by
+   * `app-<module>` (`Basic` the mega host itself, `CloudStorage` `app-cloudstor`, `ProMonitor`
+   * `pro-monitoring`), the path under its root. Signed and encrypted like every call here, so POST only: another method, another
+   * category's host and an unknown domain throw.
+   */
+  async cloudRequest<T = unknown>(req: {
+    method: string;
+    domain: string;
+    path: string;
+    body?: Record<string, unknown>;
+    headers?: Record<string, string>;
+  }): Promise<T> {
+    const name = req.domain.toLowerCase();
+    const prefix = CLOUD_MODULES.has(name) ? (CLOUD_MODULE_HOSTS[name] ?? `app-${name}`) : undefined;
+    const host = name === "eufy_security" ? this.securityAppHost() : prefix && `${prefix}-${this.region}.eufy.com`;
+    if (!host) throw new Error(`cloud request ${req.path}: no host for domain ${req.domain}`);
+    if (req.method !== "POST") throw new Error(`cloud request ${req.path}: ${req.method} is not signed by this client`);
+    const path = req.path.startsWith("/") ? req.path : `/${req.path}`;
+    return this.postSigned<T>(host, path, req.body ?? {}, true, {}, req.headers ?? {});
   }
 
   /**
@@ -1147,17 +1729,19 @@ export class MegaHttpClient {
    * is the only wrapping). The `ecc_private_key` is the root of trust for the P2P **level-2**
    * session key: `CMD_GATEWAYINFO(1100)` ships an ECIES envelope decrypted with it
    * (see `deriveLevel2KeyFromGatewayInfo` in `p2p/codec`). `userId` must be the station
-   * `member.admin_user_id`. Endpoint: `/v3/app/cipher/get_ciphers` on the eufylife host.
+   * `member.admin_user_id`. Endpoint: `/v3/app/cipher/get_ciphers` on the eufylife host. `snField` names the
+   * serial's body key: the app's version-8 gateway lookup sends `station_sn`, its RSA lookup `sn`.
    */
   async getCiphers(
     cipherIds: number[],
     userId: string,
     stationSn: string,
+    snField: "station_sn" | "sn" = "station_sn",
   ): Promise<Array<{ cipher_id: number; ecc_private_key?: string; private_key?: string }>> {
     const out = await this.securityAppPost<any>("/v3/app/cipher/get_ciphers", {
       cipher_ids: cipherIds,
       user_id: userId,
-      station_sn: stationSn,
+      [snField]: stationSn,
     });
     // server may return the array directly or under {ciphers|data}
     return (Array.isArray(out) ? out : (out?.ciphers ?? out?.data ?? [])) as Array<{
@@ -1167,9 +1751,9 @@ export class MegaHttpClient {
     }>;
   }
 
-  /** Build the /passport/login body (verify_code empty unless 2FA). */
-  private loginBody(opts: { verifyCode?: string; captchaId?: string; answer?: string }): Record<string, unknown> {
-    const base = loginCredentials(this.cfg.email, this.cfg.password, this.cfg.countryCode);
+  /** Build the /passport/login body (verify_code empty unless 2FA) around `password`, plain or hashed. */
+  private loginBody(opts: LoginChallenge, password: string): Record<string, unknown> {
+    const base = loginCredentials(this.cfg.email, password, this.cfg.countryCode);
     // Captured shapes: 2FA verify-login is minimal (verify_code + login_id);
     // captcha-solve carries answer + captcha_id; the initial login has empties.
     if (opts.verifyCode) return { ...base, verify_code: opts.verifyCode, login_id: "" };
@@ -1180,13 +1764,89 @@ export class MegaHttpClient {
 
   /** Fetch a fresh captcha challenge: { captchaId, image (data:image/png;base64) }. */
   async generateCaptcha(): Promise<{ captchaId: string; image: string }> {
-    const r = await this.postSigned<{ captcha_id: string; item: string }>(
-      `app-passport-${this.region}.eufy.com`,
-      "/passport/generate/captcha",
-      {},
-      false,
-    );
+    const r = await this.passport<{ captcha_id: string; item: string }>("/passport/generate/captcha", {});
     return { captchaId: r.captcha_id, image: r.item };
+  }
+
+  /** An unauthenticated passport call on `app-passport-{region}`, as the app's sign-up screens make them. */
+  private passport<T = unknown>(path: string, body: Record<string, unknown>, headers: Record<string, string> = {}) {
+    return this.postSigned<T>(`app-passport-${this.region}.eufy.com`, path, body, false, {}, headers);
+  }
+
+  /** Whether an account already holds `email` (`passport/validate_email`, `status` other than `"unregistered"`). */
+  async accountRegistered(email: string): Promise<boolean> {
+    const r = await this.passport<{ status?: string }>("/passport/validate_email", { email });
+    return r?.status !== "unregistered";
+  }
+
+  /**
+   * Mail the sign-up verification code to `email` (`passport/verification_sending`). A {@link MegaApiError} with
+   * code `CAPTCHA_REQUIRED` / `CAPTCHA_WRONG` asks for {@link generateCaptcha} and a retry carrying its answer.
+   */
+  async sendRegisterCode(
+    email: string,
+    captcha: { answer: string; captchaId: string } = { answer: "", captchaId: "" },
+  ) {
+    await this.passport("/passport/verification_sending", {
+      email,
+      answer: captcha.answer,
+      captcha_id: captcha.captchaId,
+    });
+  }
+
+  /** Check the sign-up code the cloud mailed (`passport/verification_check`, `type: "regist"`). */
+  async checkRegisterCode(email: string, verifyCode: string): Promise<void> {
+    await this.passport("/passport/verification_check", { email, verify_code: verifyCode, type: "regist" });
+  }
+
+  /**
+   * Create the account for `email` once its code checked out (`passport/register_create_account`): `password`
+   * goes out as the SHA-256 hex of the trimmed password, `country_code` and the `country` header are the client's
+   * `countryCode`. Captcha codes answer as on {@link sendRegisterCode}. The account is
+   * not logged in; {@link login} follows, as the app's next call.
+   */
+  async registerAccount(opts: {
+    email: string;
+    password: string;
+    verifyCode: string;
+    subscribe?: boolean;
+    captcha?: { answer: string; captchaId: string };
+  }): Promise<void> {
+    const country = this.cfg.countryCode;
+    await this.passport(
+      "/passport/register_create_account",
+      {
+        email: opts.email,
+        password: sha256Hex(opts.password),
+        verify_code: opts.verifyCode,
+        answer: opts.captcha?.answer ?? "",
+        captcha_id: opts.captcha?.captchaId ?? "",
+        is_subscribe: !!opts.subscribe,
+        country_code: country,
+      },
+      { country },
+    );
+  }
+
+  /**
+   * Mail an activation code for an account that is not yet active (`passport/resend_active_email`), what the app
+   * does when login answers `26105`. Answers the `active_token` {@link activateAccount} sends back.
+   */
+  async sendActivationCode(
+    email: string,
+    captcha: { answer: string; captchaId: string } = { answer: "", captchaId: "" },
+  ): Promise<string> {
+    const r = await this.passport<{ active_token?: string }>("/passport/resend_active_email", {
+      email,
+      answer: captcha.answer,
+      captcha_id: captcha.captchaId,
+    });
+    return r?.active_token ?? "";
+  }
+
+  /** Activate the account with the mailed code (`passport/activate_register {activation_code, verify_code}`). */
+  async activateAccount(activeToken: string, verifyCode: string): Promise<void> {
+    await this.passport("/passport/activate_register", { activation_code: activeToken, verify_code: verifyCode });
   }
 
   /**
@@ -1235,7 +1895,7 @@ export class MegaHttpClient {
         },
       };
     }
-    return this.attemptLogin(this.loginBody({}), opts.messageType ?? 2);
+    return this.attemptLogin({}, opts.messageType ?? 2);
   }
 
   /**
@@ -1384,7 +2044,7 @@ export class MegaHttpClient {
    */
   async solveCaptcha(answer: string, opts: { messageType?: number } = {}): Promise<LoginResult> {
     if (!this.pendingCaptchaId) throw new Error("no pending captcha — call login() first");
-    return this.attemptLogin(this.loginBody({ captchaId: this.pendingCaptchaId, answer }), opts.messageType ?? 2);
+    return this.attemptLogin({ captchaId: this.pendingCaptchaId, answer }, opts.messageType ?? 2);
   }
 
   /**
@@ -1392,33 +2052,56 @@ export class MegaHttpClient {
    * the next {@link LoginResult} (normally `ok`).
    */
   async submitVerifyCode(code: string): Promise<LoginResult> {
-    return this.attemptLogin(this.loginBody({ verifyCode: code }), 2);
+    return this.attemptLogin({ verifyCode: code }, 2);
   }
 
   /**
    * One `/passport/login` round-trip + outcome classification. Shared by {@link login} /
-   * {@link solveCaptcha} / {@link submitVerifyCode}; the caller-facing methods only build the body.
+   * {@link solveCaptcha} / {@link submitVerifyCode}; the caller-facing methods only name the challenge answered.
    */
-  private async attemptLogin(body: Record<string, unknown>, messageType: number): Promise<LoginResult> {
+  private async attemptLogin(challenge: LoginChallenge, messageType: number): Promise<LoginResult> {
     this.loggingIn = true;
     try {
-      return await this.loginRoundTrip(body, messageType);
+      return await this.loginRoundTrip(challenge, messageType);
     } finally {
       this.loggingIn = false;
     }
   }
 
-  /** The round trip itself. Wrapped by {@link attemptLogin}, which marks it in flight. */
-  private async loginRoundTrip(body: Record<string, unknown>, messageType: number): Promise<LoginResult> {
+  /**
+   * The round trip itself. Wrapped by {@link attemptLogin}, which marks it in flight.
+   *
+   * As the app's `MegaAccountNetManager.login`: `passport/validate_email` first, whose `enc_text: "sha2"` means
+   * the password goes out as its SHA-256 hex; a `DOMAIN_MISMATCH` runs `estimate_domain` again and retries once
+   * (`domainSwitched`), on either call except the 2FA login itself.
+   */
+  private async loginRoundTrip(
+    challenge: LoginChallenge,
+    messageType: number,
+    domainSwitched = false,
+  ): Promise<LoginResult> {
     if (!this.cfg.region) await this.estimateDomain();
     await this.ensureSessionKey();
     const passportHost = `app-passport-${this.region}.eufy.com`;
-    const isVerify = "verify_code" in body && !!body.verify_code;
+    const isVerify = !!challenge.verifyCode;
 
     let res: Record<string, unknown>;
+    let checked = false;
     try {
+      const account = await this.passport<{ enc_text?: unknown }>("/passport/validate_email", {
+        email: this.cfg.email,
+      });
+      checked = true;
+      const password = account?.enc_text === "sha2" ? sha256Hex(this.cfg.password) : this.cfg.password;
+      const body = this.loginBody(challenge, password);
       res = await this.postSigned<Record<string, unknown>>(passportHost, "/passport/login", body, !!this.auth_);
     } catch (e) {
+      const retryable = !domainSwitched && !(checked && isVerify);
+      if (retryable && e instanceof MegaApiError && e.code === EufyCloudErrorCode.DOMAIN_MISMATCH) {
+        await this.estimateDomain();
+        this.sessionKey = undefined;
+        return this.loginRoundTrip(challenge, messageType, true);
+      }
       const msg = e instanceof Error ? e.message : String(e);
       // Captcha required / wrong answer — the code is matched in the thrown message (postSigned embeds
       // `(status/code)`), so the patterns are built from the consts. Hold the id for solveCaptcha().
@@ -1442,7 +2125,7 @@ export class MegaHttpClient {
     }
     const reply = readLoginReply(res);
     if (!reply) throw new Error(`login returned no session: ${JSON.stringify(res).slice(0, 200)}`);
-    const { userId, accountUserId, authToken, geoKey } = reply;
+    const { userId, accountUserId, authToken, geoKey, nickName } = reply;
 
     if (!isVerify && reply.twoFactorPending) {
       // Keep the limited token: sendVerifyCode() AND the follow-up verify-login must both be authed
@@ -1460,7 +2143,7 @@ export class MegaHttpClient {
     this.pendingCaptchaId = undefined;
     this.pending2fa = false;
     this.reloginChallenged = false;
-    this.auth_ = { userId, accountUserId, authToken, geoKey };
+    this.auth_ = { userId, accountUserId, authToken, geoKey, nickName };
     this.tokenExpiresAt = reply.tokenExpiresAt;
     // Re-exchange WITH the auth token so the gateway binds the key-ident to the user.
     this.sessionKey = undefined;
@@ -1478,9 +2161,13 @@ export class MegaHttpClient {
       accountUserId: this.auth_.accountUserId ?? this.auth_.userId,
       authToken: this.auth_.authToken,
       geoKey: this.auth_.geoKey,
+      nickName: this.auth_.nickName,
       region: this.region,
       countryCode: this.cfg.countryCode,
-      estimatedDomain: this.estimatedDomain,
+      securityDomain: this.securityDomain,
+      homeDomain: this.homeDomain,
+      megaDomain: this.megaDomain,
+      securityMqtt: this.securityMqtt,
       openudid: this.openudid,
       phoneModel: this.phoneModel,
       mediaUserAgent: this.mediaUserAgent,
@@ -1488,7 +2175,20 @@ export class MegaHttpClient {
       keyIdent: this.sessionKey.keyIdent,
       tokenExpiresAt: this.tokenExpiresAt,
       savedAt: Date.now(),
+      things: this.things,
+      rtc: this.rtcTokens,
     });
+  }
+
+  /** A station's cached RTC signalling login and server list, the app's `sp_webrtc[<sn>]` and `sp_webrtc_servers[<sn>]`. */
+  rtcToken(sn: string): RtcToken | undefined {
+    return this.rtcTokens[sn];
+  }
+
+  /** Cache a station's RTC signalling login and server list (`onWebrtcToken`, `onWebrtcServerInfo`) with the session. */
+  saveRtcToken(sn: string, token: RtcToken): void {
+    this.rtcTokens[sn] = token;
+    this.persist();
   }
 
   /** Forget the persisted session (e.g. after the token is rejected). */

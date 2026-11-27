@@ -34,6 +34,7 @@ import {
   accessorNamesFor,
   describeCapabilities,
   claimedParams,
+  thingValue,
   type DeviceActionMap,
   type CapabilityAccessors,
   type DeviceManifest,
@@ -107,8 +108,10 @@ function coerce(
   raw: string | number | boolean,
   invert = false,
   logger: Logger = noopLogger,
+  param?: number,
+  other?: (param: number) => string | undefined,
 ): boolean | number | string {
-  if (spec.decode) return spec.decode(raw);
+  if (spec.decode) return spec.decode(raw, param, other);
   if (spec.raw && spec.type === "bool" && typeof raw === "string" && !BOOL_WIRE.has(raw)) return raw;
   const v = coerceByType(spec.type, raw, spec.name, spec.raw ? noopLogger : logger);
   // A `bool` param that is a disable flag reads inverted ("0"/false ⇒ TRUE). `invert` comes from
@@ -195,19 +198,10 @@ export class Device {
    * answers a caller has to be able to tell apart.
    */
   private bound = false;
-  /** The product's thing description resolved for this device, as {@link bindActions} was given it. */
-  private things?: CommandContext["things"];
-
-  /**
-   * Read-through freshness policy (injected by the facade via {@link setFreshnessPolicy}; the model
-   * stays transport-free — it only calls the supplied `refresh`). Default: caching OFF
-   * (`staleAfterMs = Infinity`), so a bare model object never triggers a fetch and existing behaviour
-   * is unchanged until the client wires a policy.
-   */
-  private staleAfterMs = Infinity;
-  private refresher?: () => Promise<void>;
-  /** Guards against firing more than one background refresh at a time (coalesces rapid stale reads). */
-  private refreshInFlight = false;
+  /** The context {@link bindActions} was given, its resolved thing description among it. */
+  private bindCtx?: CommandContext;
+  /** The raw value of every param applied, by param id, as the device reported it. */
+  private readonly raw = new Map<number, string>();
   /**
    * Host-supplied diagnostics sink. Defaults to {@link noopLogger} (silent) so a bare model object
    * stays quiet; the facade passes its own `logger` through {@link fromRecord}. Used to WARN when a
@@ -309,7 +303,7 @@ export class Device {
       ff09Settings,
       rawDp,
     });
-    this.things = ctx.things;
+    this.bindCtx = ctx;
     this.bound = true;
   }
 
@@ -364,19 +358,6 @@ export class Device {
   }
 
   /**
-   * Wire a read-through freshness policy. When a cached property is older than `staleAfterMs`, a
-   * `getProperty`/`getProperties` read schedules ONE coalesced background `refresh()` (the facade
-   * supplies it, choosing the cheapest live transport) and returns the last-known value immediately —
-   * reads never block. Push / P2P realtime updates refresh `ts` themselves via {@link applyParams}, so
-   * a device kept fresh by realtime never re-fetches (a fresh entry is never stale). Keeps `model/`
-   * transport-free: the device only calls the injected callback.
-   */
-  setFreshnessPolicy(policy: { staleAfterMs: number; refresh: () => Promise<void> }): void {
-    this.staleAfterMs = policy.staleAfterMs;
-    this.refresher = policy.refresh;
-  }
-
-  /**
    * Low-level property read by name — the untyped escape hatch. The typed fluent capability getters
    * (`dev.battery()?.level`, `dev.contact()?.open`) answer the value already narrowed to its declared
    * type where the property is exposed by a capability; this answers the loose `PropertyValue.value`
@@ -385,46 +366,16 @@ export class Device {
    * observed.
    */
   getProperty(name: string): PropertyValue | undefined {
-    const v = this.state.get(name);
-    if (v && Date.now() - v.ts > this.staleAfterMs) this.scheduleRefresh();
-    return v;
+    return this.state.get(name);
   }
 
   /**
    * Snapshot of all current property values (named + unknown passthrough) — the untyped bulk read, for
    * diagnostics / discovery. The typed fluent capability getters (`dev.battery()?.level`, …) answer one
-   * specific known property; this loose map answers every observed value at once. Under a freshness
-   * policy, schedules a background refresh when the OLDEST observed value is stale (one fetch covers
-   * every param) and returns the current snapshot immediately.
+   * specific known property; this loose map answers every observed value at once.
    */
   getProperties(): Record<string, PropertyValue> {
-    if (this.refresher && !this.refreshInFlight) {
-      let oldest: number | undefined;
-      for (const v of this.state.values()) oldest = oldest === undefined ? v.ts : Math.min(oldest, v.ts);
-      if (oldest !== undefined && Date.now() - oldest > this.staleAfterMs) this.scheduleRefresh();
-    }
     return Object.fromEntries(this.state);
-  }
-
-  /**
-   * Fire the injected background refresh at most once at a time (coalescing rapid stale reads). The
-   * refresh calls {@link applyParams}, which updates each value's `ts` — so subsequent reads see fresh
-   * entries and stop re-triggering until the next staleness window. Fire-and-forget; never throws to
-   * the reader (a failed refresh just leaves the last-known value in place).
-   */
-  private scheduleRefresh(): void {
-    if (!this.refresher || this.refreshInFlight) return;
-    this.refreshInFlight = true;
-    try {
-      void this.refresher().finally(() => {
-        this.refreshInFlight = false;
-      });
-    } catch {
-      // A refresher that throws SYNCHRONOUSLY (violating its `Promise<void>` contract) would otherwise
-      // leave `refreshInFlight` stuck true — bricking every future refresh — and propagate to the
-      // reader. Reset the flag and swallow it so a read never throws and refresh self-heals next time.
-      this.refreshInFlight = false;
-    }
   }
 
   /**
@@ -457,13 +408,17 @@ export class Device {
       const spec = hit?.spec;
       const def = this.withheld.has(pt) ? undefined : paramDef(this.namespace, pt);
       const name = spec ? spec.name : def ? def.name : `${UNKNOWN_PARAM_PREFIX}${pt}`;
-      const value: ParamValue = def?.encoding
-        ? decodeEncoded(rawVal, def.encoding) // base64+json / json → structured object
-        : spec
-          ? coerce(spec, rawVal, hit!.invert, this.logger)
-          : def
-            ? coerceByType(def.type, rawVal, def.name, this.logger)
-            : String(rawVal);
+      const value: ParamValue =
+        def?.encoding && !spec?.decode
+          ? decodeEncoded(rawVal, def.encoding) // base64+json / json → structured object
+          : spec
+            ? coerce(spec, rawVal, hit!.invert, this.logger, pt, (p) =>
+                p in params ? String(params[p]) : this.raw.get(p),
+              )
+            : def
+              ? coerceByType(def.type, rawVal, def.name, this.logger)
+              : String(rawVal);
+      this.raw.set(pt, String(rawVal));
       const prev = this.state.get(name);
       // Compare structurally (order-insensitive) so a decoded object whose keys come back reordered
       // doesn't read as "changed" and flap a downstream update — see `structuralEqual`.
@@ -546,9 +501,20 @@ export class Device {
         capabilities: new Set(this.capabilities),
         homeBaseAttached: this.stationSn !== this.sn,
         stationSerial: this.stationSn,
-        things: this.things,
+        things: this.bindCtx?.things,
       }),
     };
+  }
+
+  /**
+   * A thing property no capability member exposes, by its description identifier, as the product's
+   * settings bundle reads it: its value as the description states it, the description's default until the
+   * device reports it. `undefined` on an unbound device, for an identifier its description does not list,
+   * and for one a member exposes (read it there).
+   */
+  thingValue(identifier: string): string | undefined {
+    const ctx = this.bindCtx && { ...this.bindCtx, capabilities: this.capSet };
+    return ctx && thingValue(identifier, ctx, (p) => this.raw.get(p));
   }
 
   /** Plain-object view: serial, name, resolved codec/source, capabilities, and every current property value. */

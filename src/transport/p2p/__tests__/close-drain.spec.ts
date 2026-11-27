@@ -2,6 +2,7 @@ import dgram from "node:dgram";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { P2PSession } from "../p2p-session.js";
 import { RequestMessageType } from "../codec.js";
+import { withGcmKey } from "./session-fixtures.js";
 
 const cleanup: dgram.Socket[] = [];
 async function bound() {
@@ -16,8 +17,8 @@ function sessionWith(socket: dgram.Socket, port?: number) {
     socket,
     connected: true,
     ...(port === undefined ? {} : { connectAddress: { host: "127.0.0.1", port } }),
-    level2Key: Buffer.alloc(32, 1),
   });
+  withGcmKey(session, Buffer.alloc(32, 1));
   return session;
 }
 afterEach(() => {
@@ -48,7 +49,11 @@ describe("P2P session close", () => {
     try {
       const senderPort = (sender.address() as { port: number }).port;
       const session = sessionWith(sender, port);
-      session.stopLiveMedia(2, "0".repeat(40), true);
+      session.sendFrame(
+        { cmd: 1350, body: "json1350", subCmd: 1004, payload: { channel: "$channel" } },
+        2,
+        "0".repeat(40),
+      );
       await session.close();
       await delivered;
       expect(seen).toHaveLength(2);

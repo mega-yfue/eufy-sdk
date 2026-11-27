@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CommandResultError } from "../../../core/contracts.js";
 import { buildAckPayload, frameMessage, P2PDataTypeHeader, ResponseMessageType } from "../codec.js";
 import { P2PSession } from "../p2p-session.js";
-import { connectedSession, routerWithSession, DEVICE_SN, STATION_SN } from "./session-fixtures.js";
+import { atSignMode1, connectedSession, routerWithSession, DEVICE_SN, STATION_SN } from "./session-fixtures.js";
 
 const P2P_DID = "XXXXXXX-000000-XXXXX";
 
@@ -17,7 +17,7 @@ const PARAM = 1035;
  */
 function station(...codes: number[]) {
   const session = Object.assign(connectedSession(), {
-    sendRawLevel2Bytes: vi.fn((_body: Buffer, channel: number, commandId: number) => {
+    sendBytes: vi.fn((_body: Buffer, channel: number, commandId: number) => {
       const code = codes.shift();
       if (code !== undefined) queueMicrotask(() => session.emit("commandResult", { code, channel, commandId }));
       return true;
@@ -26,7 +26,7 @@ function station(...codes: number[]) {
   return { session, router: routerWithSession(session) };
 }
 
-const write = { kind: "set-param", param: PARAM, value: 1, form: "direct-binary", channel: CHANNEL } as const;
+const write = { kind: "set-param", param: PARAM, value: 1, channel: CHANNEL } as const;
 
 afterEach(() => {
   vi.useRealTimers();
@@ -36,7 +36,7 @@ describe("a level-2 setting write settles on the device's answer", () => {
   it("resolves on success, sent once", async () => {
     const { router, session } = station(0);
     await router.dispatchCommand(DEVICE_SN, write);
-    expect(session.sendRawLevel2Bytes).toHaveBeenCalledTimes(1);
+    expect(session.sendBytes).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a refusal with the device's code", async () => {
@@ -46,13 +46,13 @@ describe("a level-2 setting write settles on the device's answer", () => {
     expect(error).toMatchObject({ sn: DEVICE_SN, commandId: PARAM, code: -108 });
   });
 
-  it("does not read another command's answer, or another channel's", async () => {
+  /** The app's result reader matches the command id alone. */
+  it("does not read another command's answer, and reads its own whatever channel it names", async () => {
     const { router, session } = station();
-    session.sendRawLevel2Bytes.mockImplementationOnce(() => {
+    session.sendBytes.mockImplementationOnce(() => {
       queueMicrotask(() => {
         session.emit("commandResult", { code: -108, channel: CHANNEL, commandId: 1700 });
-        session.emit("commandResult", { code: -108, channel: CHANNEL + 1, commandId: PARAM });
-        session.emit("commandResult", { code: 0, channel: CHANNEL, commandId: PARAM });
+        session.emit("commandResult", { code: 0, channel: CHANNEL + 1, commandId: PARAM });
       });
       return true;
     });
@@ -61,7 +61,7 @@ describe("a level-2 setting write settles on the device's answer", () => {
 
   it("does not settle on a frame that carries no code", async () => {
     const { router, session } = station();
-    session.sendRawLevel2Bytes.mockImplementationOnce(() => {
+    session.sendBytes.mockImplementationOnce(() => {
       queueMicrotask(() => {
         session.emit("data", { channel: CHANNEL, commandId: PARAM, json: undefined });
         session.emit("commandResult", { code: -108, channel: CHANNEL, commandId: PARAM });
@@ -71,15 +71,24 @@ describe("a level-2 setting write settles on the device's answer", () => {
     await expect(router.dispatchCommand(DEVICE_SN, write)).rejects.toMatchObject({ code: -108 });
   });
 
+  // `PPCS_Read` on a closed session fails at once; the station's next request, a live start's stop, is not held 20 s.
+  it("ends the read with -13 when the session closes before the answer", async () => {
+    const { router, session } = station();
+    const write1 = router.dispatchCommand(DEVICE_SN, write);
+    await vi.waitFor(() => expect(session.sendBytes).toHaveBeenCalledOnce());
+    session.emit("close");
+    await expect(write1).rejects.toMatchObject({ code: -13 });
+  });
+
   it("resends once on a code the vendor app retries", async () => {
     const { router, session } = station(5, 0);
     await router.dispatchCommand(DEVICE_SN, write);
-    expect(session.sendRawLevel2Bytes).toHaveBeenCalledTimes(2);
+    expect(session.sendBytes).toHaveBeenCalledTimes(2);
   });
 
   it("does not settle a write on the late answer to the one before it", async () => {
     const { router, session } = station();
-    session.sendRawLevel2Bytes.mockImplementation((body: Buffer, channel: number, commandId: number) => {
+    session.sendBytes.mockImplementation((body: Buffer, channel: number, commandId: number) => {
       const code = body.readUInt32LE(4) === 1 ? 0 : -108;
       setTimeout(() => session.emit("commandResult", { code, channel, commandId }), 300);
       return true;
@@ -103,19 +112,35 @@ describe("a level-2 setting write settles on the device's answer", () => {
     expect(session.sendStringPayloadCommand).toHaveBeenCalledTimes(1);
   });
 
+  it("fills a $userId the bundle's parser put in a control write's data with the account id", async () => {
+    const session = Object.assign(connectedSession(false), {
+      sendStringPayloadCommand: vi.fn((commandId: number, _json: string, channel: number) =>
+        queueMicrotask(() => session.emit("commandResult", { code: 0, channel, commandId })),
+      ),
+    });
+    const data = { account: "$userId", zonecount: 0 };
+    await routerWithSession(session, { accountId: "acct-1" }).dispatchCommand(DEVICE_SN, {
+      kind: "set-json",
+      param: 6042,
+      data,
+      channel: CHANNEL,
+    });
+    expect(JSON.parse(session.sendStringPayloadCommand.mock.calls[0]![1])).toEqual({
+      commandType: 6042,
+      data: { account: "acct-1", zonecount: 0 },
+    });
+  });
+
   it("sends on a fresh session when the one it resolved closed before the send", async () => {
     const closing = Object.assign(connectedSession(false), {
-      isClosed: false,
       close: vi.fn(async () => {}),
       sendStringPayloadCommand: vi.fn(() => {
         throw new Error("P2P session is not connected");
       }),
     });
-    closing.awaitLevel2Key.mockImplementation(async () => {
-      closing.isClosed = true;
-      closing.isConnected = false;
-      return false;
-    });
+    // Open when resolved, closed by the time the send runs.
+    let reads = 0;
+    Object.defineProperty(closing, "isClosed", { get: () => ++reads > 1 });
     const fresh = Object.assign(connectedSession(false), {
       sendStringPayloadCommand: vi.fn((commandId: number, _json: string, channel: number) =>
         queueMicrotask(() => fresh.emit("commandResult", { code: 0, channel, commandId })),
@@ -135,29 +160,30 @@ describe("a level-2 setting write settles on the device's answer", () => {
     expect(fresh.sendStringPayloadCommand).toHaveBeenCalledTimes(1);
   });
 
-  it("rejects with no code when the device never answers", async () => {
+  it("rejects with the native read's timeout code when the device stays silent for 20 s", async () => {
     vi.useFakeTimers();
     const { router } = station();
     const outcome = router.dispatchCommand(DEVICE_SN, write).catch((e: unknown) => e);
-    await vi.advanceTimersByTimeAsync(30_000);
-    const error = await outcome;
-    expect(error).toBeInstanceOf(CommandResultError);
-    expect(error).toMatchObject({ commandId: PARAM, code: undefined, timeoutMs: 30_000 });
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(await outcome).toMatchObject({ commandId: PARAM, code: -3 });
   });
 
-  it("sends a write the device returns no code for unread, without waiting", async () => {
-    vi.useFakeTimers();
+  it("ends the read with -133 at the 20th answer under another command", async () => {
     const { router, session } = station();
-    const outcome = router.dispatchCommand(DEVICE_SN, { ...write, unanswered: true });
-    await vi.advanceTimersByTimeAsync(1_000);
-    await expect(outcome).resolves.toBe(false);
-    expect(session.sendRawLevel2Bytes).toHaveBeenCalledTimes(5);
+    session.sendBytes.mockImplementationOnce(() => {
+      queueMicrotask(() => {
+        for (let i = 0; i < 20; i++) session.emit("commandResult", { code: 0, channel: CHANNEL, commandId: 1700 });
+      });
+      return true;
+    });
+    await expect(router.dispatchCommand(DEVICE_SN, write)).rejects.toMatchObject({ code: -133 });
   });
 });
 
-/** A connected session whose socket captures each datagram handed to it. */
-function session() {
-  const real = new P2PSession({ stationSn: STATION_SN, p2pDid: P2P_DID });
+/** A connected session whose socket captures each datagram handed to it, at sign mode 1 unless `signMode0`. */
+function session(signMode0 = false, stationSn = STATION_SN) {
+  const real = new P2PSession({ stationSn, p2pDid: P2P_DID });
+  if (!signMode0) atSignMode1(real);
   const socket = { send: vi.fn() };
   const target = real as unknown as { connectAddress: unknown; socket: unknown; onAck(m: Buffer): void };
   target.connectAddress = { host: "127.0.0.1", port: 1 };
@@ -170,18 +196,182 @@ function session() {
   };
 }
 
-describe("an acknowledged send", () => {
-  it("repeats the same datagram, under its own sequence, until the device acknowledges it", () => {
+/** The app bounds its guard-mode request at 6 s per device and never resends it. */
+describe("a station scalar that states its answer deadline", () => {
+  const guard = { kind: "p2p-station-scalar", cmd: 1224, value: 63, channel: 255, answerMs: 6_000 } as const;
+
+  it("answers true on the station's success", async () => {
+    const { router } = station(0);
+    await expect(router.dispatchCommand(DEVICE_SN, guard)).resolves.toBe(true);
+  });
+
+  it("rejects when the station does not answer within the deadline", async () => {
+    vi.useFakeTimers();
+    const { router } = station();
+    let outcome: unknown;
+    void router.dispatchCommand(DEVICE_SN, guard).catch((e: unknown) => (outcome = e));
+    await vi.advanceTimersByTimeAsync(5_999);
+    expect(outcome).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(outcome).toBeInstanceOf(CommandResultError);
+  });
+
+  it("does not resend on a code the default write retries", async () => {
+    const { router, session } = station(5, 0);
+    await expect(router.dispatchCommand(DEVICE_SN, guard)).rejects.toMatchObject({ code: 5 });
+    expect(session.sendBytes).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("a command datagram", () => {
+  it("goes once, and every 2 s only the oldest unacknowledged datagram goes again under its own sequence", () => {
     vi.useFakeTimers();
     const { real, sent, acknowledge } = session();
-    real.sendAcknowledged(() => real.sendRawLevel1Bytes(Buffer.alloc(8), CHANNEL, PARAM));
-    vi.advanceTimersByTime(400);
-    const [first, ...repeats] = sent();
-    expect(repeats.length).toBeGreaterThan(0);
-    for (const repeat of repeats) expect(repeat.equals(first!)).toBe(true);
+    real.sendBytes(Buffer.alloc(8), CHANNEL, PARAM);
+    real.sendStringPayloadCommand(PARAM + 1, "{}", CHANNEL);
+    const [first, second] = sent();
+    vi.advanceTimersByTime(1_999);
+    expect(sent()).toHaveLength(2);
+    vi.advanceTimersByTime(1);
+    expect(sent()).toHaveLength(3);
+    expect(sent()[2]!.equals(first!)).toBe(true);
     acknowledge(first!.readUInt16BE(6));
-    const count = sent().length;
-    vi.advanceTimersByTime(1_000);
-    expect(sent()).toHaveLength(count);
+    vi.advanceTimersByTime(2_000);
+    expect(sent()).toHaveLength(4);
+    expect(sent()[3]!.equals(second!)).toBe(true);
+    acknowledge(second!.readUInt16BE(6));
+    vi.advanceTimersByTime(10_000);
+    expect(sent()).toHaveLength(4);
+  });
+
+  /**
+   * At sign mode 0 the app's sender sleeps 1.45 s, then seals by the mode it finds: in the clear, or under the level-1
+   * key at sign mode 1 on a serial that takes it at sign mode 0. The late datagram is still held until acknowledged.
+   */
+  it("waits 1.45 s at sign mode 0, seals by the mode it then finds, and holds the late datagram", () => {
+    vi.useFakeTimers();
+    for (const [stationSn, signCode] of [
+      ["T8000P0000000000", 0],
+      ["T8010P0000000000", 1],
+    ] as const) {
+      const { real, sent } = session(true, stationSn);
+      real.sendBytes(Buffer.alloc(8), CHANNEL, PARAM);
+      vi.advanceTimersByTime(1_449);
+      expect(sent()).toHaveLength(0);
+      vi.advanceTimersByTime(1);
+      expect(sent()).toHaveLength(1);
+      const frame = sent()[0]!.subarray(sent()[0]!.indexOf("XZYH"));
+      expect(frame[13]).toBe(signCode);
+      vi.advanceTimersByTime(2_000);
+      expect(sent()).toHaveLength(2);
+      real.removeAllListeners();
+    }
+  });
+});
+
+describe("one command in flight per station", () => {
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it("holds the next command for the same device until the first is answered", async () => {
+    const { router, session } = station();
+    const first = router.dispatchCommand(DEVICE_SN, write);
+    const second = router.dispatchCommand(DEVICE_SN, { ...write, param: PARAM + 1 });
+    await flush();
+    expect(session.sendBytes).toHaveBeenCalledTimes(1);
+    session.emit("commandResult", { code: 0, channel: CHANNEL, commandId: PARAM });
+    await first;
+    await flush();
+    expect(session.sendBytes).toHaveBeenCalledTimes(2);
+    session.emit("commandResult", { code: 0, channel: CHANNEL, commandId: PARAM + 1 });
+    await expect(second).resolves.toBe(true);
+  });
+
+  it("holds the station's own command behind one for a camera it hosts", async () => {
+    vi.useFakeTimers();
+    const { router, session } = station();
+    void router.dispatchCommand(DEVICE_SN, write).catch(() => {});
+    const own = router.dispatchCommand(STATION_SN, { kind: "p2p-station-scalar", cmd: 1235, value: 1, channel: 255 });
+    await vi.advanceTimersByTimeAsync(19_999);
+    expect(session.sendBytes).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1); // the camera's read gives up, the station's command goes
+    expect(session.sendBytes).toHaveBeenCalledTimes(2);
+    session.emit("commandResult", { code: 0, channel: 255, commandId: 1235 });
+    await expect(own).resolves.toBe(true);
+  });
+
+  it("resolves an unread command once sent, the station held until its answer", async () => {
+    const { router, session } = station();
+    await expect(router.rebootStation(DEVICE_SN)).resolves.toBeUndefined();
+    const next = router.dispatchCommand(DEVICE_SN, write);
+    await flush();
+    expect(session.sendBytes).toHaveBeenCalledTimes(1);
+    session.emit("commandResult", { code: 0, channel: 255, commandId: 1034 });
+    await vi.waitFor(() => expect(session.sendBytes).toHaveBeenCalledTimes(2));
+    session.emit("commandResult", { code: 0, channel: CHANNEL, commandId: PARAM });
+    await expect(next).resolves.toBe(true);
+  });
+
+  it("hands a request down every 500 ms without a result, and drops one still queued past its deadline", async () => {
+    vi.useFakeTimers();
+    const { router, session } = station();
+    const guard = { kind: "p2p-station-scalar", cmd: 1224, value: 63, channel: 255, answerMs: 6_000 } as const;
+    // Twelve silent writes hand the request queue on at 500 ms each: the 6 s guard is handed down at 6 s, in time,
+    // and a thirteenth write ahead of it would hold it past its deadline.
+    for (let i = 0; i < 12; i++) void router.dispatchCommand(DEVICE_SN, { ...write, param: PARAM + i }).catch(() => {});
+    const inTime = router.dispatchCommand(DEVICE_SN, guard).catch((e: unknown) => e);
+    void router.dispatchCommand(DEVICE_SN, { ...write, param: PARAM + 12 }).catch(() => {});
+    const late = router.dispatchCommand(DEVICE_SN, guard).catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(400_000);
+    expect(await inTime).toMatchObject({ code: undefined, timeoutMs: 6_000 });
+    expect(await late).toMatchObject({ code: undefined, timeoutMs: 6_000 });
+    const sent = session.sendBytes.mock.calls.map((c) => c[2]);
+    expect(sent.filter((c) => c === 1224)).toHaveLength(1); // the handed-down one still goes, after the calls ahead
+    expect(sent).toHaveLength(14);
+  });
+});
+
+describe("a write whose bundle descriptor reads its result from the notify (`ResultFrom.Notify`)", () => {
+  const notified = { kind: "set-payload", cmd: 2100, payload: { transaction: "42" }, channel: CHANNEL } as const;
+  const notify = { ...notified, notify: { cmd: 1351, subCmd: 2100 } } as const;
+
+  /** A station answering each 1350 with `code` on the device channel, then pushing `then` frames. */
+  function notifying(code: number, ...then: object[]) {
+    const session = Object.assign(connectedSession(), {
+      sendSetPayload: vi.fn(() => {
+        queueMicrotask(() => {
+          session.emit("commandResult", { code, channel: CHANNEL, commandId: 1350 });
+          for (const f of then) session.emit("data", { channel: CHANNEL, ...f });
+        });
+        return true;
+      }),
+    });
+    return routerWithSession(session);
+  }
+
+  it("succeeds on the 1351 notify after a 0 answer, matched by its transaction or its sub-command", async () => {
+    await expect(
+      notifying(0, { commandId: 1351, json: { cmd: 9, payload: { transaction: "42" } } }).dispatchCommand(
+        DEVICE_SN,
+        notify,
+      ),
+    ).resolves.toBe(true);
+    await expect(
+      notifying(0, { commandId: 1351, json: { cmd: 2100, payload: {} } }).dispatchCommand(DEVICE_SN, notify),
+    ).resolves.toBe(true);
+  });
+
+  it("takes a 0 answer with no notify as -40302 by the deadline, a 0 answer alone without a notify key", async () => {
+    vi.useFakeTimers();
+    const pending = notifying(0, { commandId: 1351, json: { cmd: 2101, payload: {} } })
+      .dispatchCommand(DEVICE_SN, notify)
+      .catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(await pending).toMatchObject({ commandId: 1350, code: -40302 });
+    vi.useRealTimers();
+    await expect(notifying(0).dispatchCommand(DEVICE_SN, notified)).resolves.toBe(true);
+  });
+
+  it("rejects a non-zero answer at once", async () => {
+    await expect(notifying(-108).dispatchCommand(DEVICE_SN, notify)).rejects.toMatchObject({ code: -108 });
   });
 });

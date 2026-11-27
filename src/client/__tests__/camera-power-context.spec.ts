@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EufyMega } from "../eufy-mega.js";
 import type { CommandContext } from "../../model/capabilities/types.js";
+import { parseThingsList } from "../../model/capabilities/thing-description.js";
+
+// The product's settings-bundle data, synthetic: the spec is about the code, not the shipped data.
+vi.mock("../../model/capabilities/bundle-wires.generated.json", async () => {
+  const f = await import("../../model/capabilities/__tests__/bundle-fixture.js");
+  return f.bundleData("T8410", { camera_on_off: f.power() });
+});
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -39,6 +46,9 @@ describe("camera power context", () => {
       firmwareVersion: "2.3.2.4",
       paramIds: new Set([1035]),
       capabilities: new Set(["camera"]),
+      things: parseThingsList({
+        things_list: [{ profile: { product_code: "T8410" }, properties: [{ identifier: "camera_on_off" }] }],
+      }).T8410,
     });
     const route = vi.spyOn(internal, "routeCommand").mockResolvedValue(undefined);
     const refresh = vi.spyOn(internal.registry, "refreshedList");
@@ -48,12 +58,11 @@ describe("camera power context", () => {
       expect.objectContaining({
         kind: "set-payload",
         cmd: 6250,
-        payload: { switch: enabled ? 0 : 1 },
+        payload: expect.objectContaining({ switch: enabled ? 0 : 1 }),
         channel: 3,
         mValue3: 0,
       }),
     );
     expect(refresh).not.toHaveBeenCalled();
-    expect(internal.commandRefreshes.size).toBe(0);
   });
 });

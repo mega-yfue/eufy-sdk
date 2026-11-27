@@ -2,19 +2,18 @@ import { DeviceRegistry } from "../device-registry.js";
 import { SessionExpiredError, type MegaHttpClient } from "../../transport/http/mega-client.js";
 
 /**
- * A minimal fake `MegaHttpClient` — only the two methods DeviceRegistry calls (`post`,
- * `getDeviceParamList`). `post` is routed by path so one fake serves house-list + devs-list.
+ * A minimal fake `MegaHttpClient` — only the methods DeviceRegistry calls. `post` is routed by path so
+ * one fake serves house-list + devs-list.
  */
-type PostFn = (service: string, path: string, body?: unknown) => Promise<any>;
+type PostFn = (service: string, path: string, body?: unknown, headers?: Record<string, string>) => Promise<any>;
 function fakeMega(opts: {
   post: PostFn;
-  getDeviceParamList?: (sn: string) => Promise<any>;
   getDeviceRelationList?: () => Promise<any>;
   getThingsList?: (codes: readonly string[]) => Promise<any>;
 }): MegaHttpClient {
   return {
-    post: (service: string, path: string, body?: unknown) => opts.post(service, path, body),
-    getDeviceParamList: (sn: string) => (opts.getDeviceParamList ?? (async () => ({})))(sn),
+    post: (service: string, path: string, body?: unknown, headers?: Record<string, string>) =>
+      opts.post(service, path, body, headers),
     getDeviceRelationList: () => (opts.getDeviceRelationList ?? (async () => Promise.reject(new Error("not faked"))))(),
     getThingsList: (codes: readonly string[]) =>
       (opts.getThingsList ?? (async () => Promise.reject(new Error("not faked"))))(codes),
@@ -41,10 +40,12 @@ describe("DeviceRegistry", () => {
     it("queries {} + every house_id, unions and dedupes by serial (last write wins)", async () => {
       const errors: unknown[] = [];
       const bodiesSeen: unknown[] = [];
+      const headersSeen: unknown[] = [];
       const mega = fakeMega({
-        post: async (_s, path, body) => {
+        post: async (_s, path, body, headers) => {
           if (path.endsWith("get_house_list")) return { house_infos: [{ house_id: "H1" }, { house_id: "H2" }] };
           bodiesSeen.push(body);
+          headersSeen.push(headers);
           // {} → A,B ; H1 → B (dupe, newer params) ; H2 → C
           if (JSON.stringify(body) === "{}") return { devices: [rawDevice("A"), rawDevice("B")] };
           if ((body as any).house_id === "H1")
@@ -57,6 +58,7 @@ describe("DeviceRegistry", () => {
       const devs = await reg.getDevices();
 
       expect(bodiesSeen).toEqual([{}, { house_id: "H1" }, { house_id: "H2" }]);
+      expect(headersSeen).toEqual(Array(3).fill({ "x-accept-encoding": "gzip" }));
       expect(devs.map((d) => d.sn).sort()).toEqual(["A", "B", "C"]);
       const b = devs.find((d) => d.sn === "B");
       expect(b?.params?.[1101]).toBe("42"); // H1's later record won
@@ -76,6 +78,30 @@ describe("DeviceRegistry", () => {
       expect(devs.map((d) => d.sn)).toEqual(["A"]);
       expect(devs[0].params).toEqual({ 1101: "88" });
     });
+  });
+
+  it("carries the record's member_type as memberType, 0 on a member stating none, absent without a member", async () => {
+    const mega = fakeMega({
+      post: async (_s, path, body) =>
+        path.endsWith("get_house_list") || JSON.stringify(body) !== "{}"
+          ? {}
+          : {
+              devices: [
+                rawDevice("OWN", { member: { member_type: 2, admin_user_id: "u-0", member_user_id: "u-0" } }),
+                rawDevice("GUEST", { member: { member_type: 0, admin_user_id: "u-1", member_user_id: "u-0" } }),
+                rawDevice("UNSTATED", { member: { admin_user_id: "u-1", member_user_id: "u-0" } }),
+                rawDevice("BARE"),
+              ],
+            },
+    });
+    const devs = await new DeviceRegistry({ mega, onError: () => {} }).getDevices();
+    expect(Object.fromEntries(devs.map((d) => [d.sn, d.memberType]))).toEqual({
+      OWN: 2,
+      GUEST: 0,
+      UNSTATED: 0,
+      BARE: undefined,
+    });
+    expect(devs.find((d) => d.sn === "BARE")).not.toHaveProperty("memberType");
   });
 
   describe("getDevices — error resilience", () => {
@@ -182,6 +208,32 @@ describe("DeviceRegistry", () => {
       expect(dumped.things?.properties.nightvision_type?.type, "inspectDevice carries it, serialisable").toBe("bool");
     });
 
+    it("keys the description by the record's device_new_pn, else its device_model, as the app does", async () => {
+      const asked: (readonly string[])[] = [];
+      const reg = new DeviceRegistry({
+        mega: fakeMega({
+          post: listOf(rawDevice("A", { device_model: "T85D0C", device_new_pn: "T85D0" }), rawDevice("B")),
+          getThingsList: async (codes) => (
+            asked.push(codes),
+            {
+              things_list: ["T85D0", "T8410"].map((code) => ({
+                profile: { product_code: code },
+                properties: [
+                  { identifier: "is_support_mqtt", data_type: { type: "bool", specs: { defaultValue: "true" } } },
+                ],
+              })),
+            }
+          ),
+        }),
+        onError: () => {},
+      });
+      await reg.getDevices();
+      expect(asked).toEqual([["T85D0", "T8410"]]);
+      expect((await reg.record("A")).things?.productCode).toBe("T85D0");
+      expect(reg.thingDefault("A", "is_support_mqtt")).toBe("true");
+      expect((await reg.record("B")).things?.productCode).toBe("T8410");
+    });
+
     it("resolves the description for the device: its firmware picks the variant", async () => {
       const reply = {
         things_list: [
@@ -232,7 +284,6 @@ describe("DeviceRegistry", () => {
         }),
         onError: () => {},
       });
-      await reg.getDevices();
       expect((await reg.record("A")).things).toBeUndefined();
       await reg.getDevices();
       expect(calls).toBe(2);
@@ -240,56 +291,59 @@ describe("DeviceRegistry", () => {
     });
   });
 
-  describe("record — param overlay", () => {
-    const listMega = (getDeviceParamList: (sn: string) => Promise<any>) =>
-      fakeMega({
+  describe("record — params", () => {
+    it("reads params from the device list and never asks get_device_param_list", async () => {
+      const paths: string[] = [];
+      const paramList = vi.fn(async () => ({ params: [{ param_type: 1101, param_value: "5", update_time: 2 }] }));
+      const mega = fakeMega({
         post: async (_s, path) => {
+          paths.push(path);
           if (path.endsWith("get_house_list")) return { house_infos: [] };
-          return { devices: [rawDevice("A")] };
+          return {
+            devices: [
+              rawDevice("A", { params: [{ param_type: 1101, param_value: "88", update_time: 1_700_000_000 }] }),
+            ],
+          };
         },
-        getDeviceParamList,
       });
+      (mega as unknown as Record<string, unknown>).getDeviceParamList = paramList;
+      const reg = new DeviceRegistry({ mega, onError: () => {} });
 
-    it("overlays a fresh get_device_param_list on top of the device-list params", async () => {
-      const reg = new DeviceRegistry({
-        mega: listMega(async () => ({
-          params: [
-            { param_type: 1101, param_value: "5" },
-            { param_type: 9, param_value: "x" },
-          ],
-        })),
-        onError: () => {},
-      });
       const rec = await reg.record("A");
-      expect(rec.params[1101]).toBe("5"); // live overlay won over the device-list "88"
-      expect(rec.params[9]).toBe("x"); // and added the new param
+
+      expect(rec.params[1101]).toBe("88");
+      expect(rec.paramUpdatedAt[1101]).toBe(1_700_000_000);
       expect(rec.deviceType).toBe(30);
-      expect(rec.model).toBe("T8410");
+      expect(paramList).not.toHaveBeenCalled();
+      expect(paths.some((p) => p.includes("get_device_param_list"))).toBe(false);
     });
 
-    it("falls back to device-list params when the live call throws (no throw out)", async () => {
+    it("reads the cached list, as the app does: only a cold cache fetches it", async () => {
+      vi.useFakeTimers();
+      const paths: string[] = [];
       const reg = new DeviceRegistry({
-        mega: listMega(async () => {
-          throw new Error("param boom");
+        mega: fakeMega({
+          post: async (_s, path) => {
+            paths.push(path);
+            return path.endsWith("get_house_list") ? { house_infos: [] } : { devices: [rawDevice("A")] };
+          },
         }),
         onError: () => {},
       });
-      const rec = await reg.record("A");
-      expect(rec.params[1101]).toBe("88"); // device-list value
+      await reg.record("A");
+      vi.advanceTimersByTime(60_000);
+      await reg.record("A");
+      vi.useRealTimers();
+      expect(paths.filter((p) => p.endsWith("get_devs_list"))).toHaveLength(1);
     });
 
     it("throws a helpful error for an unknown serial", async () => {
-      const reg = new DeviceRegistry({ mega: listMega(async () => ({})), onError: () => {} });
-      await expect(reg.record("NOPE")).rejects.toThrow(/device NOPE not found/);
-    });
-
-    it("carries each param's update_time through the live overlay", async () => {
-      const reg = new DeviceRegistry({
-        mega: listMega(async () => ({ params: [{ param_type: 1101, param_value: "5", update_time: 1_700_000_500 }] })),
-        onError: () => {},
+      const mega = fakeMega({
+        post: async (_s, path) =>
+          path.endsWith("get_house_list") ? { house_infos: [] } : { devices: [rawDevice("A")] },
       });
-      const rec = await reg.record("A");
-      expect(rec.paramUpdatedAt[1101]).toBe(1_700_000_500);
+      const reg = new DeviceRegistry({ mega, onError: () => {} });
+      await expect(reg.record("NOPE")).rejects.toThrow(/device NOPE not found/);
     });
   });
 

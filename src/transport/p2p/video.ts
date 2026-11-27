@@ -17,8 +17,7 @@
  * [0xb3:end]  H.264 ciphertext (AES-256-GCM)
  * ```
  *
- * Format + crypto reversed byte-exact from `libmega_media_sdk.so` and verified against a live
- * capture. The frame layout is the block comment above.
+ * Format + crypto reversed byte-exact from `libmega_media_sdk.so`. The frame layout is the block comment above.
  */
 import { createDecipheriv } from "node:crypto";
 import { hasIdr, sniffAnnexbCodec } from "./annexb.js";
@@ -44,9 +43,8 @@ export interface VideoFrameHeader {
    * belongs to.
    *
    * A station serves a unit larger than {@link STATION_CHUNK_BYTES} as several frames, and each one
-   * declares only its own share: measured on two models, a 70190-byte unit arrived as `64000` then
-   * `6190`, and a 104451-byte keyframe as `64000` then `40451`. A frame that carries a whole unit
-   * declares the whole unit, however large — a captured keyframe declares 0x3b323.
+   * declares only its own share: a 70190-byte unit arrives as `64000` then `6190`. A frame that carries a
+   * whole unit declares the whole unit, however large.
    */
   payloadLength: number;
   /** True when flag@0x04 bit0 is set: a keyframe carrying the ECIES envelope. */
@@ -189,11 +187,10 @@ export interface AssembledAccessUnit {
  * The payload size a station fills a `CMD_VIDEO_FRAME` to before splitting an access unit across
  * several of them.
  *
- * Verified on two independent camera models on one account: every frame of a split unit declared
- * EXACTLY this, and the unit's last frame declared less.
+ * Every frame of a split unit declares EXACTLY this, and the unit's last frame declares less.
  *
  * Matched by equality, never as a floor. Stations that do not split deliver whole units in one frame far
- * above this — measured at 148057, 231954 and 234670 bytes on three other models — and treating "at least
+ * above this, and treating "at least
  * this big" as "more is coming" holds those units back and then discards them as truncated, which costs
  * exactly the keyframes a decoder cannot start without.
  */
@@ -203,8 +200,7 @@ export const STATION_CHUNK_BYTES = 64000;
  * Reassembles a `CMD_VIDEO_FRAME` access unit the station split across several frames.
  *
  * Each frame declares only the payload IT carries ({@link VideoFrameHeader.payloadLength}), so the unit's
- * total length is nowhere on the wire and cannot be waited for. What the wire does carry, verified on two
- * models:
+ * total length is nowhere on the wire and cannot be waited for. What the wire does carry:
  *
  *  - the frames of one unit **repeat its {@link VideoFrameHeader.sequence}**, and carry the unit's timestamp
  *    or one stamped up to `SPLIT_UNIT_STAMP_SPREAD_MS` later;
@@ -252,7 +248,7 @@ export class AccessUnitAssembler {
    *
    * `decode` extracts the payload of a frame, whatever the stream's encryption: it is called for EVERY
    * frame, including a continuation, because a continuation carries its own wrapped key ahead of its share
-   * of the payload (measured: 129 bytes beyond what its header declares, exactly as a unit's first frame
+   * of the payload (129 bytes beyond what its header declares, exactly as a unit's first frame
    * carries). A continuation without its matching open unit has no Annex-B start code and cannot be emitted
    * as a complete unit, even if its repeated header says keyframe.
    */
@@ -295,8 +291,8 @@ export class AccessUnitAssembler {
  * How much later than a split unit's first frame its other frames may be stamped, in milliseconds.
  *
  * Some stations repeat the first frame's timestamp on every frame of the unit; others stamp each frame with
- * its own send time, measured at up to 51 ms after the first on one model and 22 ms on another, both with a
- * {@link VideoFrameHeader.sequence} of 0 on every frame. The bound is about twice the widest measured spread,
+ * its own send time, up to about 50 ms after the first, with a {@link VideoFrameHeader.sequence} of 0 on
+ * every frame. The bound is about twice that spread,
  * and keeps a continuation stamped later than that from joining. A continuation of the NEXT unit, its first
  * frame lost, never meets an open unit: a lost video datagram reaches the assembler as a discard.
  */

@@ -54,24 +54,23 @@ export const MODEL_REGISTRY: Readonly<Record<string, RegistryEntry>> = {
   T8210: { codec: "camera", caps: ["battery"], name: "Video Doorbell" },
   // T8210 hardware variant, reported as its own code; shares the T8210 row.
   T8210C: { codec: "camera", caps: ["battery"], name: "Video Doorbell" },
-  // Confirmed against a real owned unit (named "Doorbell"): Video Doorbell Dual.
   T8214: { codec: "camera", caps: ["battery"], name: "Video Doorbell Dual" },
   T8213: { codec: "camera", caps: ["battery"], name: "Video Doorbell Dual" },
-  // Confirmed against a real owned unit: the mains-powered Wired Doorbell 2K. No `battery` row
+  // The mains-powered Wired Doorbell 2K. No `battery` row
   // member on purpose — this model is wired, so the codec baseline plus inference is the whole
   // truth for power.
   T8200: { codec: "camera", name: "Wired Doorbell 2K" },
 
-  // Cameras observed on real owned hardware (inspect-device sweep). Names from the app's own
+  // Names from the app's own
   // model-family constants (scripts/data/app_model_registry.json); caps mirror what the device
   // reports. T8171 has no family entry in that dump, so it keeps the raw T-code.
   T8114: { codec: "camera", caps: ["light", "battery"], name: "eufyCam" },
   // ptz is NOT curated on these rows on purpose — infer.ts proves it from evidence for the
-  // whole fleet (verified live): SoloCam (T8170/T8171) via their reported PTZ preset params
+  // whole family: SoloCam (T8170/T8171) via their reported PTZ preset params
   // (6090/6091/6092, 6210); Indoor-PT (T8410) via its vendor deviceType 31 = INDOOR_PT_CAMERA.
   // The rotate command (6030) is write-only and leaves no param trace, so it is never the signal.
-  // T8171 reports 1400/1401/1403 on firmware 1.2.1.6 but has no physical spotlight.
-  // Those params are not light evidence for this exact model; light.ts excludes it.
+  // T8171 reports 1400/1401/1403 but has no physical spotlight, so those params are not light
+  // evidence for it; light.ts gates on the thing description.
   // `arming` here is the STANDALONE case only — `ownedByStation` withholds it again once the record
   // shows a parent, so an attached cam never advertises the hub's guard mode.
   T8170: { codec: "camera", caps: ["battery", "arming"], name: "SoloCam" },
@@ -84,7 +83,7 @@ export const MODEL_REGISTRY: Readonly<Record<string, RegistryEntry>> = {
   // Hardwired wall-light camera; mains power asserted in MAINS_CAMERA_MODELS.
   T84A1: { codec: "camera", name: "Wall Light Cam S100" },
 
-  // Video lock: device_type says lock, it also streams (live view verified, HomeBase 3-attached).
+  // Video lock: device_type says lock, it also streams.
   T8530: { codec: "lock", caps: ["camera"], name: "Video Smart Lock S330" },
 
   // Sensors — the concrete sensor kind is curated (DeviceType 2 alone is ambiguous).
@@ -98,7 +97,7 @@ export const MODEL_REGISTRY: Readonly<Record<string, RegistryEntry>> = {
   // Clean line — robot vacuums (Tuya-DP transport) + robot mowers (own `mower` codec, Tuya P2P).
   // Provenance is split, and the split is checkable against the V6 app's OWN device catalog
   // (`DEVICE_CATALOG.json` in the eufy_decompiled dump, `ui_category:"clean"` = 30 SKUs):
-  //   • App-verified (present in that V6 catalog): T2070, T2080, T211A, T2120, T2150, T2267, T2268,
+  //   • In that V6 catalog: T2070, T2080, T211A, T2120, T2150, T2267, T2268,
   //     T2276, T2278, T2280, T2320, T2351, T2353 — plus the mowers below.
   //   • The remaining RoboVac rows are OLDER models NOT in the V6 clean catalog. Their names are carried
   //     from the legacy device list — NAME-ONLY and UNVERIFIED against V6 (kept so the codes classify;
@@ -106,8 +105,7 @@ export const MODEL_REGISTRY: Readonly<Record<string, RegistryEntry>> = {
   //     get_product_data_point sweep of a real unit is what promotes one to verified. (Some V6-catalog
   //     names weren't individually extractable from the strings dump — e.g. T2080 — so a V6-listed code
   //     can still carry a legacy name until a capture pins it; those are flagged where known.)
-  // The X10 Pro Omni (T2351) is the one line driven on real hardware so far — its name is the device's
-  // own DeviceInfo self-report.
+  // The X10 Pro Omni (T2351) name is the device's own DeviceInfo self-report.
   T1250: { codec: "vacuum", name: "RoboVac 35C (T1250)" }, // legacy list — name-only, not in V6 catalog
   T2070: { codec: "vacuum", name: "RoboVac 3-in-1 E20" },
   T2080: { codec: "vacuum", name: "RoboVac S1" },
@@ -154,7 +152,7 @@ export const MODEL_REGISTRY: Readonly<Record<string, RegistryEntry>> = {
   T2280: { codec: "vacuum", name: "RoboVac C20" },
   T2292: { codec: "vacuum", name: "RoboVac C10" },
   T2320: { codec: "vacuum", name: "RoboVac X9 Pro" },
-  T2351: { codec: "vacuum", name: "Clean X10 Pro Omni" }, // V6 catalog + live DeviceInfo self-report
+  T2351: { codec: "vacuum", name: "Clean X10 Pro Omni" }, // V6 catalog + DeviceInfo self-report
   T2352: { codec: "vacuum", name: "RoboVac E28" },
   T2353: { codec: "vacuum", name: "RoboVac E25" },
 
@@ -170,9 +168,8 @@ export const MODEL_REGISTRY: Readonly<Record<string, RegistryEntry>> = {
   // eufy_life smart lighting — its own secure-MQTT "DP" TLV wire (`cmd/eufy_life/…`), NOT the P2P
   // security stack. The `light` codec's baseline is the `smart_light` capability; see
   // src/model/capabilities/smart-light.ts. The model list is the `T8L0x` family the app's shared device
-  // handler (`T8L02Handle.mix.js`) enumerates; names are from the retail boxes. Only T8L02 has been
-  // driven on a real device (2026-07) — the rest are classification/naming rows. The effect-frame
-  // encoding is per-family and reversed for T8L02 only, so `setEffect` is gated to it (the others still
+  // handler (`T8L02Handle.mix.js`) enumerates; names are from the retail boxes. The effect-frame
+  // encoding is per-family and known for T8L02 only, so `setEffect` is gated to it (the others still
   // classify + do on/off/brightness); see the capability for the gate.
   T8L00: { codec: "light", name: "Permanent Outdoor Light E120 (30 m)" },
   T8L01: { codec: "light", name: "Permanent Outdoor Light E120 (15 m)" },
@@ -185,11 +182,10 @@ export const MODEL_REGISTRY: Readonly<Record<string, RegistryEntry>> = {
   // 3D printers (eufyMake/AnkerMake) classify from `category` alone — no curated model-code rows, since
   // no printer has been observed on a code yet (rows would guess; the category path already resolves one).
 
-  // eufy_mega category — its own `display` codec (classify.ts). Confirmed live (2026-09-04): the
-  // cloud record's top-level `device_name` field held the generic "Eufy Smart Display", while its own
-  // param 8005 separately reported the model's retail name, "Smart Display E10" — curated here since
-  // it's the more specific of the two, not because the two fields agreed. No capabilities are curated —
-  // no screen/audio/assistant param has been observed yet.
+  // eufy_mega category — its own `display` codec (classify.ts). The cloud
+  // record's top-level `device_name` field holds the generic "Eufy Smart Display", while param 8005
+  // reports the model's retail name, "Smart Display E10" — curated here as the more specific of the
+  // two. No capabilities are curated — no screen/audio/assistant param is known.
   T87A0: { codec: "display", name: "Smart Display E10" },
 };
 
@@ -269,6 +265,7 @@ export function resolveProperties(rec: CloudRecord, codec: Codec, capabilities: 
     category: rec.category,
     capabilities: new Set(capabilities),
     paramIds,
+    paramValue: (param) => rec.params?.[param],
     things: rec.things,
     stationSerial: rec.parentSn,
   });

@@ -94,7 +94,6 @@ function withCloud(rounds: Array<Array<{ sn: string; updateTime?: number }>>) {
         })),
       };
     },
-    getDeviceParamList: async () => ({}),
   };
   (eufy as any).registry = new DeviceRegistry({ mega: mega as never, onError: () => {} });
   const seen: DeviceState[] = [];

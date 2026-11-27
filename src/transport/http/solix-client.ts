@@ -276,8 +276,7 @@ export class SolixClient {
    *
    * `gtoken` is hashed from `ap_cloud_user_id` where the reply carries one, `user_id` otherwise. Whether
    * this gateway recomputes the header from `user_id` specifically — as the mega gateway does, rejecting a
-   * disagreement with `"gtoken not equal userid error"` — is unverified here: no Solix response has been
-   * observed refusing the header, which is consistent with the two ids agreeing on the accounts seen.
+   * disagreement with `"gtoken not equal userid error"` — is unverified here.
    */
   private classifyLogin(data: Record<string, unknown>, isVerify: boolean): SolixLoginResult {
     const reply = readLoginReply(data);
@@ -427,8 +426,8 @@ export class SolixClient {
    * `bat_temperature`, which the realtime `ff09` MQTT push does NOT reliably carry (the fast frame's BMS
    * blob is empty, so the decoder withholds temperature). This is therefore a low-rate BACKSTOP for those
    * gap fields — NOT the realtime source: live power/SOC still come from the MQTT push (which is what the
-   * app itself refreshes from every ~5 s; there is no clean-JSON scene PUSH). Verified live against the
-   * `ff09` floats — the two agree to the watt at the same instant.
+   * app itself refreshes from every ~5 s; there is no clean-JSON scene PUSH). It agrees with the `ff09`
+   * floats to the watt at the same instant.
    */
   async getSiteScene(siteId: string): Promise<SolixSiteScene> {
     return this.authed<SolixSiteScene>("POST", SOLIX_ENDPOINTS.getSiteScene, { site_id: siteId });
@@ -449,8 +448,7 @@ export class SolixClient {
    * `{ ambient_light_switch: 0 | 1 }` (0 = on, 1 = off). Unlike the plain authenticated reads, a write
    * must be **encrypted + signed** with a freshly negotiated `algo_ecdh` key: the gateway accepts an
    * unsigned write with `code 0` but the device never applies it. The token-bearing request also must
-   * NOT carry the device id (`openudid`), or the gateway answers `401 token error`. Both verified live
-   * on an AE103 (the LED-enable bit in the `ba` telemetry flips exactly as commanded).
+   * NOT carry the device id (`openudid`), or the gateway answers `401 token error`.
    */
   async setDeviceAttrs(deviceSn: string, attributes: Record<string, unknown>): Promise<void> {
     await this.encryptedWrite(SOLIX_ENDPOINTS.setDeviceAttrs, "set_device_attrs", {
@@ -463,7 +461,7 @@ export class SolixClient {
    * A CONTROL write: `algo_ecdh`-encrypted + signed, token-bearing but WITHOUT `openudid`. Every device
    * control the account performs (set_device_attrs, set_power_cutoff, …) goes through this — the gateway
    * accepts an unsigned/plain write with `code 0` but the device never applies it, and adding `openudid`
-   * to the token-bearing request returns `401 token error`. Both verified live on an AE103.
+   * to the token-bearing request returns `401 token error`.
    */
   private async encryptedWrite(path: string, label: string, payload: Record<string, unknown>): Promise<void> {
     if (!this.session_) throw new Error("not authenticated — call login() first");
@@ -545,7 +543,7 @@ export class SolixClient {
     });
   }
 
-  /** The `param_type` under which the Solarbank's SOC-limit block lives (verified live on an AE103). */
+  /** The `param_type` under which the Solarbank's SOC-limit block lives. */
   private static readonly SOC_PARAM_TYPE = "27";
   /** `cmd` value that scopes the `site/*_site_device_param` family (from the app's request builder). */
   private static readonly SITE_DEVICE_PARAM_CMD = 246;
@@ -577,7 +575,7 @@ export class SolixClient {
    * `dischargeLowerLimit` also arrives on the MQTT `b5` telemetry blob; this is the authoritative,
    * app-synced source for `chargeUpperLimit`. `backupReserve` (with its enable switch) also has a second
    * source under the same name, the realtime MQTT `b5` frame; whether the two agree while the switch is
-   * OFF is not yet verified. Verified live against a known AE103 setting (discharge 20 / charge 80).
+   * OFF is not yet verified.
    */
   async getSafetySocParams(siteId: string): Promise<SolixSocParams | undefined> {
     const p = await this.getSiteDeviceParam(siteId, SolixClient.SOC_PARAM_TYPE);

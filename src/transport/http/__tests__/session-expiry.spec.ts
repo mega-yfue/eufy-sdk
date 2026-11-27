@@ -273,7 +273,8 @@ describe("mega authenticated session rejection", () => {
     internals.ensureSessionKey = vi.fn(async () => ({ shareKey: "00".repeat(32), keyIdent: "00".repeat(16) }));
     const logins: string[] = [];
     internals.httpPost = vi.fn(async (url: string) => {
-      if (url.includes("/verify_code")) return OK;
+      if (url.includes("/verify_code") || url.includes("/validate_email")) return OK;
+      if (url.includes("/validate_email")) return OK;
       if (!url.includes("/passport/login")) return KICKED;
       logins.push(url);
       return {
@@ -328,7 +329,7 @@ describe("mega authenticated session rejection", () => {
     const logins: string[] = [];
     let adoptedWorks = true;
     internals.httpPost = vi.fn(async (url: string, _body: unknown, headers: Record<string, string>) => {
-      if (url.includes("/verify_code")) return OK;
+      if (url.includes("/verify_code") || url.includes("/validate_email")) return OK;
       if (url.includes("/passport/login")) {
         logins.push(url);
         const data = {
@@ -492,6 +493,7 @@ describe("mega authenticated session rejection", () => {
       internals.ensureSessionKey = vi.fn(async () => ({ shareKey: "00".repeat(32), keyIdent: "00".repeat(16) }));
       const logins: string[] = [];
       internals.httpPost = vi.fn(async (url: string) => {
+        if (url.includes("/validate_email")) return OK;
         if (!url.includes("/passport/login")) return KICKED;
         logins.push(url);
         return {

@@ -15,6 +15,7 @@ interface Row {
   storage_path: string;
   start_time: string;
   cipher_id: number;
+  account?: string;
   frame_num: number;
 }
 
@@ -70,7 +71,7 @@ async function main(): Promise<void> {
       if (!camera?.downloadRecording) throw new Error("camera recording download unavailable");
       const recording = path.posix.parse(row.storage_path).name;
       const cipherId = row.cipher_id > 0xffffff ? row.cipher_id & 0xff : row.cipher_id;
-      const clip = await camera.downloadRecording({ recording, cipherId });
+      const clip = await camera.downloadRecording({ recording, cipherId, cipherUserId: row.account });
       const name = path.join(outDir, `${row.record_id}_${recording}`);
       await writeFile(`${name}.${clip.codec ?? "video"}`, clip.video);
       if (clip.audio) await writeFile(`${name}.aac`, clip.audio);

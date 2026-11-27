@@ -28,28 +28,16 @@ import { CommandType } from "./commands.js";
  * ## Answer
  *
  * The device answers every command at once with an int32 result on the `SET_PAYLOAD` echo — `0`
- * accepted, {@link KEYED_PAYLOAD_SEQ_ERROR} when `seq_num` is not above the mark it holds — and, when the
- * command changed its state, about two seconds later with a `NOTIFY_PAYLOAD` whose JSON carries
- * `P2P_QUERY_STATUS_IN_LOCK` (1955) as `cmd`, the result again under `payload.code` and the state reached
- * under `payload.slState` ({@link keyedPayloadReportCode} reads the code of the report stating the state
- * a command drives to). A command it was already in the state of draws the echo alone.
- *
- * A refusal carries a second `NOTIFY_PAYLOAD`, `CMD_DOORLOCK_P2P_SEQ` (1916), whose `payload.seq_num`
- * ({@link keyedPayloadSeqMark}) is the mark the device holds — so a refused command hands back the exact
- * number to resend above, with no searching. The mark lives with the P2P connection: the first keyed
- * command on a new connection is accepted at whatever number it carries.
+ * accepted, -151 when `seq_num` is not above the mark it holds — and, when the command changed its state,
+ * about two seconds later with a `NOTIFY_PAYLOAD` whose JSON carries `P2P_QUERY_STATUS_IN_LOCK` (1955) as
+ * `cmd`, the result again under `payload.code` and the state reached under `payload.slState`
+ * ({@link keyedPayloadReportCode} reads the code of the report stating the state a command drives to). A
+ * command it was already in the state of draws the echo alone. A `CMD_DOORLOCK_P2P_SEQ` (1916) notify states
+ * the mark it holds ({@link keyedPayloadSeqMark}).
  *
  * The command ids are {@link CommandType}'s; the inner field names follow a third-party reverse-engineering
  * project, a name source only.
  */
-
-/**
- * The int32 result the device answers a command with when its `seq_num` is not above the mark it holds for
- * the connection. The command is dropped untried, so this is a retry signal rather than a failure: resend
- * above the mark. The refusal publishes that mark in its `CMD_DOORLOCK_P2P_SEQ` (1916) twin
- * ({@link keyedPayloadSeqMark}), so the resend goes to the next number rather than searching for it.
- */
-export const KEYED_PAYLOAD_SEQ_ERROR = -151;
 
 /** Knobs a spec injects to make the otherwise random envelope deterministic, plus the sequence it carries. */
 export interface KeyedPayloadRandomness {
@@ -118,7 +106,7 @@ export interface KeyedActuatePayload {
  * @param userName the acting member's display name as the device shows it in its log.
  */
 export function buildKeyedActuatePayload(
-  id: Ff09Identity,
+  id: Omit<Ff09Identity, "adminUserId"> & { adminUserId?: string },
   devicePublicKeyHex: string,
   userName: string,
   rnd: KeyedPayloadRandomness,
@@ -158,8 +146,7 @@ export function keyedPayloadReportCode(
 }
 
 /**
- * The sequence mark a `NOTIFY_PAYLOAD` document publishes. The one that rides a sequence refusal is
- * `{cmd, payload: {lock_cmd, seq_num}}` with `cmd` `CMD_DOORLOCK_P2P_SEQ` (1916) in {@link CommandType},
+ * The sequence mark a `NOTIFY_PAYLOAD` document publishes, `{cmd, payload: {lock_cmd, seq_num}}` with `cmd` `CMD_DOORLOCK_P2P_SEQ` (1916) in {@link CommandType},
  * `payload.seq_num` being the mark the device holds on this connection. Answers that number, or
  * `undefined` for any other document.
  */

@@ -164,24 +164,21 @@ export function decodeP2PCloudIPs(data: string): Address[] {
 }
 
 /**
- * The "Level 1" AES-128-ECB key for P2P command/control encryption — derivable
- * from sn + p2p_did alone (no cipher needed). HomeBase control-channel
- * notifications (sensor/alarm events) use exactly this key.
+ * The level-1 AES-128-ECB key, as the app builds it from the session's DID string: its first 16 characters, the
+ * station serial's last 7 written over the first 7.
  */
 export function p2pCommandEncryptionKey(stationSn: string, p2pDid: string): string {
-  return `${stationSn.slice(-7)}${p2pDid.substring(p2pDid.indexOf("-"), p2pDid.indexOf("-") + 9)}`;
+  return `${stationSn.slice(-7)}${p2pDid.slice(7, 16)}`;
 }
 
-/** AES-128-ECB decrypt of a P2P payload (no padding). */
+/**
+ * AES-128-ECB decrypt of a P2P payload as the app's `aes_decrypt` runs it over its zero-filled receive buffer: every
+ * block up to `ceil(length / 16)`, a final partial block completed with zeros, the result cut back to `length`.
+ */
 export function decryptP2PData(data: Buffer, key: Buffer): Buffer {
   const d = createDecipheriv("aes-128-ecb", key, null);
   d.setAutoPadding(false);
-  return Buffer.concat([d.update(data), d.final()]);
-}
-
-/** The `cipher_id` named in a decrypted `CMD_GATEWAYINFO` (1100) payload (uint16 LE @0). */
-export function gatewayInfoCipherId(gwPayload: Buffer): number {
-  return gwPayload.length >= 2 ? gwPayload.readUInt16LE(0) : 0;
+  return Buffer.concat([d.update(paddingP2PData(data)), d.final()]).subarray(0, data.length);
 }
 
 /** The int32 result a `CMD_GATEWAYINFO` reply opens with when the device refuses level-2. */
@@ -189,8 +186,7 @@ const GATEWAY_LEVEL2_REFUSED = -103;
 
 /**
  * Whether a `CMD_GATEWAYINFO` (1100) reply is a level-2 refusal: int32 LE `GATEWAY_LEVEL2_REFUSED` (`99 ff
- * ff ff`) in place of a cipher. {@link gatewayInfoCipherId} reads those bytes as `cipher_id` 65433. Any other
- * opening is not a refusal.
+ * ff ff`) in place of a cipher. Any other opening is not a refusal.
  */
 export function gatewayInfoRefused(gwPayload: Buffer): boolean {
   return gwPayload.length >= 4 && gwPayload.readInt32LE(0) === GATEWAY_LEVEL2_REFUSED;
@@ -303,55 +299,55 @@ export function eciesWrap(plaintext: Buffer, peerPublicKey: Buffer, options: Eci
 }
 
 /**
- * Derive the P2P **level-2** (signCode 2/8) AES-256-GCM session key from a *decrypted*
- * `CMD_GATEWAYINFO` (1100) payload and the station's ECC private key (from `get_ciphers`).
- *
- * Layout of the decrypted payload: `cipher_id(2 LE) ‖ 0000 ‖ ECIES-envelope(129)`, where the
- * envelope is `ephemeralPub(33, compressed P-256) ‖ iv(16) ‖ ciphertext(48)`. ECIES =
- * ECDH(eccPriv, ephemeralPub) → eufyKDF(SHA-256/HMAC, label "ECIES") → AES-128-CBC decrypt →
- * 32-byte session key. Reversed from `libmega_media_sdk.so`; verified to reproduce the live key.
- * Returns the 32-byte key, or undefined if the inputs don't parse.
+ * The AES-256-GCM key a version-8 `CMD_GATEWAYINFO` (1100) gives, as the app's native `DecryptECC` reads the body
+ * after `cipher_id`: `ephemeralPub(33, compressed P-256) ‖ iv(16) ‖ ciphertext(48) ‖ HMAC(32)`, under the first 64 hex
+ * characters of the cipher's `ecc_private_key` — ECDH → eufyKDF → HMAC-SHA256 checked with `kdf[16:48]` over
+ * `iv ‖ ciphertext` → AES-128-CBC with `kdf[0:16]`. The key is the first 32 plaintext bytes. Answers `undefined`
+ * where the body is short or does not open.
  */
-export function deriveLevel2KeyFromGatewayInfo(gwPayload: Buffer, eccPrivateKeyHex: string): Buffer | undefined {
-  const plain = eciesUnwrap(gwPayload.subarray(4, 4 + 129), eccPrivateKeyHex);
-  if (!plain) return undefined;
-  const key = plain.subarray(0, 32);
-  return key.length === 32 ? Buffer.from(key) : undefined;
+export function deriveLevel2KeyFromGatewayInfo(body: Buffer, eccPrivateKeyHex: string): Buffer | undefined {
+  const plain = eciesUnwrap(body, eccPrivateKeyHex.slice(0, 64), { verifyHmac: true });
+  return plain && plain.length >= 32 ? Buffer.from(plain.subarray(0, 32)) : undefined;
 }
 
 /**
- * Derive the P2P **level-2** AES-128-ECB session key from a *decrypted* `CMD_GATEWAYINFO` (1100)
- * payload and the RSA private key of a cipher whose `get_ciphers` answer carries no ECC key.
+ * The AES-128-ECB key any other `CMD_GATEWAYINFO` (1100) gives, as the app reads the body after `cipher_id`: the
+ * whole body decrypted `RSA/ECB/PKCS1Padding` under the cipher's `private_key` (newlines and the `RSA PRIVATE KEY`
+ * armor lines dropped, the rest base64 read as PKCS#8 DER whatever the armor says), the plaintext made a Java `String`
+ * (UTF-8), and the first 16 bytes of that string in JNI's modified UTF-8
+ * as the native setter copies them, zero beyond its end. The padding is checked here over the raw RSA result so a wrong key fails closed:
+ * under OpenSSL's implicit rejection, `RSA_PKCS1_PADDING` answers random bytes for it instead of throwing.
  *
- * Layout of the decrypted payload: `cipher_id(2 LE) ‖ 0000 ‖ RSA ciphertext ‖ …`, the ciphertext as
- * long as the key's modulus. It is the 16-byte session key under PKCS#1 v1.5 encryption padding
- * (`00 02 ‖ ≥8 non-zero bytes ‖ 00 ‖ key`). The padding is checked here over the raw RSA result so a wrong
- * key fails closed: under OpenSSL's implicit rejection, `RSA_PKCS1_PADDING` answers random bytes for it
- * instead of throwing, and those can be 16 bytes long.
- *
- * `rsaPrivateKey` is the `get_ciphers` `private_key`, PEM or base64 PKCS#8 DER.
- *
- * Returns the 16-byte key, or `undefined` when the key does not parse, the payload is short, or the
- * padding or key length is wrong (fails closed, never throws).
+ * Answers `undefined` when the key does not parse, the body is not one modulus long or the padding is wrong.
  */
-export function deriveLevel2KeyFromRsaGatewayInfo(gwPayload: Buffer, rsaPrivateKey: string): Buffer | undefined {
+export function deriveLevel2KeyFromRsaGatewayInfo(body: Buffer, rsaPrivateKey: string): Buffer | undefined {
   try {
-    const key = rsaPrivateKey.includes("-----BEGIN")
-      ? createPrivateKey(rsaPrivateKey)
-      : createPrivateKey({ key: Buffer.from(rsaPrivateKey, "base64"), format: "der", type: "pkcs8" });
+    const b64 = rsaPrivateKey.replace(/-----(BEGIN|END) RSA PRIVATE KEY-----/g, "").replace(/[^A-Za-z0-9+/=]/g, "");
+    const key = createPrivateKey({ key: Buffer.from(b64, "base64"), format: "der", type: "pkcs8" });
     const modulusBits = key.asymmetricKeyDetails?.modulusLength;
-    if (!modulusBits) return undefined;
-    const len = Math.ceil(modulusBits / 8);
-    if (gwPayload.length < 4 + len) return undefined;
-    const block = privateDecrypt({ key, padding: constants.RSA_NO_PADDING }, gwPayload.subarray(4, 4 + len));
+    if (!modulusBits || body.length !== Math.ceil(modulusBits / 8)) return undefined;
+    const block = privateDecrypt({ key, padding: constants.RSA_NO_PADDING }, body);
     if (block[0] !== 0x00 || block[1] !== 0x02) return undefined;
     const separator = block.indexOf(0x00, 2);
     if (separator < 10) return undefined;
-    const sessionKey = block.subarray(separator + 1);
-    return sessionKey.length === 16 ? Buffer.from(sessionKey) : undefined;
+    const sessionKey = Buffer.alloc(16);
+    modifiedUtf8(block.subarray(separator + 1).toString("utf-8")).copy(sessionKey, 0, 0, 16);
+    return sessionKey;
   } catch {
     return undefined;
   }
+}
+
+/** A string as JNI's `GetStringUTFChars` gives it: modified UTF-8, U+0000 and each UTF-16 unit encoded on their own. */
+function modifiedUtf8(text: string): Buffer {
+  const bytes: number[] = [];
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c > 0 && c < 0x80) bytes.push(c);
+    else if (c < 0x800) bytes.push(0xc0 | (c >> 6), 0x80 | (c & 0x3f));
+    else bytes.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 0x3f), 0x80 | (c & 0x3f));
+  }
+  return Buffer.from(bytes);
 }
 
 /** Local-lookup payload: two zero bytes. */
@@ -460,89 +456,59 @@ export function paddingP2PData(data: Buffer, blocksize = 16): Buffer {
   return out;
 }
 
+const GCM_AAD = Buffer.from("eufy security");
+
 /**
- * Command body carrying a string `value` (e.g. CMD_SET_PAYLOAD JSON). Mirrors the
- * app's `buildCommandWithStringTypePayload`: `[len:2 LE][00 00][01 00][channel,encType][00 00][data]`.
- * When `key` is given the data is zero-padded to 16 and AES-128-ECB encrypted, and
- * `encType` is written in the channel word (level-1 encryption = 1).
+ * An AES-GCM command body, AES-128 or AES-256 by the key's length, AAD "eufy security", a fresh 12-byte nonce:
+ * `tag(16) ‖ nonce(12) ‖ word(4, LE) ‖ ciphertext`.
  */
-export function buildStringCommandPayload(value: string, channel = 0, key?: Buffer, encType = 1): Buffer {
-  const encrypted = !!key && key.length === 16;
-  const raw = Buffer.from(value, "utf-8");
-  const data = encrypted ? encryptP2PData(paddingP2PData(raw), key!) : raw;
-  const header = Buffer.allocUnsafe(2);
-  header.writeUInt16LE(data.length, 0);
-  return Buffer.concat([
-    header,
-    Buffer.from([0x00, 0x00]),
-    Buffer.from([0x01, 0x00]),
-    Buffer.from([channel, encrypted ? encType : 0x00]),
-    Buffer.from([0x00, 0x00]),
-    data,
-  ]);
+export function gcmSeal(key: Buffer, plaintext: Buffer, word: number): Buffer {
+  const nonce = randomBytes(12);
+  const c = createCipheriv(key.length === 16 ? "aes-128-gcm" : "aes-256-gcm", key, nonce);
+  c.setAAD(GCM_AAD);
+  const ct = Buffer.concat([c.update(plaintext), c.final()]);
+  const w = Buffer.alloc(4);
+  w.writeUInt32LE(word >>> 0);
+  return Buffer.concat([c.getAuthTag(), nonce, w, ct]);
+}
+
+/** An inbound AES-GCM body `tag(16) ‖ nonce(12) ‖ ciphertext` opened under `key`; `undefined` when it does not open. */
+export function gcmOpen(key: Buffer, body: Buffer): Buffer | undefined {
+  try {
+    const d = createDecipheriv(key.length === 16 ? "aes-128-gcm" : "aes-256-gcm", key, body.subarray(16, 28));
+    d.setAAD(GCM_AAD);
+    d.setAuthTag(body.subarray(0, 16));
+    return Buffer.concat([d.update(body.subarray(28)), d.final()]);
+  } catch {
+    return undefined;
+  }
 }
 
 /**
- * Build an **int+string** command body: `valueSub(u32 LE) ‖ value(u32 LE) ‖ strValue(len-prefixed)`,
- * AES-128-ECB encrypted (level-1) like {@link buildStringCommandPayload}. This is the wire shape the
- * eufy app uses for the floodlight/spotlight manual switch (`CMD_SET_FLOODLIGHT_MANUAL_SWITCH` 1400)
- * on IndoorOutdoor / SoloCam-spotlight / Cam2C/3 families — where `value` = 0/1, `valueSub` = the
- * device channel, and `strValue` = the admin `account_id`. The `strValue` uses the 128-byte-chunk
- * length prefix ({@link stringWithLength}).
+ * The plaintext body of an **int+string** command: `valueSub(u32 LE) ‖ value(u32 LE) ‖ strValue` in the 128-byte-chunk
+ * length form ({@link stringWithLength}), omitted when empty. The eufy app's shape for the floodlight/spotlight manual
+ * switch (`CMD_SET_FLOODLIGHT_MANUAL_SWITCH` 1400) on IndoorOutdoor / SoloCam-spotlight / Cam2C/3 families: `value` =
+ * 0/1, `valueSub` = the device channel, `strValue` = the admin `account_id`.
  */
-export function buildIntStringCommandPayload(
-  value: number,
-  valueSub: number,
-  strValue: string,
-  channel = 0,
-  key?: Buffer,
-  encType = 1,
-): Buffer {
-  const encrypted = !!key && key.length === 16;
-  const someInt = Buffer.allocUnsafe(4);
-  someInt.writeUInt32LE(valueSub >>> 0, 0);
-  const valueBuf = Buffer.allocUnsafe(4);
-  valueBuf.writeUInt32LE(value >>> 0, 0);
-  const strBuf = strValue.length === 0 ? Buffer.alloc(0) : stringWithLength(strValue);
-  const body = Buffer.concat([someInt, valueBuf, strBuf]);
-  const data = encrypted ? encryptP2PData(paddingP2PData(body), key!) : body;
-  const header = Buffer.allocUnsafe(2);
-  header.writeUInt16LE(data.length, 0);
-  return Buffer.concat([
-    header,
-    Buffer.from([0x00, 0x00]),
-    Buffer.from([0x01, 0x00]),
-    Buffer.from([channel, encrypted ? encType : 0x00]),
-    Buffer.from([0x00, 0x00]),
-    data,
-  ]);
+export function intStringCommandBody(value: number, valueSub: number, strValue: string): Buffer {
+  const head = Buffer.allocUnsafe(8);
+  head.writeUInt32LE(valueSub >>> 0, 0);
+  head.writeUInt32LE(value >>> 0, 4);
+  return strValue.length === 0 ? head : Buffer.concat([head, stringWithLength(strValue)]);
 }
 
 /**
- * Build a **string-pair** command body: five zero bytes, then `strValue` and `strValueSub`, each in the
- * 128-byte-chunk length form ({@link stringWithLength}), AES-128-ECB encrypted (level-1) like
- * {@link buildStringCommandPayload} when `key` is given. `CMD_DOWNLOAD_VIDEO` (1024) takes this shape on a
- * HomeBase 2: `strValue` = the recording's path on the station, `strValueSub` = the station admin
- * `account_id`, on the camera's channel.
+ * The plaintext body of a **string-pair** command: five zero bytes, then `strValue` and `strValueSub`, each in the
+ * 128-byte-chunk length form ({@link stringWithLength}). `CMD_DOWNLOAD_VIDEO` (1024) takes this shape on a HomeBase 2:
+ * `strValue` = the recording's path on the station, `strValueSub` = the station admin `account_id`.
  */
-export function buildStringPairCommandPayload(
-  strValue: string,
-  strValueSub: string,
-  channel = 0,
-  key?: Buffer,
-  encType = 1,
-): Buffer {
-  const encrypted = !!key && key.length === 16;
-  const body = Buffer.concat([Buffer.alloc(5), stringWithLength(strValue), stringWithLength(strValueSub)]);
-  const data = encrypted ? encryptP2PData(paddingP2PData(body), key!) : body;
-  return buildRawCommandPayload(data, channel, encrypted ? encType : 0);
+export function stringPairCommandBody(strValue: string, strValueSub: string): Buffer {
+  return Buffer.concat([Buffer.alloc(5), stringWithLength(strValue), stringWithLength(strValueSub)]);
 }
 
 /**
- * Build a command body around an ALREADY-encrypted (or plaintext) `data` buffer with an explicit
- * `signCode` — used for level-2 (`signCode 8`, AES-256-GCM) commands like the media-start 1350 the
- * app sends. Same on-wire layout as `buildStringCommandPayload` but the caller supplies the body and
- * the signCode verbatim (no ECB step): `len(u16) ‖ 0000 ‖ 0100 ‖ [channel, signCode] ‖ 0000 ‖ data`.
+ * A command payload around an already sealed (or plaintext) `data`, with its frame fields verbatim:
+ * `len(u32 LE) ‖ magic(2) ‖ [channel, signCode] ‖ [streamId, 00] ‖ data`.
  */
 export function buildRawCommandPayload(
   data: Buffer,
@@ -551,11 +517,10 @@ export function buildRawCommandPayload(
   magic: [number, number] = [0x01, 0x00],
   streamId = 0,
 ): Buffer {
-  const header = Buffer.allocUnsafe(2);
-  header.writeUInt16LE(data.length, 0);
+  const header = Buffer.allocUnsafe(4);
+  header.writeUInt32LE(data.length, 0);
   return Buffer.concat([
     header,
-    Buffer.from([0x00, 0x00]),
     Buffer.from([magic[0] & 0xff, magic[1] & 0xff]),
     Buffer.from([channel & 0xff, signCode & 0xff]),
     Buffer.from([streamId & 0xff, 0x00]),

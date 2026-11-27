@@ -14,7 +14,7 @@ import type { EufyDevice } from "../../core/types.js";
  * The station a device's traffic belongs to, from its cloud record and its own serial.
  *
  * `parent_sn` carries the parent on a HomeBase-attached device. `station_sn` is frequently absent there —
- * empty on every attached sensor of a T8010 — and serves only as a fallback. An empty string states no
+ * empty on an attached sensor — and serves only as a fallback. An empty string states no
  * station.
  *
  * A device naming no parent answers its own serial, so every device has a station.
@@ -27,15 +27,24 @@ export function resolvedStationSn(raw: Record<string, unknown>, sn: string): str
 }
 
 /**
+ * Outdoor mode (param 6271 `"1"`, set by `device_set_outdoor_mode`): the bundles' `getConnectType` answers SINGLE
+ * for the device and `DefaultLiveMediaStrategy` makes it its own hub on channel 0, so it is its own station.
+ */
+export function inOutdoorMode(dev: EufyDevice): boolean {
+  return dev.params?.[6271] === "1";
+}
+
+/**
  * The parent station a device's traffic belongs to — the session key the router opens and the station the
  * frame resolver attributes by.
  *
  * `parent_sn` on the cloud record is the field that is actually populated for a HomeBase-attached device, so
- * it wins; `stationSn` is frequently absent (observed empty on every attached sensor of a T8010), so keying on
+ * it wins; `stationSn` is frequently absent (empty on an attached sensor), so keying on
  * it alone silently resolves an attached device to ITSELF and no frame ever matches. Answering the device's
  * OWN serial is what "stands alone" means.
  */
 export function stationOf(dev: EufyDevice): string {
+  if (inOutdoorMode(dev)) return dev.sn;
   const raw = (dev.raw ?? {}) as Record<string, unknown>;
   const parent =
     typeof raw.parent_sn === "string" && raw.parent_sn && raw.parent_sn !== dev.sn ? raw.parent_sn : undefined;
@@ -72,7 +81,7 @@ export function stationChannels(devices: readonly EufyDevice[]): Map<string, Sta
   for (const d of devices) {
     const station = stationOf(d);
     const stated = d.channel;
-    if (d.sn === station) out.set(d.sn, { channel: stated ?? 0 });
+    if (d.sn === station) out.set(d.sn, { channel: inOutdoorMode(d) ? 0 : (stated ?? 0) });
     else if (stated === undefined) out.set(d.sn, { issue: "missing" });
     else if ((claimants.get(station)?.get(stated) ?? 0) > 1) out.set(d.sn, { issue: "shared", claimed: stated });
     else out.set(d.sn, { channel: stated });
