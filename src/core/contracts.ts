@@ -450,6 +450,15 @@ export type Command =
        * may seal it. Absent, the send waits for the key every level-2 sender uses.
        */
       level2Sender?: "set-payload";
+      /**
+       * The write is not idempotent (it dispenses), so it is submitted once: one sequence, repeated
+       * byte-identically only until the device acknowledges it (the delivery the vendor app gives every command;
+       * the device acts on a sequence once), with no replay as separate frames, no wait on an answer and no resend
+       * on a result code. Settles at the handoff to the local transport, not on the device's action. Sent within a
+       * bounded time of being requested or not at all. Confirmed only on a device's own keyless (level-1) P2P
+       * session; refused elsewhere rather than sent through a replaying form.
+       */
+      once?: true;
     }
   | { kind: "p2p-privacy-burst"; enabled: boolean; channel: number }
   | {

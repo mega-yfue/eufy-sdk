@@ -103,6 +103,7 @@ export type {
 } from "./thing-description.js";
 import { DISPLAY } from "./display.js";
 import { LOCATE } from "./locate.js";
+import { TREAT } from "./treat.js";
 import { INFO } from "./info.js";
 
 // Per-capability typed action objects. Type-only — no runtime coupling. These feed the
@@ -130,6 +131,7 @@ import type { DisplayActions } from "./display.js";
 import type { SuctionActions } from "./suction.js";
 import type { MowerActions } from "./mower.js";
 import type { LocateActions } from "./locate.js";
+import type { TreatActions } from "./treat.js";
 import type { DeviceInfo } from "./info.js";
 import type { CusPushAlarmType } from "../push-events.js";
 
@@ -160,6 +162,7 @@ const MODULES: CapabilityModule[] = [
   SUCTION,
   MOWER,
   LOCATE,
+  TREAT,
   DISPLAY,
   LINK,
   INFO,
@@ -827,6 +830,8 @@ export interface DeviceActionMap {
   mower: MowerActions;
   /** RoboVac locate (find-robot beep): `locating`; `locate(on?)`. */
   locate: LocateActions;
+  /** Dog-camera treat launcher: `lastTossAt`; `toss(distance)`, sent once and never repeated. */
+  treat: TreatActions;
   /** Smart Display (read-only): `battery`. No display write is captured. */
   display: DisplayActions;
   /** Identity metadata (read-only): `{ manufacturer, model, serialNumber, name, deviceType?, firmwareVersion?, hardwareVersion? }`. */
@@ -1057,6 +1062,7 @@ export type {
   SuctionActions,
   MowerActions,
   LocateActions,
+  TreatActions,
 };
 /**
  * The member table each `*Actions` type is DERIVED from (`LockActions = Surface<typeof LOCK_MEMBERS>`),
@@ -1077,6 +1083,7 @@ export { LINK_MEMBERS } from "./link.js";
 export { LEAK_MEMBERS } from "./leak.js";
 export { LIGHT_MEMBERS } from "./light.js";
 export { LOCATE_MEMBERS } from "./locate.js";
+export { TREAT_MEMBERS } from "./treat.js";
 export { LOCK_MEMBERS } from "./lock.js";
 export { MOTION_MEMBERS } from "./motion.js";
 export { PTZ_MEMBERS } from "./ptz.js";

@@ -204,6 +204,11 @@ export class RtcCommandRouter {
       throw new Error(`rtc: ${cmd.kind} is not routable over the RTC control channel (only set-payload or set-json)`);
     }
     if (route.mediaTrack) throw new Error(`rtc: ${route.stationSn} serves media only and takes no portal command`);
+    // A once-only write is confirmed on a device's own keyless P2P session only. This channel has its own delivery
+    // and has never carried one, so it is refused rather than sent on unconfirmed terms.
+    if (cmd.kind === "set-payload" && cmd.once) {
+      throw new Error(`rtc: a once-only set-payload is confirmed on a device's own P2P session only`);
+    }
     const channel = route.attached ? cmd.channel : PORTAL_STATION_CHANNEL;
     if (cmd.kind === "set-json") {
       return this.sendQueued(route, PORTAL_CMD_CONTROL_PAYLOAD, cmd.param, channel, {

@@ -184,4 +184,55 @@ describe("an acknowledged send", () => {
     vi.advanceTimersByTime(1_000);
     expect(sent()).toHaveLength(count);
   });
+
+  it("reports the send settled once the device acknowledges it", () => {
+    vi.useFakeTimers();
+    const { real, sent, acknowledge } = session();
+    const settled = vi.fn();
+    real.sendAcknowledged(() => real.sendRawLevel1Bytes(Buffer.alloc(8), CHANNEL, PARAM), settled);
+    vi.advanceTimersByTime(400);
+    expect(settled).not.toHaveBeenCalled();
+    acknowledge(sent()[0]!.readUInt16BE(6));
+    expect(settled).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports the send settled when it gives up repeating it", () => {
+    vi.useFakeTimers();
+    const { real } = session();
+    const settled = vi.fn();
+    real.sendAcknowledged(() => real.sendRawLevel1Bytes(Buffer.alloc(8), CHANNEL, PARAM), settled);
+    vi.advanceTimersByTime(2_800);
+    expect(settled).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(500);
+    expect(settled).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports the send settled when the session closes", () => {
+    const { real } = session();
+    const settled = vi.fn();
+    real.sendAcknowledged(() => real.sendRawLevel1Bytes(Buffer.alloc(8), CHANNEL, PARAM), settled);
+    void real.close();
+    expect(settled).toHaveBeenCalledTimes(1);
+  });
+
+  it("settles every waiter and still closes the socket when one waiter's callback throws", async () => {
+    const real = new P2PSession({ stationSn: STATION_SN, p2pDid: P2P_DID });
+    const socket = {
+      send: vi.fn((_data: Buffer, _port: number, _host: string, done?: () => void) => done?.()),
+      close: vi.fn((done?: () => void) => done?.()),
+    };
+    const target = real as unknown as { connectAddress: unknown; socket: unknown };
+    target.connectAddress = { host: "127.0.0.1", port: 1 };
+    target.socket = socket;
+    const throwing = vi.fn(() => {
+      throw new Error("a caller's bug");
+    });
+    const other = vi.fn();
+    real.sendAcknowledged(() => real.sendRawLevel1Bytes(Buffer.alloc(8), CHANNEL, PARAM), throwing);
+    real.sendAcknowledged(() => real.sendRawLevel1Bytes(Buffer.alloc(8), CHANNEL, PARAM), other);
+    await real.close();
+    expect(throwing).toHaveBeenCalledTimes(1);
+    expect(other).toHaveBeenCalledTimes(1);
+    expect(socket.close).toHaveBeenCalledTimes(1);
+  });
 });
