@@ -171,6 +171,12 @@ describe("RtcCommandRouter", () => {
     expect(sessions).toHaveLength(0);
   });
 
+  it("refuses a once-only set-payload without opening a session", async () => {
+    const { router, sessions } = makeRouter();
+    await expect(router.dispatchCommand(CAM, { ...arming(1), once: true })).rejects.toThrow(/once-only/);
+    expect(sessions).toHaveLength(0);
+  });
+
   it("opens the station session on a shard the provider resolves asynchronously", async () => {
     const { router, sessions } = makeRouter({ shard: async () => "ie-pr" });
     await router.dispatchCommand(ST, arming(1));

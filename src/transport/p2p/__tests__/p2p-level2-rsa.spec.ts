@@ -163,6 +163,7 @@ describe("P2PSession level-2 over an RSA cipher", () => {
     const { session, ready, traces } = await negotiatedSession();
     expect(await session.awaitLevel2Key(0, "call", "set-payload")).toBe(true);
     expect(session.hasLevel2Key).toBe(false);
+    expect(session.holdsLevel2Key).toBe(true); // a level-2 key all the same: a once-only write refuses this session
     expect(ready).toEqual([]);
     expect(traces.filter((trace) => trace.phase === "level2-ready")).toEqual([]);
     expect(traces.filter((trace) => trace.phase === "level2-set-payload-only")).toEqual([

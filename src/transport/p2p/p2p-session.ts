@@ -623,6 +623,8 @@ export class P2PSession extends EventEmitter {
   private commandRetransmitTimer?: ReturnType<typeof setInterval>;
   /** The DATA datagrams sent while a {@link sendAcknowledged} call runs its send. */
   private capturedCommands?: Buffer[];
+  /** {@link sendAcknowledged} callers waiting for each of their sequences to be acknowledged or given up on. */
+  private readonly commandSettleWaiters = new Set<{ pending: Set<number>; done: () => void }>();
 
   private readonly logger: Logger;
 
@@ -685,6 +687,11 @@ export class P2PSession extends EventEmitter {
   /** Whether the AES-256-GCM level-2 session key has been negotiated/set. */
   get hasLevel2Key(): boolean {
     return !!this.level2Key;
+  }
+
+  /** Whether the session holds any level-2 key: the AES-256-GCM key, or an RSA cipher's AES-128-ECB key. */
+  get holdsLevel2Key(): boolean {
+    return !!this.level2Key || !!this.level2EcbKey;
   }
 
   /**
@@ -1605,8 +1612,12 @@ export class P2PSession extends EventEmitter {
    * unacknowledged. The device answers a sequence once, however many copies arrive, and `onData` drops the
    * repeats of that answer by their sequence. Repeats run on the live-start timing and stop at
    * {@link LIVE_START_ACK_DEADLINE_MS}. Answers what `send` answered.
+   *
+   * `onSettled`, when given, is called once every datagram the send emitted has been acknowledged or given up on,
+   * or the session closed — at once (on a microtask) when the send emitted none. A caller that must not put a
+   * second command in flight before the first is settled waits for it; the call itself still returns at handoff.
    */
-  sendAcknowledged(send: () => boolean): boolean {
+  sendAcknowledged(send: () => boolean, onSettled?: () => void): boolean {
     this.capturedCommands = [];
     let sent: boolean;
     let captured: Buffer[];
@@ -1620,12 +1631,17 @@ export class P2PSession extends EventEmitter {
     for (const data of captured) {
       this.unackedCommands.set(data.readUInt16BE(2), { data, firstSentAt: now, sentAt: now, sends: 1 });
     }
+    if (onSettled) {
+      const pending = new Set(captured.map((data) => data.readUInt16BE(2)));
+      if (pending.size) this.commandSettleWaiters.add({ pending, done: onSettled });
+      else queueMicrotask(() => this.notifySettled(onSettled));
+    }
     if (this.unackedCommands.size && !this.commandRetransmitTimer) {
       this.commandRetransmitTimer = setInterval(() => {
         const outstanding = this.retransmitUnacked(this.unackedCommands, {
           retransmitMs: LIVE_START_RETRANSMIT_MS,
           spent: (held) => Date.now() - held.firstSentAt >= LIVE_START_ACK_DEADLINE_MS,
-          onAbandoned: () => {},
+          onAbandoned: (sequence) => this.settleCommand(sequence),
         });
         if (!outstanding) this.clearCommandRetransmit();
       }, LIVE_START_RETRANSMIT_MS / 2);
@@ -1637,6 +1653,28 @@ export class P2PSession extends EventEmitter {
   private clearCommandRetransmit(): void {
     clearInterval(this.commandRetransmitTimer);
     this.commandRetransmitTimer = undefined;
+  }
+
+  /** One acknowledged-send sequence is finished (acknowledged or given up on): settle the callers it completes. */
+  private settleCommand(sequence: number): void {
+    for (const waiter of this.commandSettleWaiters) {
+      waiter.pending.delete(sequence);
+      if (waiter.pending.size) continue;
+      this.commandSettleWaiters.delete(waiter);
+      this.notifySettled(waiter.done);
+    }
+  }
+
+  /** Call a caller's `onSettled`; one that throws is logged, never allowed to stop the session's own work. */
+  private notifySettled(done: () => void): void {
+    try {
+      done();
+    } catch (error) {
+      this.logger.warn(
+        `[p2p] ${this.cfg.stationSn} an acknowledged send's settle callback threw`,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
   }
 
   private clearLiveStartRetransmit(): void {
@@ -2002,7 +2040,7 @@ export class P2PSession extends EventEmitter {
         if (this.unackedLiveStarts.delete(sequence)) {
           this.trace({ phase: "media-command-ack", action: "start" });
         }
-        this.unackedCommands.delete(sequence);
+        if (this.unackedCommands.delete(sequence)) this.settleCommand(sequence);
       }
       if (!this.unackedLiveStarts.size) this.clearLiveStartRetransmit();
       if (!this.unackedCommands.size) this.clearCommandRetransmit();
@@ -2870,6 +2908,9 @@ export class P2PSession extends EventEmitter {
     this.unackedLiveStarts.clear();
     this.clearCommandRetransmit();
     this.unackedCommands.clear();
+    const waiters = [...this.commandSettleWaiters];
+    this.commandSettleWaiters.clear();
+    for (const waiter of waiters) this.notifySettled(waiter.done);
     this.resetInboundSequencing();
     const socket = this.socket;
     if (socket && this.connectAddress) {

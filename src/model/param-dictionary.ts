@@ -1401,6 +1401,11 @@ export const SECURITY_PARAMS: Record<number, ParamDef> = {
     type: "string",
     provenance: "verified",
   },
+  8103: {
+    name: "lastTossAt",
+    type: "number",
+    provenance: "verified",
+  },
   9208: {
     name: "imageHdr",
     type: "bool",
@@ -1757,9 +1762,9 @@ export const CLEAN_PARAMS: Record<number, ParamDef> = {
 /**
  * eufy Smart Display (T87Ax) param space — ids 8001-8006.
  *
- * Its own table rather than a corner of {@link SECURITY_PARAMS}: nothing in the 8000s carries a security
- * meaning, so reading these ids there would decode a future security param assigned in this range as
- * whatever it means on a camera.
+ * Its own table rather than a corner of {@link SECURITY_PARAMS}: the security line uses ids in the 8000s too
+ * (8103, a dog camera's last treat toss), so reading these ids there would decode a security param assigned
+ * in this range as whatever it means on a camera.
  *
  * Every id here was reported by a live T87A0 (captured 2026-09-04). That the device SENT an id is what
  * earns it a place in this table; the provenance label beside each one rates something narrower — how far

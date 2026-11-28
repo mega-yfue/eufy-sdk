@@ -72,7 +72,11 @@ permanent-outdoor-light line: on/off/brightness/custom colour/effect — see the
 `arming`, `lock` (lock/unlock/setAutoLock on both the P2P video lock and the MQTT garage door; lock/unlock
 also on the classic Wi-Fi lock over its own keyed envelope, both directions hardware-confirmed, where
 `setAutoLock` is absent — optional accessor, `?.()`; plus setRainMode on the video lock only; `unlock()` alone
-opens a standalone SmartDrop lid), and `siren` (volume, alarm duration, and test/stop triggers — see below).
+opens a standalone SmartDrop lid), `siren` (volume, alarm duration, and test/stop triggers — see below), and
+`treat` (a dog camera's treat launcher: `toss("near" | "middle" | "far")` and the `lastTossAt` time. Device
+type 72 or a reported `lastTossAt` exposes `treat`; only a T7200 on its own station offers `toss`. The toss is
+submitted once, never replayed or resent, settles when handed to the local transport, and is not sent at all if
+it cannot go out soon after it is requested).
 
 > **Unverified writes are absent, they don't guess.** A write method present on a `dev.<cap>()` object
 > means its wire is verified — so you know at compile time what's settable. Where a write isn't yet
@@ -109,7 +113,7 @@ dev.arming?.()?.mode; // number | undefined — current guard mode
 
 Read getters live on every capability that has readable state (`battery`, `contact`, `lock`, `camera`,
 `light`, `motion`, `arming`, `siren`, the `leak`/`smoke`/`keypad` sensors, `storage`, `audio`,
-`doorbell`, `ptz`, RoboVac `vacuumClean`/`suction`, `personDetection`).
+`doorbell`, `ptz`, `treat`, RoboVac `vacuumClean`/`suction`, `personDetection`).
 
 A getter narrows the value's **type**; what the value **means** — a percentage, a temperature, an
 instant, one of a named set — is declared beside it and is what a host needs to render a reading. See

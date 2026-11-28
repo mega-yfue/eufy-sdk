@@ -28,6 +28,10 @@ export interface FakeP2PSession extends EventEmitter {
   /** The handle every trace about this session is emitted under, real sessions included. */
   traceId: string;
   hasLevel2Key: boolean;
+  /** Any level-2 key: the GCM key ({@link hasLevel2Key}) or an RSA cipher's ECB key, which `setPayloadKeyOnly` adds. */
+  readonly holdsLevel2Key: boolean;
+  /** The session negotiated only an RSA cipher's set-payload (ECB) key. Default: no. */
+  setPayloadKeyOnly: boolean;
   awaitLevel2Key: ReturnType<typeof vi.fn>;
   repromptLevel2Key: ReturnType<typeof vi.fn>;
   /** What a second ask would achieve: `true` = the key arrives on the retry. Default: nothing to be had. */
@@ -66,8 +70,17 @@ export function connectedSession(hasLevel2Key = true): FakeP2PSession {
   session.isConnected = true;
   session.traceId = "station-fake";
   session.hasLevel2Key = hasLevel2Key;
+  session.setPayloadKeyOnly = false;
+  Object.defineProperty(session, "holdsLevel2Key", {
+    get: () => session.hasLevel2Key || session.setPayloadKeyOnly,
+  });
   session.keyArrivesOnReprompt = false;
-  session.sendAcknowledged = vi.fn((send: () => boolean) => send());
+  // The fake device acknowledges every sequence at once, so a caller waiting for that is released right away.
+  session.sendAcknowledged = vi.fn((send: () => boolean, onSettled?: () => void) => {
+    const sent = send();
+    onSettled?.();
+    return sent;
+  });
   session.awaitLevel2Key = vi.fn(async () => session.hasLevel2Key);
   session.repromptLevel2Key = vi.fn(() => {
     if (session.hasLevel2Key || !session.keyArrivesOnReprompt) return false;

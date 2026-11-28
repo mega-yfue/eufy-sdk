@@ -97,6 +97,20 @@ import { stationChannels, stationOf } from "./station-channels.js";
 const DIRECT_CMD_SENDS = 5;
 
 /**
+ * How long after it is asked for a once-only write may still be sent: the wait for an earlier request to the same
+ * device and the wait for the session to connect both count. Bounded well below the connect timeout and below a
+ * host's own wait on the call: a dispensing write sent after its caller has given up happens unasked.
+ */
+const ONCE_DEADLINE_MS = 10_000;
+
+/**
+ * How long a once-only write keeps its device's turn after the handoff when the session reports nothing: the
+ * session repeats an unacknowledged datagram for about 3 s, so this is that window and a margin. A session that
+ * reports the sequence acknowledged, given up on or closed releases the turn earlier.
+ */
+const ONCE_HOLD_MS = 3_500;
+
+/**
  * `GET_CAMERA_INFO` (1103) body: `[u32 mValue = 255][u32 mValueSub = 903]`, the constants the app's request
  * builder sets for this command (`msgType` 14, packed as two little-endian ints by its native sender). A
  * HomeBase answers on channel 255 with its whole parameter table, every attached device's entries under
@@ -789,6 +803,7 @@ export class P2PCommandRouter {
         await this.sendJsonRaw(sn, cmd.cmd, cmd.data, cmd.channel);
         return false;
       case "set-payload":
+        if (cmd.once) return this.sendSetPayloadOnce(sn, cmd.cmd, cmd.payload, cmd.channel);
         return (
           (await this.sendSetPayloadEnvelope(
             sn,
@@ -2051,6 +2066,78 @@ export class P2PCommandRouter {
       resolved ?? (await this.resolveSession(sn, { waitLevel2: true, level2Sender })),
       answer,
     );
+  }
+
+  /**
+   * A `set-payload` marked `once`: a write that must not happen twice (it dispenses). One
+   * {@link P2PSession.sendAcknowledged} send of one envelope under one sequence — repeated byte-identically only
+   * until the device acknowledges that sequence (for about 3 s at most), and the device acts
+   * on a sequence once — with none of {@link sendSetPayloadEnvelope}'s replays, no wait on an answer (the device
+   * returns none) and no resend on a code. Settles `false` at the handoff: sent unread.
+   *
+   * One in flight per device: the next request waits until this one's sequence is acknowledged, given up on or its
+   * session closed (at most {@link ONCE_HOLD_MS} after the handoff), so two requests never have sequences in the
+   * air together.
+   *
+   * Confirmed only on a device's own keyless session, so a session that is attached or holds either level-2 key
+   * is refused rather than sent a level-2 form, which replays. A request is sent within {@link ONCE_DEADLINE_MS}
+   * of being asked for or not at all: the time it waits behind an earlier request and the time the station takes
+   * to connect both count, and the deadline is checked again just before the send. A rejection means nothing left.
+   */
+  private sendSetPayloadOnce(
+    sn: string,
+    cmd: number,
+    payload: Record<string, unknown>,
+    channel: number,
+  ): Promise<boolean> {
+    const deadline = Date.now() + ONCE_DEADLINE_MS;
+    const expired = (): Error =>
+      new Error(`set-payload cmd ${cmd} for ${sn}: not sent, ${ONCE_DEADLINE_MS} ms passed since it was requested`);
+    let handedOver!: (sent: boolean) => void;
+    let refused!: (error: unknown) => void;
+    const outcome = new Promise<boolean>((resolve, reject) => {
+      handedOver = resolve;
+      refused = reject;
+    });
+    // The device's turn is held past the caller's settlement, until the sequence settles: `work` resolves the
+    // caller at the handoff and returns only once the next request may go.
+    void this.serializeAnswered(sn, async () => {
+      try {
+        const left = deadline - Date.now();
+        if (left <= 0) throw expired();
+        const { session, accountId, homeBaseAttached } = await this.resolveSession(sn, {
+          waitLevel2: "settle",
+          signal: AbortSignal.timeout(left),
+        });
+        if (homeBaseAttached || session.holdsLevel2Key) {
+          throw new Error(
+            `set-payload cmd ${cmd} for ${sn}: a once-only write is confirmed on an own keyless session only`,
+          );
+        }
+        // A session that closed while the key settled would take the send without sending anything.
+        if (session.isClosed || !session.isConnected) {
+          throw new Error(`set-payload cmd ${cmd} for ${sn}: not sent, the session closed before the send`);
+        }
+        if (Date.now() >= deadline) throw expired();
+        let release!: () => void;
+        const settled = new Promise<void>((resolve) => (release = resolve));
+        session.sendAcknowledged(() => {
+          session.sendSetPayload(cmd, payload, { accountId, channel });
+          return true;
+        }, release);
+        handedOver(false);
+        let hold: ReturnType<typeof setTimeout> | undefined;
+        const held = new Promise<void>((resolve) => {
+          hold = setTimeout(resolve, ONCE_HOLD_MS);
+          hold.unref?.();
+        });
+        await Promise.race([settled, held]);
+        clearTimeout(hold);
+      } catch (error) {
+        refused(error);
+      }
+    });
+    return outcome;
   }
 
   /**

@@ -88,6 +88,8 @@ export type Capability =
   | "mower"
   // SmartDrop parcel box: open the lid.
   | "smart_drop"
+  // A dog camera's treat launcher: toss a treat, time of the last toss.
+  | "treat"
   // eufy_life smart lighting (own secure-MQTT DP namespace) — the T8L0x line's on/off/brightness/
   // effect control. Distinct from the camera-floodlight `light` capability above.
   | "smart_light"
